@@ -1,0 +1,614 @@
+/**
+ * @file ProjectDocument.cpp
+ * @brief ProjectDocument 实现
+ */
+
+#include "ProjectDocument.h"
+#include <QUuid>
+#include <QFileInfo>
+#include <glog/logging.h>
+#include <fstream>
+#include <cereal/archives/binary.hpp>
+#include <cereal/archives/json.hpp>
+#include <cereal/types/vector.hpp>
+#include <cereal/types/map.hpp>
+#include <cereal/types/string.hpp>
+
+namespace insight {
+namespace ui {
+
+ProjectDocument::ProjectDocument(QObject* parent)
+    : QObject(parent), m_projectLoaded(false) {
+}
+
+ProjectDocument::~ProjectDocument() {
+}
+
+// ─────────────────────────────────────────────────────────────
+// 文件操作
+// ─────────────────────────────────────────────────────────────
+
+bool ProjectDocument::newProject(const QString& name, const QString& author,
+                                 const QString& description) {
+    closeProject();
+    
+    // 初始化新项目
+    m_project.name = name.toStdString();
+    m_project.author = author.toStdString();
+    m_project.description = description.toStdString();
+    m_project.uuid = QUuid::createUuid().toString().toStdString();
+    
+    auto now = std::time(nullptr);
+    m_project.creation_time = now;
+    m_project.last_modified_time = now;
+    
+    // 初始化默认坐标系
+    m_project.input_coordinate_system.type = insight::database::CoordinateSystem::Type::kLocal;
+    m_project.input_coordinate_system.definition = "Local";
+    
+    m_projectLoaded = true;
+    setModified(true);
+    
+    LOG(INFO) << "New project created: " << name.toStdString();
+    emit projectCreated();
+    return true;
+}
+
+bool ProjectDocument::openProject(const QString& filepath) {
+    if (!QFileInfo(filepath).exists()) {
+        LOG(ERROR) << "Project file not found: " << filepath.toStdString();
+        return false;
+    }
+    
+    if (!loadFromFile(filepath)) {
+        return false;
+    }
+    
+    m_filepath = filepath;
+    m_projectLoaded = true;
+    setModified(false);
+    
+    LOG(INFO) << "Project opened: " << filepath.toStdString();
+    emit projectOpened();
+    return true;
+}
+
+bool ProjectDocument::saveProject() {
+    if (!m_projectLoaded) {
+        LOG(ERROR) << "No project loaded";
+        return false;
+    }
+    
+    if (m_filepath.isEmpty()) {
+        LOG(ERROR) << "Project path not set";
+        return false;
+    }
+    
+    return saveProjectAs(m_filepath);
+}
+
+bool ProjectDocument::saveProjectAs(const QString& filepath) {
+    if (!m_projectLoaded) {
+        LOG(ERROR) << "No project loaded";
+        return false;
+    }
+    
+    m_project.last_modified_time = std::time(nullptr);
+    
+    if (!saveToFile(filepath)) {
+        return false;
+    }
+    
+    m_filepath = filepath;
+    setModified(false);
+    
+    LOG(INFO) << "Project saved: " << filepath.toStdString();
+    emit projectSaved();
+    return true;
+}
+
+void ProjectDocument::closeProject() {
+    clearAllData();
+    m_filepath.clear();
+    m_projectLoaded = false;
+    setModified(false);
+    
+    LOG(INFO) << "Project closed";
+    emit projectCleared();
+}
+
+// ─────────────────────────────────────────────────────────────
+// 项目信息编辑
+// ─────────────────────────────────────────────────────────────
+
+void ProjectDocument::updateProjectInfo(const QString& name,
+                                       const QString& author,
+                                       const QString& description) {
+    m_project.name = name.toStdString();
+    m_project.author = author.toStdString();
+    m_project.description = description.toStdString();
+    
+    setModified(true);
+    emit projectInfoChanged();
+}
+
+void ProjectDocument::updateCoordinateSystem(const insight::database::CoordinateSystem& cs) {
+    m_project.input_coordinate_system = cs;
+    setModified(true);
+    emit projectInfoChanged();
+}
+
+// ─────────────────────────────────────────────────────────────
+// ImageGroup 操作
+// ─────────────────────────────────────────────────────────────
+
+uint32_t ProjectDocument::createImageGroup(const QString& name,
+                                          insight::database::ImageGroup::CameraMode mode) {
+    if (!m_projectLoaded) {
+        LOG(ERROR) << "No project loaded";
+        return (uint32_t)-1;
+    }
+    
+    uint32_t group_id = generateImageGroupId();
+    
+    insight::database::ImageGroup group;
+    group.group_id = group_id;
+    group.group_name = name.toStdString();
+    group.camera_mode = mode;
+    group.creation_time = std::time(nullptr);
+    
+    m_project.image_groups.push_back(group);
+    
+    setModified(true);
+    emit imageGroupAdded(group_id);
+    
+    LOG(INFO) << "Image group created: " << name.toStdString() << " (ID: " << group_id << ")";
+    return group_id;
+}
+
+bool ProjectDocument::deleteImageGroup(uint32_t group_id) {
+    auto it = std::find_if(m_project.image_groups.begin(),
+                          m_project.image_groups.end(),
+                          [group_id](const auto& g) { return g.group_id == group_id; });
+    
+    if (it == m_project.image_groups.end()) {
+        LOG(ERROR) << "Image group not found: " << group_id;
+        return false;
+    }
+    
+    m_project.image_groups.erase(it);
+    
+    setModified(true);
+    emit imageGroupRemoved(group_id);
+    
+    LOG(INFO) << "Image group deleted: " << group_id;
+    return true;
+}
+
+bool ProjectDocument::addImagesToGroup(uint32_t group_id, const QStringList& filenames) {
+    auto it = std::find_if(m_project.image_groups.begin(),
+                          m_project.image_groups.end(),
+                          [group_id](const auto& g) { return g.group_id == group_id; });
+    
+    if (it == m_project.image_groups.end()) {
+        LOG(ERROR) << "Image group not found: " << group_id;
+        return false;
+    }
+    
+    for (const auto& filename : filenames) {
+        uint32_t image_id = static_cast<uint32_t>(it->images.size() + 1);
+        
+        insight::database::Image image;
+        image.image_id = image_id;
+        image.filename = filename.toStdString();
+        
+        it->images.push_back(image);
+    }
+    
+    setModified(true);
+    emit imagesAdded(group_id, filenames);
+    emit imageGroupChanged(group_id);
+    
+    LOG(INFO) << "Added " << filenames.size() << " images to group " << group_id;
+    return true;
+}
+
+bool ProjectDocument::removeImageFromGroup(uint32_t group_id, uint32_t image_id) {
+    auto it = std::find_if(m_project.image_groups.begin(),
+                          m_project.image_groups.end(),
+                          [group_id](const auto& g) { return g.group_id == group_id; });
+    
+    if (it == m_project.image_groups.end()) {
+        return false;
+    }
+    
+    auto img_it = std::find_if(it->images.begin(),
+                              it->images.end(),
+                              [image_id](const auto& img) { return img.image_id == image_id; });
+    
+    if (img_it == it->images.end()) {
+        return false;
+    }
+    
+    it->images.erase(img_it);
+    
+    setModified(true);
+    emit imageGroupChanged(group_id);
+    
+    return true;
+}
+
+void ProjectDocument::updateGroupCamera(uint32_t group_id,
+                                       const insight::database::CameraModel& camera) {
+    auto it = std::find_if(m_project.image_groups.begin(),
+                          m_project.image_groups.end(),
+                          [group_id](const auto& g) { return g.group_id == group_id; });
+    
+    if (it != m_project.image_groups.end()) {
+        it->group_camera = camera;
+        setModified(true);
+        emit cameraModelChanged(group_id, 0);
+        emit imageGroupChanged(group_id);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CameraModel 操作
+// ─────────────────────────────────────────────────────────────
+
+void ProjectDocument::updateImageCamera(uint32_t group_id, uint32_t image_id,
+                                       const insight::database::CameraModel& camera) {
+    auto it = std::find_if(m_project.image_groups.begin(),
+                          m_project.image_groups.end(),
+                          [group_id](const auto& g) { return g.group_id == group_id; });
+    
+    if (it == m_project.image_groups.end()) {
+        return;
+    }
+    
+    auto img_it = std::find_if(it->images.begin(),
+                              it->images.end(),
+                              [image_id](const auto& img) { return img.image_id == image_id; });
+    
+    if (img_it != it->images.end()) {
+        img_it->camera = camera;
+        setModified(true);
+        emit cameraModelChanged(group_id, image_id);
+        emit imageGroupChanged(group_id);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// CameraRig 操作
+// ─────────────────────────────────────────────────────────────
+
+uint32_t ProjectDocument::createCameraRig(const QString& name,
+                                         const QString& description) {
+    if (!m_projectLoaded) {
+        LOG(ERROR) << "No project loaded";
+        return (uint32_t)-1;
+    }
+    
+    uint32_t rig_id = generateRigId();
+    
+    insight::database::CameraRig rig;
+    rig.rig_id = rig_id;
+    rig.rig_name = name.toStdString();
+    rig.description = description.toStdString();
+    rig.calib_status = insight::database::CameraRig::CalibrationStatus::kUnknown;
+    
+    m_project.camera_rigs[rig_id] = rig;
+    
+    setModified(true);
+    emit cameraRigAdded(rig_id);
+    
+    LOG(INFO) << "Camera rig created: " << name.toStdString() << " (ID: " << rig_id << ")";
+    return rig_id;
+}
+
+bool ProjectDocument::deleteCameraRig(uint32_t rig_id) {
+    auto it = m_project.camera_rigs.find(rig_id);
+    
+    if (it == m_project.camera_rigs.end()) {
+        LOG(ERROR) << "Camera rig not found: " << rig_id;
+        return false;
+    }
+    
+    m_project.camera_rigs.erase(it);
+    
+    setModified(true);
+    emit cameraRigRemoved(rig_id);
+    
+    LOG(INFO) << "Camera rig deleted: " << rig_id;
+    return true;
+}
+
+bool ProjectDocument::addCameraToRig(uint32_t rig_id,
+                                    const insight::database::CameraRig::CameraMount& mount,
+                                    const insight::database::CameraModel& camera) {
+    auto it = m_project.camera_rigs.find(rig_id);
+    
+    if (it == m_project.camera_rigs.end()) {
+        LOG(ERROR) << "Camera rig not found: " << rig_id;
+        return false;
+    }
+    
+    it->second.mounts.push_back(mount);
+    
+    // 将相机参数与mount的camera_id关联（可在后续扩展）
+    
+    setModified(true);
+    emit cameraRigChanged(rig_id);
+    
+    LOG(INFO) << "Camera added to rig " << rig_id << " (Camera ID: " << mount.camera_id << ")";
+    return true;
+}
+
+bool ProjectDocument::removeCameraFromRig(uint32_t rig_id, uint32_t camera_id) {
+    auto it = m_project.camera_rigs.find(rig_id);
+    
+    if (it == m_project.camera_rigs.end()) {
+        return false;
+    }
+    
+    auto mount_it = std::find_if(it->second.mounts.begin(),
+                                it->second.mounts.end(),
+                                [camera_id](const auto& m) { return m.camera_id == camera_id; });
+    
+    if (mount_it == it->second.mounts.end()) {
+        return false;
+    }
+    
+    it->second.mounts.erase(mount_it);
+    
+    setModified(true);
+    emit cameraRigChanged(rig_id);
+    
+    return true;
+}
+
+void ProjectDocument::updateRigCameraModel(uint32_t rig_id, uint32_t camera_id,
+                                          const insight::database::CameraModel& camera) {
+    auto it = m_project.camera_rigs.find(rig_id);
+    
+    if (it != m_project.camera_rigs.end()) {
+        setModified(true);
+        emit cameraRigChanged(rig_id);
+    }
+}
+
+void ProjectDocument::updateRigCalibrationStatus(
+    uint32_t rig_id,
+    insight::database::CameraRig::CalibrationStatus status) {
+    auto it = m_project.camera_rigs.find(rig_id);
+    
+    if (it != m_project.camera_rigs.end()) {
+        it->second.calib_status = status;
+        setModified(true);
+        emit cameraRigChanged(rig_id);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// GCP 操作
+// ─────────────────────────────────────────────────────────────
+
+size_t ProjectDocument::importGCPs(const QString& filepath, const QMap<QString, QString>& options) {
+    // TODO: 实现从CSV/TXT文件解析GCP数据
+    LOG(WARNING) << "GCP import not yet implemented";
+    return 0;
+}
+
+uint32_t ProjectDocument::addGCP(const insight::database::GCPMeasurement& gcp) {
+    uint32_t gcp_id = generateGCPId();
+    
+    insight::database::GCPMeasurement new_gcp = gcp;
+    new_gcp.gcp_id = gcp_id;
+    
+    m_project.gcp_database[gcp_id] = new_gcp;
+    m_project.InvalidateGCPCache();
+    
+    setModified(true);
+    emit gcpAdded(gcp_id);
+    
+    return gcp_id;
+}
+
+bool ProjectDocument::deleteGCP(uint32_t gcp_id) {
+    auto it = m_project.gcp_database.find(gcp_id);
+    
+    if (it == m_project.gcp_database.end()) {
+        return false;
+    }
+    
+    m_project.gcp_database.erase(it);
+    m_project.InvalidateGCPCache();
+    
+    setModified(true);
+    emit gcpRemoved(gcp_id);
+    
+    return true;
+}
+
+void ProjectDocument::updateGCP(uint32_t gcp_id, const insight::database::GCPMeasurement& gcp) {
+    auto it = m_project.gcp_database.find(gcp_id);
+    
+    if (it != m_project.gcp_database.end()) {
+        it->second = gcp;
+        it->second.gcp_id = gcp_id;
+        m_project.InvalidateGCPCache();
+        
+        setModified(true);
+        emit gcpChanged(gcp_id);
+    }
+}
+
+void ProjectDocument::clearAllGCPs() {
+    m_project.gcp_database.clear();
+    m_project.InvalidateGCPCache();
+    
+    setModified(true);
+}
+
+// ─────────────────────────────────────────────────────────────
+// ATTask 操作
+// ─────────────────────────────────────────────────────────────
+
+std::string ProjectDocument::createATTask(const QString& name) {
+    if (!m_projectLoaded) {
+        LOG(ERROR) << "No project loaded";
+        return "";
+    }
+    
+    std::string task_id = QUuid::createUuid().toString().toStdString();
+    
+    insight::database::ATTask task;
+    task.id = task_id;
+    
+    m_project.at_tasks.push_back(task);
+    
+    setModified(true);
+    emit atTaskCreated(QString::fromStdString(task_id));
+    
+    LOG(INFO) << "AT task created: " << name.toStdString() << " (ID: " << task_id << ")";
+    return task_id;
+}
+
+bool ProjectDocument::deleteATTask(const std::string& task_id) {
+    auto it = std::find_if(m_project.at_tasks.begin(),
+                          m_project.at_tasks.end(),
+                          [&task_id](const auto& t) { return t.id == task_id; });
+    
+    if (it == m_project.at_tasks.end()) {
+        LOG(ERROR) << "AT task not found: " << task_id;
+        return false;
+    }
+    
+    m_project.at_tasks.erase(it);
+    
+    setModified(true);
+    emit atTaskRemoved(QString::fromStdString(task_id));
+    
+    LOG(INFO) << "AT task deleted: " << task_id;
+    return true;
+}
+
+void ProjectDocument::updateATTask(const std::string& task_id,
+                                  const insight::database::ATTask& task) {
+    auto it = std::find_if(m_project.at_tasks.begin(),
+                          m_project.at_tasks.end(),
+                          [&task_id](const auto& t) { return t.id == task_id; });
+    
+    if (it != m_project.at_tasks.end()) {
+        *it = task;
+        it->id = task_id;
+        
+        setModified(true);
+        emit atTaskChanged(QString::fromStdString(task_id));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 导出/导入
+// ─────────────────────────────────────────────────────────────
+
+bool ProjectDocument::exportToCOLMAP(const QString& outputDir, const QMap<QString, QString>& options) {
+    // TODO: 实现COLMAP导出
+    LOG(INFO) << "Exporting to COLMAP: " << outputDir.toStdString();
+    emit exportStarted("COLMAP");
+    emit exportFinished(false, "Not yet implemented");
+    return false;
+}
+
+bool ProjectDocument::importFromCOLMAP(const QString& colmapDb, const QMap<QString, QString>& options) {
+    // TODO: 实现从COLMAP导入
+    LOG(INFO) << "Importing from COLMAP: " << colmapDb.toStdString();
+    emit importStarted("COLMAP");
+    emit importFinished(false, "Not yet implemented");
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 内部辅助方法
+// ─────────────────────────────────────────────────────────────
+
+void ProjectDocument::setModified(bool modified) {
+    if (m_modified != modified) {
+        m_modified = modified;
+        emit modificationChanged(modified);
+    }
+}
+
+void ProjectDocument::clearAllData() {
+    m_project = insight::database::Project();
+    m_nextImageGroupId = 1;
+    m_nextRigId = 1;
+    m_nextGCPId = 1;
+}
+
+bool ProjectDocument::loadFromFile(const QString& filepath) {
+    try {
+        std::ifstream ifs(filepath.toStdString(), std::ios::binary);
+        if (!ifs.is_open()) {
+            LOG(ERROR) << "Failed to open file: " << filepath.toStdString();
+            return false;
+        }
+        
+        // cereal::BinaryInputArchive archive(ifs);
+        cereal::JSONInputArchive archive(ifs);
+        archive(cereal::make_nvp("project", m_project));
+        ifs.close();
+        
+        m_projectLoaded = true;
+        m_filepath = filepath;
+        
+        LOG(INFO) << "Project loaded from file: " << filepath.toStdString();
+        emit projectOpened();
+        return true;
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to load project: " << e.what();
+        return false;
+    }
+}
+
+bool ProjectDocument::saveToFile(const QString& filepath) {
+    try {
+        std::ofstream ofs(filepath.toStdString(), std::ios::binary);
+        if (!ofs.is_open()) {
+            LOG(ERROR) << "Failed to create file: " << filepath.toStdString();
+            return false;
+        }
+        
+        {
+            // cereal::BinaryOutputArchive archive(ofs);
+            cereal::JSONOutputArchive archive(ofs);
+            archive(cereal::make_nvp("project", m_project));
+            // 显式销毁 archive 以确保正确写入
+        }
+        
+        ofs.close();
+        m_filepath = filepath;
+        
+        LOG(INFO) << "Project saved to file: " << filepath.toStdString();
+        emit projectSaved();
+        return true;
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to save project: " << e.what();
+        return false;
+    }
+}
+
+uint32_t ProjectDocument::generateImageGroupId() {
+    return m_nextImageGroupId++;
+}
+
+uint32_t ProjectDocument::generateRigId() {
+    return m_nextRigId++;
+}
+
+uint32_t ProjectDocument::generateGCPId() {
+    return m_nextGCPId++;
+}
+
+}  // namespace ui
+}  // namespace insight

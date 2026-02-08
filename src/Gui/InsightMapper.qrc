@@ -1,0 +1,7 @@
+<RCC>
+  <qresource prefix="/InsightMapper">
+    <file alias="logo">Resources/Icon.png</file>
+    <file alias="error">Resources/error_18px.png</file>
+    <file alias="donate_wx">Resources/donate_weixin.png</file>
+  </qresource>
+</RCC>

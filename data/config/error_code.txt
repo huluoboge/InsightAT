@@ -1,0 +1,9 @@
+0;no error
+1;some error occurred
+2;load feature failed
+3;match task file not exist
+4;aerial triangulation failed
+5;open file failed
+6;write file failed
+7;absolute orientation failed: too less valid coordinate to absolute orientation,must more than 4  coordinate
+8;absolute orientation failed: can't solve function

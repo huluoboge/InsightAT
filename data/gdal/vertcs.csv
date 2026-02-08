@@ -1,0 +1,4 @@
+"COORD_REF_SYS_CODE","COORD_REF_SYS_NAME","DATUM_CODE","DATUM_NAME","UOM_CODE","SHOW_CRS","DEPRECATED","COORD_SYS_CODE","COORD_OP_METHOD_CODE_1","PARM_1_1"
+3855,EGM2008 geoid height,1027,EGM2008 geoid,9001,1,0,6499,9665,"egm08_25.gtx"
+5703,NAVD88 height,5103,North American Vertical Datum 1988,9001,1,0,6499,9665,"g2012a_conus.gtx,g2012a_alaska.gtx,g2012a_guam.gtx,g2012a_hawaii.gtx,g2012a_puertorico.gtx,g2012a_samoa.gtx"
+5773,EGM96 geoid height,5171,EGM96 geoid,9001,1,0,6499,9665,"egm96_15.gtx"

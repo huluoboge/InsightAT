@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ImageAttributes</class>
+ <widget class="QWidget" name="ImageAttributes">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>777</width>
+    <height>482</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>ImageAttributes</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout">
+     <item>
+      <widget class="QPushButton" name="pushButton_2">
+       <property name="text">
+        <string>Import images</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButton_3">
+       <property name="text">
+        <string>Import pose</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButton_5">
+       <property name="text">
+        <string>Set path</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButton_setCamera">
+       <property name="text">
+        <string>Set Camera</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButton_4">
+       <property name="text">
+        <string>Remove</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButton">
+       <property name="text">
+        <string>Check</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="tableWidget_attribute">
+     <property name="editTriggers">
+      <set>QAbstractItemView::NoEditTriggers</set>
+     </property>
+     <property name="alternatingRowColors">
+      <bool>true</bool>
+     </property>
+     <property name="textElideMode">
+      <enum>Qt::ElideRight</enum>
+     </property>
+     <property name="sortingEnabled">
+      <bool>false</bool>
+     </property>
+     <attribute name="horizontalHeaderShowSortIndicator" stdset="0">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="horizontalHeaderStretchLastSection">
+      <bool>true</bool>
+     </attribute>
+     <attribute name="verticalHeaderVisible">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="verticalHeaderDefaultSectionSize">
+      <number>24</number>
+     </attribute>
+     <column>
+      <property name="text">
+       <string>ImageId</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>CameraName</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>ImageName</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>X</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Y</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Z</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Omega</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Phi</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Kappa</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Path</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <layoutdefault spacing="6" margin="11"/>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>pushButton_2</sender>
+   <signal>clicked()</signal>
+   <receiver>ImageAttributes</receiver>
+   <slot>importImages()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>81</x>
+     <y>28</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>169</x>
+     <y>-12</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton_3</sender>
+   <signal>clicked()</signal>
+   <receiver>ImageAttributes</receiver>
+   <slot>importPose()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>169</x>
+     <y>31</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>249</x>
+     <y>-2</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton_5</sender>
+   <signal>clicked()</signal>
+   <receiver>ImageAttributes</receiver>
+   <slot>setPath()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>257</x>
+     <y>32</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>584</x>
+     <y>-19</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton</sender>
+   <signal>clicked()</signal>
+   <receiver>ImageAttributes</receiver>
+   <slot>check()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>500</x>
+     <y>32</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>626</x>
+     <y>1</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton_setCamera</sender>
+   <signal>clicked()</signal>
+   <receiver>ImageAttributes</receiver>
+   <slot>setCamera()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>338</x>
+     <y>32</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>419</x>
+     <y>-13</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton_4</sender>
+   <signal>clicked()</signal>
+   <receiver>ImageAttributes</receiver>
+   <slot>removeImages()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>419</x>
+     <y>30</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>536</x>
+     <y>-80</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+ <slots>
+  <slot>importImages()</slot>
+  <slot>importPose()</slot>
+  <slot>setCamera()</slot>
+  <slot>setPath()</slot>
+  <slot>check()</slot>
+  <slot>removeImages()</slot>
+ </slots>
+</ui>
