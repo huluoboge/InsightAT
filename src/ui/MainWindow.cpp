@@ -9,9 +9,15 @@
 #include "dialogs/NewProjectDialog.h"
 #include "dialogs/ImageGroupDialog.h"
 #include "dialogs/ProjectInfoDialog.h"
+#include "dialogs/CoordinateSystemConfigDialog.h"
+#include "dialogs/ImageGroupDetailPanel.h"
+#include "dialogs/NewATTaskDialog.h"
 #include "widgets/SpatialReferenceDialog.h"
+#include "widgets/ImageGroupsManagementPanel.h"
+#include "panels/ATTaskPanel.h"
 #include "UISystemConfig.h"
 #include "../Common/Coordinates.h"
+#include "../database/database_types.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -144,6 +150,13 @@ void MainWindow::createMenuBar() {
     m_actionImportGCPs->setEnabled(false);
     connect(m_actionImportGCPs, &QAction::triggered, this, &MainWindow::onImportGCPs);
     
+    m_editMenu->addSeparator();
+    
+    m_actionCreateATTask = m_editMenu->addAction(tr("Create &AT Task"));
+    m_actionCreateATTask->setShortcut(Qt::CTRL | Qt::Key_T);
+    m_actionCreateATTask->setEnabled(false);
+    connect(m_actionCreateATTask, &QAction::triggered, this, &MainWindow::onCreateATTask);
+    
     // ─────────────────────────────────────────────────────
     // 视图菜单 (View Menu)
     // ─────────────────────────────────────────────────────
@@ -187,6 +200,8 @@ void MainWindow::createToolBar() {
     toolbar->addAction(m_actionAddImageGroup);
     toolbar->addAction(m_actionAddCameraRig);
     toolbar->addAction(m_actionImportGCPs);
+    toolbar->addSeparator();
+    toolbar->addAction(m_actionCreateATTask);
 }
 
 void MainWindow::createWorkspace() {
@@ -206,7 +221,8 @@ void MainWindow::createWorkspace() {
     m_workspaceTreeView->setContextMenuPolicy(Qt::CustomContextMenu);
     m_splitter->addWidget(m_workspaceTreeView);
     
-    // 中央：内容区域 (暂时放一个占位符，后续放3D视图)
+    // 中央/右侧：内容区域 (使用 QStackedWidget 管理多个面板)
+    // 暂时创建占位符，ImageGroupsManagementPanel 将在连接阶段创建
     m_centerWidget = new QWidget();
     QVBoxLayout* centerLayout = new QVBoxLayout(m_centerWidget);
     
@@ -258,8 +274,35 @@ void MainWindow::connectSignalsSlots() {
     connect(m_workspaceTreeView, &QTreeView::doubleClicked,
             this, &MainWindow::onWorkspaceTreeDoubleClicked);
     
+    // 工作区树视图单击选中信号
+    connect(m_workspaceTreeView->selectionModel(), &QItemSelectionModel::currentChanged,
+            this, &MainWindow::onWorkspaceTreeSelectionChanged);
+    
     // 将 ProjectDocument 连接到 WorkspaceTreeModel
     m_workspaceModel->setProjectDocument(m_projectDocument.get());
+
+    // ─── 新增：图像分组 UI 初始化 ───
+    // 创建分组管理面板
+    m_imageGroupsPanel = new widgets::ImageGroupsManagementPanel();
+    m_imageGroupsPanel->SetProjectDocument(m_projectDocument.get());
+    
+    // 创建分组编辑对话框（单例）
+    m_imageGroupDetailDialog = new dialogs::ImageGroupDetailPanel(this);
+    m_imageGroupDetailDialog->SetProjectDocument(m_projectDocument.get());
+    
+    // 连接分组管理面板信号
+    connect(m_imageGroupsPanel, &widgets::ImageGroupsManagementPanel::editGroupRequested,
+            this, &MainWindow::onEditImageGroup);
+    
+    // 连接编辑对话框信号
+    connect(m_imageGroupDetailDialog, &dialogs::ImageGroupDetailPanel::groupDataChanged,
+            m_imageGroupsPanel, [this]() {
+                m_imageGroupsPanel->RefreshGroupList();
+            });
+    
+    // ─── 新增：AT Task UI 初始化 ───
+    // 创建 AT Task 编辑面板（单例）
+    m_atTaskPanel = new ATTaskPanel(m_projectDocument.get());
 }
 
 void MainWindow::updateWindowTitle() {
@@ -301,6 +344,7 @@ void MainWindow::onNewProject() {
         m_actionAddImageGroup->setEnabled(true);
         m_actionAddCameraRig->setEnabled(true);
         m_actionImportGCPs->setEnabled(true);
+        m_actionCreateATTask->setEnabled(true);
         m_actionSaveProject->setEnabled(true);
         m_actionSaveProjectAs->setEnabled(true);
         
@@ -327,6 +371,7 @@ void MainWindow::onOpenProject() {
         m_actionAddImageGroup->setEnabled(true);
         m_actionAddCameraRig->setEnabled(true);
         m_actionImportGCPs->setEnabled(true);
+        m_actionCreateATTask->setEnabled(true);
         m_actionSaveProject->setEnabled(true);
         m_actionSaveProjectAs->setEnabled(true);
         
@@ -395,45 +440,26 @@ void MainWindow::onProjectInfo() {
 }
 
 void MainWindow::onSetCoordinateSystem() {
-    // 使用新的 SpatialReferenceDialog，配合 UISystemConfig
-    SpatialReferenceDialog dialog(this);
+    if (!m_projectDocument->isProjectLoaded()) {
+        QMessageBox::warning(this, tr("Warning"), 
+                           tr("Please create or open a project first"));
+        return;
+    }
+
+    // 使用新的 CoordinateSystemConfigDialog
+    CoordinateSystemConfigDialog dialog(this);
+    
+    // 加载现有的坐标系配置（如果有）
+    dialog.SetCoordinateSystem(m_projectDocument->project().input_coordinate_system);
     
     if (dialog.exec() == QDialog::Accepted) {
-        Coordinate coord = dialog.SelectCoordinate();
+        auto coordSys = dialog.GetCoordinateSystem();
+        // 更新项目中的坐标系
+        m_projectDocument->updateCoordinateSystem(coordSys);
         
-        if (!coord.CoordinateName.empty()) {
-            // 设置坐标系到项目
-            insight::database::CoordinateSystem cs;
-            
-            // 优先使用 EPSG，其次使用 WKT
-            if (!coord.EPSGName.empty()) {
-                // 从 EPSG 名称提取数字（例如 "EPSG:4326" -> 4326）
-                std::string epsgStr = coord.EPSGName;
-                size_t colonPos = epsgStr.find(':');
-                if (colonPos != std::string::npos) {
-                    try {
-                        int epsg = std::stoi(epsgStr.substr(colonPos + 1));
-                        cs.type = insight::database::CoordinateSystem::Type::kEPSG;
-                        cs.definition = "EPSG:" + std::to_string(epsg);
-                    } catch (...) {
-                        cs.type = insight::database::CoordinateSystem::Type::kWKT;
-                        cs.definition = coord.WKT;
-                    }
-                } else {
-                    cs.type = insight::database::CoordinateSystem::Type::kWKT;
-                    cs.definition = coord.WKT;
-                }
-            } else {
-                cs.type = insight::database::CoordinateSystem::Type::kWKT;
-                cs.definition = coord.WKT;
-            }
-            
-            m_projectDocument->project().input_coordinate_system = cs;
-            
-            m_statusLabel->setText(tr("Coordinate system set: %1")
-                                 .arg(QString::fromStdString(coord.CoordinateName)));
-            LOG(INFO) << "Coordinate system set: " << coord.CoordinateName;
-        }
+        // 更新状态栏
+        m_statusLabel->setText(tr("Coordinate system configured successfully"));
+        LOG(INFO) << "Coordinate system set: type=" << static_cast<int>(coordSys.type);
     }
 }
 
@@ -443,23 +469,9 @@ void MainWindow::onAddImageGroup() {
                            tr("Please create or open a project first"));
         return;
     }
-    
-    // 创建图像分组对话框
-    if (!m_imageGroupDialog) {
-        m_imageGroupDialog = std::make_unique<ImageGroupDialog>(
-            &m_projectDocument->project(), this);
-    }
-    
-    if (m_imageGroupDialog->exec() == QDialog::Accepted) {
-        const auto& group = m_imageGroupDialog->getImageGroup();
-        
-        // 添加分组到项目
-        m_projectDocument->project().image_groups.push_back(group);
-        
-        m_statusLabel->setText(tr("Image group added: %1")
-                             .arg(QString::fromStdString(group.group_name)));
-        LOG(INFO) << "Image group added: " << group.group_name;
-    }
+
+    // 显示 Image Groups 管理面板
+    onImageGroupsNodeSelected();
 }
 
 void MainWindow::onAddCameraRig() {
@@ -472,9 +484,48 @@ void MainWindow::onImportGCPs() {
     QMessageBox::information(this, tr("TODO"), tr("GCP import - not yet implemented"));
 }
 
-// ─────────────────────────────────────────────────────
-// 视图菜单槽函数
-// ─────────────────────────────────────────────────────
+void MainWindow::onCreateATTask() {
+    if (!m_projectDocument->isProjectLoaded()) {
+        QMessageBox::warning(this, tr("Warning"), 
+                           tr("Please create or open a project first"));
+        return;
+    }
+    
+    // 创建"新建 AT Task"对话框（使用动态生成的下一个任务名称）
+    std::string nextTaskName = m_projectDocument->generateNextATTaskName();
+    NewATTaskDialog dialog(m_projectDocument.get(), QString::fromStdString(nextTaskName), this);
+    
+    if (dialog.exec() == QDialog::Accepted) {
+        std::string taskName = dialog.getTaskName();
+        uint32_t parentTaskIndex = dialog.getParentTaskIndex();
+        
+        // 创建新任务
+        std::string taskId = m_projectDocument->createATTask(QString::fromStdString(taskName));
+        
+        if (!taskId.empty()) {
+            // 如果指定了父任务，设置继承关系
+            if (parentTaskIndex != static_cast<uint32_t>(-1)) {
+                auto* task = m_projectDocument->getATTaskById(taskId);
+                if (task) {
+                    task->initialization = insight::database::ATTask::Initialization();
+                    task->initialization->prev_task_id = parentTaskIndex;
+                    m_projectDocument->updateATTask(taskId, *task);
+                }
+            }
+            
+            // 刷新树形视图
+            if (m_workspaceModel) {
+                m_workspaceModel->refreshTree();
+            }
+            
+            m_statusLabel->setText(tr("AT Task created: %1").arg(QString::fromStdString(taskName)));
+            LOG(INFO) << "AT Task created: " << taskName << " (ID: " << taskId << ")";
+        } else {
+            QMessageBox::critical(this, tr("Error"), tr("Failed to create AT Task"));
+            LOG(ERROR) << "Failed to create AT Task";
+        }
+    }
+}
 
 void MainWindow::onToggleWorkspacePanel() {
     m_workspaceTreeView->setVisible(m_actionToggleWorkspacePanel->isChecked());
@@ -585,6 +636,86 @@ void MainWindow::onWorkspaceTreeDoubleClicked(const QModelIndex& index) {
     // 检查是否双击了 "Project Info" 节点
     if (nodeName == "Project Info") {
         onProjectInfo();
+    }
+    // 检查是否双击了 "Image Groups" 节点
+    else if (nodeName == "Image Groups") {
+        onImageGroupsNodeSelected();
+    }
+}
+
+void MainWindow::onWorkspaceTreeSelectionChanged(const QModelIndex& index) {
+    if (!m_workspaceModel || !m_projectDocument || !m_projectDocument->isProjectLoaded()) {
+        return;
+    }
+    
+    // 获取树节点信息
+    WorkspaceTreeModel::TreeNode* node = m_workspaceModel->getNode(index);
+    if (!node) {
+        return;
+    }
+    
+    // 根据节点类型显示对应的编辑面板
+    if (node->type == WorkspaceTreeModel::ATTaskNode) {
+        // 隐藏其他面板
+        if (m_imageGroupsPanel) {
+            m_imageGroupsPanel->hide();
+        }
+        m_centerWidget->hide();
+        
+        // 显示 ATTaskPanel
+        if (m_atTaskPanel) {
+            // 加载选中的任务
+            m_atTaskPanel->loadTask(node->taskId);
+            
+            // 将右侧内容面板替换为 ATTaskPanel
+            int panelIndex = m_splitter->indexOf(m_centerWidget);
+            if (panelIndex >= 0) {
+                m_splitter->replaceWidget(panelIndex, m_atTaskPanel);
+            } else {
+                m_splitter->addWidget(m_atTaskPanel);
+            }
+            m_atTaskPanel->show();
+            
+            m_statusLabel->setText(tr("AT Task: ") + QString::fromStdString(node->taskId).left(8));
+        }
+    }
+    // 单击 ImageGroupNode 时显示 ImageGroupsManagementPanel
+    else if (node->type == WorkspaceTreeModel::ImageGroupNode) {
+        onImageGroupsNodeSelected();
+    }
+    // 其他节点类型可在此后续扩展
+}
+
+// ─────────────────────────────────────────────────────
+// 新增：图像分组 UI 槽函数
+// ─────────────────────────────────────────────────────
+
+void MainWindow::onImageGroupsNodeSelected() {
+    // 隐藏其他面板
+    if (m_atTaskPanel) {
+        m_atTaskPanel->hide();
+    }
+    m_centerWidget->hide();
+    
+    // 将右侧内容面板替换为 ImageGroupsManagementPanel
+    if (m_imageGroupsPanel) {
+        // 查找 m_centerWidget 在分割器中的位置
+        int index = m_splitter->indexOf(m_centerWidget);
+        if (index >= 0) {
+            m_splitter->replaceWidget(index, m_imageGroupsPanel);
+        } else {
+            m_splitter->addWidget(m_imageGroupsPanel);
+        }
+        m_imageGroupsPanel->show();
+        m_imageGroupsPanel->RefreshGroupList();
+        
+        m_statusLabel->setText(tr("Image Groups Management"));
+    }
+}
+
+void MainWindow::onEditImageGroup(database::ImageGroup* group) {
+    if (m_imageGroupDetailDialog && group) {
+        m_imageGroupDetailDialog->LoadGroup(group);
     }
 }
 

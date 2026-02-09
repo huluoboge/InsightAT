@@ -8,7 +8,12 @@
 #include <QDebug>
 #include <QApplication>
 
-
+// Qt版本兼容性处理
+#if QT_VERSION >= QT_VERSION_CHECK(5, 3, 0)
+    #define MIDDLE_BUTTON Qt::MiddleButton
+#else
+    #define MIDDLE_BUTTON Qt::MidButton
+#endif
 namespace insight{
 
 namespace render
@@ -26,7 +31,9 @@ namespace render
 
 	void RenderPanTool::mouseReleaseEvent(QMouseEvent * event)
 	{
-		if (event->button() == Qt::RightButton || event->button() == Qt::MidButton)
+		//Qt::MidButton or Qt MiddleButton
+		//检查Qt的版本， 兼容Qt::MidButton or Qt MiddleButton
+		if (event->button() == Qt::RightButton || event->button() == MIDDLE_BUTTON)
 		{
 			m_isMoving = false;
 			renderContext()->widget->setCursor(m_lastCursor);

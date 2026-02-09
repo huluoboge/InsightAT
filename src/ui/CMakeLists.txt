@@ -50,18 +50,44 @@ set(UI_SOURCES
     dialogs/ImageGroupDialog.cpp
     dialogs/ProjectInfoDialog.h
     dialogs/ProjectInfoDialog.cpp
-    dialogs/ProjectCoordinateDialog.h
-    dialogs/ProjectCoordinateDialog.cpp
+    dialogs/CoordinateSystemConfigDialog.h
+    dialogs/CoordinateSystemConfigDialog.cpp
+    dialogs/ImageGroupDetailPanel.h
+    dialogs/ImageGroupDetailPanel.cpp
+    dialogs/ImageEditorDialog.h
+    dialogs/ImageEditorDialog.cpp
+    dialogs/ImagePreviewDialog.h
+    dialogs/ImagePreviewDialog.cpp
+    dialogs/NewATTaskDialog.h
+    dialogs/NewATTaskDialog.cpp
     
     # Widgets
     widgets/SpatialReferenceDialog.h
     widgets/SpatialReferenceDialog.cpp
     widgets/SpatialReferenceTool.ui
-    widgets/ProjectCoordinateWidget.h
-    widgets/ProjectCoordinateWidget.cpp
-    widgets/ProjectCoordinateWidget.ui
     widgets/CameraModelWidget.h
     widgets/CameraModelWidget.cpp
+    widgets/CoordinateSystemConfigWidget.h
+    widgets/CoordinateSystemConfigWidget.cpp
+    widgets/CameraParameterEditorWidget.h
+    widgets/CameraParameterEditorWidget.cpp
+    widgets/ImageGroupsManagementPanel.h
+    widgets/ImageGroupsManagementPanel.cpp
+    
+    # GPS/GNSS Import Wizards
+    widgets/GPSPointsWizardDialog.h
+    widgets/GPSPointsWizardDialog.cpp
+    widgets/GPSPointsWizardDialog.ui
+    widgets/GPSPointsWizardModel.h
+    widgets/GPSPointsWizardModel.cpp
+    widgets/GPSPointsWizardDelegate.h
+    widgets/GPSPointsWizardDelegate.cpp
+    widgets/GNSSMeasurementImportDialog.h
+    widgets/GNSSMeasurementImportDialog.cpp
+    
+    # Panels
+    panels/ATTaskPanel.h
+    panels/ATTaskPanel.cpp
 )
 
 set(UI_HEADERS

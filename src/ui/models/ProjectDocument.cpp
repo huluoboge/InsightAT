@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <glog/logging.h>
 #include <fstream>
+#include <algorithm>
 #include <cereal/archives/binary.hpp>
 #include <cereal/archives/json.hpp>
 #include <cereal/types/vector.hpp>
@@ -156,6 +157,21 @@ uint32_t ProjectDocument::createImageGroup(const QString& name,
     group.group_name = name.toStdString();
     group.camera_mode = mode;
     group.creation_time = std::time(nullptr);
+    
+    // 为 GroupLevel 模式创建默认相机参数
+    if (mode == insight::database::ImageGroup::CameraMode::kGroupLevel) {
+        insight::database::CameraModel defaultCamera;
+        // 设置一些合理的默认值
+        defaultCamera.width = 3840;           // 默认4K分辨率宽
+        defaultCamera.height = 2160;          // 默认4K分辨率高
+        defaultCamera.focal_length = 3600.0;  // 默认焦距约 36mm（35mm等效）
+        defaultCamera.principal_point_x = 1920.0;  // 图像中心
+        defaultCamera.principal_point_y = 1080.0;
+        defaultCamera.sensor_width_mm = 36.0;   // 默认全画幅传感器
+        defaultCamera.sensor_height_mm = 20.25;
+        defaultCamera.focal_length_35mm = 36.0;
+        group.group_camera = defaultCamera;
+    }
     
     m_project.image_groups.push_back(group);
     
@@ -460,17 +476,53 @@ std::string ProjectDocument::createATTask(const QString& name) {
         return "";
     }
     
+    // 生成新的 UUID 作为任务唯一标识
     std::string task_id = QUuid::createUuid().toString().toStdString();
     
+    // 确定任务名称
+    std::string task_name = name.toStdString();
+    if (task_name.empty()) {
+        // 如果未指定名称，自动生成 AT_0, AT_1, ...
+        task_name = generateNextATTaskName();
+    }
+    
+    // 创建新的 AT Task
     insight::database::ATTask task;
     task.id = task_id;
+    task.task_name = task_name;
+    
+    // 复制当前项目的快照到 InputSnapshot
+    task.input_snapshot.image_groups = m_project.image_groups;
+    task.input_snapshot.measurements = m_project.measurements;
+    task.input_snapshot.input_coordinate_system = m_project.input_coordinate_system;
+    
+    // 设置默认的优化配置
+    // 对所有camera_rigs中的相机设置优化标记
+    for (const auto& rig_pair : m_project.camera_rigs) {
+        const auto& rig = rig_pair.second;
+        for (const auto& mount : rig.mounts) {
+            insight::database::OptimizationFlags flags;
+            flags.focal_length = true;
+            flags.principal_point_x = true;
+            flags.principal_point_y = true;
+            flags.k1 = true;
+            flags.k2 = true;
+            flags.p1 = true;
+            flags.p2 = true;
+            
+            task.optimization_config.camera_optimization[mount.camera_id] = flags;
+        }
+    }
+    task.optimization_config.enable_gnss_constraint = true;
+    task.optimization_config.gnss_weight = 1.0;
+    task.optimization_config.max_reprojection_error = 10.0;
     
     m_project.at_tasks.push_back(task);
     
     setModified(true);
     emit atTaskCreated(QString::fromStdString(task_id));
     
-    LOG(INFO) << "AT task created: " << name.toStdString() << " (ID: " << task_id << ")";
+    LOG(INFO) << "AT task created: " << task_name << " (ID: " << task_id << ")";
     return task_id;
 }
 
@@ -500,12 +552,40 @@ void ProjectDocument::updateATTask(const std::string& task_id,
                           [&task_id](const auto& t) { return t.id == task_id; });
     
     if (it != m_project.at_tasks.end()) {
+        // 保留原有的 id，其他字段更新
+        std::string originalId = it->id;
         *it = task;
-        it->id = task_id;
+        it->id = originalId;
         
         setModified(true);
         emit atTaskChanged(QString::fromStdString(task_id));
+        
+        LOG(INFO) << "AT task updated: " << task_id;
+    } else {
+        LOG(ERROR) << "AT task not found for update: " << task_id;
     }
+}
+
+insight::database::ATTask* ProjectDocument::getATTaskById(const std::string& task_id) {
+    auto it = std::find_if(m_project.at_tasks.begin(),
+                          m_project.at_tasks.end(),
+                          [&task_id](const auto& t) { return t.id == task_id; });
+    
+    if (it != m_project.at_tasks.end()) {
+        return &(*it);
+    }
+    return nullptr;
+}
+
+const insight::database::ATTask* ProjectDocument::getATTaskById(const std::string& task_id) const {
+    auto it = std::find_if(m_project.at_tasks.begin(),
+                          m_project.at_tasks.end(),
+                          [&task_id](const auto& t) { return t.id == task_id; });
+    
+    if (it != m_project.at_tasks.end()) {
+        return &(*it);
+    }
+    return nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -541,6 +621,7 @@ void ProjectDocument::setModified(bool modified) {
 
 void ProjectDocument::clearAllData() {
     m_project = insight::database::Project();
+    m_nextImageId = 1;
     m_nextImageGroupId = 1;
     m_nextRigId = 1;
     m_nextGCPId = 1;
@@ -598,6 +679,35 @@ bool ProjectDocument::saveToFile(const QString& filepath) {
     }
 }
 
+uint32_t ProjectDocument::generateImageId() {
+    return m_nextImageId++;
+}
+
+void ProjectDocument::applyGNSSToImages(const std::vector<database::Measurement::GNSSMeasurement>& gnssDataList,
+                                        uint32_t groupId)
+{
+    // Find the image group by ID
+    for (auto& group : m_project.image_groups) {
+        if (group.group_id == groupId) {
+            // Apply GNSS data to images in sequence
+            size_t gnssIndex = 0;
+            for (auto& image : group.images) {
+                if (gnssIndex < gnssDataList.size()) {
+                    image.gnss_data = gnssDataList[gnssIndex];
+                    ++gnssIndex;
+                } else {
+                    break;  // No more GNSS data to apply
+                }
+            }
+            
+            // Mark as modified and save
+            setModified(true);
+            saveToFile(m_filepath);
+            break;
+        }
+    }
+}
+
 uint32_t ProjectDocument::generateImageGroupId() {
     return m_nextImageGroupId++;
 }
@@ -608,6 +718,30 @@ uint32_t ProjectDocument::generateRigId() {
 
 uint32_t ProjectDocument::generateGCPId() {
     return m_nextGCPId++;
+}
+
+std::string ProjectDocument::generateNextATTaskName() {
+    // 生成 AT_0, AT_1, ... 格式的任务名称
+    // 找到最大的现有编号
+    int maxNumber = -1;
+    for (const auto& task : m_project.at_tasks) {
+        // 尝试解析任务名称中的编号
+        if (task.task_name.substr(0, 3) == "AT_") {
+            try {
+                int number = std::stoi(task.task_name.substr(3));
+                if (number > maxNumber) {
+                    maxNumber = number;
+                }
+            } catch (const std::exception& e) {
+                // 无法解析的名称，跳过
+                LOG(WARNING) << "Failed to parse AT task name: " << task.task_name;
+            }
+        }
+    }
+    
+    // 生成下一个名称
+    std::string nextName = "AT_" + std::to_string(maxNumber + 1);
+    return nextName;
 }
 
 }  // namespace ui

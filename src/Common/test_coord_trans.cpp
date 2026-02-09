@@ -151,10 +151,12 @@ int main2(int argc, char* argv[])
     std::cout << RotationOfXYZ2ENU(115.7804388970, 29.1062965587) << std::endl;
     std::cout << RotationOfXYZ2ENU(0, 0) << std::endl;
     std::cout << RotationOfXYZ2ENU(0, 90) << std::endl;
+    return 0;
 }
 int main(int argc, char* argv[])
 {
     main0(argc, argv);
     main1(argc, argv);
     main2(argc, argv);
+    return 0;
 }

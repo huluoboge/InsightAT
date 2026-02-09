@@ -40,6 +40,12 @@ class ProjectDocument;
 class WorkspaceTreeModel : public QAbstractItemModel {
     Q_OBJECT
 
+signals:
+    /**
+     * 树被刷新完成后发出此信号
+     */
+    void treeRefreshed();
+
 public:
     /**
      * 树节点类型枚举
@@ -162,6 +168,16 @@ private:
      * 清空树
      */
     void clearTree();
+    
+    /**
+     * 递归查找指定 taskId 的节点
+     */
+    TreeNode* findATTaskNode(TreeNode* node, const std::string& taskId);
+    
+    /**
+     * 增量更新 AT Task 节点（只更新名称，不重建整个树）
+     */
+    void updateATTaskNode(const std::string& taskId);
 
 private:
     ProjectDocument* m_document;

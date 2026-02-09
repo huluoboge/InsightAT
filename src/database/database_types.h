@@ -71,9 +71,8 @@ struct CoordinateSystem {
     };
 
     enum class RotationConvention : int {
-        kNone = 0,              ///< 无旋转信息
-        kOmegaPhiKappa = 1,     ///< 摄影测量 (ω,φ,κ)
-        kYawPitchRoll = 2       ///< 航空学 (Y,P,R)
+        kOmegaPhiKappa = 0,     ///< 摄影测量 (ω,φ,κ)
+        kYawPitchRoll = 1       ///< 航空学 (Y,P,R)
     };
 
     struct Origin {
@@ -95,7 +94,7 @@ struct CoordinateSystem {
     };
 
     Type type = Type::kLocal;
-    RotationConvention rotation_convention = RotationConvention::kNone;
+    RotationConvention rotation_convention = RotationConvention::kOmegaPhiKappa;
     std::string definition;
     std::optional<Origin> origin;
     std::optional<ReferencePoint> reference;
@@ -654,12 +653,13 @@ struct Image {
     std::string filename;                   ///< 图像文件名
     InputPose input_pose;                   ///< 初始位姿估计
     std::optional<CameraModel> camera;      ///< 图像级相机参数（可选，仅在图像级模式时使用）
+    std::optional<Measurement::GNSSMeasurement> gnss_data;  ///< v2: GNSS测量数据（可选）
 
     std::string ToString() const;
     bool IsValid() const;
 
     template <class Archive>
-    void serialize(Archive& ar, std::uint32_t const /*version*/) {
+    void serialize(Archive& ar, std::uint32_t const version) {
         ar(CEREAL_NVP(image_id), CEREAL_NVP(filename));
         ar(CEREAL_NVP(input_pose));
         
@@ -668,6 +668,15 @@ struct Image {
         ar(CEREAL_NVP(has_camera));
         if (has_camera) {
             ar(CEREAL_NVP(camera));
+        }
+        
+        // v2+: 处理可选的 gnss_data
+        if (version >= 2) {
+            bool has_gnss = gnss_data.has_value();
+            ar(CEREAL_NVP(has_gnss));
+            if (has_gnss) {
+                ar(CEREAL_NVP(gnss_data));
+            }
         }
     }
 };
@@ -828,6 +837,43 @@ struct ImageGroup {
     }
 };
 
+// ─────────────────────────────────────────────────────────────
+// OptimizationConfig: 空三任务的优化参数配置
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * @struct OptimizationConfig
+ * @brief 空三任务的优化参数配置 - 控制BA中如何优化相机参数和约束条件
+ * 
+ * 包含：
+ * - 按相机ID映射的参数优化标记（每个相机独立控制）
+ * - GNSS约束开关和权重
+ * - 迭代优化的其他通用参数
+ */
+struct OptimizationConfig {
+    /// 相机参数优化标记，按camera_id映射
+    std::map<uint32_t, OptimizationFlags> camera_optimization;
+    
+    /// GNSS约束是否启用
+    bool enable_gnss_constraint = true;
+    
+    /// GNSS权重（通常为 1/sigma²）
+    double gnss_weight = 1.0;
+    
+    /// 最大重投影误差阈值（像素）
+    double max_reprojection_error = 10.0;
+    
+    /// 备注
+    std::string description;
+
+    template <class Archive>
+    void serialize(Archive& ar, std::uint32_t const /*version*/) {
+        ar(CEREAL_NVP(camera_optimization), CEREAL_NVP(enable_gnss_constraint),
+           CEREAL_NVP(gnss_weight), CEREAL_NVP(max_reprojection_error),
+           CEREAL_NVP(description));
+    }
+};
+
 struct ATTask {
     struct InputSnapshot {
         CoordinateSystem input_coordinate_system;
@@ -853,11 +899,13 @@ struct ATTask {
         }
     };
 
-    std::string id;
+    std::string id;                                 ///< 任务UUID（唯一标识）
+    std::string task_name;                          ///< 任务名称，e.g. "AT_0", "AT_1"（用户友好）
     InputSnapshot input_snapshot;
     std::optional<Initialization> initialization;
     CoordinateSystem output_coordinate_system;
     std::map<uint32_t, OptimizedPose> optimized_poses;
+    OptimizationConfig optimization_config;         ///< 优化参数配置（v3新增）
 
     /**
      * 从输入图像分组获取指定图像的相机参数
@@ -886,10 +934,17 @@ struct ATTask {
     std::string ToString() const;
 
     template <class Archive>
-    void serialize(Archive& ar, std::uint32_t const /*version*/) {
-        ar(CEREAL_NVP(id), CEREAL_NVP(input_snapshot));
+    void serialize(Archive& ar, std::uint32_t const version) {
+        ar(CEREAL_NVP(id));
+        if (version >= 1) {
+            ar(CEREAL_NVP(task_name));
+        }
+        ar(CEREAL_NVP(input_snapshot));
         ar(CEREAL_NVP(initialization), CEREAL_NVP(output_coordinate_system));
         ar(CEREAL_NVP(optimized_poses));
+        if (version >= 3) {
+            ar(CEREAL_NVP(optimization_config));
+        }
     }
 };
 
@@ -1133,13 +1188,14 @@ CEREAL_CLASS_VERSION(insight::database::Measurement::IMUMeasurement, 1);
 CEREAL_CLASS_VERSION(insight::database::Measurement::SLAMMeasurement, 1);
 CEREAL_CLASS_VERSION(insight::database::OptimizedPose, 1);
 CEREAL_CLASS_VERSION(insight::database::OptimizationFlags, 1);
+CEREAL_CLASS_VERSION(insight::database::OptimizationConfig, 1);  ///< v1: 新增优化参数配置
 CEREAL_CLASS_VERSION(insight::database::CameraModel, 2);  ///< v2: 增加OptimizationFlags字段
 CEREAL_CLASS_VERSION(insight::database::CameraRig, 1);
 CEREAL_CLASS_VERSION(insight::database::CameraRig::CameraMount, 1);
-CEREAL_CLASS_VERSION(insight::database::Image, 1);
+CEREAL_CLASS_VERSION(insight::database::Image, 2);  ///< v2: 增加gnss_data字段
 CEREAL_CLASS_VERSION(insight::database::ImageGroup, 2);  ///< v2: 增加rig_mount_info字段
 CEREAL_CLASS_VERSION(insight::database::ImageGroup::RigMountInfo, 1);
-CEREAL_CLASS_VERSION(insight::database::ATTask, 2);
+CEREAL_CLASS_VERSION(insight::database::ATTask, 3);  ///< v3: 添加task_name和optimization_config字段
 CEREAL_CLASS_VERSION(insight::database::ATTask::InputSnapshot, 2);
 CEREAL_CLASS_VERSION(insight::database::ATTask::Initialization, 1);
 CEREAL_CLASS_VERSION(insight::database::Project, 3);  ///< v3: 添加camera_rigs字段

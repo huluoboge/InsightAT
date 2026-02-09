@@ -321,6 +321,22 @@ public slots:
      * 更新空三任务信息
      */
     void updateATTask(const std::string& task_id, const insight::database::ATTask& task);
+    
+    /**
+     * 根据任务ID获取 AT Task
+     * 
+     * @param[in] task_id 任务的 UUID
+     * @return 指向 ATTask 的指针，未找到返回 nullptr
+     */
+    insight::database::ATTask* getATTaskById(const std::string& task_id);
+    
+    /**
+     * 根据任务ID获取 AT Task（const 版本）
+     * 
+     * @param[in] task_id 任务的 UUID
+     * @return 指向 ATTask 的常量指针，未找到返回 nullptr
+     */
+    const insight::database::ATTask* getATTaskById(const std::string& task_id) const;
 
     // ─────────────────────────────────────────────────────────
     // 导出/导入（Algorithm Bridge）
@@ -351,6 +367,34 @@ public slots:
      */
     bool importFromCOLMAP(const QString& colmapDb, const QMap<QString, QString>& options = {});
 
+    // ─────────────────────────────────────────────────────────
+    // 公开的ID生成接口（用于图像编辑器等）
+    // ─────────────────────────────────────────────────────────
+    
+    /**
+     * 生成唯一的图像ID
+     * @return 新的图像ID
+     */
+    uint32_t generateImageId();
+
+    /**
+     * 应用 GNSS 测量数据到图像
+     * 
+     * @param[in] gnssDataList GNSS 测量数据列表，按照向导匹配顺序排列
+     * @param[in] groupId 目标图像组ID
+     * 
+     * 将 GNSS 数据按顺序应用到指定图像组中的对应图像。
+     * 如果数据列表长度与组内图像数量不匹配，只应用对应部分。
+     */
+    void applyGNSSToImages(const std::vector<database::Measurement::GNSSMeasurement>& gnssDataList,
+                          uint32_t groupId);
+
+    /**
+     * 生成下一个 AT Task 名称（AT_0, AT_1, ...）
+     * @return 新的任务名称字符串
+     */
+    std::string generateNextATTaskName();
+
 private:
     // ─────────────────────────────────────────────────────────
     // 内部辅助方法
@@ -377,6 +421,7 @@ private:
     bool m_projectLoaded = false;          ///< 是否已加载项目
     
     // 用于生成唯一ID的计数器
+    uint32_t m_nextImageId = 1;
     uint32_t m_nextImageGroupId = 1;
     uint32_t m_nextRigId = 1;
     uint32_t m_nextGCPId = 1;

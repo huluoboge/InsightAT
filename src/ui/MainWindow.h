@@ -32,6 +32,27 @@ class NewProjectDialog;
 class ImageGroupDialog;
 class ProjectInfoDialog;
 class CameraModelWidget;
+class ATTaskPanel;
+class NewATTaskDialog;
+
+namespace widgets {
+class ImageGroupsManagementPanel;
+}  // namespace widgets
+
+namespace dialogs {
+class ImageGroupDetailPanel;
+}  // namespace dialogs
+
+}  // namespace ui
+
+namespace database {
+class ImageGroup;
+}  // namespace database
+
+}  // namespace insight
+
+namespace insight {
+namespace ui {
 
 /**
  * @class MainWindow
@@ -105,6 +126,11 @@ private slots:
      * 导入GCP数据
      */
     void onImportGCPs();
+    
+    /**
+     * 新建 AT Task
+     */
+    void onCreateATTask();
 
     // ─────────────────────────────────────────────────────
     // 视图菜单 - View Menu
@@ -162,6 +188,21 @@ private slots:
      * 工作区树视图双击事件处理
      */
     void onWorkspaceTreeDoubleClicked(const QModelIndex& index);
+    
+    /**
+     * 工作区树视图选中事件处理（单击选中）
+     */
+    void onWorkspaceTreeSelectionChanged(const QModelIndex& index);
+
+    /**
+     * Image Groups 节点被选中时，显示 ImageGroupsManagementPanel
+     */
+    void onImageGroupsNodeSelected();
+
+    /**
+     * 处理编辑分组请求
+     */
+    void onEditImageGroup(database::ImageGroup* group);
 
 private:
     // ─────────────────────────────────────────────────────
@@ -235,6 +276,7 @@ private:
     QAction* m_actionAddImageGroup = nullptr;
     QAction* m_actionAddCameraRig = nullptr;
     QAction* m_actionImportGCPs = nullptr;
+    QAction* m_actionCreateATTask = nullptr;
     
     // 视图菜单动作
     QAction* m_actionToggleWorkspacePanel = nullptr;
@@ -261,6 +303,14 @@ private:
     // 对话框和小部件（延迟创建）
     std::unique_ptr<NewProjectDialog> m_newProjectDialog;
     std::unique_ptr<ImageGroupDialog> m_imageGroupDialog;
+    
+    // 新增：图像分组 UI 组件
+    widgets::ImageGroupsManagementPanel* m_imageGroupsPanel = nullptr;         ///< 右侧分组管理面板
+    dialogs::ImageGroupDetailPanel* m_imageGroupDetailDialog = nullptr;        ///< 分组编辑对话框（单例）
+    
+    // 新增：AT Task UI 组件
+    ATTaskPanel* m_atTaskPanel = nullptr;                                       ///< AT Task 编辑面板（单例）
+    std::unique_ptr<NewATTaskDialog> m_newATTaskDialog;                         ///< 新建 AT Task 对话框
 };
 
 }  // namespace ui

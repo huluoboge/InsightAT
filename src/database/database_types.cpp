@@ -32,7 +32,7 @@ std::string CoordinateSystem::ToString() const {
     }
     oss << "\n  RotationConvention: ";
     switch (rotation_convention) {
-        case RotationConvention::kNone: oss << "None"; break;
+
         case RotationConvention::kOmegaPhiKappa: oss << "OmegaPhiKappa (ω,φ,κ)"; break;
         case RotationConvention::kYawPitchRoll: oss << "YawPitchRoll (Y,P,R)"; break;
     }

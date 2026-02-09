@@ -239,6 +239,9 @@ void WorkspaceTreeModel::refreshTree() {
         buildTree();
     }
     endResetModel();
+    
+    // 树刷新完成，发出信号
+    emit treeRefreshed();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -351,7 +354,9 @@ void WorkspaceTreeModel::onATTaskRemoved(const QString& task_id) {
 }
 
 void WorkspaceTreeModel::onATTaskChanged(const QString& task_id) {
-    refreshTree();
+    // 任务被修改（如名称改变），增量更新节点而不是重建整个树
+    std::string taskIdStr = task_id.toStdString();
+    updateATTaskNode(taskIdStr);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -370,32 +375,30 @@ void WorkspaceTreeModel::buildTree() {
     infoNode->parent = m_root.get();
     m_root->children.push_back(std::move(infoNode));
     
-    // ─── 图像分组节点
-    if (!project.image_groups.empty()) {
-        auto imagesContainerNode = std::make_unique<TreeNode>(ImagesNode, "Images");
-        imagesContainerNode->parent = m_root.get();
+    // ─── 图像分组节点（总是创建，即使为空）
+    auto imagesContainerNode = std::make_unique<TreeNode>(ImagesNode, "Image Groups");
+    imagesContainerNode->parent = m_root.get();
+    
+    for (const auto& group : project.image_groups) {
+        auto groupNode = std::make_unique<TreeNode>(ImageGroupNode,
+                                                   QString::fromStdString(group.group_name));
+        groupNode->groupId = group.group_id;
+        groupNode->parent = imagesContainerNode.get();
         
-        for (const auto& group : project.image_groups) {
-            auto groupNode = std::make_unique<TreeNode>(ImageGroupNode,
-                                                       QString::fromStdString(group.group_name));
-            groupNode->groupId = group.group_id;
-            groupNode->parent = imagesContainerNode.get();
-            
-            // 添加组内的图像
-            for (const auto& image : group.images) {
-                auto imageNode = std::make_unique<TreeNode>(ImageNode,
-                                                           QString::fromStdString(image.filename));
-                imageNode->groupId = group.group_id;
-                imageNode->imageId = image.image_id;
-                imageNode->parent = groupNode.get();
-                groupNode->children.push_back(std::move(imageNode));
-            }
-            
-            imagesContainerNode->children.push_back(std::move(groupNode));
-        }
+        // 不显示组内的图像 - 只显示分组节点
+        // for (const auto& image : group.images) {
+        //     auto imageNode = std::make_unique<TreeNode>(ImageNode,
+        //                                                QString::fromStdString(image.filename));
+        //     imageNode->groupId = group.group_id;
+        //     imageNode->imageId = image.image_id;
+        //     imageNode->parent = groupNode.get();
+        //     groupNode->children.push_back(std::move(imageNode));
+        // }
         
-        m_root->children.push_back(std::move(imagesContainerNode));
+        imagesContainerNode->children.push_back(std::move(groupNode));
     }
+    
+    m_root->children.push_back(std::move(imagesContainerNode));
     
     // ─── 相机节点
     if (!project.camera_rigs.empty()) {
@@ -443,17 +446,73 @@ void WorkspaceTreeModel::buildTree() {
         m_root->children.push_back(std::move(gcpsContainerNode));
     }
     
-    // ─── AT任务节点
+    // ─── AT任务节点 - 构建真实的树结构（包括父子关系）
     if (!project.at_tasks.empty()) {
         auto tasksContainerNode = std::make_unique<TreeNode>(ATTasksNode, "AT Tasks");
         tasksContainerNode->parent = m_root.get();
         
-        for (const auto& task : project.at_tasks) {
+        // 首先创建所有任务节点
+        std::vector<TreeNode*> taskNodePtrs;
+        for (size_t i = 0; i < project.at_tasks.size(); ++i) {
+            const auto& task = project.at_tasks[i];
             auto taskNode = std::make_unique<TreeNode>(ATTaskNode,
-                                                      QString::fromStdString(task.id).left(8));
+                                                      QString::fromStdString(task.task_name));
             taskNode->taskId = task.id;
-            taskNode->parent = tasksContainerNode.get();
+            TreeNode* taskNodePtr = taskNode.get();
             tasksContainerNode->children.push_back(std::move(taskNode));
+            taskNodePtrs.push_back(taskNodePtr);
+        }
+        
+        // 然后根据父子关系重新组织树结构
+        // 重新整理：只有没有子任务的节点才保留在容器中
+        std::vector<std::unique_ptr<TreeNode>> rootTaskNodes;
+        std::vector<bool> isChild(project.at_tasks.size(), false);
+        
+        // 标记所有有父任务的节点
+        for (size_t i = 0; i < project.at_tasks.size(); ++i) {
+            const auto& task = project.at_tasks[i];
+            if (task.initialization && task.initialization->prev_task_id != static_cast<uint32_t>(-1)) {
+                uint32_t parentIdx = task.initialization->prev_task_id;
+                if (parentIdx < project.at_tasks.size()) {
+                    isChild[i] = true;
+                }
+            }
+        }
+        
+        // 重新构建树：将子任务添加到父任务下，只保留根任务在容器中
+        tasksContainerNode->children.clear();
+        
+        for (size_t i = 0; i < project.at_tasks.size(); ++i) {
+            if (!isChild[i]) {
+                // 这是一个根任务，应该直接添加到容器中
+                auto rootTaskNode = std::make_unique<TreeNode>(ATTaskNode,
+                                                               QString::fromStdString(project.at_tasks[i].task_name));
+                rootTaskNode->taskId = project.at_tasks[i].id;
+                rootTaskNode->parent = tasksContainerNode.get();
+                
+                // 找出所有继承自这个任务的后续任务，形成树链
+                std::function<void(TreeNode*, size_t)> buildTaskHierarchy = 
+                    [&](TreeNode* parentNode, size_t parentIdx) {
+                        for (size_t j = i + 1; j < project.at_tasks.size(); ++j) {
+                            const auto& task = project.at_tasks[j];
+                            if (task.initialization && task.initialization->prev_task_id == static_cast<uint32_t>(parentIdx)) {
+                                auto childTaskNode = std::make_unique<TreeNode>(ATTaskNode,
+                                                                                QString::fromStdString(task.task_name));
+                                childTaskNode->taskId = task.id;
+                                childTaskNode->parent = parentNode;
+                                TreeNode* childPtr = childTaskNode.get();
+                                parentNode->children.push_back(std::move(childTaskNode));
+                                
+                                // 递归处理下一级
+                                buildTaskHierarchy(childPtr, j);
+                            }
+                        }
+                    };
+                
+                TreeNode* rootPtr = rootTaskNode.get();
+                tasksContainerNode->children.push_back(std::move(rootTaskNode));
+                buildTaskHierarchy(rootPtr, i);
+            }
         }
         
         m_root->children.push_back(std::move(tasksContainerNode));
@@ -464,5 +523,81 @@ void WorkspaceTreeModel::clearTree() {
     m_root->children.clear();
 }
 
+WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::findATTaskNode(TreeNode* node, 
+                                                                  const std::string& taskId) {
+    if (!node) {
+        return nullptr;
+    }
+    
+    // 检查当前节点
+    if (node->type == ATTaskNode && node->taskId == taskId) {
+        return node;
+    }
+    
+    // 递归搜索子节点
+    for (auto& child : node->children) {
+        TreeNode* result = findATTaskNode(child.get(), taskId);
+        if (result) {
+            return result;
+        }
+    }
+    
+    return nullptr;
+}
+
+void WorkspaceTreeModel::updateATTaskNode(const std::string& taskId) {
+    if (!m_document || !m_document->isProjectLoaded()) {
+        return;
+    }
+    
+    // 查找树中对应的节点
+    TreeNode* taskNode = findATTaskNode(m_root.get(), taskId);
+    if (!taskNode) {
+        LOG(WARNING) << "AT Task node not found in tree: " << taskId;
+        return;
+    }
+    
+    // 获取最新的 task 数据
+    const auto* task = m_document->getATTaskById(taskId);
+    if (!task) {
+        LOG(ERROR) << "AT Task not found in document: " << taskId;
+        return;
+    }
+    
+    // 更新节点的显示名称
+    QString newDisplayName = QString::fromStdString(task->task_name);
+    if (taskNode->displayName != newDisplayName) {
+        taskNode->displayName = newDisplayName;
+        
+        // 发出 dataChanged 信号以更新视图
+        // 需要找到该节点在其父节点中的索引
+        if (taskNode->parent) {
+            for (size_t i = 0; i < taskNode->parent->children.size(); ++i) {
+                if (taskNode->parent->children[i].get() == taskNode) {
+                    TreeNode* parentNode = taskNode->parent;
+                    TreeNode* grandParentNode = parentNode->parent;
+                    
+                    if (grandParentNode) {
+                        int parentRow = 0;
+                        for (size_t j = 0; j < grandParentNode->children.size(); ++j) {
+                            if (grandParentNode->children[j].get() == parentNode) {
+                                parentRow = j;
+                                break;
+                            }
+                        }
+                        
+                        QModelIndex parentIdx = createIndex(parentRow, 0, parentNode);
+                        QModelIndex nodeIdx = createIndex(i, 0, taskNode);
+                        
+                        emit dataChanged(nodeIdx, nodeIdx, {Qt::DisplayRole});
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
 }  // namespace ui
 }  // namespace insight
+
