@@ -46,8 +46,8 @@ set(UI_SOURCES
     # Dialogs
     dialogs/NewProjectDialog.h
     dialogs/NewProjectDialog.cpp
-    dialogs/ImageGroupDialog.h
-    dialogs/ImageGroupDialog.cpp
+    # dialogs/ImageGroupDialog.h
+    # dialogs/ImageGroupDialog.cpp
     dialogs/ProjectInfoDialog.h
     dialogs/ProjectInfoDialog.cpp
     dialogs/CoordinateSystemConfigDialog.h
@@ -95,7 +95,7 @@ set(UI_HEADERS
     models/WorkspaceTreeModel.h
     MainWindow.h
     dialogs/NewProjectDialog.h
-    dialogs/ImageGroupDialog.h
+    # dialogs/ImageGroupDialog.h
     widgets/SpatialReferenceDialog.h
     widgets/CameraModelWidget.h
 )

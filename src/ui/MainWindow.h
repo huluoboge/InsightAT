@@ -29,7 +29,7 @@ namespace ui {
 class ProjectDocument;
 class WorkspaceTreeModel;
 class NewProjectDialog;
-class ImageGroupDialog;
+// class ImageGroupDialog;
 class ProjectInfoDialog;
 class CameraModelWidget;
 class ATTaskPanel;
@@ -302,7 +302,7 @@ private:
     
     // 对话框和小部件（延迟创建）
     std::unique_ptr<NewProjectDialog> m_newProjectDialog;
-    std::unique_ptr<ImageGroupDialog> m_imageGroupDialog;
+    // std::unique_ptr<ImageGroupDialog> m_imageGroupDialog;
     
     // 新增：图像分组 UI 组件
     widgets::ImageGroupsManagementPanel* m_imageGroupsPanel = nullptr;         ///< 右侧分组管理面板

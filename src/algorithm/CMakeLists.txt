@@ -50,6 +50,29 @@ target_link_libraries(InsightATAlgorithm
 )
 
 # ─────────────────────────────────────────────────────────────
+# CameraEstimator 独立进程工具
+# ─────────────────────────────────────────────────────────────
+
+add_executable(CameraEstimator CameraEstimator.cpp)
+
+target_link_libraries(CameraEstimator
+    PRIVATE
+        InsightATAlgorithm
+        Common
+        InsightATDatabase
+        ImageIO
+        glog::glog
+        ${GDAL_LIBRARIES}
+)
+
+target_include_directories(CameraEstimator
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+
+# ─────────────────────────────────────────────────────────────
 # 编译选项
 # ─────────────────────────────────────────────────────────────
 

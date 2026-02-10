@@ -390,6 +390,12 @@ public slots:
                           uint32_t groupId);
 
     /**
+     * 通知外部组件 ImageGroup 数据已发生变化
+     * @param[in] group_id 分组ID
+     */
+    void notifyImageGroupChanged(uint32_t group_id);
+
+    /**
      * 生成下一个 AT Task 名称（AT_0, AT_1, ...）
      * @return 新的任务名称字符串
      */
@@ -402,6 +408,7 @@ private:
     
     void setModified(bool modified);
     void clearAllData();
+    void syncCounters();
     bool loadFromFile(const QString& filepath);
     bool saveToFile(const QString& filepath);
     
@@ -419,12 +426,6 @@ private:
     QString m_filepath;                    ///< 项目文件路径
     bool m_modified = false;               ///< 是否有未保存的修改
     bool m_projectLoaded = false;          ///< 是否已加载项目
-    
-    // 用于生成唯一ID的计数器
-    uint32_t m_nextImageId = 1;
-    uint32_t m_nextImageGroupId = 1;
-    uint32_t m_nextRigId = 1;
-    uint32_t m_nextGCPId = 1;
 };
 
 }  // namespace ui

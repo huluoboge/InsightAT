@@ -9,6 +9,7 @@
 #include <glog/logging.h>
 #include <fstream>
 #include <algorithm>
+#include <set>
 #include <cereal/archives/binary.hpp>
 #include <cereal/archives/json.hpp>
 #include <cereal/types/vector.hpp>
@@ -477,18 +478,20 @@ std::string ProjectDocument::createATTask(const QString& name) {
     }
     
     // 生成新的 UUID 作为任务唯一标识
-    std::string task_id = QUuid::createUuid().toString().toStdString();
+    std::string task_id_str = QUuid::createUuid().toString().toStdString();
+    uint32_t task_id = m_project.next_at_task_id++;
     
     // 确定任务名称
     std::string task_name = name.toStdString();
     if (task_name.empty()) {
         // 如果未指定名称，自动生成 AT_0, AT_1, ...
-        task_name = generateNextATTaskName();
+        task_name = "AT_" + std::to_string(task_id);
     }
     
     // 创建新的 AT Task
     insight::database::ATTask task;
-    task.id = task_id;
+    task.id = task_id_str;
+    task.task_id = task_id;
     task.task_name = task_name;
     
     // 复制当前项目的快照到 InputSnapshot
@@ -520,10 +523,10 @@ std::string ProjectDocument::createATTask(const QString& name) {
     m_project.at_tasks.push_back(task);
     
     setModified(true);
-    emit atTaskCreated(QString::fromStdString(task_id));
+    emit atTaskCreated(QString::fromStdString(task_id_str));
     
-    LOG(INFO) << "AT task created: " << task_name << " (ID: " << task_id << ")";
-    return task_id;
+    LOG(INFO) << "AT task created: " << task_name << " (ID: " << task_id_str << ", Number: " << task_id << ")";
+    return task_id_str;
 }
 
 bool ProjectDocument::deleteATTask(const std::string& task_id) {
@@ -621,10 +624,6 @@ void ProjectDocument::setModified(bool modified) {
 
 void ProjectDocument::clearAllData() {
     m_project = insight::database::Project();
-    m_nextImageId = 1;
-    m_nextImageGroupId = 1;
-    m_nextRigId = 1;
-    m_nextGCPId = 1;
 }
 
 bool ProjectDocument::loadFromFile(const QString& filepath) {
@@ -642,6 +641,9 @@ bool ProjectDocument::loadFromFile(const QString& filepath) {
         
         m_projectLoaded = true;
         m_filepath = filepath;
+        
+        // 同步 ID 计数器，防止 ID 冲突
+        syncCounters();
         
         LOG(INFO) << "Project loaded from file: " << filepath.toStdString();
         emit projectOpened();
@@ -680,9 +682,94 @@ bool ProjectDocument::saveToFile(const QString& filepath) {
 }
 
 uint32_t ProjectDocument::generateImageId() {
-    return m_nextImageId++;
+    return m_project.next_image_id++;
 }
+void ProjectDocument::syncCounters() {
+    uint32_t maxImageId = 0;
+    uint32_t maxGroupId = 0;
+    uint32_t maxRigId = 0;
+    uint32_t maxGCPId = 0;
+    uint32_t maxTaskIndex = 0;
 
+    // 1. First Pass: Find Current Max IDs (ignoring invalid ones)
+    for (const auto& group : m_project.image_groups) {
+        if (group.group_id != static_cast<uint32_t>(-1)) {
+            maxGroupId = std::max(maxGroupId, group.group_id);
+        }
+        for (const auto& image : group.images) {
+            if (image.image_id != static_cast<uint32_t>(-1)) {
+                maxImageId = std::max(maxImageId, image.image_id);
+            }
+        }
+    }
+
+    for (const auto& meas : m_project.measurements) {
+        if (meas.image_id != static_cast<uint32_t>(-1)) {
+            maxImageId = std::max(maxImageId, meas.image_id);
+        }
+    }
+
+    for (const auto& pair : m_project.camera_rigs) {
+        if (pair.first != static_cast<uint32_t>(-1)) {
+            maxRigId = std::max(maxRigId, pair.first);
+        }
+    }
+
+    for (const auto& pair : m_project.gcp_database) {
+        if (pair.first != static_cast<uint32_t>(-1)) {
+            maxGCPId = std::max(maxGCPId, pair.first);
+        }
+    }
+
+    // 扫描现有任务中的最大 ID
+    for (const auto& task : m_project.at_tasks) {
+        if (task.task_id != static_cast<uint32_t>(-1)) {
+            maxTaskIndex = std::max(maxTaskIndex, task.task_id);
+        }
+    }
+
+    // Set counters to next available (only if scanned values are larger)
+    m_project.next_image_id = std::max(m_project.next_image_id, maxImageId + 1);
+    m_project.next_image_group_id = std::max(m_project.next_image_group_id, maxGroupId + 1);
+    m_project.next_rig_id = std::max(m_project.next_rig_id, maxRigId + 1);
+    m_project.next_gcp_id = std::max(m_project.next_gcp_id, maxGCPId + 1);
+    m_project.next_at_task_id = std::max(m_project.next_at_task_id, maxTaskIndex + 1);
+
+    // 2. Second Pass: Repair invalid or duplicate IDs to ensure uniqueness
+    std::set<uint32_t> seenGroupIds;
+    bool anyRepaired = false;
+    for (auto& group : m_project.image_groups) {
+        if (group.group_id == 0 || group.group_id == static_cast<uint32_t>(-1) || seenGroupIds.count(group.group_id)) {
+            uint32_t oldId = group.group_id;
+            group.group_id = m_project.next_image_group_id++;
+            LOG(WARNING) << "Repaired ImageGroup ID conflict: " << (int)oldId << " -> " << group.group_id;
+            anyRepaired = true;
+        }
+        seenGroupIds.insert(group.group_id);
+    }
+
+    // 修复 AT Task 的 ID (如果为 0 且列表非空，可能是旧版本导入)
+    std::set<uint32_t> seenTaskIds;
+    for (auto& task : m_project.at_tasks) {
+        if (task.task_id == 0 || seenTaskIds.count(task.task_id)) {
+            uint32_t oldId = task.task_id;
+            task.task_id = m_project.next_at_task_id++;
+            LOG(WARNING) << "Assigned/Repaired AT Task ID: " << oldId << " -> " << task.task_id;
+            anyRepaired = true;
+        }
+        seenTaskIds.insert(task.task_id);
+    }
+
+    if (anyRepaired) {
+        setModified(true);
+    }
+
+    LOG(INFO) << "Counters synchronized and repaired. Next IDs: Image=" << m_project.next_image_id 
+              << ", Group=" << m_project.next_image_group_id 
+              << ", Rig=" << m_project.next_rig_id 
+              << ", GCP=" << m_project.next_gcp_id
+              << ", AT_ID=" << m_project.next_at_task_id;
+}
 void ProjectDocument::applyGNSSToImages(const std::vector<database::Measurement::GNSSMeasurement>& gnssDataList,
                                         uint32_t groupId)
 {
@@ -709,39 +796,26 @@ void ProjectDocument::applyGNSSToImages(const std::vector<database::Measurement:
 }
 
 uint32_t ProjectDocument::generateImageGroupId() {
-    return m_nextImageGroupId++;
+    return m_project.next_image_group_id++;
 }
 
 uint32_t ProjectDocument::generateRigId() {
-    return m_nextRigId++;
+    return m_project.next_rig_id++;
 }
 
 uint32_t ProjectDocument::generateGCPId() {
-    return m_nextGCPId++;
+    return m_project.next_gcp_id++;
+}
+
+void ProjectDocument::notifyImageGroupChanged(uint32_t group_id) {
+    setModified(true);
+    emit imageGroupChanged(group_id);
 }
 
 std::string ProjectDocument::generateNextATTaskName() {
-    // 生成 AT_0, AT_1, ... 格式的任务名称
-    // 找到最大的现有编号
-    int maxNumber = -1;
-    for (const auto& task : m_project.at_tasks) {
-        // 尝试解析任务名称中的编号
-        if (task.task_name.substr(0, 3) == "AT_") {
-            try {
-                int number = std::stoi(task.task_name.substr(3));
-                if (number > maxNumber) {
-                    maxNumber = number;
-                }
-            } catch (const std::exception& e) {
-                // 无法解析的名称，跳过
-                LOG(WARNING) << "Failed to parse AT task name: " << task.task_name;
-            }
-        }
-    }
-    
-    // 生成下一个名称
-    std::string nextName = "AT_" + std::to_string(maxNumber + 1);
-    return nextName;
+    // 仅仅提供一个基于当前计数器的建议名称，不增加计数器
+    // 计数器的增加发生在 createATTask 中
+    return "AT_" + std::to_string(m_project.next_at_task_id);
 }
 
 }  // namespace ui

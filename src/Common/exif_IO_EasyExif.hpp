@@ -76,6 +76,11 @@ class Exif_IO_EasyExif : public Exif_IO
       return static_cast<float>(exifInfo_.FocalLength);
     }
 
+    float getFocal35mm() const
+    {
+      return static_cast<float>(exifInfo_.FocalLengthIn35mm);
+    }
+
     std::string getBrand() const
     {
       std::string sbrand = exifInfo_.Make;

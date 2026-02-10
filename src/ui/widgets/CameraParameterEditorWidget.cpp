@@ -331,6 +331,10 @@ void CameraParameterEditorWidget::ConnectSignals() {
     // 分组名称
     connect(m_groupNameEdit, &QLineEdit::editingFinished,
             this, &CameraParameterEditorWidget::fieldModified);
+
+    // 按钮
+    connect(m_autoEstimateButton, &QPushButton::clicked, this, &CameraParameterEditorWidget::autoEstimateRequested);
+    connect(m_selectPresetButton, &QPushButton::clicked, this, &CameraParameterEditorWidget::fieldModified); // Placeholder
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -340,6 +344,8 @@ void CameraParameterEditorWidget::ConnectSignals() {
 void CameraParameterEditorWidget::LoadCamera(const database::CameraModel& camera) {
     blockSignals(true);  // 防止信号在加载期间触发
 
+    m_autoEstimateButton->setEnabled(true);
+
     // 加载内参（camera_mode 由外部通过 SetMode() 设置）
     m_focalLengthPxSpinBox->setValue(camera.focal_length);
     m_principalPointXSpinBox->setValue(camera.principal_point_x);
@@ -348,7 +354,7 @@ void CameraParameterEditorWidget::LoadCamera(const database::CameraModel& camera
     m_imageHeightSpinBox->setValue(camera.height);
     m_sensorWidthMmSpinBox->setValue(camera.sensor_width_mm);
     m_sensorHeightMmSpinBox->setValue(camera.sensor_height_mm);
-    m_focalLengthMmSpinBox->setValue(camera.focal_length_35mm);  // 没有单独的focal_length_mm，使用focal_length_35mm
+    m_focalLengthMmSpinBox->setValue(0.0); // No dedicated field for focal length mm in CameraModel yet?
     m_focalLength35mmSpinBox->setValue(camera.focal_length_35mm);
 
     // 加载畸变参数

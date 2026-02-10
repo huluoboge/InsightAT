@@ -45,14 +45,14 @@ MainWindow::MainWindow(QWidget* parent)
     UISystemConfig& config = UISystemConfig::instance();
     
     // 设置配置路径（优先尝试 build/config，备选 ../data/config）
-    config.setConfigPath("./config");
-    if (!config.loadCoordinateDatabases()) {
-        LOG(WARNING) << "Failed to load from ./config, trying ../data/config";
-        config.setConfigPath("../data/config");
-        if (!config.loadCoordinateDatabases()) {
-            LOG(ERROR) << "Failed to load coordinate databases from both paths";
-        }
-    }
+    // config.setConfigPath("./config");
+    // if (!config.loadCoordinateDatabases()) {
+    //     LOG(WARNING) << "Failed to load from ./config, trying ../data/config";
+    //     config.setConfigPath("../data/config");
+    //     if (!config.loadCoordinateDatabases()) {
+    //         LOG(ERROR) << "Failed to load coordinate databases from both paths";
+    //     }
+    // }
     
     // 设置窗口属性
     setWindowTitle("InsightAT - Photogrammetry Suite");
@@ -295,9 +295,12 @@ void MainWindow::connectSignalsSlots() {
             this, &MainWindow::onEditImageGroup);
     
     // 连接编辑对话框信号
+    // ImageGroupDetailPanel 内部会调用 m_projectDocument->notifyImageGroupChanged()
+    // 这将触发所有感兴趣组件（树、表格面板等）同步更新
     connect(m_imageGroupDetailDialog, &dialogs::ImageGroupDetailPanel::groupDataChanged,
-            m_imageGroupsPanel, [this]() {
-                m_imageGroupsPanel->RefreshGroupList();
+            this, [this](uint32_t group_id) {
+                // 如果将来有需要针对特定分组更新的内容，可以在这里处理
+                Q_UNUSED(group_id);
             });
     
     // ─── 新增：AT Task UI 初始化 ───

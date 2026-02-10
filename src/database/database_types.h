@@ -900,6 +900,7 @@ struct ATTask {
     };
 
     std::string id;                                 ///< 任务UUID（唯一标识）
+    uint32_t task_id = 0;                           ///< 任务整型ID（用于持久化引用）
     std::string task_name;                          ///< 任务名称，e.g. "AT_0", "AT_1"（用户友好）
     InputSnapshot input_snapshot;
     std::optional<Initialization> initialization;
@@ -936,6 +937,9 @@ struct ATTask {
     template <class Archive>
     void serialize(Archive& ar, std::uint32_t const version) {
         ar(CEREAL_NVP(id));
+        if (version >= 4) {
+            ar(CEREAL_NVP(task_id));
+        }
         if (version >= 1) {
             ar(CEREAL_NVP(task_name));
         }
@@ -998,6 +1002,13 @@ struct Project {
     // ── 空三任务（通常一个项目只有一个主任务）
     std::vector<ATTask> at_tasks;              ///< 空三处理任务列表
     
+    // ── ID 计数器（用于生成唯一 ID，保持持久化）
+    uint32_t next_image_id = 1;
+    uint32_t next_image_group_id = 1;
+    uint32_t next_rig_id = 1;
+    uint32_t next_gcp_id = 1;
+    uint32_t next_at_task_id = 0;  ///< 用于生成 AT_0, AT_1 这样的名称
+
     // ── 项目统计信息
     /**
      * 获取项目中所有图像的总数
@@ -1169,6 +1180,15 @@ struct Project {
         }
         
         ar(CEREAL_NVP(at_tasks));
+
+        if (version > 3) {
+            ar(CEREAL_NVP(next_image_id), CEREAL_NVP(next_image_group_id));
+            ar(CEREAL_NVP(next_rig_id), CEREAL_NVP(next_gcp_id));
+        }
+
+        if (version > 4) {
+            ar(CEREAL_NVP(next_at_task_id));
+        }
     }
 };
 
@@ -1195,9 +1215,9 @@ CEREAL_CLASS_VERSION(insight::database::CameraRig::CameraMount, 1);
 CEREAL_CLASS_VERSION(insight::database::Image, 2);  ///< v2: 增加gnss_data字段
 CEREAL_CLASS_VERSION(insight::database::ImageGroup, 2);  ///< v2: 增加rig_mount_info字段
 CEREAL_CLASS_VERSION(insight::database::ImageGroup::RigMountInfo, 1);
-CEREAL_CLASS_VERSION(insight::database::ATTask, 3);  ///< v3: 添加task_name和optimization_config字段
+CEREAL_CLASS_VERSION(insight::database::ATTask, 4);  ///< v4: 添加 task_id
 CEREAL_CLASS_VERSION(insight::database::ATTask::InputSnapshot, 2);
 CEREAL_CLASS_VERSION(insight::database::ATTask::Initialization, 1);
-CEREAL_CLASS_VERSION(insight::database::Project, 3);  ///< v3: 添加camera_rigs字段
+CEREAL_CLASS_VERSION(insight::database::Project, 5);  ///< v5: 添加 next_at_task_index
 
 #endif  // INSIGHT_DATABASE_TYPES_H

@@ -84,6 +84,11 @@ signals:
      */
     void modeChanged(database::ImageGroup::CameraMode mode);
 
+    /**
+     * @brief 请求自动估计参数时发出此信号
+     */
+    void autoEstimateRequested();
+
 private slots:
     // ─── 内参字段信号槽 ───
     void onFocalLengthPxEdited();

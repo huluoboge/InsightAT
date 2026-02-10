@@ -16,6 +16,8 @@ class Exif_IO
 
     virtual float getFocal() const = 0;
 
+    virtual float getFocal35mm() const = 0;
+
     virtual std::string getBrand() const = 0;
 
     virtual std::string getModel() const = 0;

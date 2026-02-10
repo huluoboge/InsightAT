@@ -43,13 +43,14 @@ signals:
     /**
      * @brief 分组数据被修改并保存时发出
      */
-    void groupDataChanged(const std::string& group_id);
+    void groupDataChanged(uint32_t group_id);
 
 private slots:
     // ─── 数据保存槽 ───
     void onCameraParameterModified();
     void onCameraParameterModeChanged(database::ImageGroup::CameraMode mode);
     void onGroupNameModified();
+    void onAutoEstimateRequested();
 
 private:
     // ─── 初始化 ───
