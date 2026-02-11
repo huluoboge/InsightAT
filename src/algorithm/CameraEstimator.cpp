@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <map>
@@ -10,6 +11,17 @@
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
 
+#ifdef _WIN32
+#include <io.h>
+#define ISATTY _isatty
+#define FILENO _fileno
+#else
+#include <unistd.h>
+#define ISATTY isatty
+#define FILENO fileno
+#endif
+
+#include "cmdLine/cmdLine.h"
 #include "Common/exif_IO_EasyExif.hpp"
 #include "ImageIO/gdal_utils.h"
 #include "database/CameraSensorDatabase.h"
@@ -103,20 +115,97 @@ struct GroupKey {
     }
 };
 
+/**
+ * @brief 打印该工具的使用方法，方便开发者和 AI Agent 调用
+ */
+void PrintUsage(const char* prog) {
+    std::cout << "InsightAT Camera Estimator Tool\n";
+    std::cout << "--------------------------------\n";
+    std::cout << "Estimates camera intrinsics from a list of images using EXIF and sensor databases.\n\n";
+    std::cout << "Usage Options:\n";
+    std::cout << "  1. JSON Input (Stream):   cat input.json | " << prog << "\n";
+    std::cout << "  2. JSON File Input:       " << prog << " -j params.json\n";
+    std::cout << "  3. CSV File Input:        " << prog << " -c images.csv\n\n";
+    std::cout << "Arguments:\n";
+    std::cout << "  -j, --json-file PATH      Path to a JSON file containing the 'estimator_input' object.\n";
+    std::cout << "  -c, --csv-file PATH       Path to a CSV file (one image path per line).\n";
+    std::cout << "  -d, --db PATH             Path to the camera sensor database (replaces project default).\n";
+    std::cout << "  -l, --log DIR             Directory to store Glog output files.\n";
+    std::cout << "  -h, --help                Show this help message.\n";
+    std::cout << "--------------------------------\n";
+}
+
 int main(int argc, char* argv[]) {
-    // 强制输出到 stderr，因为 stdout 用于 JSON IPC
+    // 强制输出到 stderr，因为 stdout 用于 JSON IPC 结果输出
     FLAGS_logtostderr = true;
     google::InitGoogleLogging(argv[0]);
 
-    // 从 stdin 读取输入 JSON
-    EstimatorInput input;
+    CmdLine cmd;
+    std::string json_file, csv_file, db_path, log_dir;
+    
+    cmd.add(make_option('j', json_file, "json-file"));
+    cmd.add(make_option('c', csv_file, "csv-file"));
+    cmd.add(make_option('d', db_path, "db"));
+    cmd.add(make_option('l', log_dir, "log"));
+    cmd.add(make_switch('h', "help"));
+
     try {
-        cereal::JSONInputArchive archive(std::cin);
-        archive(cereal::make_nvp("estimator_input", input));
-    } catch (const std::exception& e) {
-        LOG(ERROR) << "Failed to parse input JSON: " << e.what();
+        cmd.process(argc, argv);
+    } catch (const std::string& e) {
+        std::cerr << "Command line process error: " << e << std::endl;
         return 1;
     }
+
+    // 只有在明确请求帮助，或者没有任何参数且 stdin 是终端（人机交互）时才打印帮助信息
+    if (cmd.used('h') || (argc == 1 && !cmd.used('j') && !cmd.used('c') && ISATTY(FILENO(stdin)))) {
+        PrintUsage(argv[0]);
+        return 0;
+    }
+
+    EstimatorInput input;
+
+    // ─────────────────────────────────────────────────────────────
+    // 1. 获取输入数据 (优先级: JSON File > CSV File > Stdin JSON)
+    // ─────────────────────────────────────────────────────────────
+    if (!json_file.empty()) {
+        std::ifstream is(json_file);
+        if (!is) {
+            LOG(ERROR) << "Failed to open JSON file: " << json_file;
+            return 1;
+        }
+        try {
+            cereal::JSONInputArchive archive(is);
+            archive(cereal::make_nvp("estimator_input", input));
+        } catch (const std::exception& e) {
+            LOG(ERROR) << "Failed to parse JSON file: " << e.what();
+            return 1;
+        }
+    } else if (!csv_file.empty()) {
+        std::ifstream is(csv_file);
+        if (!is) {
+            LOG(ERROR) << "Failed to open CSV file: " << csv_file;
+            return 1;
+        }
+        std::string line;
+        while (std::getline(is, line)) {
+            if (!line.empty()) {
+                input.image_paths.push_back(line);
+            }
+        }
+    } else {
+        // 尝试从 stdin 读取 JSON
+        try {
+            cereal::JSONInputArchive archive(std::cin);
+            archive(cereal::make_nvp("estimator_input", input));
+        } catch (...) {
+            LOG(ERROR) << "No valid input. Use -h for help.";
+            return 1;
+        }
+    }
+
+    // 命令行覆盖参数
+    if (!db_path.empty()) input.sensor_db_path = db_path;
+    if (!log_dir.empty()) input.log_dir = log_dir;
 
     if (!input.log_dir.empty()) {
         FLAGS_log_dir = input.log_dir;

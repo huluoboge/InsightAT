@@ -360,7 +360,7 @@ void MainWindow::onOpenProject() {
     // 选择文件
     QString filePath = QFileDialog::getOpenFileName(this,
         tr("Open InsightAT Project"), "",
-        tr("InsightAT Projects (*.ipt);;All Files (*)"));
+        tr("InsightAT Projects (*.iat);;All Files (*)"));
     
     if (filePath.isEmpty()) {
         return;
@@ -404,15 +404,15 @@ void MainWindow::onSaveProject() {
 void MainWindow::onSaveProjectAs() {
     QString filePath = QFileDialog::getSaveFileName(this,
         tr("Save InsightAT Project As"), "",
-        tr("InsightAT Projects (*.ipt);;All Files (*)"));
+        tr("InsightAT Projects (*.iat);;All Files (*)"));
     
     if (filePath.isEmpty()) {
         return;
     }
     
     // 确保扩展名正确
-    if (!filePath.endsWith(".ipt")) {
-        filePath += ".ipt";
+    if (!filePath.endsWith(".iat")) {
+        filePath += ".iat";
     }
     
     if (m_projectDocument->saveProjectAs(filePath)) {

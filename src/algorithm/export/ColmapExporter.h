@@ -17,8 +17,8 @@
 #ifndef ALGORITHM_COLMAPEXPORTER_H
 #define ALGORITHM_COLMAPEXPORTER_H
 
-#include <QString>
-#include <QMap>
+#include <string>
+#include <map>
 #include <memory>
 
 namespace insight {
@@ -51,59 +51,59 @@ public:
      * @return 成功返回true
      */
     bool exportProject(const insight::database::Project& project,
-                      const QString& outputDir,
-                      const QMap<QString, QString>& options = {});
+                      const std::string& outputDir,
+                      const std::map<std::string, std::string>& options = {});
 
     /**
      * 获取最后一次操作的错误信息
      */
-    QString getLastError() const { return m_lastError; }
+    std::string getLastError() const { return m_lastError; }
 
 private:
     /**
      * 创建输出目录结构
      */
-    bool createDirectoryStructure(const QString& outputDir);
+    bool createDirectoryStructure(const std::string& outputDir);
 
     /**
      * 创建COLMAP数据库（database.db）
      */
     bool createCOLMAPDatabase(const insight::database::Project& project,
-                             const QString& dbPath);
+                             const std::string& dbPath);
 
     /**
      * 将图像文件链接到输出目录
      */
     bool linkImageFiles(const insight::database::Project& project,
-                       const QString& outputDir,
-                       const QMap<QString, QString>& options);
+                       const std::string& outputDir,
+                       const std::map<std::string, std::string>& options);
 
     /**
      * 创建稀疏模型文件（images.txt, cameras.txt, points3D.txt）
      */
     bool createSparseFiles(const insight::database::Project& project,
-                          const QString& sparseDir);
+                          const std::string& sparseDir);
 
     /**
      * 写入 images.txt
      */
     bool writeImagesText(const insight::database::Project& project,
-                        const QString& filepath);
+                        const std::string& filepath);
 
     /**
      * 写入 cameras.txt
      */
     bool writeCamerasText(const insight::database::Project& project,
-                         const QString& filepath);
+                         const std::string& filepath);
 
     /**
      * 写入 points3D.txt
      */
     bool writePoints3DText(const insight::database::Project& project,
-                          const QString& filepath);
+                          const std::string& filepath);
 
 private:
-    QString m_lastError;
+    std::string m_lastError;
 };
 
 }  // namespace algorithm

@@ -240,7 +240,12 @@ void ImageGroupDetailPanel::onAutoEstimateRequested() {
     // 3. 解析结果
     QJsonDocument outputDoc = QJsonDocument::fromJson(outputData);
     if (outputDoc.isNull()) {
-        QMessageBox::critical(this, tr("Error"), tr("Invalid output JSON from algorithm."));
+        QString details = tr("Raw Output: %1\n\nRaw Error: %2")
+            .arg(QString::fromUtf8(outputData))
+            .arg(QString::fromUtf8(errorData));
+        LOG(ERROR) << "Invalid output JSON: " << outputData.constData();
+        QMessageBox::critical(this, tr("Error"), 
+            tr("Invalid output JSON from algorithm.\n\n%1").arg(details));
         return;
     }
 

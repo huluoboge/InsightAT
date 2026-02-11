@@ -231,7 +231,7 @@ Edit 菜单:
 13. 用户: File → Save Project
     ↓
 14. ProjectDocument::saveProjectAs()
-    └─ 序列化为 .ipt 文件 (Cereal格式)
+    └─ 序列化为 .iat 文件 (Cereal格式)
 ```
 
 ---
@@ -379,7 +379,7 @@ ELF 64-bit LSB pie executable, x86-64, dynamically linked
 ┌────────────────────────────────────────────────────────────┐
 │       ProjectDocument::saveProjectAs()                      │
 │  ├─ Cereal 序列化 project 对象                            │
-│  ├─ 保存为 .ipt 文件 (二进制格式)                         │
+│  ├─ 保存为 .iat 文件 (二进制格式)                         │
 │  ├─ 包含内容:                                              │
 │  │   ├─ 项目元数据 (名称, UUID, 创建时间)                │
 │  │   ├─ 坐标系定义                                        │
@@ -435,13 +435,13 @@ cd /home/jones/Git/01jones/InsightAT/build
 
 4. **保存项目**
    - 点击 File → Save Project
-   - 选择保存路径 (如 ~/Desktop/test_project.ipt)
+   - 选择保存路径 (如 ~/Desktop/test_project.iat)
    - ✓ 应该看到文件被创建
    - ✓ 标题栏中的 * (修改标志) 应消失
 
 5. **打开项目**
    - 点击 File → Open Project
-   - 选择刚才保存的 .ipt 文件
+   - 选择刚才保存的 .iat 文件
    - ✓ 项目应被恢复
    - ✓ 可以看到分组树结构
 

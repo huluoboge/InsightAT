@@ -8,20 +8,22 @@
 
 #include "ColmapExporter.h"
 #include "database/database_types.h"
-#include <QDir>
-#include <QFile>
-#include <QTextStream>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <glog/logging.h>
 #include <sstream>
 #include <iomanip>
+
+namespace fs = std::filesystem;
 
 namespace insight {
 namespace algorithm {
 
 bool ColmapExporter::exportProject(const insight::database::Project& project,
-                                   const QString& outputDir,
-                                   const QMap<QString, QString>& options) {
-    LOG(INFO) << "Starting COLMAP export to: " << outputDir.toStdString();
+                                   const std::string& outputDir,
+                                   const std::map<std::string, std::string>& options) {
+    LOG(INFO) << "Starting COLMAP export to: " << outputDir;
     
     try {
         // 1. 创建目录结构
@@ -31,7 +33,7 @@ bool ColmapExporter::exportProject(const insight::database::Project& project,
         }
         
         // 2. 创建COLMAP数据库
-        QString dbPath = outputDir + "/database.db";
+        std::string dbPath = outputDir + "/database.db";
         if (!createCOLMAPDatabase(project, dbPath)) {
             m_lastError = "Failed to create COLMAP database";
             return false;
@@ -44,7 +46,7 @@ bool ColmapExporter::exportProject(const insight::database::Project& project,
         }
         
         // 4. 创建稀疏模型文件
-        QString sparseDir = outputDir + "/sparse/0";
+        std::string sparseDir = outputDir + "/sparse/0";
         if (!createSparseFiles(project, sparseDir)) {
             m_lastError = "Failed to create sparse files";
             return false;
@@ -54,45 +56,27 @@ bool ColmapExporter::exportProject(const insight::database::Project& project,
         return true;
         
     } catch (const std::exception& e) {
-        m_lastError = QString("Export failed: %1").arg(e.what());
-        LOG(ERROR) << m_lastError.toStdString();
+        m_lastError = std::string("Export failed: ") + e.what();
+        LOG(ERROR) << m_lastError;
         return false;
     }
 }
 
-bool ColmapExporter::createDirectoryStructure(const QString& outputDir) {
-    QDir dir;
-    
-    // 创建根目录
-    if (!dir.exists(outputDir)) {
-        if (!dir.mkpath(outputDir)) {
-            LOG(ERROR) << "Failed to create output directory: " << outputDir.toStdString();
-            return false;
-        }
+bool ColmapExporter::createDirectoryStructure(const std::string& outputDir) {
+    try {
+        fs::path base(outputDir);
+        fs::create_directories(base / "images");
+        fs::create_directories(base / "sparse/0");
+        LOG(INFO) << "Directory structure created";
+        return true;
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to create directory: " << e.what();
+        return false;
     }
-    
-    // 创建子目录
-    QStringList subdirs = {
-        outputDir + "/images",
-        outputDir + "/sparse",
-        outputDir + "/sparse/0"
-    };
-    
-    for (const auto& subdir : subdirs) {
-        if (!dir.exists(subdir)) {
-            if (!dir.mkpath(subdir)) {
-                LOG(ERROR) << "Failed to create subdirectory: " << subdir.toStdString();
-                return false;
-            }
-        }
-    }
-    
-    LOG(INFO) << "Directory structure created";
-    return true;
 }
 
 bool ColmapExporter::createCOLMAPDatabase(const insight::database::Project& project,
-                                          const QString& dbPath) {
+                                          const std::string& dbPath) {
     // TODO: 实现COLMAP数据库创建
     // 这需要：
     // 1. SQLite库支持
@@ -100,11 +84,11 @@ bool ColmapExporter::createCOLMAPDatabase(const insight::database::Project& proj
     // 3. 填充相机和图像信息
     
     LOG(WARNING) << "COLMAP database creation not yet fully implemented";
-    LOG(INFO) << "Database path would be: " << dbPath.toStdString();
+    LOG(INFO) << "Database path would be: " << dbPath;
     
     // 暂时创建空文件占位
-    QFile file(dbPath);
-    if (!file.open(QIODevice::WriteOnly)) {
+    std::ofstream file(dbPath, std::ios::binary);
+    if (!file.is_open()) {
         LOG(ERROR) << "Failed to create database file";
         return false;
     }
@@ -114,37 +98,45 @@ bool ColmapExporter::createCOLMAPDatabase(const insight::database::Project& proj
 }
 
 bool ColmapExporter::linkImageFiles(const insight::database::Project& project,
-                                    const QString& outputDir,
-                                    const QMap<QString, QString>& options) {
-    QString imagesDir = outputDir + "/images";
+                                    const std::string& outputDir,
+                                    const std::map<std::string, std::string>& options) {
+    std::string imagesDir = outputDir + "/images";
     
     // 获取选项
-    bool copyImages = options.value("copy_images", "false") == "true";
-    bool linkImages = options.value("link_images", "true") == "true";
+    bool copyImages = false;
+    auto it_copy = options.find("copy_images");
+    if (it_copy != options.end()) {
+        copyImages = (it_copy->second == "true");
+    }
+
+    bool linkImages = true;
+    auto it_link = options.find("link_images");
+    if (it_link != options.end()) {
+        linkImages = (it_link->second == "true");
+    }
     
     LOG(INFO) << "Processing image files (copy=" << copyImages << ", link=" << linkImages << ")";
     
     int imageCount = 0;
     for (const auto& group : project.image_groups) {
         for (const auto& image : group.images) {
-            QString srcPath = QString::fromStdString(image.filename);
-            QString filename = QFileInfo(srcPath).fileName();
-            QString dstPath = imagesDir + "/" + filename;
+            std::string srcPath = image.filename;
+            std::string filename = fs::path(srcPath).filename().string();
+            std::string dstPath = imagesDir + "/" + filename;
             
-            if (copyImages) {
-                // 复制文件
-                if (!QFile::copy(srcPath, dstPath)) {
-                    LOG(WARNING) << "Failed to copy image: " << srcPath.toStdString();
-                    continue;
+            try {
+                if (copyImages) {
+                    fs::copy_file(srcPath, dstPath, fs::copy_options::overwrite_existing);
+                } else if (linkImages) {
+                    // 创建符号链接
+                    if (!fs::exists(dstPath)) {
+                        fs::create_symlink(srcPath, dstPath);
+                    }
                 }
-            } else if (linkImages) {
-                // 创建符号链接
-                // TODO: 实现跨平台的符号链接创建
-                LOG(WARNING) << "Symbolic link not yet implemented, would link: " 
-                            << srcPath.toStdString();
+                imageCount++;
+            } catch (const std::exception& e) {
+                LOG(WARNING) << "Failed to process image " << srcPath << ": " << e.what();
             }
-            
-            imageCount++;
         }
     }
     
@@ -153,21 +145,21 @@ bool ColmapExporter::linkImageFiles(const insight::database::Project& project,
 }
 
 bool ColmapExporter::createSparseFiles(const insight::database::Project& project,
-                                       const QString& sparseDir) {
+                                       const std::string& sparseDir) {
     // 创建images.txt
-    QString imagesPath = sparseDir + "/images.txt";
+    std::string imagesPath = sparseDir + "/images.txt";
     if (!writeImagesText(project, imagesPath)) {
         return false;
     }
     
     // 创建cameras.txt
-    QString camerasPath = sparseDir + "/cameras.txt";
+    std::string camerasPath = sparseDir + "/cameras.txt";
     if (!writeCamerasText(project, camerasPath)) {
         return false;
     }
     
     // 创建points3D.txt
-    QString points3DPath = sparseDir + "/points3D.txt";
+    std::string points3DPath = sparseDir + "/points3D.txt";
     if (!writePoints3DText(project, points3DPath)) {
         return false;
     }
@@ -176,14 +168,12 @@ bool ColmapExporter::createSparseFiles(const insight::database::Project& project
 }
 
 bool ColmapExporter::writeImagesText(const insight::database::Project& project,
-                                     const QString& filepath) {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        LOG(ERROR) << "Failed to open images.txt for writing: " << filepath.toStdString();
+                                     const std::string& filepath) {
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        LOG(ERROR) << "Failed to open images.txt for writing: " << filepath;
         return false;
     }
-    
-    QTextStream stream(&file);
     
     // COLMAP images.txt 格式：
     // # image_list.txt
@@ -192,123 +182,88 @@ bool ColmapExporter::writeImagesText(const insight::database::Project& project,
     
     uint32_t imageId = 1;
     for (const auto& group : project.image_groups) {
-        const auto* camera = group.group_camera ? &(*group.group_camera) : nullptr;
-        uint32_t cameraId = (camera ? 1 : 0);
+        uint32_t cameraId = (group.group_camera ? 1 : 0); // 简化
         
         for (const auto& image : group.images) {
-            // 默认旋转（四元数）：(1, 0, 0, 0)
-            // 默认位置：(0, 0, 0)
-            stream << imageId << " "
+            file << imageId << " "
                   << "1 0 0 0 "  // quaternion (qw qx qy qz)
                   << "0 0 0 "    // translation (tx ty tz)
                   << cameraId << " "
-                  << QString::fromStdString(image.filename)
-                  << "\n";
+                  << fs::path(image.filename).filename().string() // 仅保留文件名
+                  << "\n\n"; // COLMAP 每两行一张图
             
             imageId++;
         }
     }
     
-    // 空行（分隔符）
-    stream << "\n";
-    
-    // 写入keypoints (COLMAP格式要求，这里先留空)
-    // 实际格式：每个图像一行，包含keypoint数量和坐标
-    
     file.close();
-    
     LOG(INFO) << "Created images.txt with " << (imageId - 1) << " images";
     return true;
 }
 
 bool ColmapExporter::writeCamerasText(const insight::database::Project& project,
-                                      const QString& filepath) {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        LOG(ERROR) << "Failed to open cameras.txt for writing: " << filepath.toStdString();
+                                      const std::string& filepath) {
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        LOG(ERROR) << "Failed to open cameras.txt for writing: " << filepath;
         return false;
     }
-    
-    QTextStream stream(&file);
-    
-    // COLMAP cameras.txt 格式：
-    // # Camera list with one line of data per camera:
-    // #   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[0], PARAMS[1], ...
-    // # Available camera models:
-    // #   SIMPLE_PINHOLE: f, cx, cy
-    // #   PINHOLE: fx, fy, cx, cy
-    // #   SIMPLE_RADIAL: f, cx, cy, k
-    // #   RADIAL: f, cx, cy, k1, k2
-    // #   OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
-    // #   OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
     
     uint32_t cameraId = 1;
     for (const auto& group : project.image_groups) {
         if (group.group_camera) {
             const auto& camera = *group.group_camera;
             
-            // 使用 OPENCV 模型（对应 Brown-Conrady）
-            stream << cameraId << " "
+            file << cameraId << " "
                   << "OPENCV "
                   << camera.width << " "
                   << camera.height << " ";
             
-            // 参数: fx, fy, cx, cy, k1, k2, p1, p2
-            stream << QString::number(camera.focal_length, 'f', 6) << " "
-                  << QString::number(camera.focal_length * camera.aspect_ratio, 'f', 6) << " "
-                  << QString::number(camera.principal_point_x, 'f', 6) << " "
-                  << QString::number(camera.principal_point_y, 'f', 6) << " "
-                  << QString::number(camera.k1, 'f', 6) << " "
-                  << QString::number(camera.k2, 'f', 6) << " "
-                  << QString::number(camera.p1, 'f', 6) << " "
-                  << QString::number(camera.p2, 'f', 6) << "\n";
+            file << std::fixed << std::setprecision(6)
+                  << camera.focal_length << " "
+                  << camera.focal_length * camera.aspect_ratio << " "
+                  << camera.principal_point_x << " "
+                  << camera.principal_point_y << " "
+                  << camera.k1 << " "
+                  << camera.k2 << " "
+                  << camera.p1 << " "
+                  << camera.p2 << "\n";
             
             cameraId++;
         }
     }
     
     file.close();
-    
     LOG(INFO) << "Created cameras.txt with " << (cameraId - 1) << " cameras";
     return true;
 }
 
 bool ColmapExporter::writePoints3DText(const insight::database::Project& project,
-                                       const QString& filepath) {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        LOG(ERROR) << "Failed to open points3D.txt for writing: " << filepath.toStdString();
+                                       const std::string& filepath) {
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        LOG(ERROR) << "Failed to open points3D.txt for writing: " << filepath;
         return false;
     }
     
-    QTextStream stream(&file);
-    
-    // COLMAP points3D.txt 格式：
-    // #   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] (IMAGE_ID, POINT2D_IDX)
-    
-    // 从GCP导入点云
     uint32_t point3DId = 1;
     for (const auto& [gcp_id, gcp] : project.gcp_database) {
-        stream << point3DId << " "
-              << QString::number(gcp.x, 'f', 6) << " "
-              << QString::number(gcp.y, 'f', 6) << " "
-              << QString::number(gcp.z, 'f', 6) << " ";
+        file << point3DId << " "
+              << std::fixed << std::setprecision(6)
+              << gcp.x << " "
+              << gcp.y << " "
+              << gcp.z << " "
+              << "255 255 255 0 "; // Colors (RGB) + Error
         
-        // 颜色 (R, G, B) - 暂时默认白色
-        stream << "255 255 255 "
-              << "0 ";  // ERROR
-        
-        // TRACK - GCP的观测
         for (const auto& obs : gcp.observations) {
-            stream << obs.image_id << " 0 ";
+            file << obs.image_id << " 0 ";
         }
         
-        stream << "\n";
+        file << "\n";
         point3DId++;
     }
     
     file.close();
-    
     LOG(INFO) << "Created points3D.txt with " << (point3DId - 1) << " points";
     return true;
 }

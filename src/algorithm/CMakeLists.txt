@@ -3,17 +3,13 @@ cmake_minimum_required(VERSION 3.16)
 project(InsightATAlgorithm)
 
 # ─────────────────────────────────────────────────────────────
-# 设置Qt编译选项
+# 设置编译选项
 # ─────────────────────────────────────────────────────────────
-
-set(CMAKE_INCLUDE_CURRENT_DIR ON)
-set(CMAKE_AUTOMOC ON)
 
 # ─────────────────────────────────────────────────────────────
 # 查找依赖
 # ─────────────────────────────────────────────────────────────
 
-find_package(Qt5 COMPONENTS Core REQUIRED)
 find_package(glog REQUIRED)
 
 # ─────────────────────────────────────────────────────────────
@@ -39,12 +35,10 @@ add_library(InsightATAlgorithm STATIC ${ALGORITHM_SOURCES})
 target_include_directories(InsightATAlgorithm
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/..
-        ${Qt5_INCLUDE_DIRS}
 )
 
 target_link_libraries(InsightATAlgorithm
     PUBLIC
-        Qt5::Core
         glog::glog
         InsightATDatabase
 )
