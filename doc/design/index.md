@@ -19,9 +19,11 @@
 6. **[UI 框架设计 (06_ui_framework.md)](06_ui_framework.md)**: Qt 信号槽模式、Document/View 架构及工作流。
 7. **[业务流程实现 (07_business_workflow.md)](07_business_workflow.md)**: 从项目创建到空三解算的完整操作链。
 
-### 渲染与算法 (待补充)
-8. **渲染引擎设计**: OpenGL 3D 可视化基础。
-9. **算法模块设计**: 空间后方交会与光束法平差。
+### 🧮 算法与工具
+8. **[函数式算法工具包 (08_functional_at_toolkit.md)](08_functional_at_toolkit.md)**: CLI-First 架构、IDC 数据格式、分布式就绪的 AT 流水线。
+
+### 渲染 (待补充)
+9. **渲染引擎设计**: OpenGL 3D 可视化基础。
 
 ---
 
