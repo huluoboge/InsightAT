@@ -59,7 +59,7 @@ WorkspaceTreeModel::WorkspaceTreeModel(ProjectDocument* doc, QObject* parent)
            this, &WorkspaceTreeModel::onATTaskChanged);
     
     // 初始化根节点
-    m_root = std::make_unique<TreeNode>(ProjectRoot, "Project");
+    m_root = std::make_unique<TreeNode>(ProjectRoot, "Workspace");
     
     // 如果已有项目，构建树
     if (m_document->isProjectLoaded()) {

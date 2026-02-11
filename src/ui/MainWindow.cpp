@@ -31,6 +31,7 @@
 #include <QSettings>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QShowEvent>
 #include <QDialog>
 #include <QPushButton>
 #include <glog/logging.h>
@@ -219,25 +220,51 @@ void MainWindow::createWorkspace() {
     m_workspaceTreeView->setMaximumWidth(400);
     m_workspaceTreeView->setModel(m_workspaceModel.get());
     m_workspaceTreeView->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_workspaceTreeView->setHeaderHidden(true);  // 隐藏列标题
     m_splitter->addWidget(m_workspaceTreeView);
     
     // 中央/右侧：内容区域 (使用 QStackedWidget 管理多个面板)
     // 暂时创建占位符，ImageGroupsManagementPanel 将在连接阶段创建
     m_centerWidget = new QWidget();
+    m_centerWidget->setMinimumWidth(400);
     QVBoxLayout* centerLayout = new QVBoxLayout(m_centerWidget);
+    centerLayout->setContentsMargins(40, 40, 40, 40);
     
-    // 欢迎标签
-    QLabel* welcomeLabel = new QLabel(tr("Welcome to InsightAT!\n\n"
-                                         "Create a new project or open an existing one to get started."));
+    // 欢迎页面
+    QWidget* welcomeWidget = new QWidget();
+    QVBoxLayout* welcomeLayout = new QVBoxLayout(welcomeWidget);
+    welcomeLayout->setAlignment(Qt::AlignCenter);
+    
+    // Logo或标题
+    QLabel* titleLabel = new QLabel(tr("InsightAT"));
+    titleLabel->setAlignment(Qt::AlignCenter);
+    titleLabel->setStyleSheet("font-size: 32px; font-weight: bold; color: #333; margin-bottom: 20px;");
+    welcomeLayout->addWidget(titleLabel);
+    
+    // 副标题
+    QLabel* subtitleLabel = new QLabel(tr("Photogrammetry Suite"));
+    subtitleLabel->setAlignment(Qt::AlignCenter);
+    subtitleLabel->setStyleSheet("font-size: 18px; color: #666; margin-bottom: 40px;");
+    welcomeLayout->addWidget(subtitleLabel);
+    
+    // 欢迎信息
+    QLabel* welcomeLabel = new QLabel(tr("Welcome! To get started:\n\n"
+                                         "• Create a new project (File → New Project)\n"
+                                         "• Open an existing project (File → Open Project)\n\n"
+                                         "Your workspace will appear on the left."));
     welcomeLabel->setAlignment(Qt::AlignCenter);
-    welcomeLabel->setStyleSheet("font-size: 14px; color: #666;");
-    centerLayout->addWidget(welcomeLabel);
+    welcomeLabel->setStyleSheet("font-size: 14px; color: #888; line-height: 1.6;");
+    welcomeLabel->setWordWrap(true);
+    welcomeLayout->addWidget(welcomeLabel);
+    
+    centerLayout->addWidget(welcomeWidget);
     
     m_splitter->addWidget(m_centerWidget);
     
     // 设置分割器比例
     m_splitter->setStretchFactor(0, 1);  // 左侧
     m_splitter->setStretchFactor(1, 3);  // 中央
+    m_splitter->setChildrenCollapsible(false);  // 防止子部件被折叠
     
     layout->addWidget(m_splitter);
     setCentralWidget(centralWidget);
@@ -589,6 +616,29 @@ void MainWindow::onModificationChanged(bool modified) {
 // ─────────────────────────────────────────────────────
 // 窗口事件处理
 // ─────────────────────────────────────────────────────
+
+void MainWindow::showEvent(QShowEvent* event) {
+    QMainWindow::showEvent(event);
+    
+    // 在窗口首次显示时设置splitter的初始大小
+    static bool firstShow = true;
+    if (firstShow) {
+        firstShow = false;
+        
+        // 计算合理的初始大小
+        int totalWidth = width();
+        int leftWidth = 250;  // workspace panel宽度
+        int rightWidth = totalWidth - leftWidth;
+        
+        // 确保右侧有足够的宽度
+        if (rightWidth < 400) {
+            rightWidth = 400;
+            leftWidth = totalWidth - rightWidth;
+        }
+        
+        m_splitter->setSizes(QList<int>() << leftWidth << rightWidth);
+    }
+}
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (m_isModified) {

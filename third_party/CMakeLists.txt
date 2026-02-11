@@ -15,6 +15,9 @@ set(STLPLUS_LIBRARY stlplus3 PARENT_SCOPE)
 
 add_subdirectory(ImageIO)
 
+# SiftGPU for feature extraction
+add_subdirectory(SiftGPU)
+
 list(APPEND directories cereal cmdLine progress stlplus3) 
 foreach(inDirectory ${directories})
 install(
