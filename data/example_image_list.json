@@ -1,0 +1,7 @@
+{
+  "images": [
+    {"path": "/home/jones/test_image_001.jpg", "camera_id": 1},
+    {"path": "/home/jones/test_image_002.jpg", "camera_id": 1},
+    {"path": "/home/jones/test_image_003.jpg", "camera_id": 1}
+  ]
+}

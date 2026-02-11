@@ -140,8 +140,10 @@ include_directories(${GLOG_INCLUDE_DIRS})
 find_package(OpenGL REQUIRED)
 find_package(Glew REQUIRED)
 
-add_subdirectory(third_party)
 include_directories(third_party)
+include_directories(src)
+
+add_subdirectory(third_party)
 add_subdirectory(src)
 
 

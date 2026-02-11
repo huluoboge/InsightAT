@@ -46,6 +46,7 @@
 - 自描述：无需外部文档即可理解数据结构
 - 版本化：支持未来格式演进
 - AI 友好：Agent 可直接解析 JSON 头了解数据内容
+- **8 字节对齐**：Binary Payload 对齐优化，支持高性能 SIMD、GPU 上传和跨平台兼容
 
 **文件结构**
 
@@ -53,7 +54,7 @@
 ┌─────────────────────────────────────┐
 │ Magic Header: "ISAT" (4 bytes)     │  ← 魔数标识
 ├─────────────────────────────────────┤
-│ Format Version: uint32_t (4 bytes) │  ← 格式版本号
+│ Format Version: uint32_t (4 bytes) │  ← 格式版本号（当前版本：1）
 ├─────────────────────────────────────┤
 │ JSON Size: uint64_t (8 bytes)      │  ← JSON 描述符长度
 ├─────────────────────────────────────┤
@@ -62,12 +63,42 @@
 │ (UTF-8, Variable Length)            │
 │                                     │
 ├─────────────────────────────────────┤
+│ Padding (0-7 bytes)                 │  ← **对齐填充**：保证下一部分 8 字节对齐
+├─────────────────────────────────────┤
 │                                     │
-│ Binary Payload                      │  ← 原始数据块
+│ Binary Payload                      │  ← 原始数据块（8 字节对齐起始）
 │ (Little-Endian, Variable Length)    │
 │                                     │
 └─────────────────────────────────────┘
 ```
+
+**字节对齐设计**
+
+Binary Payload 起始于 **8 字节边界**，原因：
+
+| 需求 | 对齐要求 | 说明 |
+|------|----------|------|
+| **SIMD** | 8/16/32 字节 | AVX/SSE 指令要求，8 字节是安全基准 |
+| **GPU Upload** | 4-16 字节 | OpenGL/Vulkan buffer 性能优化 |
+| **跨平台** | 8 字节 | ARM64/x86_64 推荐对齐 |
+| **mmap** | 8 字节 | 内存映射后可直接强制转换为 `float*`/`double*` |
+| **Cache Line** | 64 字节 | 避免跨 cache line 访问（8 的倍数） |
+
+**计算公式**：
+```cpp
+header_size = 4 (magic) + 4 (version) + 8 (json_size) + json_size
+padding = (8 - (header_size % 8)) % 8  // 0-7 bytes
+payload_offset = header_size + padding  // 保证是 8 的倍数
+```
+
+**对比其他格式**：
+
+| 格式 | 对齐要求 | Padding 策略 | 备注 |
+|------|----------|--------------|------|
+| **IDC** | 8 字节 | JSON 后统一 padding | 简单高效 |
+| **GLB/glTF** | 4 字节 | 每个 chunk 独立对齐 | WebGL 兼容 |
+| **HDF5** | 8 字节 | 每个 dataset 对齐 | 科学计算优化 |
+| **NumPy .npy** | 64 字节 | 固定 header 填充 | Cache line 优化 |
 
 **JSON 描述符示例**
 
@@ -112,6 +143,40 @@
 - 所有二进制数据强制 **Little-Endian** 编码
 - 支持的基本类型：`uint8`, `uint16`, `uint32`, `uint64`, `float32`, `float64`
 - 复杂类型通过 `shape` 字段描述（例如 `[N, M]` 表示 N×M 矩阵）
+- **Blob offset**：相对于 Binary Payload 起始位置（8 字节对齐后）的偏移
+
+**实现细节**
+
+C++ 实现示例：
+```cpp
+class IDCWriter {
+    static constexpr uint32_t MAGIC_NUMBER = 0x54415349; // "ISAT"
+    static constexpr uint32_t FORMAT_VERSION = 1;
+    static constexpr size_t ALIGNMENT = 8;
+    
+    static size_t calculatePadding(size_t offset) {
+        return (ALIGNMENT - (offset % ALIGNMENT)) % ALIGNMENT;
+    }
+    
+    bool write() {
+        // 1. Write header (16 bytes, already aligned)
+        // 2. Write JSON (variable length)
+        // 3. Add padding to reach 8-byte boundary
+        size_t current = 16 + json_size;
+        size_t padding = calculatePadding(current);
+        // 4. Write payload (now 8-byte aligned)
+    }
+};
+```
+
+**性能优势**
+
+| 操作 | 未对齐 | 8 字节对齐 | 提升 |
+|------|--------|-----------|------|
+| CPU 读取 float32[] | 慢 | 快 | 2-4x |
+| SIMD 批量处理 | 可能崩溃 | 安全高效 | 10x+ |
+| GPU 上传 (OpenGL) | 额外拷贝 | 直接使用 | 避免拷贝 |
+| mmap + 强制转换 | 未定义行为 | 安全 | 可靠性 |
 
 ### 2.2 简单数据交换格式
 
