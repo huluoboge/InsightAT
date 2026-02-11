@@ -68,6 +68,11 @@ public slots:
     void onExportClicked();
     
     /**
+     * SIFT GPU 特征提取按钮点击处理
+     */
+    void onRunSiftGPUClicked();
+    
+    /**
      * 任务名称改变时自动保存
      */
     void onTaskNameChanged();
@@ -106,6 +111,7 @@ private:
     
     // Export Tab 中的按钮
     QPushButton* m_exportButton = nullptr;
+    QPushButton* m_siftGPUButton = nullptr;
 };
 
 }  // namespace ui

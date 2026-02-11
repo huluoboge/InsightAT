@@ -16,6 +16,14 @@
 #include <QLabel>
 #include <QGroupBox>
 #include <QTextEdit>
+#include <QProcess>
+#include <QMessageBox>
+#include <QFileInfo>
+#include <QDir>
+#include <QCoreApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <glog/logging.h>
 
 namespace insight {
@@ -115,7 +123,16 @@ void ATTaskPanel::initUI() {
     m_exportTab = new QWidget();
     QVBoxLayout* exportLayout = new QVBoxLayout(m_exportTab);
     
-    // 在 Export Tab 内部添加 Export 按钮
+    // SIFT GPU 特征提取按钮
+    m_siftGPUButton = new QPushButton("Run SIFT GPU Feature Extraction");
+    m_siftGPUButton->setMinimumHeight(40);
+    m_siftGPUButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }");
+    connect(m_siftGPUButton, &QPushButton::clicked, this, &ATTaskPanel::onRunSiftGPUClicked);
+    exportLayout->addWidget(m_siftGPUButton);
+    
+    exportLayout->addSpacing(20);
+    
+    // Export 按钮
     m_exportButton = new QPushButton("Export to COLMAP");
     connect(m_exportButton, &QPushButton::clicked, this, &ATTaskPanel::onExportClicked);
     exportLayout->addWidget(m_exportButton);
@@ -183,6 +200,146 @@ void ATTaskPanel::onExportClicked() {
     // TODO: 在 Phase 5 中实现，打开导出对话框和 COLMAP 子进程
     LOG(INFO) << "Export button clicked for task: " << m_currentTaskId;
     m_statusLabel->setText("Exporting...");
+}
+
+void ATTaskPanel::onRunSiftGPUClicked() {
+    if (m_currentTaskId.empty() || !m_document) {
+        QMessageBox::warning(this, "Warning", "No task loaded");
+        return;
+    }
+    
+    const auto* task = m_document->getATTaskById(m_currentTaskId);
+    if (!task) {
+        QMessageBox::critical(this, "Error", "Task not found");
+        return;
+    }
+    
+    // 准备工作目录
+    QString workDir = QDir::homePath() + "/.insightat/tasks/" + QString::fromStdString(m_currentTaskId);
+    QDir().mkpath(workDir);
+    
+    QString featuresDir = workDir + "/features";
+    QDir().mkpath(featuresDir);
+    
+    // 生成 image_list.json
+    QString imageListPath = workDir + "/image_list.json";
+    QJsonObject root;
+    QJsonArray images;
+    
+    for (const auto& group : task->input_snapshot.image_groups) {
+        for (const auto& img : group.images) {
+            QJsonObject imgObj;
+            imgObj["path"] = QString::fromStdString(img.filename);
+            imgObj["camera_id"] = 1;  // Default camera ID
+            images.append(imgObj);
+        }
+    }
+    
+    root["images"] = images;
+    
+    // 写入 JSON 文件
+    QFile file(imageListPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::critical(this, "Error", "Failed to create image list file");
+        return;
+    }
+    
+    file.write(QJsonDocument(root).toJson());
+    file.close();
+    
+    LOG(INFO) << "Created image list: " << imageListPath.toStdString() 
+              << " with " << images.size() << " images";
+    
+    // 构建 isat_extract 命令
+    QString program = QCoreApplication::applicationDirPath() + "/isat_extract";
+    QStringList arguments;
+    arguments << "-i" << imageListPath
+              << "-o" << featuresDir
+              << "-n" << "8000"
+              << "-v";  // verbose
+    
+    LOG(INFO) << "Running command: " << program.toStdString() 
+              << " " << arguments.join(" ").toStdString();
+    
+    // 禁用按钮并显示进度
+    m_siftGPUButton->setEnabled(false);
+    m_siftGPUButton->setText("Running SIFT GPU...");
+    m_statusLabel->setText("Extracting features...");
+    
+    // 创建 QProcess
+    QProcess* process = new QProcess(this);
+    process->setWorkingDirectory(workDir);
+    
+    // 连接输出信号
+    connect(process, &QProcess::readyReadStandardOutput, [process, this]() {
+        QString output = process->readAllStandardOutput();
+        LOG(INFO) << "[SIFT GPU] " << output.toStdString();
+    });
+    
+    connect(process, &QProcess::readyReadStandardError, [process, this]() {
+        QString error = process->readAllStandardError();
+        // 解析进度
+        if (error.contains("PROGRESS:")) {
+            QStringList lines = error.split('\n');
+            for (const QString& line : lines) {
+                if (line.contains("PROGRESS:")) {
+                    QString progressStr = line.split("PROGRESS:").last().trimmed();
+                    bool ok;
+                    float progress = progressStr.toFloat(&ok);
+                    if (ok) {
+                        int percent = static_cast<int>(progress * 100);
+                        m_statusLabel->setText(QString("Extracting features... %1%").arg(percent));
+                    }
+                }
+            }
+        }
+        LOG(INFO) << "[SIFT GPU] " << error.toStdString();
+    });
+    
+    // 连接完成信号
+    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            [this, process, featuresDir](int exitCode, QProcess::ExitStatus exitStatus) {
+        m_siftGPUButton->setEnabled(true);
+        m_siftGPUButton->setText("Run SIFT GPU Feature Extraction");
+        
+        if (exitStatus == QProcess::NormalExit && exitCode == 0) {
+            m_statusLabel->setText("Feature extraction completed successfully");
+            
+            // 统计生成的特征文件数量
+            QDir dir(featuresDir);
+            int featureCount = dir.entryList(QStringList() << "*.isat_feat", QDir::Files).count();
+            
+            QMessageBox::information(this, "Success", 
+                                    QString("SIFT GPU feature extraction completed!\n\n"
+                                           "Generated %1 feature files in:\n%2")
+                                    .arg(featureCount).arg(featuresDir));
+            
+            LOG(INFO) << "SIFT GPU completed successfully. " 
+                      << featureCount << " feature files generated.";
+        } else {
+            m_statusLabel->setText("Feature extraction failed");
+            QMessageBox::critical(this, "Error", 
+                                 QString("SIFT GPU failed with exit code %1").arg(exitCode));
+            LOG(ERROR) << "SIFT GPU failed with exit code: " << exitCode;
+        }
+        
+        process->deleteLater();
+    });
+    
+    // 启动进程
+    process->start(program, arguments);
+    
+    if (!process->waitForStarted(3000)) {
+        m_siftGPUButton->setEnabled(true);
+        m_siftGPUButton->setText("Run SIFT GPU Feature Extraction");
+        m_statusLabel->setText("Failed to start");
+        QMessageBox::critical(this, "Error", 
+                             "Failed to start isat_extract. Please check if the executable exists.");
+        process->deleteLater();
+        return;
+    }
+    
+    LOG(INFO) << "SIFT GPU process started successfully";
 }
 
 void ATTaskPanel::onTaskNameChanged() {

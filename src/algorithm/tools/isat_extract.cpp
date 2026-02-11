@@ -17,16 +17,19 @@ using json = nlohmann::json;
 
 struct ImageTask {
     std::string image_path;
+    cv::Mat image;
     int camera_id;
     int index;
+
+    std::vector<SiftGPU::SiftKeypoint> keypoints;
+    std::vector<float> descriptors;
 };
 
-struct ImageData {
-    cv::Mat image;
-    std::string image_path;
-    int camera_id;
-    int index;
-};
+// struct ImageData {
+//     std::string image_path;
+//     int camera_id;
+//     int index;
+// };
 
 struct FeatureData {
     std::vector<SiftGPU::SiftKeypoint> keypoints;
@@ -183,7 +186,7 @@ int main(int argc, char* argv[])
     // Stage 1: Image loading (multi-threaded I/O)
     Stage imageLoadStage("ImageLoad", NUM_IO_THREADS, IO_QUEUE_SIZE,
         [&image_tasks](int index) {
-            const auto& task = image_tasks[index];
+            auto& task = image_tasks[index];
             cv::Mat image = cv::imread(task.image_path);
             if (image.empty()) {
                 LOG(ERROR) << "Failed to load image: " << task.image_path;
@@ -191,24 +194,28 @@ int main(int argc, char* argv[])
             }
             LOG(INFO) << "Loaded image [" << index << "]: " << task.image_path
                       << " (" << image.cols << "x" << image.rows << ")";
+            task.image = image; // Store loaded image in task for next stage
         });
 
     // Stage 2: SIFT GPU extraction (single GPU)
+    insight::modules::SiftGPUExtractor extractor(sift_params);
+    if (!extractor.initialize()) {
+        LOG(FATAL) << "Failed to initialize SiftGPU";
+    }
     StageCurrent siftGPUStage("SiftGPU", 1, GPU_QUEUE_SIZE,
-        [&sift_params, &image_tasks](int index) {
+        [&sift_params, &image_tasks, &extractor](int index) {
             // This runs in the current thread
-            static thread_local insight::modules::SiftGPUExtractor extractor(sift_params);
-            static thread_local bool initialized = false;
+            // static thread_local static thread_local bool initialized = false;
 
-            if (!initialized) {
-                if (!extractor.initialize()) {
-                    LOG(FATAL) << "Failed to initialize SiftGPU";
-                }
-                initialized = true;
-            }
+            // if (!initialized) {
+            //     if (!extractor.initialize()) {
+            //         LOG(FATAL) << "Failed to initialize SiftGPU";
+            //     }
+            //     initialized = true;
+            // }
 
-            const auto& task = image_tasks[index];
-            cv::Mat image = cv::imread(task.image_path);
+            auto& task = image_tasks[index];
+            cv::Mat image = task.image;
             if (image.empty())
                 return;
 
@@ -217,7 +224,9 @@ int main(int argc, char* argv[])
             std::vector<SiftGPU::SiftKeypoint> keypoints;
             std::vector<float> descriptors;
             int num_features = extractor.extract(image, keypoints, descriptors);
-
+            task.image.release(); // Free image memory after extraction
+            task.keypoints = std::move(keypoints);
+            task.descriptors = std::move(descriptors);
             auto end = std::chrono::high_resolution_clock::now();
             int exec_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
@@ -228,28 +237,10 @@ int main(int argc, char* argv[])
     // Stage 3: Write IDC files (multi-threaded I/O)
     Stage writeStage("WriteIDC", NUM_IO_THREADS, IO_QUEUE_SIZE,
         [&output_dir, &sift_params, &image_tasks](int index) {
-            const auto& task = image_tasks[index];
+            auto& task = image_tasks[index];
 
-            // Re-extract features (in real implementation, pass data through pipeline)
-            cv::Mat image = cv::imread(task.image_path);
-            if (image.empty())
-                return;
-
-            // For this simplified version, we re-extract
-            // In production, you'd pass FeatureData through the pipeline
-            static thread_local insight::modules::SiftGPUExtractor extractor(sift_params);
-            static thread_local bool initialized = false;
-
-            if (!initialized) {
-                if (!extractor.initialize()) {
-                    LOG(FATAL) << "Failed to initialize SiftGPU for writing";
-                }
-                initialized = true;
-            }
-
-            std::vector<SiftGPU::SiftKeypoint> keypoints;
-            std::vector<float> descriptors;
-            extractor.extract(image, keypoints, descriptors);
+            std::vector<SiftGPU::SiftKeypoint>& keypoints = task.keypoints;
+            std::vector<float>& descriptors = task.descriptors;
 
             // Write IDC file
             std::string output_filename = fs::path(task.image_path).stem().string() + ".isat_feat";
@@ -295,6 +286,10 @@ int main(int argc, char* argv[])
                 LOG(INFO) << "Written features [" << index << "]: " << output_path;
                 std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
             }
+            keypoints.clear();
+            descriptors.clear();
+            keypoints.shrink_to_fit();
+            descriptors.shrink_to_fit();
         });
 
     // Chain stages
@@ -316,7 +311,7 @@ int main(int argc, char* argv[])
             imageLoadStage.push(i);
         }
     });
-    
+
     // Run GPU stage in main thread (OpenGL context requirement)
     siftGPUStage.run();
 
