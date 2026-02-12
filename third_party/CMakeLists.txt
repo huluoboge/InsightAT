@@ -18,6 +18,11 @@ add_subdirectory(ImageIO)
 # SiftGPU for feature extraction
 add_subdirectory(SiftGPU)
 
+# DBow3 for vocabulary tree retrieval
+set(BUILD_UTILS OFF CACHE BOOL "Disable DBow3 utils")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build DBow3 as static library")
+add_subdirectory(DBow3)
+
 list(APPEND directories cereal cmdLine progress stlplus3) 
 foreach(inDirectory ${directories})
 install(

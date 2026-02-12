@@ -38,6 +38,18 @@ set(ALGORITHM_SOURCES
     # Modules - Feature Matching
     modules/matching/sift_matcher.h
     modules/matching/sift_matcher.cpp
+    
+    # Modules - Image Retrieval
+    modules/retrieval/retrieval_types.h
+    modules/retrieval/retrieval_types.cpp
+    modules/retrieval/spatial_retrieval.h
+    modules/retrieval/spatial_retrieval.cpp
+    modules/retrieval/vlad_encoding.h
+    modules/retrieval/vlad_encoding.cpp
+    modules/retrieval/vlad_retrieval.h
+    modules/retrieval/vlad_retrieval.cpp
+    modules/retrieval/vocab_tree_retrieval.h
+    modules/retrieval/vocab_tree_retrieval.cpp
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -54,6 +66,7 @@ target_include_directories(InsightATAlgorithm
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/..
         ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_SOURCE_DIR}/third_party/DBow3/src
 )
 
 target_link_libraries(InsightATAlgorithm
@@ -61,6 +74,7 @@ target_link_libraries(InsightATAlgorithm
         glog::glog
         InsightATDatabase
         ${OpenCV_LIBS}
+        DBoW3
         sift_gpu
         ${GLEW_LIBRARY}
         ${OPENGL_LIBRARIES}
@@ -116,6 +130,7 @@ add_executable(isat_retrieve tools/isat_retrieve.cpp)
 
 target_link_libraries(isat_retrieve
     PRIVATE
+        InsightATAlgorithm
         glog::glog
 )
 
@@ -126,6 +141,43 @@ target_include_directories(isat_retrieve
 )
 
 set_property(TARGET isat_retrieve PROPERTY FOLDER InsightAT/Tools)
+
+# isat_train_vlad - VLAD codebook training tool
+add_executable(isat_train_vlad tools/isat_train_vlad.cpp)
+
+target_link_libraries(isat_train_vlad
+    PRIVATE
+        InsightATAlgorithm
+        glog::glog
+        ${OpenCV_LIBS}
+)
+
+target_include_directories(isat_train_vlad
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET isat_train_vlad PROPERTY FOLDER InsightAT/Tools)
+
+# isat_train_vocab - DBoW3 vocabulary tree training tool
+add_executable(isat_train_vocab tools/isat_train_vocab.cpp)
+
+target_link_libraries(isat_train_vocab
+    PRIVATE
+        InsightATAlgorithm
+        glog::glog
+        ${OpenCV_LIBS}
+        DBoW3
+)
+
+target_include_directories(isat_train_vocab
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET isat_train_vocab PROPERTY FOLDER InsightAT/Tools)
 
 
 # ─────────────────────────────────────────────────────────────
