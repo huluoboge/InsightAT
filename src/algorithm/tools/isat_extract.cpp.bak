@@ -1,0 +1,327 @@
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <glog/logging.h>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <opencv2/opencv.hpp>
+#include <string>
+#include <vector>
+
+#include "../io/idc_writer.h"
+#include "../modules/extraction/sift_gpu_extractor.h"
+#include "task_queue/task_queue.hpp"
+
+namespace fs = std::filesystem;
+using json = nlohmann::json;
+
+struct ImageTask {
+    std::string image_path;
+    cv::Mat image;
+    int camera_id;
+    int index;
+
+    std::vector<SiftGPU::SiftKeypoint> keypoints;
+    std::vector<float> descriptors;
+};
+
+// struct ImageData {
+//     std::string image_path;
+//     int camera_id;
+//     int index;
+// };
+
+struct FeatureData {
+    std::vector<SiftGPU::SiftKeypoint> keypoints;
+    std::vector<float> descriptors;
+    std::string image_path;
+    int camera_id;
+    int index;
+    int execution_time_ms;
+};
+
+void printHelp()
+{
+    std::cout << R"(
+InsightAT Feature Extraction Tool v1.0
+
+USAGE:
+  isat_extract [OPTIONS] -i <image_list.json> -o <output_dir>
+
+OPTIONS:
+  -h, --help              Print this help message
+  -i, --input <file>      Input image list (JSON format)
+  -o, --output <dir>      Output directory for .isat_feat files
+  -n, --nfeatures <int>   Maximum features per image (default: 8000)
+  -t, --threshold <float> Peak threshold (default: 0.04)
+  --octaves <int>         Number of octaves (-1 = auto, default: -1)
+  --levels <int>          Levels per octave (default: 3)
+  --no-adapt              Disable dark image adaptation
+  -v, --verbose           Verbose logging
+  -q, --quiet             Quiet mode (errors only)
+
+INPUT FORMAT (JSON):
+{
+  "images": [
+    {"path": "/data/IMG_0001.jpg", "camera_id": 1},
+    {"path": "/data/IMG_0002.jpg", "camera_id": 1}
+  ]
+}
+
+OUTPUT FORMAT:
+  One .isat_feat file per image (IDC format with JSON header)
+
+EXAMPLE:
+  isat_extract -i images.json -o features/ -n 10000
+)";
+}
+
+bool parseArguments(int argc, char* argv[],
+    std::string& input_file,
+    std::string& output_dir,
+    insight::modules::SiftGPUParams& params,
+    int& log_level)
+{
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+
+        if (arg == "-h" || arg == "--help") {
+            printHelp();
+            return false;
+        } else if (arg == "-i" || arg == "--input") {
+            if (i + 1 < argc)
+                input_file = argv[++i];
+        } else if (arg == "-o" || arg == "--output") {
+            if (i + 1 < argc)
+                output_dir = argv[++i];
+        } else if (arg == "-n" || arg == "--nfeatures") {
+            if (i + 1 < argc)
+                params.nMaxFeatures = std::stoi(argv[++i]);
+        } else if (arg == "-t" || arg == "--threshold") {
+            if (i + 1 < argc)
+                params.dPeak = std::stod(argv[++i]);
+        } else if (arg == "--octaves") {
+            if (i + 1 < argc)
+                params.nOctives = std::stoi(argv[++i]);
+        } else if (arg == "--levels") {
+            if (i + 1 < argc)
+                params.nLevel = std::stoi(argv[++i]);
+        } else if (arg == "--no-adapt") {
+            params.adaptDarkness = false;
+        } else if (arg == "-v" || arg == "--verbose") {
+            log_level = google::INFO;
+        } else if (arg == "-q" || arg == "--quiet") {
+            log_level = google::ERROR;
+        }
+    }
+
+    if (input_file.empty() || output_dir.empty()) {
+        std::cerr << "Error: -i and -o are required\n";
+        printHelp();
+        return false;
+    }
+
+    return true;
+}
+
+std::vector<ImageTask> loadImageList(const std::string& json_path)
+{
+    std::ifstream file(json_path);
+    if (!file.is_open()) {
+        LOG(FATAL) << "Failed to open image list: " << json_path;
+    }
+
+    json j;
+    file >> j;
+
+    std::vector<ImageTask> tasks;
+    int index = 0;
+    for (const auto& img : j["images"]) {
+        ImageTask task;
+        task.image_path = img["path"];
+        task.camera_id = img.value("camera_id", 1);
+        task.index = index++;
+        tasks.push_back(task);
+    }
+
+    LOG(INFO) << "Loaded " << tasks.size() << " images from " << json_path;
+    return tasks;
+}
+
+int main(int argc, char* argv[])
+{
+    // Initialize glog
+    google::InitGoogleLogging(argv[0]);
+    FLAGS_logtostderr = 1;
+    FLAGS_colorlogtostderr = 1;
+
+    // Parse arguments
+    std::string input_file, output_dir;
+    insight::modules::SiftGPUParams sift_params;
+    int log_level = google::WARNING;
+
+    if (!parseArguments(argc, argv, input_file, output_dir, sift_params, log_level)) {
+        return 0;
+    }
+
+    FLAGS_minloglevel = log_level;
+
+    // Create output directory
+    fs::create_directories(output_dir);
+
+    // Load image list
+    std::vector<ImageTask> image_tasks = loadImageList(input_file);
+    int total_images = image_tasks.size();
+
+    if (total_images == 0) {
+        LOG(ERROR) << "No images to process";
+        return 1;
+    }
+
+    // Create pipeline stages
+    const int IO_QUEUE_SIZE = 10;
+    const int GPU_QUEUE_SIZE = 5;
+    const int NUM_IO_THREADS = 4;
+
+    // Stage 1: Image loading (multi-threaded I/O)
+    Stage imageLoadStage("ImageLoad", NUM_IO_THREADS, IO_QUEUE_SIZE,
+        [&image_tasks](int index) {
+            auto& task = image_tasks[index];
+            cv::Mat image = cv::imread(task.image_path);
+            if (image.empty()) {
+                LOG(ERROR) << "Failed to load image: " << task.image_path;
+                return;
+            }
+            LOG(INFO) << "Loaded image [" << index << "]: " << task.image_path
+                      << " (" << image.cols << "x" << image.rows << ")";
+            task.image = image; // Store loaded image in task for next stage
+        });
+
+    // Stage 2: SIFT GPU extraction (single GPU)
+    insight::modules::SiftGPUExtractor extractor(sift_params);
+    if (!extractor.initialize()) {
+        LOG(FATAL) << "Failed to initialize SiftGPU";
+    }
+    StageCurrent siftGPUStage("SiftGPU", 1, GPU_QUEUE_SIZE,
+        [&sift_params, &image_tasks, &extractor](int index) {
+            auto& task = image_tasks[index];
+            cv::Mat image = task.image;
+            if (image.empty())
+                return;
+
+            auto start = std::chrono::high_resolution_clock::now();
+
+            LOG(INFO) << "Starting SIFT extraction for [" << index << "] - image size: " 
+                      << image.cols << "x" << image.rows << ", channels: " << image.channels();
+
+            std::vector<SiftGPU::SiftKeypoint> keypoints;
+            std::vector<float> descriptors;
+            int num_features = extractor.extract(image, keypoints, descriptors);
+            task.image.release(); // Free image memory after extraction
+            task.keypoints = std::move(keypoints);
+            task.descriptors = std::move(descriptors);
+            auto end = std::chrono::high_resolution_clock::now();
+            int exec_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+            if (num_features == 0) {
+                LOG(WARNING) << "No features extracted from [" << index << "] - " << task.image_path;
+            } else {
+                LOG(INFO) << "Extracted " << num_features << " features from [" << index
+                          << "] in " << exec_time << "ms";
+            }
+        });
+
+    // Stage 3: Write IDC files (multi-threaded I/O)
+    Stage writeStage("WriteIDC", NUM_IO_THREADS, IO_QUEUE_SIZE,
+        [&output_dir, &sift_params, &image_tasks](int index) {
+            auto& task = image_tasks[index];
+
+            std::vector<SiftGPU::SiftKeypoint>& keypoints = task.keypoints;
+            std::vector<float>& descriptors = task.descriptors;
+
+            // Write IDC file
+            std::string output_filename = fs::path(task.image_path).stem().string() + ".isat_feat";
+            std::string output_path = fs::path(output_dir) / output_filename;
+
+            insight::io::IDCWriter writer(output_path);
+
+            json params_json;
+            params_json["nfeatures"] = sift_params.nMaxFeatures;
+            params_json["threshold"] = sift_params.dPeak;
+            params_json["octaves"] = sift_params.nOctives;
+            params_json["levels"] = sift_params.nLevel;
+            params_json["adapt_darkness"] = sift_params.adaptDarkness;
+
+            auto metadata = insight::io::createFeatureMetadata(
+                task.image_path,
+                "SIFT_GPU",
+                "1.0",
+                params_json,
+                0);
+
+            writer.setMetadata(metadata);
+
+            // Add keypoints (x, y, scale, orientation)
+            std::vector<float> kpt_data;
+            for (const auto& kp : keypoints) {
+                kpt_data.push_back(kp.x);
+                kpt_data.push_back(kp.y);
+                kpt_data.push_back(kp.s);
+                kpt_data.push_back(kp.o);
+            }
+
+            writer.addBlob("keypoints", kpt_data.data(),
+                kpt_data.size() * sizeof(float),
+                "float32", { (int)keypoints.size(), 4 });
+
+            // Add descriptors
+            writer.addBlob("descriptors", descriptors.data(),
+                descriptors.size() * sizeof(float),
+                "float32", { (int)keypoints.size(), 128 });
+
+            if (writer.write()) {
+                LOG(INFO) << "Written features [" << index << "]: " << output_path;
+                std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
+            }
+            keypoints.clear();
+            descriptors.clear();
+            keypoints.shrink_to_fit();
+            descriptors.shrink_to_fit();
+        });
+
+    // Chain stages
+    chain(imageLoadStage, siftGPUStage);
+    chain(siftGPUStage, writeStage);
+
+    // Set task counts
+    imageLoadStage.setTaskCount(total_images);
+    siftGPUStage.setTaskCount(total_images);
+    writeStage.setTaskCount(total_images);
+
+    // Start processing
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    // IMPORTANT: GPU (OpenGL context) MUST run in main thread
+    // Push tasks in background thread, process GPU in main thread
+    std::thread push_thread([&]() {
+        for (int i = 0; i < total_images; ++i) {
+            imageLoadStage.push(i);
+        }
+    });
+
+    // Run GPU stage in main thread (OpenGL context requirement)
+    siftGPUStage.run();
+
+    // Wait for all stages to complete
+    push_thread.join();
+    imageLoadStage.wait();
+    writeStage.wait();
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+
+    LOG(INFO) << "Feature extraction completed in " << total_time << "s";
+    LOG(INFO) << "Average time per image: " << (float)total_time / total_images << "s";
+
+    return 0;
+}

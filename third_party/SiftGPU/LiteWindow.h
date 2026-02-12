@@ -104,16 +104,21 @@ public:
             return;
         }
         
-        // Create OpenGL context (3.3 Core)
+        // Create OpenGL context (Compatibility profile for SiftGPU)
+        // SiftGPU requires compatibility mode, not core profile
         EGLint ctxAttribs[] = {
-            EGL_CONTEXT_MAJOR_VERSION, 3,
-            EGL_CONTEXT_MINOR_VERSION, 3,
-            EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+            EGL_CONTEXT_MAJOR_VERSION, 2,
+            EGL_CONTEXT_MINOR_VERSION, 1,
             EGL_NONE
         };
         eglContext = eglCreateContext(eglDisplay, eglConfig, EGL_NO_CONTEXT, ctxAttribs);
         if (eglContext == EGL_NO_CONTEXT) {
-            std::cerr << "ERROR: eglCreateContext failed\n";
+            // Fallback: try without version specification
+            EGLint ctxAttribsDefault[] = { EGL_NONE };
+            eglContext = eglCreateContext(eglDisplay, eglConfig, EGL_NO_CONTEXT, ctxAttribsDefault);
+        }
+        if (eglContext == EGL_NO_CONTEXT) {
+            std::cerr << "ERROR: eglCreateContext failed (tried OpenGL 2.1 and default)\n";
             eglDestroySurface(eglDisplay, eglSurface);
             eglTerminate(eglDisplay);
             eglDisplay = EGL_NO_DISPLAY;

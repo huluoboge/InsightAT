@@ -40,12 +40,14 @@ public:
     char c; ///< Option letter (eg 's' for option -s)
     bool used; ///< Does the command line use that option?
     std::string longName; /// Optional long name (eg "switch" for --switch)
+    std::string docString; /// Documentation string for help message
 
     /// Constructor with short name/long name
     Option(char d, std::string name)
         : c(d)
         , used(false)
         , longName(name)
+        , docString("")
     {
     }
     virtual ~Option() = default;
@@ -54,6 +56,15 @@ public:
     virtual void print(std::ostream& os)
     {
     }
+    /// Set documentation string (chainable)
+    Option& doc(const std::string& s) {
+        docString = s;
+        return *this;
+    }
+    /// Get option signature for help
+    virtual std::string signature() const = 0;
+    /// Get documentation for help
+    std::string documentation() const { return docString; }
 };
 
 /// Option on/off is called a switch
@@ -83,12 +94,30 @@ public:
     /// Copy
     Option* clone() const override
     {
-        return new OptionSwitch(c, longName);
+        OptionSwitch* opt = new OptionSwitch(c, longName);
+        opt->docString = docString;
+        return opt;
     }
-    virtual void print(std::ostream& os)
+    void print(std::ostream& os) override
     {
         const char* msg = used ? "true" : "false";
         os << longName << "]: " << msg << std::endl;
+    }
+    /// Get option signature
+    std::string signature() const override
+    {
+        std::string sig;
+        if (c != 0) sig += std::string("-") + c;
+        if (!longName.empty()) {
+            if (!sig.empty()) sig += ", ";
+            sig += "--" + longName;
+        }
+        return sig;
+    }
+    /// Chainable doc() method
+    OptionSwitch& doc(const std::string& s) {
+        Option::doc(s);
+        return *this;
     }
 };
 
@@ -141,12 +170,33 @@ public:
     /// Copy
     Option* clone() const override
     {
-        return new OptionField<T>(c, _field, longName);
+        OptionField<T>* opt = new OptionField<T>(c, _field, longName);
+        opt->docString = docString;
+        return opt;
     }
 
     virtual void print(std::ostream& os)
     {
         os << longName << "]: " << _field << std::endl;
+    }
+    
+    /// Get option signature with type hint
+    std::string signature() const override
+    {
+        std::string sig;
+        if (c != 0) sig += std::string("-") + c;
+        if (!longName.empty()) {
+            if (!sig.empty()) sig += ", ";
+            sig += "--" + longName;
+        }
+        sig += " <value>";
+        return sig;
+    }
+    
+    /// Chainable doc() method
+    OptionField& doc(const std::string& s) {
+        Option::doc(s);
+        return *this;
     }
 
 private:
@@ -178,8 +228,15 @@ inline OptionField<T> make_option(char c, T& field, std::string name = "")
 /// Command line parsing
 class CmdLine {
     std::vector<Option*> opts;
+    std::string programDescription;
 
 public:
+    /// Constructor
+    CmdLine(const std::string& desc = "")
+        : programDescription(desc)
+    {
+    }
+    
     /// Destructor
     ~CmdLine()
     {
@@ -235,6 +292,16 @@ public:
         assert(false); // Called with non-existent option, probably a bug
         return false;
     }
+    
+    /// Was the option (by long name) used in last parsing?
+    bool used(const std::string& name) const
+    {
+        std::vector<Option*>::const_iterator it = opts.begin();
+        for (; it != opts.end(); ++it)
+            if ((*it)->longName == name)
+                return (*it)->used;
+        return false;
+    }
 
     void print(std::ostream& os)
     {
@@ -243,6 +310,42 @@ public:
         for (; it != opts.end(); ++it)
             (*it)->print(os);
         os << "========================" << std::endl;
+    }
+    
+    /// Print help message
+    void printHelp(std::ostream& os, const char* programName) const
+    {
+        if (!programDescription.empty()) {
+            os << programDescription << "\n\n";
+        }
+        os << "Usage: " << programName << " [options]\n\n";
+        os << "Options:\n";
+        
+        std::vector<Option*>::const_iterator it = opts.begin();
+        for (; it != opts.end(); ++it) {
+            std::string sig = (*it)->signature();
+            std::string doc = (*it)->documentation();
+            if (!sig.empty()) {
+                os << "  " << sig;
+                // Align documentation
+                if (sig.length() < 30) {
+                    os << std::string(30 - sig.length(), ' ');
+                } else {
+                    os << "\n" << std::string(32, ' ');
+                }
+                os << doc << "\n";
+            }
+        }
+    }
+    
+    /// Check if help was requested and print if so (returns true if help shown)
+    bool checkHelp(const char* programName)
+    {
+        if (used('h')) {
+            printHelp(std::cout, programName);
+            return true;
+        }
+        return false;
     }
 };
 

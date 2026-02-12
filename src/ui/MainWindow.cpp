@@ -354,6 +354,11 @@ void MainWindow::updateWindowTitle() {
 // ─────────────────────────────────────────────────────
 
 void MainWindow::onNewProject() {
+    // 先保存当前项目（如果有修改）
+    if (!maybeSave()) {
+        return;  // 用户取消了保存操作
+    }
+    
     // 创建新项目对话框
     if (!m_newProjectDialog) {
         m_newProjectDialog = std::make_unique<NewProjectDialog>(this);
@@ -365,7 +370,34 @@ void MainWindow::onNewProject() {
     
     // 显示对话框
     if (m_newProjectDialog->exec() == QDialog::Accepted) {
-        // 项目已创建，现在显示坐标系设置对话框
+        // 立即选择新项目的保存位置
+        QString filePath = QFileDialog::getSaveFileName(this,
+            tr("Save New Project"), "",
+            tr("InsightAT Projects (*.iat);;All Files (*)"));
+        
+        if (filePath.isEmpty()) {
+            // 用户取消了保存位置选择，回退新建操作
+            m_projectDocument->closeProject();
+            return;
+        }
+        
+        // 确保扩展名正确
+        if (!filePath.endsWith(".iat")) {
+            filePath += ".iat";
+        }
+        
+        // 保存新项目
+        if (m_projectDocument->saveProjectAs(filePath)) {
+            m_currentFilePath = filePath;
+            m_statusLabel->setText(tr("New project created and saved: %1").arg(filePath));
+            LOG(INFO) << "New project created and saved: " << filePath.toStdString();
+        } else {
+            QMessageBox::critical(this, tr("Error"), tr("Failed to save new project"));
+            m_projectDocument->closeProject();
+            return;
+        }
+        
+        // 项目已创建并保存，现在显示坐标系设置对话框
         onSetCoordinateSystem();
         
         // 启用编辑菜单项
@@ -384,6 +416,11 @@ void MainWindow::onNewProject() {
 }
 
 void MainWindow::onOpenProject() {
+    // 先保存当前项目（如果有修改）
+    if (!maybeSave()) {
+        return;  // 用户取消了保存操作
+    }
+    
     // 选择文件
     QString filePath = QFileDialog::getOpenFileName(this,
         tr("Open InsightAT Project"), "",
@@ -640,23 +677,44 @@ void MainWindow::showEvent(QShowEvent* event) {
     }
 }
 
-void MainWindow::closeEvent(QCloseEvent* event) {
-    if (m_isModified) {
-        QMessageBox::StandardButton reply = QMessageBox::question(this,
-            tr("Unsaved Changes"),
-            tr("The project has been modified. Do you want to save changes?"),
-            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-        
-        if (reply == QMessageBox::Save) {
-            onSaveProject();
-            event->accept();
-        } else if (reply == QMessageBox::Discard) {
-            event->accept();
+bool MainWindow::maybeSave() {
+    if (!m_projectDocument->isModified()) {
+        return true;  // 没有修改，继续
+    }
+    
+    // 如果有保存路径，直接保存
+    if (!m_currentFilePath.isEmpty()) {
+        if (m_projectDocument->saveProjectAs(m_currentFilePath)) {
+            m_statusLabel->setText(tr("Project saved"));
+            LOG(INFO) << "Project auto-saved before creating new project";
+            return true;
         } else {
-            event->ignore();
+            QMessageBox::critical(this, tr("Error"), tr("Failed to save project"));
+            return false;
         }
+    }
+    
+    // 没有保存路径，询问用户
+    QMessageBox::StandardButton reply = QMessageBox::question(this,
+        tr("Unsaved Changes"),
+        tr("The project has not been saved. Do you want to save it?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    
+    if (reply == QMessageBox::Save) {
+        onSaveProjectAs();
+        return !m_projectDocument->isModified();  // 保存成功才继续
+    } else if (reply == QMessageBox::Discard) {
+        return true;  // 放弃修改，继续
     } else {
+        return false;  // 取消操作
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (maybeSave()) {
         event->accept();
+    } else {
+        event->ignore();
     }
 }
 

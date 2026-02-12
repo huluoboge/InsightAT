@@ -81,6 +81,69 @@ Run tests: `./build/test_project_serialization`
 - **Ceres Solver** – Bundle adjustment optimization (referenced but not directly in core types)
 - **GDAL** – Coordinate system transformations
 - **Glog** – Structured logging
+- **cmdLine** – Enhanced command-line parsing with automatic help generation
+
+## Command-Line Tools Pattern
+
+**Enhanced cmdLine Library** (`third_party/cmdLine/cmdLine.h`):
+- Automatic `-h/--help` support via `.doc()` method on options
+- Supports both short (`-v`) and long (`--verbose`) option names
+- Type-safe option parsing with `make_option<T>()` and `make_switch()`
+- Chainable `.doc()` method for inline documentation
+
+**Standard Usage Pattern**:
+```cpp
+#include "cmdLine/cmdLine.h"
+
+int main(int argc, char* argv[]) {
+    CmdLine cmd("Tool description");
+    
+    std::string input;
+    int count = 100;
+    
+    // Required arguments
+    cmd.add(make_option('i', input, "input")
+        .doc("Input file path"));
+    
+    // Optional parameters
+    cmd.add(make_option('n', count, "count")
+        .doc("Number of items (default: 100)"));
+    
+    // Switches
+    cmd.add(make_switch('v', "verbose")
+        .doc("Enable verbose output"));
+    
+    // Auto-add help
+    cmd.add(make_switch('h', "help")
+        .doc("Show this help message"));
+    
+    try {
+        cmd.process(argc, argv);
+    } catch (const std::string& s) {
+        std::cerr << "Error: " << s << "\n\n";
+        cmd.printHelp(std::cerr, argv[0]);
+        return 1;
+    }
+    
+    if (cmd.checkHelp(argv[0])) return 0;
+    
+    // Validation
+    if (input.empty()) {
+        std::cerr << "Error: -i/--input required\n\n";
+        cmd.printHelp(std::cerr, argv[0]);
+        return 1;
+    }
+    
+    bool verbose = cmd.used('v');
+    // ... tool logic
+}
+```
+
+**Benefits**:
+- Self-documenting: help text lives with option definitions
+- Type-safe: compile-time checking of option types
+- Consistent: all tools follow same pattern
+- Automatic: `checkHelp()` handles `-h/--help` automatically
 
 ## Gotchas
 

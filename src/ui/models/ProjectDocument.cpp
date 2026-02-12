@@ -34,6 +34,9 @@ bool ProjectDocument::newProject(const QString& name, const QString& author,
                                  const QString& description) {
     closeProject();
     
+    // 清除文件路径，新项目未保存到磁盘
+    m_filepath.clear();
+    
     // 初始化新项目
     m_project.name = name.toStdString();
     m_project.author = author.toStdString();

@@ -14,7 +14,7 @@ SET(SIFTGPU_SSE_OPTIONS -march=core2 -mfpmath=sse)
 SET(SIFTGPU_PREFER_GLUT FALSE)
 SET(SIFTGPU_DISABLE_DEVIL TRUE)
 
-# EGL headless rendering (default for Linux, Docker-friendly)
+# EGL headless rendering (now fixed for SiftGPU compatibility)
 option(SIFTGPU_USE_EGL "Use EGL for headless rendering (Linux default)" ON)
 
 
@@ -122,6 +122,7 @@ endif(IS_GNU)
 
 # Link libraries
 target_link_libraries(sift_gpu
+    ${LIBS_SIFTGPU}         # Add platform-specific libs (X11, glut, etc.)
     ${SIFT_GPU_LIBRARIES}
     ${GLEW_LIBRARIES}
     ${OPENGL_LIBRARIES}

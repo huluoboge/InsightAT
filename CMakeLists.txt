@@ -48,11 +48,6 @@ if(IS_GNU)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-maybe-uninitialized")
 endif()
 
-# Set build path
-set(EXECUTABLE_OUTPUT_PATH "${PROJECT_BINARY_DIR}")
-set(LIBRARY_OUTPUT_PATH "${PROJECT_BINARY_DIR}")
-
-message(STATUS "library save to : ${LIBRARY_OUTPUT_PATH}")
 
 
 # ==============================================================================
@@ -61,8 +56,13 @@ message(STATUS "library save to : ${LIBRARY_OUTPUT_PATH}")
 set(CMAKE_MODULE_PATH
     ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmakeFindModules)
 # include(OptimizeForArchitecture)
-# include(CMakeHelper)
-
+include(CMakeHelper)
+set(INSIGHTMAP_DEFINITIONS "")
+MACRO(register_definitions DEF)
+add_definitions(${DEF})
+string(REPLACE "-D" "" STRIPPED_DEF ${DEF})
+list(APPEND INSIGHTMAP_DEFINITIONS ${STRIPPED_DEF})
+ENDMACRO()
 # add_definitions(-DVL_DISABLE_SSE2)
 #ceres maybe crash if use ceres with eigen sse optimize
 #AutodetectHostArchitecture()

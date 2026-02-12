@@ -24,10 +24,20 @@ set(ALGORITHM_SOURCES
     # I/O
     io/idc_writer.h
     io/idc_writer.cpp
+    io/idc_reader.h
+    io/idc_reader.cpp
     
     # Modules - Feature Extraction
     modules/extraction/sift_gpu_extractor.h
     modules/extraction/sift_gpu_extractor.cpp
+    modules/extraction/feature_distribution.h
+    modules/extraction/feature_distribution.cpp
+    modules/extraction/KeyPointsNode.h
+    modules/extraction/KeyPointsNode.cpp
+    
+    # Modules - Feature Matching
+    modules/matching/sift_matcher.h
+    modules/matching/sift_matcher.cpp
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -80,6 +90,43 @@ target_include_directories(isat_extract
 )
 
 set_property(TARGET isat_extract PROPERTY FOLDER InsightAT/Tools)
+
+# isat_match - Feature matching tool
+add_executable(isat_match tools/isat_match.cpp)
+
+target_link_libraries(isat_match
+    PRIVATE
+        InsightATAlgorithm
+        glog::glog
+        sift_gpu
+        ${GLEW_LIBRARY}
+        ${OPENGL_LIBRARIES}
+)
+
+target_include_directories(isat_match
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET isat_match PROPERTY FOLDER InsightAT/Tools)
+
+# isat_retrieve - Image pair retrieval tool
+add_executable(isat_retrieve tools/isat_retrieve.cpp)
+
+target_link_libraries(isat_retrieve
+    PRIVATE
+        glog::glog
+)
+
+target_include_directories(isat_retrieve
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET isat_retrieve PROPERTY FOLDER InsightAT/Tools)
+
 
 # ─────────────────────────────────────────────────────────────
 # CameraEstimator 独立进程工具

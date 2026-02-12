@@ -246,6 +246,12 @@ private:
     void saveSettings();
     
     /**
+     * 保存当前项目（如果有修改）
+     * @return true 如果用户选择保存或放弃，false 如果用户取消
+     */
+    bool maybeSave();
+    
+    /**
      * 更新窗口标题
      */
     void updateWindowTitle();
