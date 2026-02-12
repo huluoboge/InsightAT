@@ -1,4 +1,11 @@
 {
     "editor.fontSize": 22,
-    "chat.agent.maxRequests": 50
+    "chat.agent.maxRequests": 50,
+    
+    // GitHub Copilot 聊天历史设置
+    "github.copilot.chat.history.enabled": true,
+    "github.copilot.chat.history.maxEntries": 100,
+    
+    // 启用聊天上下文保持
+    "github.copilot.chat.persistHistory": true
 }
