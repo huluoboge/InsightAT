@@ -1,6 +1,7 @@
 #pragma once
 
 #include "retrieval_types.h"
+#include "pca_whitening.h"
 #include <string>
 #include <vector>
 
@@ -16,13 +17,21 @@ namespace insight::algorithm::retrieval {
  * @param options Retrieval configuration (vlad_clusters, top_k)
  * @param centroids Pre-trained k-means centroids [K x 128]
  * @param cache_dir Directory for .isat_vlad cache files (optional)
+ * @param pca_model Optional PCA model for dimensionality reduction
+ * @param scale_weighted Enable scale-weighted VLAD encoding
+ * @param target_scale Target scale for weighting (default: 4.0)
+ * @param scale_sigma Gaussian sigma for scale weighting (default: 2.0)
  * @return Image pairs sorted by visual similarity (lower distance = higher score)
  */
 std::vector<ImagePair> retrieveByVLAD(
     const std::vector<ImageInfo>& images,
     const RetrievalOptions& options,
     const std::vector<float>& centroids,
-    const std::string& cache_dir = ""
+    const std::string& cache_dir = "",
+    const PCAModel* pca_model = nullptr,
+    bool scale_weighted = false,
+    float target_scale = 4.0f,
+    float scale_sigma = 2.0f
 );
 
 /**

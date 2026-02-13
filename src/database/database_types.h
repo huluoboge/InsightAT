@@ -19,34 +19,7 @@
 #include <vector>
 #include <map>
 #include <cereal/cereal.hpp>
-
-// ─────────────────────────────────────────────────────────────
-// Cereal support for std::optional
-// ─────────────────────────────────────────────────────────────
-namespace cereal {
-    // Cereal 对 std::optional 的序列化支持
-    template <class Archive, class T>
-    void save(Archive& ar, const std::optional<T>& opt) {
-        if (opt.has_value()) {
-            ar(true, *opt);
-        } else {
-            ar(false);
-        }
-    }
-
-    template <class Archive, class T>
-    void load(Archive& ar, std::optional<T>& opt) {
-        bool has_value;
-        ar(has_value);
-        if (has_value) {
-            T value;
-            ar(value);
-            opt = value;
-        } else {
-            opt = std::nullopt;
-        }
-    }
-}  // namespace cereal
+#include <cereal/types/optional.hpp>  // Use cereal's built-in optional support
 
 namespace insight {
 namespace database {

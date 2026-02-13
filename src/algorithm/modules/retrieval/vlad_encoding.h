@@ -53,6 +53,45 @@ std::vector<float> encodeVLAD(
 );
 
 /**
+ * @brief Compute scale-dependent weight for VLAD encoding
+ * @param scale Feature scale (KeyPoint.size / 2)
+ * @param target_scale Target scale center (default: 4.0)
+ * @param sigma Gaussian width (default: 2.0)
+ * @return Weight in [0, 1]
+ */
+float computeScaleWeight(
+    float scale,
+    float target_scale = 4.0f,
+    float sigma = 2.0f
+);
+
+/**
+ * @brief Extract scale information from keypoints
+ * @param keypoints Keypoint array [N x 4] (x, y, scale, orientation)
+ * @return Scale values [N]
+ */
+std::vector<float> extractScales(const std::vector<float>& keypoints);
+
+/**
+ * @brief Encode image features as scale-weighted VLAD vector
+ * @param descriptors Input descriptors [N x 128]
+ * @param scales Feature scales [N]
+ * @param centroids Cluster centroids [K x 128]
+ * @param num_clusters Number of clusters K
+ * @param target_scale Target scale center (default: 4.0)
+ * @param sigma Gaussian width (default: 2.0)
+ * @return VLAD vector [K x 128] as flat vector, L2-normalized
+ */
+std::vector<float> encodeVLADScaleWeighted(
+    const std::vector<float>& descriptors,
+    const std::vector<float>& scales,
+    const std::vector<float>& centroids,
+    int num_clusters,
+    float target_scale = 4.0f,
+    float sigma = 2.0f
+);
+
+/**
  * @brief L2 normalize a vector in-place
  * @param vec Vector to normalize
  */
@@ -94,6 +133,9 @@ bool saveVLADCache(
  * @param centroids k-means centroids [K x 128]
  * @param num_clusters Number of clusters K
  * @param force_recompute Force recomputation even if cache exists
+ * @param scale_weighted Enable scale-weighted VLAD encoding
+ * @param target_scale Target scale center for weighting (default: 4.0)
+ * @param scale_sigma Gaussian width for scale weighting (default: 2.0)
  * @return VLAD vector [K x 128]
  */
 std::vector<float> loadOrComputeVLAD(
@@ -101,7 +143,10 @@ std::vector<float> loadOrComputeVLAD(
     const std::string& cache_file,
     const std::vector<float>& centroids,
     int num_clusters,
-    bool force_recompute = false
+    bool force_recompute = false,
+    bool scale_weighted = false,
+    float target_scale = 4.0f,
+    float scale_sigma = 2.0f
 );
 
 }  // namespace retrieval

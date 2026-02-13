@@ -122,6 +122,71 @@ bool SiftGPUExtractor::initialize()
     return true;
 }
 
+bool SiftGPUExtractor::reconfigure(const SiftGPUParams& new_params)
+{
+    if (!initialized_) {
+        LOG(ERROR) << "Cannot reconfigure: SiftGPU not initialized";
+        return false;
+    }
+    
+    // Update stored parameters
+    params_ = new_params;
+    
+    // Rebuild parameter strings
+    char strOcFrom[10];
+    char strNOctave[10];
+    char strNLevel[10];
+    char strPeak[10];
+    char strMaxFeatures[10];
+    
+    sprintf(strOcFrom, "%d", new_params.nOctiveFrom);
+    sprintf(strNOctave, "%d", new_params.nOctives);
+    sprintf(strNLevel, "%d", new_params.nLevel);
+    sprintf(strPeak, "%f", new_params.dPeak / new_params.nLevel);
+    sprintf(strMaxFeatures, "%d", new_params.nMaxFeatures);
+    
+    const char* argv[100] = { 0 };
+    int ii = 0;
+    argv[ii++] = "-v";
+    argv[ii++] = "0";
+    argv[ii++] = "-fo";
+    argv[ii++] = strOcFrom;
+    argv[ii++] = "-t";
+    argv[ii++] = strPeak;
+    argv[ii++] = "-d";
+    argv[ii++] = strNLevel;
+    argv[ii++] = "-w";
+    argv[ii++] = "3";
+    
+    if (new_params.nOctives != -1) {
+        argv[ii++] = "-no";
+        argv[ii++] = strNOctave;
+    }
+    
+    if (new_params.nMaxFeatures != -1) {
+        // Select truncate method:
+        // -tc  (0): Keep highest levels (large-scale stable features) - delete after extraction
+        // -tc2 (1): Keep highest levels (large-scale stable features) - faster, stop during extraction  
+        // -tc3 (2): Keep lowest levels (small-scale dense features)
+        switch (new_params.truncateMethod) {
+            case 1:  argv[ii++] = "-tc2"; break;
+            case 2:  argv[ii++] = "-tc3"; break;
+            default: argv[ii++] = "-tc";  break;  // Method 0 (default)
+        }
+        argv[ii++] = strMaxFeatures;
+    }
+    
+    if (new_params.adaptDarkness) {
+        argv[ii++] = "-da";
+    }
+    
+    // Reconfigure existing SiftGPU instance
+    sift_gpu_->ParseParam(ii, argv);
+    
+    LOG(INFO) << "SiftGPU reconfigured: nMaxFeatures=" << new_params.nMaxFeatures;
+    return true;
+}
+
 int SiftGPUExtractor::extract(const cv::Mat& image,
                                std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                std::vector<float>& descriptors)
@@ -205,7 +270,12 @@ SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::createSiftGPU(const SiftGPUParams
     }
     
     if (param.nMaxFeatures != -1) {
-        argv[ii++] = "-tc2";
+        // -tc (0): Keep highest levels (large-scale), -tc2 (1): Same but faster, -tc3 (2): Keep lowest levels (small-scale)
+        switch (param.truncateMethod) {
+            case 1:  argv[ii++] = "-tc2"; break;
+            case 2:  argv[ii++] = "-tc3"; break;
+            default: argv[ii++] = "-tc";  break;  // Method 0 (default)
+        }
         argv[ii++] = strMaxFeatures;
     }
     

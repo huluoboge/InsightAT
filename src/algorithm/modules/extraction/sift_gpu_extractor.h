@@ -36,6 +36,11 @@ struct SiftGPUParams {
     double dPeak = 0.02;         // Peak threshold (divided by nLevel)
     int nMaxFeatures = 8000;     // Maximum features to extract
     bool adaptDarkness = true;   // Adapt to dark images
+    // Feature truncation method:
+    //   0 = -tc  (keep highest levels: large-scale stable features, delete after extraction)
+    //   1 = -tc2 (keep highest levels: large-scale stable features, faster - stop during extraction)
+    //   2 = -tc3 (keep lowest levels: small-scale dense features)
+    int truncateMethod = 0;
 };
 
 /**
@@ -53,6 +58,10 @@ public:
     
     // Initialize GPU context (must be called before extract)
     bool initialize();
+    
+    // Reconfigure SIFT parameters (for dual-output mode)
+    // WARNING: SiftGPU uses global state, so reconfiguration affects the instance
+    bool reconfigure(const SiftGPUParams& new_params);
     
     // Extract features from image (returns float descriptors only)
     // Returns number of features extracted

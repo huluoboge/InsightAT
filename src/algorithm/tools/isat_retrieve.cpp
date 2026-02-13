@@ -10,10 +10,12 @@
 #include <map>
 
 #include "cmdLine/cmdLine.h"
+#include "stlplus3/filesystemSimplified/file_system.hpp"
 #include "../modules/retrieval/retrieval_types.h"
 #include "../modules/retrieval/spatial_retrieval.h"
 #include "../modules/retrieval/vlad_retrieval.h"
 #include "../modules/retrieval/vocab_tree_retrieval.h"
+#include "../modules/retrieval/pca_whitening.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -143,6 +145,26 @@ std::vector<ImageInfo> loadImagesFromFeatures(const std::string& feature_dir) {
 
 /**
  * Load images from JSON list (with optional GNSS/IMU data)
+ * 
+ * Expected JSON format:
+ * {
+ *   "images": [
+ *     {
+ *       "id": 1,                    // Unique image ID (required)
+ *       "path": "/path/to/img.jpg", // Image file path (required)
+ *       "camera_id": 1,             // Camera ID (optional, default: 1)
+ *       "gnss": {                   // Optional GNSS data
+ *         "x": 123.456, "y": 789.012, "z": 10.5,
+ *         "cov_xx": 0.1, "cov_yy": 0.1, "cov_zz": 0.2,
+ *         "num_satellites": 12, "hdop": 0.8
+ *       },
+ *       "imu": {                    // Optional IMU data (degrees)
+ *         "roll": 0.5, "pitch": -1.2, "yaw": 45.3,
+ *         "cov_att_xx": 0.1, "cov_att_yy": 0.1, "cov_att_zz": 0.1
+ *       }
+ *     }
+ *   ]
+ * }
  */
 std::vector<ImageInfo> loadImagesFromJSON(const std::string& json_path, 
                                          const std::string& feature_dir) {
@@ -158,14 +180,25 @@ std::vector<ImageInfo> loadImagesFromJSON(const std::string& json_path,
     
     for (const auto& img : j["images"]) {
         ImageInfo info;
+        
+        // Read image ID (required, unique identifier)
+        if (!img.contains("id")) {
+            LOG(ERROR) << "Image entry missing required 'id' field, skipping";
+            continue;
+        }
+        info.image_id = std::to_string(img["id"].get<int>());
+        
+        // Read image path (required)
+        if (!img.contains("path")) {
+            LOG(ERROR) << "Image entry missing required 'path' field for ID " << info.image_id;
+            continue;
+        }
         info.image_path = img["path"];
+        
+        // Camera ID (optional, default: 1)
         info.camera_id = img.value("camera_id", 1);
         
-        // Extract image ID from path
-        fs::path img_path(info.image_path);
-        info.image_id = img_path.stem().string();
-        
-        // Construct feature file path
+        // Construct feature file path using image_id (NOT filename!)
         info.feature_file = feature_dir + "/" + info.image_id + ".isat_feat";
         
         // Check if feature file exists
@@ -382,7 +415,10 @@ int main(int argc, char* argv[]) {
     // VLAD visual retrieval options
     std::string vlad_codebook;
     std::string vlad_cache_dir;
+    std::string pca_model_file;
     int vlad_top_k = 20;
+    float target_scale = 4.0f;
+    float scale_sigma = 2.0f;
     
     // Vocabulary tree retrieval options
     std::string vocab_file;
@@ -420,6 +456,14 @@ int main(int argc, char* argv[]) {
         .doc("Directory for VLAD vector cache (.isat_vlad files)"));
     cmd.add(make_option(0, vlad_top_k, "vlad-top-k")
         .doc("Top-k most similar images per query for VLAD (default: 20)"));
+    cmd.add(make_option(0, pca_model_file, "pca-model")
+        .doc("PCA model file (.pca format) for VLAD dimensionality reduction"));
+    cmd.add(make_option(0, target_scale, "vlad-target-scale")
+        .doc("Target scale for VLAD weighting (default: 4.0)"));
+    cmd.add(make_option(0, scale_sigma, "vlad-scale-sigma")
+        .doc("Gaussian sigma for VLAD scale weighting (default: 2.0)"));
+    cmd.add(make_switch(0, "vlad-scale-weighted")
+        .doc("Enable scale-weighted VLAD encoding"));
     
     // Vocabulary tree retrieval options
     cmd.add(make_option(0, vocab_file, "vocab-file")
@@ -511,6 +555,7 @@ int main(int argc, char* argv[]) {
     
     // Load VLAD centroids if needed
     std::vector<float> vlad_centroids;
+    PCAModel pca_model;
     
     if (vlad_enabled) {
         if (vlad_codebook.empty()) {
@@ -529,6 +574,17 @@ int main(int argc, char* argv[]) {
         LOG(INFO) << "Loaded VLAD codebook: " << num_clusters << " clusters";
         options.vlad_clusters = num_clusters;
         options.top_k = vlad_top_k;
+        
+        // Load PCA model if provided
+        if (!pca_model_file.empty()) {
+            pca_model = PCAModel::load(pca_model_file);
+            if (!pca_model.isValid()) {
+                LOG(ERROR) << "Failed to load PCA model from " << pca_model_file;
+                return 1;
+            }
+            LOG(INFO) << "Loaded PCA model: " << pca_model.input_dim 
+                      << " -> " << pca_model.n_components << " dimensions";
+        }
     }
     
     // Validate vocabulary tree file if needed
@@ -550,11 +606,25 @@ int main(int argc, char* argv[]) {
     // Create dynamic strategy registry (extends static STRATEGIES with VLAD/vocab tree)
     auto strategies = STRATEGIES;  // Copy static registry
     if (vlad_enabled) {
-        strategies["vlad"] = [&vlad_centroids, &vlad_cache_dir](
+        // Only pass cache_dir if it's not empty (avoid cache write errors)
+        if(!vlad_cache_dir.empty()){
+            stlplus::folder_create(vlad_cache_dir);
+        }
+        std::string cache_path = vlad_cache_dir.empty() ? "" : vlad_cache_dir;
+        
+        // Capture pca_model by pointer to pass to retrieveByVLAD
+        const PCAModel* pca_ptr = pca_model.isValid() ? &pca_model : nullptr;
+        
+        // Capture scale weighting parameters
+        bool use_scale_weighting = cmd.used("vlad-scale-weighted");
+        
+        strategies["vlad"] = [&vlad_centroids, cache_path, pca_ptr, use_scale_weighting, 
+                              target_scale, scale_sigma](
             const std::vector<ImageInfo>& imgs,
             const RetrievalOptions& opts
         ) -> std::vector<ImagePair> {
-            return retrieveByVLAD(imgs, opts, vlad_centroids, vlad_cache_dir);
+            return retrieveByVLAD(imgs, opts, vlad_centroids, cache_path, pca_ptr,
+                                 use_scale_weighting, target_scale, scale_sigma);
         };
     }
     if (vocab_enabled) {
@@ -589,6 +659,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         pairs = it->second(images, options);
+        // Deduplicate pairs (VLAD/vocab may produce A->B and B->A)
+        pairs = combinePairs({pairs}, true);
     } else {
         // Combined strategies
         std::vector<std::vector<ImagePair>> all_pairs;

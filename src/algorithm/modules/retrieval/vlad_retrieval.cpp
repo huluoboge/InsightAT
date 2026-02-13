@@ -1,5 +1,6 @@
 #include "vlad_retrieval.h"
 #include "vlad_encoding.h"
+#include "pca_whitening.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,7 +66,11 @@ std::vector<ImagePair> retrieveByVLAD(
     const std::vector<ImageInfo>& images,
     const RetrievalOptions& options,
     const std::vector<float>& centroids,
-    const std::string& cache_dir
+    const std::string& cache_dir,
+    const PCAModel* pca_model,
+    bool scale_weighted,
+    float target_scale,
+    float scale_sigma
 ) {
     if (images.empty()) {
         LOG(WARNING) << "No images provided for VLAD retrieval";
@@ -87,8 +92,19 @@ std::vector<ImagePair> retrieveByVLAD(
         return {};
     }
     
+    bool use_pca = (pca_model != nullptr && pca_model->isValid());
+    int final_dim = use_pca ? pca_model->n_components : (num_clusters * descriptor_dim);
+    
     LOG(INFO) << "VLAD retrieval: " << images.size() << " images, "
               << num_clusters << " clusters, top-k=" << options.top_k;
+    if (use_pca) {
+        LOG(INFO) << "PCA enabled: " << (num_clusters * descriptor_dim) 
+                  << " -> " << final_dim << " dimensions";
+    }
+    if (scale_weighted) {
+        LOG(INFO) << "Scale weighting enabled: target=" << target_scale 
+                  << ", sigma=" << scale_sigma;
+    }
     
     // Load or compute VLAD vectors for all images
     std::vector<std::vector<float>> vlad_vectors;
@@ -110,12 +126,24 @@ std::vector<ImagePair> retrieveByVLAD(
             cache_file,
             centroids,
             num_clusters,
-            false  // use cache if available
+            false,  // use cache if available
+            scale_weighted,
+            target_scale,
+            scale_sigma
         );
         
         if (vlad.empty()) {
             LOG(WARNING) << "Failed to compute VLAD for " << img.image_id;
             vlad.resize(num_clusters * descriptor_dim, 0.0f);
+        }
+        
+        // Apply PCA if provided
+        if (use_pca) {
+            vlad = applyPCA(vlad, *pca_model);
+            if (vlad.empty() || vlad.size() != static_cast<size_t>(final_dim)) {
+                LOG(WARNING) << "PCA transformation failed for " << img.image_id;
+                vlad.resize(final_dim, 0.0f);
+            }
         }
         
         vlad_vectors.push_back(std::move(vlad));

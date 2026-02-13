@@ -48,6 +48,8 @@ set(ALGORITHM_SOURCES
     modules/retrieval/vlad_encoding.cpp
     modules/retrieval/vlad_retrieval.h
     modules/retrieval/vlad_retrieval.cpp
+    modules/retrieval/pca_whitening.h
+    modules/retrieval/pca_whitening.cpp
     modules/retrieval/vocab_tree_retrieval.h
     modules/retrieval/vocab_tree_retrieval.cpp
 )
@@ -132,6 +134,7 @@ target_link_libraries(isat_retrieve
     PRIVATE
         InsightATAlgorithm
         glog::glog
+        stlplus3
 )
 
 target_include_directories(isat_retrieve
@@ -178,6 +181,23 @@ target_include_directories(isat_train_vocab
 )
 
 set_property(TARGET isat_train_vocab PROPERTY FOLDER InsightAT/Tools)
+
+# export_project_json - Export Project to CLI-compatible JSON format
+add_executable(export_project_json tools/export_project_json.cpp)
+
+target_link_libraries(export_project_json
+    PRIVATE
+        InsightATDatabase
+        glog::glog
+)
+
+target_include_directories(export_project_json
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET export_project_json PROPERTY FOLDER InsightAT/Tools)
 
 
 # ─────────────────────────────────────────────────────────────

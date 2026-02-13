@@ -1,0 +1,64 @@
+{
+  "$schema": "InsightAT Image List Format v2.0",
+  "description": "Image list with unique IDs, GNSS, and IMU data",
+  "images": [
+    {
+      "id": 1,
+      "path": "/abs/path/to/images/DSC_0001.JPG",
+      "camera_id": 1,
+      "gnss": {
+        "x": 500123.456,
+        "y": 4500789.012,
+        "z": 125.5,
+        "cov_xx": 0.1,
+        "cov_yy": 0.1,
+        "cov_zz": 0.2,
+        "cov_xy": 0.0,
+        "cov_xz": 0.0,
+        "cov_yz": 0.0,
+        "num_satellites": 12,
+        "hdop": 0.8,
+        "vdop": 1.2
+      },
+      "imu": {
+        "roll": 0.5,
+        "pitch": -1.2,
+        "yaw": 45.3,
+        "cov_att_xx": 0.1,
+        "cov_att_yy": 0.1,
+        "cov_att_zz": 0.1
+      }
+    },
+    {
+      "id": 2,
+      "path": "/abs/path/to/images/DSC_0002.JPG",
+      "camera_id": 1,
+      "gnss": {
+        "x": 500125.678,
+        "y": 4500790.234,
+        "z": 125.8,
+        "cov_xx": 0.1,
+        "cov_yy": 0.1,
+        "cov_zz": 0.2,
+        "num_satellites": 10,
+        "hdop": 1.0
+      },
+      "imu": {
+        "roll": 0.6,
+        "pitch": -1.1,
+        "yaw": 46.1
+      }
+    },
+    {
+      "id": 3,
+      "path": "/abs/path/to/images/DSC_0003.JPG",
+      "camera_id": 2
+    }
+  ],
+  "metadata": {
+    "format_version": "2.0",
+    "coordinate_system": "EPSG:32649",
+    "angle_unit": "degrees",
+    "comments": "GNSS in UTM Zone 49N, IMU angles in degrees (converted to radians internally)"
+  }
+}

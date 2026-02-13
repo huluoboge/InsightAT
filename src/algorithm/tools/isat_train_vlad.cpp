@@ -10,6 +10,7 @@
 
 #include "cmdLine/cmdLine.h"
 #include "../modules/retrieval/vlad_encoding.h"
+#include "../modules/retrieval/pca_whitening.h"
 #include "../io/idc_reader.h"
 #include "../modules/matching/match_types.h"
 
@@ -46,10 +47,11 @@ std::vector<float> sampleDescriptorsMultiFile(
         if (dtype == "float32") {
             descriptors = reader.readBlob<float>("descriptors");
         } else if (dtype == "uint8") {
+            // uint8 descriptors were scaled by 512 during storage, need to reverse
             auto desc_uint8 = reader.readBlob<uint8_t>("descriptors");
             descriptors.resize(desc_uint8.size());
             for (size_t i = 0; i < desc_uint8.size(); ++i) {
-                descriptors[i] = static_cast<float>(desc_uint8[i]);
+                descriptors[i] = static_cast<float>(desc_uint8[i]) / 512.0f;
             }
         } else {
             LOG(WARNING) << "Unsupported descriptor type in " << file;
@@ -171,10 +173,14 @@ int main(int argc, char* argv[]) {
     
     std::string feature_dir;
     std::string output_file;
+    std::string pca_output_file;
     int num_clusters = 64;
     int max_descriptors = 1000000;
     int max_per_image = 500;
     int max_iterations = 100;
+    int pca_dims = 256;
+    float target_scale = 4.0f;
+    float scale_sigma = 2.0f;
     
     // Required arguments
     cmd.add(make_option('f', feature_dir, "features")
@@ -191,6 +197,24 @@ int main(int argc, char* argv[]) {
         .doc("Maximum descriptors per image (default: 500)"));
     cmd.add(make_option('i', max_iterations, "iterations")
         .doc("k-means max iterations (default: 100)"));
+    
+    // PCA parameters
+    cmd.add(make_option('P', pca_output_file, "pca-output")
+        .doc("Output PCA model file (.pca format, optional)"));
+    cmd.add(make_option('d', pca_dims, "pca-dims")
+        .doc("PCA output dimensions (default: 256)"));
+    
+    // Scale weighting parameters
+    cmd.add(make_option('t', target_scale, "target-scale")
+        .doc("Target scale for weighting (default: 4.0)"));
+    cmd.add(make_option('s', scale_sigma, "scale-sigma")
+        .doc("Gaussian sigma for scale weighting (default: 2.0)"));
+    
+    // Switches
+    cmd.add(make_switch('w', "whiten")
+        .doc("Enable PCA whitening (variance normalization)"));
+    cmd.add(make_switch('S', "scale-weighted")
+        .doc("Enable scale-weighted VLAD encoding"));
     
     // Logging options
     cmd.add(make_switch('v', "verbose")
@@ -317,6 +341,136 @@ int main(int argc, char* argv[]) {
     
     LOG(INFO) << "Saved codebook to " << output_file;
     
+    // ========================================================================
+    // PCA Training (Optional)
+    // ========================================================================
+    
+    bool enable_pca = !pca_output_file.empty();
+    bool enable_whiten = cmd.used('w');
+    int vlad_dim = num_clusters * 128;  // VLAD dimension
+    
+    if (enable_pca) {
+        LOG(INFO) << "=== PCA Training ===";
+        LOG(INFO) << "PCA output: " << pca_output_file;
+        LOG(INFO) << "PCA dimensions: " << pca_dims;
+        LOG(INFO) << "Whitening: " << (enable_whiten ? "enabled" : "disabled");
+        
+        // Encode all feature files as VLAD vectors
+        LOG(INFO) << "Encoding VLAD vectors from " << feature_files.size() << " files...";
+        
+        std::vector<float> all_vlad_vectors;
+        int num_encoded = 0;
+        
+        auto start_encode = std::chrono::high_resolution_clock::now();
+        
+        for (size_t i = 0; i < feature_files.size(); ++i) {
+            const auto& file = feature_files[i];
+            
+            // Read descriptors
+            IDCReader reader(file);
+            if (!reader.isValid()) {
+                LOG(WARNING) << "Skipping invalid file: " << file;
+                continue;
+            }
+            
+            auto desc_blob = reader.getBlobDescriptor("descriptors");
+            std::string dtype = desc_blob["dtype"];
+            
+            std::vector<float> desc;
+            if (dtype == "float32") {
+                desc = reader.readBlob<float>("descriptors");
+            } else if (dtype == "uint8") {
+                auto desc_uint8 = reader.readBlob<uint8_t>("descriptors");
+                desc.resize(desc_uint8.size());
+                for (size_t j = 0; j < desc_uint8.size(); ++j) {
+                    desc[j] = static_cast<float>(desc_uint8[j]) / 512.0f;
+                }
+            } else {
+                LOG(WARNING) << "Unsupported descriptor type in " << file;
+                continue;
+            }
+            
+            if (desc.empty()) {
+                LOG(WARNING) << "No descriptors in " << file;
+                continue;
+            }
+            
+            // Encode VLAD (with or without scale weighting)
+            std::vector<float> vlad;
+            if (cmd.used('S')) {
+                // Load keypoints for scale weighting
+                auto keypoints = reader.readBlob<float>("keypoints");
+                if (keypoints.empty()) {
+                    LOG(WARNING) << "No keypoints for scale weighting in " << file;
+                    continue;
+                }
+                
+                auto scales = extractScales(keypoints);
+                if (scales.empty()) {
+                    LOG(WARNING) << "Failed to extract scales from " << file;
+                    continue;
+                }
+                
+                vlad = encodeVLADScaleWeighted(desc, scales, centroids, 
+                                               num_clusters, target_scale, scale_sigma);
+            } else {
+                vlad = encodeVLAD(desc, centroids, num_clusters);
+            }
+            
+            if (vlad.size() != static_cast<size_t>(vlad_dim)) {
+                LOG(WARNING) << "VLAD encoding failed for " << file;
+                continue;
+            }
+            
+            all_vlad_vectors.insert(all_vlad_vectors.end(), vlad.begin(), vlad.end());
+            num_encoded++;
+            
+            if ((i + 1) % 100 == 0 || i == feature_files.size() - 1) {
+                LOG(INFO) << "Encoded " << (i + 1) << "/" << feature_files.size() << " files";
+            }
+        }
+        
+        auto end_encode = std::chrono::high_resolution_clock::now();
+        auto encode_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            end_encode - start_encode).count();
+        
+        LOG(INFO) << "Encoded " << num_encoded << " VLAD vectors in " << encode_ms << "ms";
+        
+        if (num_encoded == 0) {
+            LOG(ERROR) << "No VLAD vectors encoded, PCA training aborted";
+            return 1;
+        }
+        
+        // Train PCA
+        LOG(INFO) << "Training PCA model...";
+        auto pca_model = trainPCA(
+            all_vlad_vectors,
+            num_encoded,
+            vlad_dim,
+            pca_dims,
+            enable_whiten
+        );
+        
+        auto end_pca = std::chrono::high_resolution_clock::now();
+        auto pca_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            end_pca - end_encode).count();
+        
+        if (!pca_model.isValid()) {
+            LOG(ERROR) << "PCA training failed";
+            return 1;
+        }
+        
+        LOG(INFO) << "PCA training complete in " << pca_ms << "ms";
+        
+        // Save PCA model
+        if (!pca_model.save(pca_output_file)) {
+            LOG(ERROR) << "Failed to save PCA model to " << pca_output_file;
+            return 1;
+        }
+        
+        LOG(INFO) << "Saved PCA model to " << pca_output_file;
+    }
+    
     auto end_total = std::chrono::high_resolution_clock::now();
     auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_total - start).count();
@@ -325,6 +479,10 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "Total time: " << total_ms << "ms";
     LOG(INFO) << "Clusters: " << num_clusters;
     LOG(INFO) << "Training samples: " << total_sampled;
+    if (enable_pca) {
+        LOG(INFO) << "PCA dimensions: " << vlad_dim << " -> " << pca_dims;
+        LOG(INFO) << "Compression ratio: " << (static_cast<float>(vlad_dim) / pca_dims) << "x";
+    }
     
     return 0;
 }
