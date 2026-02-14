@@ -226,7 +226,9 @@ namespace ui {
         QDir().mkpath(workDir);
 
         QString featuresDir = workDir + "/features";
+        QString featuresForRetrievalDir = workDir + "/features_for_retrieval";
         QDir().mkpath(featuresDir);
+        QDir().mkpath(featuresForRetrievalDir);
 
         // 生成 image_list.json
         QString imageListPath = workDir + "/image_list.json";
@@ -238,6 +240,7 @@ namespace ui {
                 QJsonObject imgObj;
                 imgObj["path"] = QString::fromStdString(img.filename);
                 imgObj["camera_id"] = 1; // Default camera ID
+                imgObj["id"] = int(img.image_id);
                 images.append(imgObj);
             }
         }
@@ -263,6 +266,7 @@ namespace ui {
         arguments << "-i" << imageListPath
                   << "-o" << featuresDir
                   << "-n" << "8000"
+                  << "--output-retrieval" << featuresForRetrievalDir
                   << "--nms"
                   << "--uint8"
                   << "-v"; // verbose
