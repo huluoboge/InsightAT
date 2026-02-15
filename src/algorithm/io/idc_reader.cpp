@@ -1,4 +1,5 @@
 #include "idc_reader.h"
+#include "idc_writer.h"  // For DescriptorSchema
 #include <fstream>
 #include <cstring>
 
@@ -88,6 +89,62 @@ nlohmann::json IDCReader::getBlobDescriptor(const std::string& blob_name) const 
 
 std::vector<uint8_t> IDCReader::readBlobRaw(const std::string& blob_name) {
     return readBlob<uint8_t>(blob_name);
+}
+
+std::optional<DescriptorSchema> IDCReader::getDescriptorSchema() const {
+    // Primary: Try to read from descriptor_schema field (v1.1)
+    if (metadata_.contains("descriptor_schema")) {
+        auto schema = DescriptorSchema::fromJson(metadata_["descriptor_schema"]);
+        if (schema.has_value()) {
+            return schema;
+        }
+    }
+    
+    // Fallback: Infer from blobs and algorithm parameters (v1.0 compatibility)
+    auto desc_blob = getBlobDescriptor("descriptors");
+    if (desc_blob.is_null() || !desc_blob.contains("shape") || !desc_blob.contains("dtype")) {
+        LOG(WARNING) << "Cannot infer descriptor schema: missing 'descriptors' blob or metadata";
+        return std::nullopt;
+    }
+    
+    DescriptorSchema schema;
+    
+    // Infer descriptor_dim from shape[1]
+    auto shape = desc_blob["shape"].get<std::vector<int>>();
+    if (shape.size() >= 2) {
+        schema.descriptor_dim = shape[1];
+    } else {
+        LOG(ERROR) << "Invalid descriptor shape for schema inference";
+        return std::nullopt;
+    }
+    
+    // Infer dtype
+    schema.descriptor_dtype = desc_blob["dtype"].get<std::string>();
+    
+    // Infer feature_type from algorithm parameters (best effort)
+    if (metadata_.contains("algorithm") && metadata_["algorithm"].contains("parameters")) {
+        auto params = metadata_["algorithm"]["parameters"];
+        schema.feature_type = params.value("feature_type", "unknown");
+    } else {
+        // Legacy: assume SIFT for 128-dim
+        schema.feature_type = (schema.descriptor_dim == 128) ? "sift" : "unknown";
+    }
+    
+    // Set defaults based on dtype
+    if (schema.descriptor_dtype == "uint8") {
+        schema.normalization = "l2";
+        schema.quantization_scale = 512.0f;  // SIFT convention
+    } else {
+        schema.normalization = "none";
+        schema.quantization_scale = 1.0f;
+    }
+    
+    schema.schema_version = "1.0";
+    
+    VLOG(1) << "Inferred descriptor schema (v1.0 fallback): feature_type=" << schema.feature_type
+            << ", dim=" << schema.descriptor_dim << ", dtype=" << schema.descriptor_dtype;
+    
+    return schema;
 }
 
 }  // namespace io

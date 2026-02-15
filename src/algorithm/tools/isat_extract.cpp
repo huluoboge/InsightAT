@@ -10,6 +10,9 @@
 
 #include "../io/idc_writer.h"
 #include "../modules/extraction/sift_gpu_extractor.h"
+#ifdef INSIGHTAT_HAS_SUPERPOINT
+#include "../modules/extraction/superpoint_extractor.h"
+#endif
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"
 
@@ -28,15 +31,23 @@ struct ImageTask {
     int camera_id;
     int index;
 
-    // Matching features (full resolution)
+    // SIFT features (128-dim)
     std::vector<SiftGPU::SiftKeypoint> keypoints;
     std::vector<float> descriptors;
     std::vector<unsigned char> descriptors_uchar;
     
-    // Retrieval features (resized resolution)
     std::vector<SiftGPU::SiftKeypoint> keypoints_retrieval;
     std::vector<float> descriptors_retrieval;
     std::vector<unsigned char> descriptors_uchar_retrieval;
+    
+    // SuperPoint features (256-dim, float32 only)
+    std::vector<cv::KeyPoint> sp_keypoints;
+    cv::Mat sp_descriptors;  // N x 256, CV_32F
+    std::vector<float> sp_scores;
+    
+    std::vector<cv::KeyPoint> sp_keypoints_retrieval;
+    cv::Mat sp_descriptors_retrieval;
+    std::vector<float> sp_scores_retrieval;
 };
 
 std::vector<ImageTask> loadImageList(const std::string& json_path)
@@ -84,11 +95,17 @@ int main(int argc, char* argv[])
     FLAGS_colorlogtostderr = 1;
 
     // Define command line options with documentation
-    CmdLine cmd("InsightAT SIFT Feature Extractor - GPU-accelerated SIFT feature extraction with RootSIFT normalization and NMS");
+    CmdLine cmd("InsightAT Feature Extractor - GPU-accelerated feature extraction with SIFT or SuperPoint");
 
+    // Feature backend selection
+    std::string feature_type = "sift";  // "sift" or "superpoint"
+    
+    // Common options
     std::string input_file;
     std::string output_dir;
     std::string output_retrieval_dir;  // Dual-output: retrieval features directory
+    
+    // SIFT-specific options
     int nfeatures = 8000;
     int nfeatures_retrieval = 1500;     // Dual-output: retrieval features count
     int resize_retrieval = 1024;        // Dual-output: retrieval image resize dimension
@@ -97,6 +114,19 @@ int main(int argc, char* argv[])
     int levels = 3;
     std::string normalization = "l1root";
     float nms_radius = 3.0f;
+    
+    // SuperPoint-specific options
+    std::string superpoint_model_path;
+    std::string superpoint_provider = "cpu";  // "cpu" or "cuda"
+    float superpoint_threshold = 0.005f;
+    int superpoint_nms_radius = 4;
+    int superpoint_max_keypoints = 1024;
+    
+    // ================================================================
+    // Backend selection
+    // ================================================================
+    cmd.add(make_option(0, feature_type, "feature-type")
+            .doc("Feature backend: sift or superpoint (default: sift)"));
 
     // Required arguments
     cmd.add(make_option('i', input_file, "input")
@@ -114,17 +144,47 @@ int main(int argc, char* argv[])
     cmd.add(make_switch(0, "only-retrieval")
             .doc("Only output retrieval features (skip matching features)"));
 
-    // Feature extraction parameters
+    // ================================================================
+    // SIFT-specific parameters
+    // ================================================================
     cmd.add(make_option('n', nfeatures, "nfeatures")
-            .doc("Maximum features per image (default: 8000)"));
+            .doc("[SIFT] Maximum features per image (default: 8000)"));
     cmd.add(make_option('t', threshold, "threshold")
-            .doc("Peak threshold (default: 0.02)"));
+            .doc("[SIFT] Peak threshold (default: 0.02)"));
     cmd.add(make_option(0, octaves, "octaves")
-            .doc("Number of octaves, -1=auto (default: -1)"));
+            .doc("[SIFT] Number of octaves, -1=auto (default: -1)"));
     cmd.add(make_option(0, levels, "levels")
-            .doc("Levels per octave (default: 3)"));
+            .doc("[SIFT] Levels per octave (default: 3)"));
     cmd.add(make_switch(0, "no-adapt")
-            .doc("Disable dark image adaptation"));
+            .doc("[SIFT] Disable dark image adaptation"));
+
+    // Descriptor options
+    cmd.add(make_option(0, normalization, "norm")
+            .doc("[SIFT] Normalization: l1root (RootSIFT) or l2 (default: l1root)"));
+    cmd.add(make_switch(0, "uint8")
+            .doc("[SIFT] Convert descriptors to uint8 (saves memory)"));
+
+    // NMS options
+    cmd.add(make_switch(0, "nms")
+            .doc("[SIFT] Enable non-maximum suppression"));
+    cmd.add(make_option(0, nms_radius, "nms-radius")
+            .doc("[SIFT] NMS radius in pixels (default: 3.0)"));
+    cmd.add(make_switch(0, "nms-no-orient")
+            .doc("[SIFT] NMS ignores orientation (removes multi-orientation)"));
+    
+    // ================================================================
+    // SuperPoint-specific parameters
+    // ================================================================
+    cmd.add(make_option(0, superpoint_model_path, "superpoint-model")
+            .doc("[SuperPoint] Path to ONNX model file (required if feature-type=superpoint)"));
+    cmd.add(make_option(0, superpoint_provider, "superpoint-provider")
+            .doc("[SuperPoint] ONNX Runtime provider: cpu or cuda (default: cpu)"));
+    cmd.add(make_option(0, superpoint_threshold, "superpoint-threshold")
+            .doc("[SuperPoint] Detection confidence threshold (default: 0.005)"));
+    cmd.add(make_option(0, superpoint_nms_radius, "superpoint-nms-radius")
+            .doc("[SuperPoint] NMS radius in pixels (default: 4)"));
+    cmd.add(make_option(0, superpoint_max_keypoints, "superpoint-max-keypoints")
+            .doc("[SuperPoint] Maximum keypoints to keep (default: 1024)"));
 
     // Descriptor options
     cmd.add(make_option(0, normalization, "norm")
@@ -169,6 +229,41 @@ int main(int argc, char* argv[])
         std::cerr << "Error: -i/--input and -o/--output are required\n\n";
         cmd.printHelp(std::cerr, argv[0]);
         return 1;
+    }
+    
+    // Validate feature_type
+    if (feature_type != "sift" && feature_type != "superpoint") {
+        std::cerr << "Error: --feature-type must be 'sift' or 'superpoint'\n\n";
+        cmd.printHelp(std::cerr, argv[0]);
+        return 1;
+    }
+    
+    // Check SuperPoint availability
+    if (feature_type == "superpoint") {
+#ifndef INSIGHTAT_HAS_SUPERPOINT
+        std::cerr << "Error: SuperPoint not compiled in.\n";
+        std::cerr << "To enable SuperPoint:\n";
+        std::cerr << "  1. Install ONNXRuntime\n";
+        std::cerr << "  2. Rebuild with: cmake -DINSIGHTAT_ENABLE_SUPERPOINT=ON ..\n";
+        return 1;
+#else
+        // Validate SuperPoint-specific requirements
+        if (superpoint_model_path.empty()) {
+            std::cerr << "Error: --superpoint-model is required when feature-type=superpoint\n\n";
+            cmd.printHelp(std::cerr, argv[0]);
+            return 1;
+        }
+        
+        if (!fs::exists(superpoint_model_path)) {
+            std::cerr << "Error: SuperPoint model file not found: " << superpoint_model_path << "\n";
+            return 1;
+        }
+        
+        if (superpoint_provider != "cpu" && superpoint_provider != "cuda") {
+            std::cerr << "Error: --superpoint-provider must be 'cpu' or 'cuda'\n";
+            return 1;
+        }
+#endif
     }
     
     // Process dual-output options
@@ -219,9 +314,29 @@ int main(int argc, char* argv[])
 
     // Log configuration
     LOG(INFO) << "Feature extraction configuration:";
+    LOG(INFO) << "  Feature type: " << feature_type;
+    if (feature_type == "superpoint") {
+#ifdef INSIGHTAT_HAS_SUPERPOINT
+        LOG(INFO) << "  SuperPoint model: " << superpoint_model_path;
+        LOG(INFO) << "  Provider: " << superpoint_provider;
+        LOG(INFO) << "  Threshold: " << superpoint_threshold;
+        LOG(INFO) << "  NMS radius: " << superpoint_nms_radius;
+        LOG(INFO) << "  Max keypoints: " << superpoint_max_keypoints;
+#endif
+    } else {
+        LOG(INFO) << "  SIFT threshold: " << threshold;
+        LOG(INFO) << "  Normalization: " << normalization;
+        LOG(INFO) << "  uint8 format: " << (use_uint8 ? "yes" : "no");
+        LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
+        if (enable_nms) {
+            LOG(INFO) << "    NMS radius: " << nms_radius;
+            LOG(INFO) << "    Keep orientations: " << (nms_keep_orientation ? "yes" : "no");
+        }
+    }
+    
     if (process_matching) {
         LOG(INFO) << "  Matching features:";
-        LOG(INFO) << "    Max features: " << nfeatures;
+        LOG(INFO) << "    Max features: " << (feature_type == "superpoint" ? superpoint_max_keypoints : nfeatures);
         LOG(INFO) << "    Output: " << output_dir;
     }
     if (process_retrieval) {
@@ -229,14 +344,6 @@ int main(int argc, char* argv[])
         LOG(INFO) << "    Max features: " << nfeatures_retrieval;
         LOG(INFO) << "    Resize dimension: " << resize_retrieval;
         LOG(INFO) << "    Output: " << output_retrieval_dir;
-    }
-    LOG(INFO) << "  Threshold: " << threshold;
-    LOG(INFO) << "  Normalization: " << normalization;
-    LOG(INFO) << "  uint8 format: " << (use_uint8 ? "yes" : "no");
-    LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
-    if (enable_nms) {
-        LOG(INFO) << "    NMS radius: " << nms_radius;
-        LOG(INFO) << "    Keep orientations: " << (nms_keep_orientation ? "yes" : "no");
     }
     LOG(INFO) << "  Mode: " << (only_retrieval ? "retrieval-only" : 
                                  (enable_dual_output ? "dual-output" : "matching-only"));
@@ -290,14 +397,16 @@ int main(int argc, char* argv[])
             }
         });
 
-    // Stage 2: SIFT GPU extraction (single GPU, use reconfigure for dual-output)
-    // NOTE: SiftGPU uses global state, so we use ONE extractor and reconfigure parameters
-    insight::modules::SiftGPUExtractor extractor(sift_params);
-    if (!extractor.initialize()) {
-        LOG(FATAL) << "Failed to initialize SiftGPU";
-    }
+    // Stage 2: Feature extraction (GPU/CPU, backend-specific)
+    if (feature_type == "sift") {
+        // SIFT GPU extraction (single GPU, use reconfigure for dual-output)
+        // NOTE: SiftGPU uses global state, so we use ONE extractor and reconfigure parameters
+        insight::modules::SiftGPUExtractor extractor(sift_params);
+        if (!extractor.initialize()) {
+            LOG(FATAL) << "Failed to initialize SiftGPU";
+        }
 
-    StageCurrent siftGPUStage("SiftGPU", 1, GPU_QUEUE_SIZE,
+        StageCurrent siftGPUStage("SiftGPU", 1, GPU_QUEUE_SIZE,
         [&image_tasks, &extractor, &sift_params, &sift_params_retrieval, 
          process_matching, process_retrieval](int index) {
             auto& task = image_tasks[index];
@@ -354,205 +463,215 @@ int main(int argc, char* argv[])
                           << index << "] in " << exec_time << "ms";
             }
         });
-
-    // Stage 3: CPU post-processing (normalization, distribution, uint8 conversion)
-    Stage postProcessStage("PostProcess", NUM_IO_THREADS, IO_QUEUE_SIZE,
-        [&image_tasks, use_uint8, enable_nms, normalization,
-            nms_radius, nms_keep_orientation, process_matching, process_retrieval](int index) {
-            auto& task = image_tasks[index];
-
-            // Process matching features
-            if (process_matching && !task.keypoints.empty()) {
-                // Step 1: Apply normalization (CPU)
-                if (normalization == "l2") {
-                    insight::modules::L2NormalizeDescriptors(task.descriptors, 128);
-                } else { // l1root
-                    insight::modules::L1RootNormalizeDescriptors(task.descriptors, 128);
+        // Stage 3: CPU post-processing (normalization, distribution, uint8 conversion)
+        Stage postProcessStage("PostProcess", NUM_IO_THREADS, IO_QUEUE_SIZE,
+            [&image_tasks, use_uint8, enable_nms, normalization,
+                nms_radius, nms_keep_orientation, process_matching, process_retrieval](int index) {
+                auto& task = image_tasks[index];
+    
+                // Process matching features
+                if (process_matching && !task.keypoints.empty()) {
+                    // Step 1: Apply normalization (CPU)
+                    if (normalization == "l2") {
+                        insight::modules::L2NormalizeDescriptors(task.descriptors, 128);
+                    } else { // l1root
+                        insight::modules::L1RootNormalizeDescriptors(task.descriptors, 128);
+                    }
+    
+                    // Step 2: Apply feature distribution if enabled (CPU)
+                    if (enable_nms) {
+                        insight::modules::ApplyFeatureDistribution(
+                            task.keypoints, task.descriptors,
+                            task.image_cols, task.image_rows,
+                            static_cast<int>(nms_radius * 10), // Grid size ~10x radius
+                            2, // Max 2 features per cell
+                            nms_keep_orientation);
+                    }
+    
+                    // Step 3: Convert to uint8 if needed (CPU)
+                    if (use_uint8) {
+                        task.descriptors_uchar = insight::modules::ConvertDescriptorsToUChar(
+                            task.descriptors, 128);
+                        // Free float descriptors to save memory
+                        task.descriptors.clear();
+                        task.descriptors.shrink_to_fit();
+                    }
                 }
-
-                // Step 2: Apply feature distribution if enabled (CPU)
-                if (enable_nms) {
-                    insight::modules::ApplyFeatureDistribution(
-                        task.keypoints, task.descriptors,
-                        task.image_cols, task.image_rows,
-                        static_cast<int>(nms_radius * 10), // Grid size ~10x radius
-                        2, // Max 2 features per cell
-                        nms_keep_orientation);
-                }
-
-                // Step 3: Convert to uint8 if needed (CPU)
-                if (use_uint8) {
-                    task.descriptors_uchar = insight::modules::ConvertDescriptorsToUChar(
-                        task.descriptors, 128);
-                    // Free float descriptors to save memory
-                    task.descriptors.clear();
-                    task.descriptors.shrink_to_fit();
-                }
-            }
-            
-            // Process retrieval features
-            if (process_retrieval && !task.keypoints_retrieval.empty()) {
-                // Step 1: Apply normalization (CPU)
-                if (normalization == "l2") {
-                    insight::modules::L2NormalizeDescriptors(task.descriptors_retrieval, 128);
-                } else { // l1root
-                    insight::modules::L1RootNormalizeDescriptors(task.descriptors_retrieval, 128);
-                }
-
-                // Step 2: Apply feature distribution if enabled (CPU)
-                if (enable_nms) {
-                    insight::modules::ApplyFeatureDistribution(
-                        task.keypoints_retrieval, task.descriptors_retrieval,
-                        task.image_retrieval_cols, task.image_retrieval_rows,
-                        static_cast<int>(nms_radius * 10),
-                        2,
-                        nms_keep_orientation);
-                }
-
-                // Step 3: Convert to uint8 if needed (CPU)
-                if (use_uint8) {
-                    task.descriptors_uchar_retrieval = insight::modules::ConvertDescriptorsToUChar(
-                        task.descriptors_retrieval, 128);
-                    task.descriptors_retrieval.clear();
-                    task.descriptors_retrieval.shrink_to_fit();
-                }
-            }
-        });
-
-    // Stage 4: Write IDC files (multi-threaded I/O, dual-output support)
-    Stage writeStage("WriteIDC", NUM_IO_THREADS, IO_QUEUE_SIZE,
-        [&output_dir, &output_retrieval_dir, &image_tasks, use_uint8, enable_nms, normalization,
-            nms_radius, nms_keep_orientation, &sift_params, &sift_params_retrieval,
-            process_matching, process_retrieval](int index) {
-            auto& task = image_tasks[index];
-            
-            // Use image_id for output filename (NOT filesystem path stem!)
-            std::string base_filename = task.image_id + ".isat_feat";
-            
-            // Helper lambda to write features to file
-            auto write_features = [&](const std::string& output_path,
-                                      const std::vector<SiftGPU::SiftKeypoint>& keypoints,
-                                      const std::vector<float>& descriptors,
-                                      const std::vector<unsigned char>& descriptors_uchar,
-                                      const insight::modules::SiftGPUParams& params,
-                                      const std::string& feature_type) {
-                if (keypoints.empty()) return false;
                 
-                insight::io::IDCWriter writer(output_path);
-
-                json params_json;
-                params_json["nfeatures"] = params.nMaxFeatures;
-                params_json["threshold"] = params.dPeak;
-                params_json["octaves"] = params.nOctives;
-                params_json["levels"] = params.nLevel;
-                params_json["adapt_darkness"] = params.adaptDarkness;
-                params_json["normalization"] = normalization;
-                params_json["uint8"] = use_uint8;
-                params_json["nms_enabled"] = enable_nms;
-                params_json["feature_type"] = feature_type;  // "matching" or "retrieval"
-                if (enable_nms) {
-                    params_json["nms_radius"] = nms_radius;
-                    params_json["nms_keep_orientation"] = nms_keep_orientation;
+                // Process retrieval features
+                if (process_retrieval && !task.keypoints_retrieval.empty()) {
+                    // Step 1: Apply normalization (CPU)
+                    if (normalization == "l2") {
+                        insight::modules::L2NormalizeDescriptors(task.descriptors_retrieval, 128);
+                    } else { // l1root
+                        insight::modules::L1RootNormalizeDescriptors(task.descriptors_retrieval, 128);
+                    }
+    
+                    // Step 2: Apply feature distribution if enabled (CPU)
+                    if (enable_nms) {
+                        insight::modules::ApplyFeatureDistribution(
+                            task.keypoints_retrieval, task.descriptors_retrieval,
+                            task.image_retrieval_cols, task.image_retrieval_rows,
+                            static_cast<int>(nms_radius * 10),
+                            2,
+                            nms_keep_orientation);
+                    }
+    
+                    // Step 3: Convert to uint8 if needed (CPU)
+                    if (use_uint8) {
+                        task.descriptors_uchar_retrieval = insight::modules::ConvertDescriptorsToUChar(
+                            task.descriptors_retrieval, 128);
+                        task.descriptors_retrieval.clear();
+                        task.descriptors_retrieval.shrink_to_fit();
+                    }
                 }
-
-                auto metadata = insight::io::createFeatureMetadata(
-                    task.image_path,
-                    "SIFT_GPU",
-                    "1.2",  // Version bump for dual-output support
-                    params_json,
-                    0);
-
-                writer.setMetadata(metadata);
-
-                // Add keypoints (x, y, scale, orientation)
-                std::vector<float> kpt_data;
-                for (const auto& kp : keypoints) {
-                    kpt_data.push_back(kp.x);
-                    kpt_data.push_back(kp.y);
-                    kpt_data.push_back(kp.s);
-                    kpt_data.push_back(kp.o);
+            });
+    
+        // Stage 4: Write IDC files (multi-threaded I/O, dual-output support)
+        Stage writeStage("WriteIDC", NUM_IO_THREADS, IO_QUEUE_SIZE,
+            [&output_dir, &output_retrieval_dir, &image_tasks, use_uint8, enable_nms, normalization,
+                nms_radius, nms_keep_orientation, &sift_params, &sift_params_retrieval,
+                process_matching, process_retrieval](int index) {
+                auto& task = image_tasks[index];
+                
+                // Use image_id for output filename (NOT filesystem path stem!)
+                std::string base_filename = task.image_id + ".isat_feat";
+                
+                // Helper lambda to write features to file
+                auto write_features = [&](const std::string& output_path,
+                                          const std::vector<SiftGPU::SiftKeypoint>& keypoints,
+                                          const std::vector<float>& descriptors,
+                                          const std::vector<unsigned char>& descriptors_uchar,
+                                          const insight::modules::SiftGPUParams& params,
+                                          const std::string& feature_type) {
+                    if (keypoints.empty()) return false;
+                    
+                    insight::io::IDCWriter writer(output_path);
+    
+                    json params_json;
+                    params_json["nfeatures"] = params.nMaxFeatures;
+                    params_json["threshold"] = params.dPeak;
+                    params_json["octaves"] = params.nOctives;
+                    params_json["levels"] = params.nLevel;
+                    params_json["adapt_darkness"] = params.adaptDarkness;
+                    params_json["normalization"] = normalization;
+                    params_json["uint8"] = use_uint8;
+                    params_json["nms_enabled"] = enable_nms;
+                    params_json["feature_type"] = feature_type;  // "matching" or "retrieval"
+                    if (enable_nms) {
+                        params_json["nms_radius"] = nms_radius;
+                        params_json["nms_keep_orientation"] = nms_keep_orientation;
+                    }
+    
+                    // Create descriptor schema (v1.1)
+                    insight::io::DescriptorSchema schema;
+                    schema.feature_type = "sift";
+                    schema.descriptor_dim = 128;
+                    schema.descriptor_dtype = use_uint8 ? "uint8" : "float32";
+                    schema.normalization = normalization;
+                    schema.quantization_scale = use_uint8 ? 512.0f : 1.0f;
+    
+                    auto metadata = insight::io::createFeatureMetadata(
+                        task.image_path,
+                        "SIFT_GPU",
+                        "1.2",  // Version bump for dual-output support
+                        params_json,
+                        schema,
+                        0);
+    
+                    writer.setMetadata(metadata);
+    
+                    // Add keypoints (x, y, scale, orientation)
+                    std::vector<float> kpt_data;
+                    for (const auto& kp : keypoints) {
+                        kpt_data.push_back(kp.x);
+                        kpt_data.push_back(kp.y);
+                        kpt_data.push_back(kp.s);
+                        kpt_data.push_back(kp.o);
+                    }
+    
+                    writer.addBlob("keypoints", kpt_data.data(),
+                        kpt_data.size() * sizeof(float),
+                        "float32", { (int)keypoints.size(), 4 });
+    
+                    // Add descriptors (uint8 or float32)
+                    if (use_uint8) {
+                        writer.addBlob("descriptors", descriptors_uchar.data(),
+                            descriptors_uchar.size() * sizeof(unsigned char),
+                            "uint8", { (int)keypoints.size(), 128 });
+                    } else {
+                        writer.addBlob("descriptors", descriptors.data(),
+                            descriptors.size() * sizeof(float),
+                            "float32", { (int)keypoints.size(), 128 });
+                    }
+    
+                    return writer.write();
+                };
+                
+                // Write matching features
+                if (process_matching) {
+                    std::string output_path = fs::path(output_dir) / base_filename;
+                    if (write_features(output_path, task.keypoints, task.descriptors,
+                                       task.descriptors_uchar, sift_params, "matching")) {
+                        LOG(INFO) << "Written matching features [" << index << "]: " << output_path;
+                    }
                 }
-
-                writer.addBlob("keypoints", kpt_data.data(),
-                    kpt_data.size() * sizeof(float),
-                    "float32", { (int)keypoints.size(), 4 });
-
-                // Add descriptors (uint8 or float32)
-                if (use_uint8) {
-                    writer.addBlob("descriptors", descriptors_uchar.data(),
-                        descriptors_uchar.size() * sizeof(unsigned char),
-                        "uint8", { (int)keypoints.size(), 128 });
-                } else {
-                    writer.addBlob("descriptors", descriptors.data(),
-                        descriptors.size() * sizeof(float),
-                        "float32", { (int)keypoints.size(), 128 });
+                
+                // Write retrieval features
+                if (process_retrieval) {
+                    std::string output_path = fs::path(output_retrieval_dir) / base_filename;
+                    if (write_features(output_path, task.keypoints_retrieval, 
+                                       task.descriptors_retrieval,
+                                       task.descriptors_uchar_retrieval, 
+                                       sift_params_retrieval, "retrieval")) {
+                        LOG(INFO) << "Written retrieval features [" << index << "]: " << output_path;
+                    }
                 }
-
-                return writer.write();
-            };
-            
-            // Write matching features
-            if (process_matching) {
-                std::string output_path = fs::path(output_dir) / base_filename;
-                if (write_features(output_path, task.keypoints, task.descriptors,
-                                   task.descriptors_uchar, sift_params, "matching")) {
-                    LOG(INFO) << "Written matching features [" << index << "]: " << output_path;
-                }
+                
+                // Progress reporting
+                std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
+    
+                // Clear memory
+                task = ImageTask(); // release all memory
+            });
+    
+        // Chain stages
+        chain(imageLoadStage, siftGPUStage);
+        chain(siftGPUStage, postProcessStage);
+        chain(postProcessStage, writeStage);
+        // Set task counts
+        imageLoadStage.setTaskCount(total_images);
+        siftGPUStage.setTaskCount(total_images);
+        postProcessStage.setTaskCount(total_images);
+        writeStage.setTaskCount(total_images);
+    
+        // Start processing
+        auto start_time = std::chrono::high_resolution_clock::now();
+    
+        // Push tasks in background thread, process GPU in main thread
+        std::thread push_thread([&]() {
+            for (int i = 0; i < total_images; ++i) {
+                imageLoadStage.push(i);
             }
-            
-            // Write retrieval features
-            if (process_retrieval) {
-                std::string output_path = fs::path(output_retrieval_dir) / base_filename;
-                if (write_features(output_path, task.keypoints_retrieval, 
-                                   task.descriptors_retrieval,
-                                   task.descriptors_uchar_retrieval, 
-                                   sift_params_retrieval, "retrieval")) {
-                    LOG(INFO) << "Written retrieval features [" << index << "]: " << output_path;
-                }
-            }
-            
-            // Progress reporting
-            std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
-
-            // Clear memory
-            task = ImageTask(); // release all memory
         });
+    
+        // Run GPU stage in main thread (OpenGL context requirement)
+        siftGPUStage.run();
+    
+        // Wait for all stages to complete
+        push_thread.join();
+        imageLoadStage.wait();
+        postProcessStage.wait();
+        writeStage.wait();
+    
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+    
+        LOG(INFO) << "Feature extraction completed in " << total_time << "s";
+        LOG(INFO) << "Average time per image: " << (float)total_time / total_images << "s";
+    }
 
-    // Chain stages
-    chain(imageLoadStage, siftGPUStage);
-    chain(siftGPUStage, postProcessStage);
-    chain(postProcessStage, writeStage);
 
-    // Set task counts
-    imageLoadStage.setTaskCount(total_images);
-    siftGPUStage.setTaskCount(total_images);
-    postProcessStage.setTaskCount(total_images);
-    writeStage.setTaskCount(total_images);
-
-    // Start processing
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    // Push tasks in background thread, process GPU in main thread
-    std::thread push_thread([&]() {
-        for (int i = 0; i < total_images; ++i) {
-            imageLoadStage.push(i);
-        }
-    });
-
-    // Run GPU stage in main thread (OpenGL context requirement)
-    siftGPUStage.run();
-
-    // Wait for all stages to complete
-    push_thread.join();
-    imageLoadStage.wait();
-    postProcessStage.wait();
-    writeStage.wait();
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
-
-    LOG(INFO) << "Feature extraction completed in " << total_time << "s";
-    LOG(INFO) << "Average time per image: " << (float)total_time / total_images << "s";
 
     return 0;
 }

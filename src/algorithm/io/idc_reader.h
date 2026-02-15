@@ -5,12 +5,16 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include <Eigen/Core>
 #include <glog/logging.h>
 
 namespace insight {
 namespace io {
+
+// Forward declaration
+struct DescriptorSchema;
 
 /**
  * IDC (Insight Data Container) Reader
@@ -46,6 +50,9 @@ public:
     
     // Check if file is valid IDC format
     bool isValid() const { return is_valid_; }
+    
+    // Get descriptor schema (with fallback to v1.0 inference)
+    std::optional<DescriptorSchema> getDescriptorSchema() const;
 
 private:
     std::string filepath_;

@@ -54,6 +54,14 @@ set(ALGORITHM_SOURCES
     modules/retrieval/vocab_tree_retrieval.cpp
 )
 
+# Add SuperPoint sources if available
+if(SUPERPOINT_AVAILABLE)
+    list(APPEND ALGORITHM_SOURCES
+        modules/extraction/superpoint_extractor.h
+        modules/extraction/superpoint_extractor.cpp
+    )
+endif()
+
 # ─────────────────────────────────────────────────────────────
 # 创建库目标
 # ─────────────────────────────────────────────────────────────
@@ -81,6 +89,28 @@ target_link_libraries(InsightATAlgorithm
         ${GLEW_LIBRARY}
         ${OPENGL_LIBRARIES}
 )
+
+# Link ONNXRuntime if SuperPoint is enabled
+if(SUPERPOINT_AVAILABLE)
+    target_link_libraries(InsightATAlgorithm
+        PUBLIC
+            ${onnxruntime_LIBRARIES}
+            cudart
+            cudnn
+    )
+    target_include_directories(InsightATAlgorithm
+        PUBLIC
+            ${ONNXRUNTIME_INCLUDE_DIR}
+            ${CUDA_INCLUDE_DIRS}
+    )
+    target_compile_definitions(InsightATAlgorithm
+        PUBLIC
+            INSIGHTAT_HAS_SUPERPOINT
+    )
+    message(STATUS "InsightATAlgorithm: SuperPoint support enabled")
+    message(STATUS "  Linking ONNX Runtime: ${onnxruntime_LIBRARIES}")
+    message(STATUS "  ONNX Include: ${ONNXRUNTIME_INCLUDE_DIR}")
+endif()
 
 # ─────────────────────────────────────────────────────────────
 # CLI Tools

@@ -5,10 +5,50 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
+#include <optional>
 #include <nlohmann/json.hpp>
 
 namespace insight {
 namespace io {
+
+/**
+ * Descriptor Schema for Feature Extraction
+ * Schema version 1.1: Adds explicit descriptor metadata
+ */
+struct DescriptorSchema {
+    std::string feature_type;        // "sift", "superpoint", etc.
+    int descriptor_dim;               // 128, 256, etc.
+    std::string descriptor_dtype;     // "uint8", "float32"
+    std::string normalization;        // "l2", "none"
+    float quantization_scale;         // 512.0 for SIFT uint8, 1.0 for float
+    std::string schema_version = "1.1";  // Schema version
+    
+    // Convert to JSON
+    nlohmann::json toJson() const {
+        nlohmann::json j;
+        j["feature_type"] = feature_type;
+        j["descriptor_dim"] = descriptor_dim;
+        j["descriptor_dtype"] = descriptor_dtype;
+        j["normalization"] = normalization;
+        j["quantization_scale"] = quantization_scale;
+        return j;
+    }
+    
+    // Create from JSON
+    static std::optional<DescriptorSchema> fromJson(const nlohmann::json& j) {
+        if (!j.contains("descriptor_dim") || !j.contains("descriptor_dtype")) {
+            return std::nullopt;
+        }
+        
+        DescriptorSchema schema;
+        schema.feature_type = j.value("feature_type", "unknown");
+        schema.descriptor_dim = j["descriptor_dim"].get<int>();
+        schema.descriptor_dtype = j["descriptor_dtype"].get<std::string>();
+        schema.normalization = j.value("normalization", "none");
+        schema.quantization_scale = j.value("quantization_scale", 1.0f);
+        return schema;
+    }
+};
 
 /**
  * IDC (Insight Data Container) Writer
@@ -58,16 +98,25 @@ private:
     }
 };
 
-// Helper function to create feature extraction metadata
+// Helper function to create feature extraction metadata (v1.1 with descriptor_schema)
 inline nlohmann::json createFeatureMetadata(
     const std::string& image_path,
     const std::string& algorithm_name,
     const std::string& algorithm_version,
     const nlohmann::json& parameters,
+    const std::optional<DescriptorSchema>& descriptor_schema = std::nullopt,
     int execution_time_ms = 0)
 {
     nlohmann::json meta;
-    meta["schema_version"] = "1.0";
+    
+    // Use schema_version 1.1 if descriptor_schema provided, otherwise 1.0 for backward compatibility
+    if (descriptor_schema.has_value()) {
+        meta["schema_version"] = "1.1";
+        meta["descriptor_schema"] = descriptor_schema->toJson();
+    } else {
+        meta["schema_version"] = "1.0";
+    }
+    
     meta["task_type"] = "feature_extraction";
     meta["algorithm"]["name"] = algorithm_name;
     meta["algorithm"]["version"] = algorithm_version;
