@@ -61,6 +61,10 @@ set(UI_SOURCES
     dialogs/NewATTaskDialog.h
     dialogs/NewATTaskDialog.cpp
     
+    # Utils (Coordinates from Common)
+    utils/Coordinates.h
+    utils/Coordinates.cpp
+    
     # Widgets
     widgets/SpatialReferenceDialog.h
     widgets/SpatialReferenceDialog.cpp
@@ -113,7 +117,9 @@ add_library(InsightATUI STATIC ${UI_SOURCES})
 target_include_directories(InsightATUI
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
         ${Qt5_INCLUDE_DIRS}
+        ${GDAL_INCLUDE_DIRS}
 )
 
 target_link_libraries(InsightATUI
@@ -123,6 +129,9 @@ target_link_libraries(InsightATUI
         Qt5::Widgets
         glog::glog
         InsightATDatabase
+        util
+        stlplus3
+        ${GDAL_LIBRARIES}
 )
 
 # ─────────────────────────────────────────────────────────────

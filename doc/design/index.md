@@ -1,35 +1,83 @@
-# InsightAT 软件设计文档
+# InsightAT 设计文档索引
 
-欢迎阅读 InsightAT（Aerial Triangulation）的设计文档。本项目是一个专业的摄影测量空三处理软件，旨在管理复杂的相机位姿、坐标系统和各类测量数据。
-
-## 📖 文档概览
-
-本设计文档集将软件拆分为逻辑清晰的模块，方便人类开发者理解架构，同时也为 AI Agent 提供清晰的上下文信息。
-
-### 🏗️ 核心架构
-1. **[项目综述 (01_introduction.md)](01_introduction.md)**: 软件目标、核心概念与业务背景。
-2. **[系统架构 (02_architecture_overview.md)](02_architecture_overview.md)**: 三层架构设计、数据流向及技术栈。
-
-### 💾 数据与序列化
-3. **[核心数据模型 (03_data_model.md)](03_data_model.md)**: Project, ImageGroup, Image, Measurement, ATTask 等结构详解。
-4. **[坐标系与旋转标准 (04_coordinate_and_rotation.md)](04_coordinate_and_rotation.md)**: EPSG/WKT、摄影测量与导航旋转约定的统一管理。
-5. **[数据持久化 (05_serialization.md)](05_serialization.md)**: 基于 Cereal 的版本化二进制序列化方案。
-
-### 🖥️ 界面与交互
-6. **[UI 框架设计 (06_ui_framework.md)](06_ui_framework.md)**: Qt 信号槽模式、Document/View 架构及工作流。
-7. **[业务流程实现 (07_business_workflow.md)](07_business_workflow.md)**: 从项目创建到空三解算的完整操作链。
-
-### 🧮 算法与工具
-8. **[函数式算法工具包 (08_functional_at_toolkit.md)](08_functional_at_toolkit.md)**: CLI-First 架构、IDC 数据格式、分布式就绪的 AT 流水线。
-
-### 渲染 (待补充)
-9. **渲染引擎设计**: OpenGL 3D 可视化基础。
+本目录为 **InsightAT** 的正式设计文档，按阅读与实现顺序组织（序号 01–12）。算法与 UI 实现应以本文档集为准。
 
 ---
 
-## 🤖 AI Agent 阅读指南
-如果您是 AI 助手：
-- **核心逻辑**请查阅 [02_architecture_overview.md](02_architecture_overview.md)。
-- **数据结构定义**请参考 [03_data_model.md](03_data_model.md)。
-- **数值计算规范**（尤其是坐标系和旋转）请务必对齐 [04_coordinate_and_rotation.md](04_coordinate_and_rotation.md)。
-- **UI 修改**前请阅读 [06_ui_framework.md](06_ui_framework.md) 以遵循现有的信号槽规范。
+## 01. 整体算法设计
+
+- **[01_algorithm_sfm_philosophy.md](01_algorithm_sfm_philosophy.md)**  
+  第一层：粗 SfM（Cluster + Merge + Global BA）；第二层：高精度 SfM（原始分辨率、位姿引导匹配、高精度相对位姿、Global BA 策略）。面向航空/倾斜摄影、大规模数据。
+
+---
+
+## 02. 代码规范
+
+- **[02_coding_style.md](02_coding_style.md)**  
+  命名、文件组织、注释、头文件、命名空间、GPU 与序列化约定、CLI 工具规范等。新代码必须遵守；格式由 `.clang-format` 执行。
+
+---
+
+## 03. 整体目录组织
+
+- **[03_directory_organization.md](03_directory_organization.md)**  
+  源码目录划分：`algorithm/`、`database/`、`util/`、`ui/` 及各自职责，与三层架构（Project / AT Task / Output）的对应关系。
+
+---
+
+## 04. CLI-First 实现
+
+- **[04_functional_at_toolkit.md](04_functional_at_toolkit.md)**  
+  CLI-First 架构、算法独立性、分布式就绪、IDC 自描述数据格式、工具间通过文件交换的流水线设计。
+
+---
+
+## 05. IO 交互标准
+
+- **[05_cli_io_conventions.md](05_cli_io_conventions.md)**  
+  所有 `isat_*` 工具的 stdout/stderr/退出码约定；机器可读输出格式 `ISAT_EVENT <单行 JSON>`；日志级别与管道友好用法。
+
+---
+
+## 06. UI 设计
+
+- **[06_ui_framework.md](06_ui_framework.md)**  
+  Qt Document/View、ProjectDocument 与 MainWindow、Model/View、组件化 Widget、信号槽驱动工作流及 UI 规范。
+
+---
+
+## 07. UI 与项目序列化
+
+- **[07_serialization.md](07_serialization.md)**  
+  项目与任务数据的序列化设计。底层支持 Cereal 版本化；**当前为便于调试与互操作，项目/配置等采用 JSON 格式**，二进制方案见文档与 `database/` 实现。
+
+---
+
+## 08–09. 技术细节设计（单独列出）
+
+以下为具体技术选型与约定，实现时需严格对齐：
+
+| 序号 | 文档 | 内容 |
+|------|------|------|
+| 08 | **[08_coordinate_and_rotation.md](08_coordinate_and_rotation.md)** | 坐标系类型（EPSG/WKT/ENU/Local）、旋转约定（Omega-Phi-Kappa vs Yaw-Pitch-Roll）、角单位与内部标准化 |
+| 09 | **[09_data_model.md](09_data_model.md)** | Project、ImageGroup、Image、Measurement、ATTask 等核心数据结构（与 `database/` 对应） |
+| — | **旋转专题** | 更详细的旋转表示与转换见 [design/rotation/](rotation/rotation_readme.md) |
+
+---
+
+## 10–12. 其他参考
+
+| 序号 | 文档 | 说明 |
+|------|------|------|
+| 10 | **[10_introduction.md](10_introduction.md)** | 软件目标与核心概念（综述） |
+| 11 | **[11_architecture_overview.md](11_architecture_overview.md)** | 三层架构与数据流向（与 03 目录组织互补） |
+| 12 | **[12_implementation_details.md](12_implementation_details.md)** | 业务实现细节（若存在） |
+
+---
+
+## AI Agent 阅读顺序建议
+
+1. **算法与流水线**：[01_algorithm_sfm_philosophy.md](01_algorithm_sfm_philosophy.md) → [04_functional_at_toolkit.md](04_functional_at_toolkit.md)
+2. **代码与 CLI 行为**：[02_coding_style.md](02_coding_style.md) → [05_cli_io_conventions.md](05_cli_io_conventions.md)
+3. **数值与坐标**：[08_coordinate_and_rotation.md](08_coordinate_and_rotation.md)，必要时 [rotation/rotation_readme.md](rotation/rotation_readme.md)
+4. **UI 与持久化**：[06_ui_framework.md](06_ui_framework.md) → [07_serialization.md](07_serialization.md)

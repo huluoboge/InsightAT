@@ -50,6 +50,10 @@ set(ALGORITHM_SOURCES
     io/idc_writer.cpp
     io/idc_reader.h
     io/idc_reader.cpp
+    io/exif/exif.h
+    io/exif/exif.cpp
+    io/exif/exif_IO.hpp
+    io/exif/exif_IO_EasyExif.hpp
     
     # Modules - Feature Extraction
     modules/extraction/sift_gpu_extractor.h
@@ -115,6 +119,7 @@ target_link_libraries(InsightATAlgorithm
     PUBLIC
         glog::glog
         InsightATDatabase
+        util
         ${OpenCV_LIBS}
         DBoW3
         sift_gpu
@@ -370,7 +375,6 @@ target_link_libraries(isat_camera_estimator
     PRIVATE
         insightat_tools_logging
         InsightATAlgorithm
-        Common
         InsightATDatabase
         ImageIO
         glog::glog
@@ -395,7 +399,6 @@ add_executable(CameraEstimator CameraEstimator.cpp)
 target_link_libraries(CameraEstimator
     PRIVATE
         InsightATAlgorithm
-        Common
         InsightATDatabase
         ImageIO
         glog::glog

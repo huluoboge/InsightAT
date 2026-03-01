@@ -22,7 +22,7 @@
 #endif
 
 #include "cmdLine/cmdLine.h"
-#include "Common/exif_IO_EasyExif.hpp"
+#include "io/exif/exif_IO_EasyExif.hpp"
 #include "ImageIO/gdal_utils.h"
 #include "database/CameraSensorDatabase.h"
 

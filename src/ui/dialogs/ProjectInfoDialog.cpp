@@ -9,7 +9,7 @@
  */
 
 #include "ProjectInfoDialog.h"
-#include "../../Common/string_utils.h"
+#include "../../util/string_utils.h"
 #include "../../database/database_types.h"
 #include "../widgets/SpatialReferenceDialog.h"
 #include "CoordinateSystemConfigDialog.h"

@@ -1,5 +1,0 @@
-#ifndef INSIGHTAT_GLOBAL_H
-#define INSIGHTAT_GLOBAL_H
-
-
-#endif // INSIGHTAT_GLOBAL_H

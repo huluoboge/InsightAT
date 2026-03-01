@@ -36,7 +36,7 @@
 #include <cereal/types/string.hpp>
 #include <cereal/types/vector.hpp>
 
-#include "Common/exif_IO_EasyExif.hpp"
+#include "io/exif/exif_IO_EasyExif.hpp"
 #include "ImageIO/gdal_utils.h"
 #include "cmdLine/cmdLine.h"
 #include "cli_logging.h"

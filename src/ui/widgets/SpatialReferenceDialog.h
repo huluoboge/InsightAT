@@ -3,7 +3,7 @@
 
 #include <QDialog>
 #include "ui_SpatialReferenceTool.h"
-#include "../../Common/Coordinates.h"
+#include "ui/utils/Coordinates.h"
 
 namespace insight {
 namespace ui {

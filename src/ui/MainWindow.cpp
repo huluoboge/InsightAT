@@ -16,7 +16,7 @@
 #include "widgets/ImageGroupsManagementPanel.h"
 #include "panels/ATTaskPanel.h"
 #include "UISystemConfig.h"
-#include "../Common/Coordinates.h"
+#include "ui/utils/Coordinates.h"
 #include "../database/database_types.h"
 
 #include <QVBoxLayout>

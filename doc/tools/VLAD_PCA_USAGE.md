@@ -373,7 +373,7 @@ ls features_retrieval/*.isat_feat | head -3
 ## 下一步
 
 1. **双路特征提取**：一次IO完成检索+匹配特征提取（节省50% IO时间）
-   - 参考：[VLAD_DESIGN.md](../design/retrieval/VLAD_DESIGN.md#双路输出)
+   - 参考：[vlad_design.md](../design/retrieval/vlad_design.md#双路输出)
 
 2. **尺度加权VLAD**：进一步提升检索准确率（+5-8%）
    - 计划实现：`--scale-weighted` 参数

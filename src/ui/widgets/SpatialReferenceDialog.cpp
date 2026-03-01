@@ -5,9 +5,9 @@
 
 #include "SpatialReferenceDialog.h"
 #include "UISystemConfig.h"
-#include "../../Common/Coordinates.h"
-#include "../../Common/string_utils.h"
-#include "../Gui/Utils.h"
+#include "ui/utils/Coordinates.h"
+#include "../../util/string_utils.h"
+#include "../utils/QStringConvert.h"
 #include <QSettings>
 #include <QTreeWidgetItem>
 #include <QDialogButtonBox>

@@ -5,7 +5,7 @@
 
 #include "UISystemConfig.h"
 
-#include "Common/Coordinates.h"
+#include "ui/utils/Coordinates.h"
 #include <algorithm>
 #include <cctype>
 #include <glog/logging.h>

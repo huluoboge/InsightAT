@@ -4,7 +4,7 @@
 #include <QTextStream>
 #include <QMessageBox>
 #include <QFileInfo>
-#include "Common/string_utils.h"
+#include "util/string_utils.h"
 
 #include <cassert>
 

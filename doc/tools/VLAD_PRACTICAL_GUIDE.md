@@ -561,7 +561,7 @@ Saved to ../matches.bin
 
 ```bash
 # 在InsightAT GUI中加载
-./InsightAT_New
+./InsightAT
 
 # 或使用命令行工具（如果有）
 # ./isat_ba -m ../matches.bin -i ../image_list.json -o ../result/

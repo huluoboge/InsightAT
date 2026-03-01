@@ -1,8 +1,20 @@
-# InsightAT 
+# InsightAT
 
 ## 📋 概述
 
-**InsightAT** 是一个专业的摄影测量空三（Aerial Triangulation）处理软件。本文件包括设计原则、架构、系统架构、文件格式规范、CLIG工具、数据模型、和开发规范。
+**InsightAT** 是一个专业的摄影测量空三（Aerial Triangulation）处理软件。本文件包括设计原则、架构、系统架构、文件格式规范、CLI 工具、数据模型和开发规范。
+
+---
+
+## 📌 项目状态（Project Status）
+
+- **当前阶段**：**积极开发中**，尚未达到生产就绪（not production-ready）。
+- **设计依据**：整体思路与阶段划分以设计文档为准：
+  - [设计文档索引](doc/design/index.md)（架构、数据模型、坐标系、序列化、UI、AT 工具包）
+  - [Parallel Hybrid SfM 架构设计](doc/design/parallel_hybrid_sf_m_design_philosophy.md)（粗到细两层、拓扑优先、Pose Graph 融合）
+- **已实现**：CLI 工具链（特征提取 / 匹配 / 检索 / 几何 / 两视图 / tracks / 标定等）、IDC 数据格式、database 类型与序列化、Qt 主窗口与项目/任务/坐标系配置。详见 [CHANGELOG.md](CHANGELOG.md) 中「已实现」与「进行中/计划中」。
+- **可能变动**：API、IDC 细节和项目文件格式在开发过程中可能调整，请以仓库与 CHANGELOG 为准。
+- **反馈与贡献**：欢迎试用、提 Issue 和 PR；用于生产前请自行评估稳定性与兼容性。
 
 ## 🎯 核心设计原则
 
@@ -78,32 +90,26 @@
 └─────────────────────────────────────────────────────┘
 ```
 
-### SfM算法架构：粗到细两层设计
+### SfM 算法架构：两层设计
 
-具体设计思想： [SfM架构](./parallel_hybrid_sf_m_design_philosophy.md)
-第一层：粗粒度初始位姿估计
-  - 核心思想：提供相对位姿准确， 鲁棒性强，速度快速的整体粗粒度重建
-  - [X] 分辨率：不超过4000×4000
-  - 特征提取：
-   - [X] 快速GPU特征检测（SIFT、SuperPoint）特征数量不超过10000
-  - 图像检索：
-      - [x] VLAD、词汇树、GNSS，Sequence
-      - [ ] 如果有GNSS+姿态那么根据世界基础地形数据，按照椭球高计算航高，然后根据投影来精确获得匹配图像
-  - [X] 特征匹配：GPU加速匹配
-  - [X] 几何验证：RANSAC + 基础矩阵/本质矩阵，GPU RANSAC  
-  - [ ] 两视图几何重建： 通过两视图几何，估计F, 估计E， 前方交会，生成3D点，估计内参，BA优化 
-  - 已知内参，准确使用E来估计inlier，进行两视图几何重建，筛选三维点> 50的pair
-  - 层级式SfM： 所有两视图重建成功的可以直接尝试求解sRt，剩下的不断进行增量重建。
-  - 优化：使用PBA（Parallel Bundle Adjustment）
-  - 畸变模型：简化模型（仅径向畸变）
-  
+具体设计思想：[SfM 架构](doc/design/parallel_hybrid_sf_m_design_philosophy.md)
 
-第二层：细粒度优化
-  -  分辨率：原始图像分辨率
-  -  特征提取和匹配： 利用初始位姿/BA引导，子像素稀疏特征、光流进行匹配及优化（最小二乘匹配）
-  - 优化器：GPU cuda实现+ceres cuda实现
-  - 目标：高精度，稀疏特征匹配+全局BA。
-  - 畸变： 完整畸变模型
+**第一层：粗 SfM 结果（Cluster + Merge + Global BA）**
+
+- 目标：得到**粗的、全局一致的** SfM 结果，为第二层提供初值。
+- 流程：Cluster 内并行重建 → Merge（融合/对齐）→ **Global BA**。
+- 已实现/进行中：
+  - [X] 分辨率：可降分辨率（如不超过 4000×4000）以控制规模
+  - [X] 特征提取：GPU（SIFT、SuperPoint），特征数量可限（如 ≤10000）
+  - [X] 图像检索：VLAD、词汇树、GNSS、Sequence
+  - [X] 特征匹配与几何验证：GPU 匹配、RANSAC（F/E）
+  - [ ] 两视图几何重建、层级式增量、Merge、**第一层 Global BA**（进行中）
+  - 畸变：简化模型（如仅径向畸变）
+
+**第二层：高精度 SfM（规划中）**
+
+- 目标：在第一层粗结果基础上达到高精度。
+- 计划：**原始分辨率**特征、**位姿引导**的匹配、**高精度相对位姿**、**Global BA 策略**；完整畸变模型。
 
 
 ## 📁 文件格式规范: IDC (Insight Data Container) 格式
@@ -210,20 +216,18 @@
 
 ```
 src/
-├── algorithm/           # 核心算法（无Qt依赖）
+├── algorithm/           # 核心算法（无 Qt 依赖）
 │   ├── modules/        # 算法模块
 │   │   ├── extraction/ # 特征提取（SIFT, SuperPoint）
 │   │   ├── retrieval/  # 图像检索（VLAD, 词汇树）
 │   │   ├── matching/   # 特征匹配
 │   │   └── geometry/   # 几何计算
-│   └── tools/          # CLI工具
-│       ├── isat_extract.cpp
-│       ├── isat_retrieve.cpp
-│       ├── isat_match.cpp
-│       └── isat_geo.cpp
-├── database/           # 数据结构和序列化
-├── Common/            # 公共工具函数
-└── ui/                # Qt界面（与算法分离）
+│   ├── io/exif/        # EXIF 解析（相机内参估计用）
+│   └── tools/          # CLI 工具（isat_*）
+├── database/           # 数据结构和序列化（Cereal）
+├── util/               # 轻量公共工具（string_utils, numeric）
+└── ui/                 # Qt 界面（与算法分离）
+    └── utils/          # UI 用工具（Coordinates, QStringConvert）
 ```
 ### 文档
 
@@ -238,7 +242,7 @@ doc/
 ├── design/
 │   ├── CODING_STYLE.md       # 代码编写规范（命名/注释/格式/设计）
 │   └── CLI_IO_CONVENTIONS.md # CLI 输入输出约定
-└── implemention/
+└── dev-notes/           # 开发过程记录（过程稿，以 design/ 与代码为准）
 ```
 ### 添加新算法模块
 

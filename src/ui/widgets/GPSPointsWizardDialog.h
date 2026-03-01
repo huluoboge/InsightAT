@@ -9,7 +9,7 @@
 #include <Eigen/Core>
 
 #include "GPSPointsWizardDelegate.h"
-#include "Common/Coordinates.h"
+#include "ui/utils/Coordinates.h"
 
 namespace insight{
 
