@@ -1,0 +1,441 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CameraEdit</class>
+ <widget class="QWidget" name="CameraEdit">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>490</width>
+    <height>609</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>CameraEdit</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout" stretch="0,1,2">
+   <item>
+    <widget class="QGroupBox" name="groupBox">
+     <property name="title">
+      <string/>
+     </property>
+     <layout class="QHBoxLayout" name="horizontalLayout_2">
+      <property name="leftMargin">
+       <number>1</number>
+      </property>
+      <property name="topMargin">
+       <number>1</number>
+      </property>
+      <property name="rightMargin">
+       <number>1</number>
+      </property>
+      <property name="bottomMargin">
+       <number>1</number>
+      </property>
+      <item>
+       <widget class="QPushButton" name="pushButton">
+        <property name="text">
+         <string>Add camera</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_2">
+        <property name="text">
+         <string>Remove camera</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_exif">
+        <property name="text">
+         <string>From Exif</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_reset">
+        <property name="text">
+         <string>From image W x H</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="horizontalSpacer">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>162</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QListWidget" name="listWidget_camera">
+     <property name="viewMode">
+      <enum>QListView::ListMode</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="tableWidget_initial">
+     <property name="autoFillBackground">
+      <bool>false</bool>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::StyledPanel</enum>
+     </property>
+     <property name="frameShadow">
+      <enum>QFrame::Plain</enum>
+     </property>
+     <property name="alternatingRowColors">
+      <bool>true</bool>
+     </property>
+     <property name="showGrid">
+      <bool>true</bool>
+     </property>
+     <property name="gridStyle">
+      <enum>Qt::SolidLine</enum>
+     </property>
+     <attribute name="horizontalHeaderMinimumSectionSize">
+      <number>50</number>
+     </attribute>
+     <attribute name="horizontalHeaderDefaultSectionSize">
+      <number>155</number>
+     </attribute>
+     <attribute name="horizontalHeaderStretchLastSection">
+      <bool>true</bool>
+     </attribute>
+     <attribute name="verticalHeaderVisible">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="verticalHeaderCascadingSectionResizes">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="verticalHeaderDefaultSectionSize">
+      <number>31</number>
+     </attribute>
+     <row>
+      <property name="text">
+       <string>camera name</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>width</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>height</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>ppx</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>ppy</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>focal(mm)</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>focal(pixel)</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>sensor width (mm)</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>sensor height(mm)</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>k1</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>k2</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>k3</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>p1</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>p2</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>b1</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>b2</string>
+      </property>
+     </row>
+     <column>
+      <property name="text">
+       <string>Attribute</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Value</string>
+      </property>
+     </column>
+     <item row="0" column="0">
+      <property name="text">
+       <string>camera name</string>
+      </property>
+     </item>
+     <item row="1" column="0">
+      <property name="text">
+       <string>width</string>
+      </property>
+     </item>
+     <item row="2" column="0">
+      <property name="text">
+       <string>height</string>
+      </property>
+     </item>
+     <item row="3" column="0">
+      <property name="text">
+       <string>ppx</string>
+      </property>
+     </item>
+     <item row="4" column="0">
+      <property name="text">
+       <string>ppy</string>
+      </property>
+     </item>
+     <item row="5" column="0">
+      <property name="text">
+       <string>focal(mm)</string>
+      </property>
+     </item>
+     <item row="6" column="0">
+      <property name="text">
+       <string>focal(pix)</string>
+      </property>
+     </item>
+     <item row="7" column="0">
+      <property name="text">
+       <string>sensor width(mm)</string>
+      </property>
+     </item>
+     <item row="8" column="0">
+      <property name="text">
+       <string>sensor height(mm)</string>
+      </property>
+     </item>
+     <item row="9" column="0">
+      <property name="text">
+       <string>k1</string>
+      </property>
+     </item>
+     <item row="9" column="1">
+      <property name="text">
+       <string>0</string>
+      </property>
+     </item>
+     <item row="10" column="0">
+      <property name="text">
+       <string>k2</string>
+      </property>
+     </item>
+     <item row="10" column="1">
+      <property name="text">
+       <string>0</string>
+      </property>
+     </item>
+     <item row="11" column="0">
+      <property name="text">
+       <string>k3</string>
+      </property>
+     </item>
+     <item row="11" column="1">
+      <property name="text">
+       <string>0</string>
+      </property>
+     </item>
+     <item row="12" column="0">
+      <property name="text">
+       <string>p1</string>
+      </property>
+     </item>
+     <item row="12" column="1">
+      <property name="text">
+       <string>0</string>
+      </property>
+     </item>
+     <item row="13" column="0">
+      <property name="text">
+       <string>p2</string>
+      </property>
+     </item>
+     <item row="13" column="1">
+      <property name="text">
+       <string>0</string>
+      </property>
+     </item>
+     <item row="14" column="0">
+      <property name="text">
+       <string>b1</string>
+      </property>
+     </item>
+     <item row="14" column="1">
+      <property name="text">
+       <string>0</string>
+      </property>
+     </item>
+     <item row="15" column="0">
+      <property name="text">
+       <string>b2</string>
+      </property>
+     </item>
+     <item row="15" column="1">
+      <property name="text">
+       <string>0</string>
+      </property>
+     </item>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <layoutdefault spacing="6" margin="11"/>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>pushButton</sender>
+   <signal>clicked()</signal>
+   <receiver>CameraEdit</receiver>
+   <slot>addCamera()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>51</x>
+     <y>20</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>121</x>
+     <y>0</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton_2</sender>
+   <signal>clicked()</signal>
+   <receiver>CameraEdit</receiver>
+   <slot>removeCamera()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>177</x>
+     <y>33</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>214</x>
+     <y>0</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>listWidget_camera</sender>
+   <signal>currentRowChanged(int)</signal>
+   <receiver>CameraEdit</receiver>
+   <slot>showCurCamera()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>141</x>
+     <y>106</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>371</x>
+     <y>7</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton_exif</sender>
+   <signal>clicked()</signal>
+   <receiver>CameraEdit</receiver>
+   <slot>getCameraFromExif()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>258</x>
+     <y>33</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>391</x>
+     <y>0</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>tableWidget_initial</sender>
+   <signal>itemChanged(QTableWidgetItem*)</signal>
+   <receiver>CameraEdit</receiver>
+   <slot>camerraItemEdit(QTableWidgetItem*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>255</x>
+     <y>338</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>538</x>
+     <y>342</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>pushButton_reset</sender>
+   <signal>clicked()</signal>
+   <receiver>CameraEdit</receiver>
+   <slot>getCameraFromImageWH()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>368</x>
+     <y>33</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>598</x>
+     <y>64</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+ <slots>
+  <slot>addCamera()</slot>
+  <slot>removeCamera()</slot>
+  <slot>showCurCamera()</slot>
+  <slot>camerraItemEdit(QTableWidgetItem*)</slot>
+  <slot>getCameraFromExif()</slot>
+  <slot>getCameraFromImageWH()</slot>
+ </slots>
+</ui>

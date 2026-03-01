@@ -1,0 +1,595 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>InsightMapperClass</class>
+ <widget class="QMainWindow" name="InsightMapperClass">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1234</width>
+    <height>804</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Insight AT</string>
+  </property>
+  <property name="windowIcon">
+   <iconset resource="InsightMapper.qrc">
+    <normaloff>:/InsightMapper/logo</normaloff>:/InsightMapper/logo</iconset>
+  </property>
+  <property name="dockOptions">
+   <set>QMainWindow::AllowNestedDocks|QMainWindow::AllowTabbedDocks|QMainWindow::AnimatedDocks</set>
+  </property>
+  <widget class="QWidget" name="centralWidget">
+   <layout class="QHBoxLayout" name="horizontalLayout">
+    <property name="spacing">
+     <number>2</number>
+    </property>
+    <property name="leftMargin">
+     <number>3</number>
+    </property>
+    <property name="topMargin">
+     <number>3</number>
+    </property>
+    <property name="rightMargin">
+     <number>3</number>
+    </property>
+    <property name="bottomMargin">
+     <number>3</number>
+    </property>
+    <item>
+     <widget class="QMdiArea" name="mdiArea">
+      <property name="styleSheet">
+       <string notr="true"/>
+      </property>
+      <property name="viewMode">
+       <enum>QMdiArea::TabbedView</enum>
+      </property>
+      <property name="documentMode">
+       <bool>true</bool>
+      </property>
+      <property name="tabsClosable">
+       <bool>true</bool>
+      </property>
+      <property name="tabsMovable">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menuBar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1234</width>
+     <height>31</height>
+    </rect>
+   </property>
+   <property name="styleSheet">
+    <string notr="true">QMenuBar {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                      stop:0 rgba(63, 63, 63, 255), stop:1 rgba(63, 63, 63, 255));
+	color : rgb(255,255,255);
+}
+
+QMenuBar::item {
+    spacing: 3px; /* spacing between menu bar items */
+    padding: 7px 4px;
+    background: transparent;
+    border-radius: 2px;
+}
+
+QMenuBar::item:selected { /* when selected using mouse or keyboard */
+    background: #a8a8a8;
+}
+
+QMenuBar::item:pressed {
+    background: #888888;
+}
+</string>
+   </property>
+   <widget class="QMenu" name="menu_File">
+    <property name="enabled">
+     <bool>true</bool>
+    </property>
+    <property name="title">
+     <string>&amp;Project</string>
+    </property>
+    <addaction name="actionNew"/>
+    <addaction name="actionOpen"/>
+    <addaction name="actionSave"/>
+    <addaction name="actionClose"/>
+   </widget>
+   <widget class="QMenu" name="menuImport">
+    <property name="title">
+     <string>Edit</string>
+    </property>
+    <addaction name="actionProject"/>
+    <addaction name="separator"/>
+    <addaction name="actionGCP"/>
+   </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title">
+     <string>View</string>
+    </property>
+    <addaction name="actionWelcome"/>
+    <addaction name="actionWorkspace"/>
+    <addaction name="actionLog"/>
+    <addaction name="separator"/>
+    <addaction name="separator"/>
+   </widget>
+   <widget class="QMenu" name="menuAbout">
+    <property name="title">
+     <string>About</string>
+    </property>
+    <addaction name="actionRegister"/>
+   </widget>
+   <addaction name="menu_File"/>
+   <addaction name="menuImport"/>
+   <addaction name="menuView"/>
+   <addaction name="menuAbout"/>
+  </widget>
+  <widget class="QToolBar" name="toolbar_project">
+   <property name="sizePolicy">
+    <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+     <horstretch>0</horstretch>
+     <verstretch>0</verstretch>
+    </sizepolicy>
+   </property>
+   <property name="minimumSize">
+    <size>
+     <width>0</width>
+     <height>30</height>
+    </size>
+   </property>
+   <property name="windowTitle">
+    <string>Main Toolbar</string>
+   </property>
+   <property name="styleSheet">
+    <string notr="true">
+QToolBar{
+background-color: rgb(93, 93, 93);
+border:2px;
+
+}
+
+QToolButton{
+margin: 3px;
+border-radius: 2px;
+color:rgb(255, 255, 255);
+padding: 2px;
+}
+
+QToolButton:hover { /* when selected using mouse or keyboard */
+    background: #a8a8a8;
+}
+
+QToolButton:pressed {
+    background: #888888;
+}
+QToolButton:disabled{
+	color: rgb(153, 153, 153);
+}</string>
+   </property>
+   <property name="movable">
+    <bool>false</bool>
+   </property>
+   <property name="floatable">
+    <bool>false</bool>
+   </property>
+   <attribute name="toolBarArea">
+    <enum>TopToolBarArea</enum>
+   </attribute>
+   <attribute name="toolBarBreak">
+    <bool>false</bool>
+   </attribute>
+   <addaction name="actionNew"/>
+   <addaction name="actionOpen"/>
+   <addaction name="actionSave"/>
+   <addaction name="separator"/>
+   <addaction name="actionProject"/>
+   <addaction name="actionGCP"/>
+  </widget>
+  <widget class="QStatusBar" name="statusBar"/>
+  <widget class="QDockWidget" name="dockWidget_workspace">
+   <property name="floating">
+    <bool>false</bool>
+   </property>
+   <property name="windowTitle">
+    <string>Workspace</string>
+   </property>
+   <attribute name="dockWidgetArea">
+    <number>1</number>
+   </attribute>
+   <widget class="QWidget" name="dockWidgetContents">
+    <layout class="QVBoxLayout" name="verticalLayout">
+     <property name="spacing">
+      <number>2</number>
+     </property>
+     <property name="leftMargin">
+      <number>3</number>
+     </property>
+     <property name="topMargin">
+      <number>3</number>
+     </property>
+     <property name="rightMargin">
+      <number>3</number>
+     </property>
+     <property name="bottomMargin">
+      <number>3</number>
+     </property>
+     <item>
+      <widget class="insight::Workspace" name="treeWidget">
+       <column>
+        <property name="text">
+         <string>Project</string>
+        </property>
+       </column>
+      </widget>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QDockWidget" name="dockWidget_log">
+   <property name="windowTitle">
+    <string>Log</string>
+   </property>
+   <attribute name="dockWidgetArea">
+    <number>8</number>
+   </attribute>
+   <widget class="QWidget" name="dockWidgetContents_3">
+    <layout class="QVBoxLayout" name="verticalLayout_2">
+     <property name="spacing">
+      <number>1</number>
+     </property>
+     <property name="leftMargin">
+      <number>1</number>
+     </property>
+     <property name="topMargin">
+      <number>1</number>
+     </property>
+     <property name="rightMargin">
+      <number>1</number>
+     </property>
+     <property name="bottomMargin">
+      <number>1</number>
+     </property>
+     <item>
+      <widget class="QPlainTextEdit" name="plainTextEdit_log"/>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="horizontalLayout_2">
+       <item>
+        <widget class="QPushButton" name="pushButton_pause">
+         <property name="text">
+          <string>Pause</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_stop">
+         <property name="text">
+          <string>Stop</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_log_title">
+         <property name="text">
+          <string>处理过程：</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QProgressBar" name="progressBar">
+         <property name="value">
+          <number>0</number>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <action name="actionOpen">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Open</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+O</string>
+   </property>
+  </action>
+  <action name="actionSave">
+   <property name="text">
+    <string>Save</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+S</string>
+   </property>
+  </action>
+  <action name="actionClose">
+   <property name="text">
+    <string>Close</string>
+   </property>
+  </action>
+  <action name="actionNew">
+   <property name="text">
+    <string>New</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+N</string>
+   </property>
+  </action>
+  <action name="actionWelcome">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Welcome</string>
+   </property>
+  </action>
+  <action name="actionWorkspace">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Workspace</string>
+   </property>
+  </action>
+  <action name="actionLog">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Log</string>
+   </property>
+  </action>
+  <action name="actionAttributes">
+   <property name="text">
+    <string>Attributes</string>
+   </property>
+  </action>
+  <action name="actionGCP">
+   <property name="text">
+    <string>Edit GCP</string>
+   </property>
+  </action>
+  <action name="actionProject">
+   <property name="text">
+    <string>Project setting</string>
+   </property>
+  </action>
+  <action name="actionRegister">
+   <property name="text">
+    <string>Insight Mapper</string>
+   </property>
+  </action>
+ </widget>
+ <layoutdefault spacing="6" margin="11"/>
+ <customwidgets>
+  <customwidget>
+   <class>insight::Workspace</class>
+   <extends>QTreeWidget</extends>
+   <header>Workspace.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>actionNew</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onNewProject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionOpen</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onOpenProject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionSave</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onSaveProject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionClose</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onCloseProject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionWorkspace</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onSetWorkspaceVisible()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionLog</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onSetLogVisible()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionAttributes</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onShowAttributes()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionWelcome</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onSetWelcomVisible()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>485</x>
+     <y>391</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionProject</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onEditProject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>437</x>
+     <y>310</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionGCP</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onEditGCP()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>516</x>
+     <y>401</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionRegister</sender>
+   <signal>triggered()</signal>
+   <receiver>InsightMapperClass</receiver>
+   <slot>onRegister()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>516</x>
+     <y>401</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+ <slots>
+  <slot>onNewProject()</slot>
+  <slot>onSaveProject()</slot>
+  <slot>onCloseProject()</slot>
+  <slot>onOpenProject()</slot>
+  <slot>onAddImages()</slot>
+  <slot>onAddImagesDir()</slot>
+  <slot>onEditCamera()</slot>
+  <slot>onSetWorkspaceVisible()</slot>
+  <slot>onSetLogVisible()</slot>
+  <slot>onShowAttributes()</slot>
+  <slot>onSetWelcomVisible()</slot>
+  <slot>onAlignImages()</slot>
+  <slot>onPostAdjustment()</slot>
+  <slot>onEditProject()</slot>
+  <slot>onWizard()</slot>
+  <slot>addATResultWidget()</slot>
+  <slot>add3dATResultWidget()</slot>
+  <slot>onStop()</slot>
+  <slot>onPause()</slot>
+  <slot>onEditGCP()</slot>
+  <slot>addMapWidget()</slot>
+  <slot>onRegister()</slot>
+  <slot>add3dATInitPoseResultWidget()</slot>
+ </slots>
+</ui>
