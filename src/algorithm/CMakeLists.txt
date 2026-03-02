@@ -80,6 +80,12 @@ set(ALGORITHM_SOURCES
     modules/retrieval/pca_whitening.cpp
     modules/retrieval/vocab_tree_retrieval.h
     modules/retrieval/vocab_tree_retrieval.cpp
+    modules/sfm/view_graph_loader.h
+    modules/sfm/view_graph_loader.cpp
+    modules/sfm/resection.h
+    modules/sfm/resection.cpp
+    modules/sfm/incremental_sfm.h
+    modules/sfm/incremental_sfm.cpp
 )
 
 # Add SuperPoint sources if available
@@ -120,6 +126,7 @@ target_link_libraries(InsightATAlgorithm
         glog::glog
         InsightATDatabase
         util
+        sfm_module
         ${OpenCV_LIBS}
         DBoW3
         sift_gpu
@@ -367,6 +374,25 @@ target_include_directories(isat_calibrate
 )
 
 set_property(TARGET isat_calibrate PROPERTY FOLDER InsightAT/Tools)
+
+# isat_incremental_sfm - Initial pair bootstrap + two-view BA
+add_executable(isat_incremental_sfm tools/isat_incremental_sfm.cpp)
+
+target_link_libraries(isat_incremental_sfm
+    PRIVATE
+        insightat_tools_logging
+        InsightATAlgorithm
+        sfm_module
+        glog::glog
+)
+
+target_include_directories(isat_incremental_sfm
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET isat_incremental_sfm PROPERTY FOLDER InsightAT/Tools)
 
 # isat_camera_estimator - Per-group EXIF-based camera intrinsics estimator
 add_executable(isat_camera_estimator tools/isat_camera_estimator.cpp)

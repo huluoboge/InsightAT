@@ -1,0 +1,200 @@
+/**
+ * isat_incremental_sfm.cpp
+ * InsightAT Incremental SfM – initial pair bootstrap and (optionally) resection loop.
+ *
+ * Phase 1: Build view graph from geo, choose best initial pair, run two-view BA,
+ *          reject outliers, filter tracks. Writes initial poses and 2-image tracks.
+ *
+ * Usage:
+ *   isat_incremental_sfm -i pairs.json -g geo_dir/ -m match_dir/ -k K.json -o out_dir/
+ *   isat_incremental_sfm -i pairs.json -g geo_dir/ -m match_dir/ -k K.json -o out_dir/ -l images.json
+ *
+ * Requires: isat_geo run with --twoview so geo files contain R, t, F_inliers.
+ */
+
+#include "../modules/sfm/incremental_sfm.h"
+#include "../modules/sfm/track_store.h"
+#include "../io/idc_reader.h"
+#include "../io/idc_writer.h"
+#include "cli_logging.h"
+#include "cmdLine/cmdLine.h"
+#include "isat_intrinsics.h"
+#include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <glog/logging.h>
+
+namespace fs = std::filesystem;
+using json = nlohmann::json;
+
+static const char* kEventPrefix = "ISAT_EVENT ";
+static void printEvent(const json& j) {
+  std::cout << kEventPrefix << j.dump() << "\n";
+  std::cout.flush();
+}
+
+// Save 2-image track store and poses to output dir (same IDC layout as isat_tracks)
+static bool save_initial_result(const insight::sfm::TrackStore& store,
+                                uint32_t image1_id, uint32_t image2_id,
+                                const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+                                const std::string& output_dir) {
+  std::vector<uint32_t> image_ids = {image1_id, image2_id};
+  const size_t n_tracks = store.num_tracks();
+  json meta;
+  meta["schema_version"] = "1.0";
+  meta["task_type"] = "incremental_sfm_initial";
+  meta["num_images"] = 2;
+  meta["image_ids"] = image_ids;
+  meta["num_tracks"] = static_cast<int>(n_tracks);
+  meta["cam2_R"] = std::vector<std::vector<double>>(3, std::vector<double>(3));
+  meta["cam2_t"] = std::vector<double>(3);
+  for (int i = 0; i < 3; ++i) {
+    meta["cam2_t"][i] = t(i);
+    for (int j = 0; j < 3; ++j) meta["cam2_R"][i][j] = R(i, j);
+  }
+  std::vector<float> track_xyz(n_tracks * 3);
+  std::vector<uint8_t> track_flags(n_tracks);
+  for (size_t i = 0; i < n_tracks; ++i) {
+    float x, y, z;
+    store.get_track_xyz(static_cast<int>(i), &x, &y, &z);
+    track_xyz[i*3] = x; track_xyz[i*3+1] = y; track_xyz[i*3+2] = z;
+    track_flags[i] = store.is_track_valid(static_cast<int>(i)) ? 1 : 0;
+  }
+  std::vector<uint32_t> track_obs_offset(n_tracks + 1);
+  std::vector<uint32_t> obs_image_id;
+  std::vector<uint32_t> obs_feature_id;
+  std::vector<float> obs_u, obs_v, obs_scale;
+  std::vector<uint8_t> obs_flags;
+  size_t offset = 0;
+  for (size_t t = 0; t < n_tracks; ++t) {
+    track_obs_offset[t] = static_cast<uint32_t>(offset);
+    std::vector<insight::sfm::Observation> obs_list;
+    store.get_track_observations(static_cast<int>(t), &obs_list);
+    for (const auto& o : obs_list) {
+      obs_image_id.push_back(o.image_index);
+      obs_feature_id.push_back(o.feature_id);
+      obs_u.push_back(o.u);
+      obs_v.push_back(o.v);
+      obs_scale.push_back(o.scale);
+      obs_flags.push_back(1);
+      ++offset;
+    }
+  }
+  track_obs_offset[n_tracks] = static_cast<uint32_t>(offset);
+  meta["num_observations"] = static_cast<int>(offset);
+
+  const std::string idc_path = output_dir + "/initial_tracks.isat_tracks";
+  insight::io::IDCWriter writer(idc_path);
+  writer.setMetadata(meta);
+  writer.addBlob("track_xyz", track_xyz.data(), track_xyz.size() * sizeof(float), "float32", {static_cast<int>(n_tracks), 3});
+  writer.addBlob("track_flags", track_flags.data(), track_flags.size(), "uint8", {static_cast<int>(n_tracks)});
+  writer.addBlob("track_obs_offset", track_obs_offset.data(), track_obs_offset.size() * sizeof(uint32_t), "uint32", {static_cast<int>(n_tracks) + 1});
+  writer.addBlob("obs_image_id", obs_image_id.data(), obs_image_id.size() * sizeof(uint32_t), "uint32", {static_cast<int>(obs_image_id.size())});
+  writer.addBlob("obs_feature_id", obs_feature_id.data(), obs_feature_id.size() * sizeof(uint32_t), "uint32", {static_cast<int>(obs_feature_id.size())});
+  writer.addBlob("obs_u", obs_u.data(), obs_u.size() * sizeof(float), "float32", {static_cast<int>(obs_u.size())});
+  writer.addBlob("obs_v", obs_v.data(), obs_v.size() * sizeof(float), "float32", {static_cast<int>(obs_v.size())});
+  writer.addBlob("obs_scale", obs_scale.data(), obs_scale.size() * sizeof(float), "float32", {static_cast<int>(obs_scale.size())});
+  writer.addBlob("obs_flags", obs_flags.data(), obs_flags.size(), "uint8", {static_cast<int>(obs_flags.size())});
+  if (!writer.write()) {
+    LOG(ERROR) << "Failed to write " << idc_path;
+    return false;
+  }
+  const std::string poses_path = output_dir + "/initial_poses.json";
+  json poses_json;
+  poses_json["image_ids"] = image_ids;
+  poses_json["cam1_identity"] = true;
+  poses_json["cam2_R"] = std::vector<std::vector<double>>(3, std::vector<double>(3));
+  poses_json["cam2_t"] = std::vector<double>(3);
+  for (int i = 0; i < 3; ++i) {
+    poses_json["cam2_t"][i] = t(i);
+    for (int j = 0; j < 3; ++j) poses_json["cam2_R"][i][j] = R(i, j);
+  }
+  std::ofstream of(poses_path);
+  if (!of) { LOG(ERROR) << "Failed to write " << poses_path; return false; }
+  of << poses_json.dump(2) << "\n";
+  LOG(INFO) << "Wrote " << idc_path << " and " << poses_path;
+  return true;
+}
+
+int main(int argc, char* argv[]) {
+  google::InitGoogleLogging(argv[0]);
+  FLAGS_logtostderr = 1;
+  FLAGS_colorlogtostderr = 1;
+
+  CmdLine cmd("InsightAT Incremental SfM – initial pair + two-view BA");
+  std::string pairs_json, geo_dir, match_dir, intrinsics_path, output_dir, image_list;
+  int min_tracks = 20;
+
+  cmd.add(make_option('i', pairs_json, "input").doc("Pairs JSON path"));
+  cmd.add(make_option('g', geo_dir, "geo-dir").doc("Directory of .isat_geo (must have been run with --twoview)"));
+  cmd.add(make_option('m', match_dir, "match-dir").doc("Directory of .isat_match files"));
+  cmd.add(make_option('k', intrinsics_path, "intrinsics").doc("Camera intrinsics JSON (e.g. from isat_calibrate or isat_project intrinsics --all)"));
+  cmd.add(make_option('o', output_dir, "output").doc("Output directory for initial_poses.json and initial_tracks.isat_tracks"));
+  cmd.add(make_option('l', image_list, "image-list").doc("Image list JSON (optional)"));
+  cmd.add(make_option(0, min_tracks, "min-tracks").doc("Minimum valid tracks after filtering. Default: 20"));
+  std::string log_level;
+  cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
+  cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
+  cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
+  cmd.add(make_switch('h', "help").doc("Show help"));
+
+  try {
+    cmd.process(argc, argv);
+  } catch (const std::string& s) {
+    std::cerr << "Error: " << s << "\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (cmd.checkHelp(argv[0])) return 0;
+  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+
+  if (pairs_json.empty() || geo_dir.empty() || match_dir.empty() || intrinsics_path.empty()) {
+    std::cerr << "Error: -i, -g, -m, -k are required\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  auto cam_map = loadIntrinsicsMap(intrinsics_path);
+  if (cam_map.empty()) {
+    LOG(ERROR) << "No intrinsics loaded from " << intrinsics_path;
+    return 1;
+  }
+  const auto* cam = lookupCamera(cam_map, 1);
+  if (!cam || !cam->valid()) {
+    LOG(ERROR) << "Invalid or missing camera (use camera_id 1 or provide valid K)";
+    return 1;
+  }
+  const double fx = cam->fx, fy = cam->fy, cx = cam->cx, cy = cam->cy;
+
+  if (output_dir.empty()) output_dir = ".";
+
+  insight::sfm::TrackStore store;
+  Eigen::Matrix3d R1;
+  Eigen::Vector3d t1;
+  uint32_t image1_id = 0, image2_id = 0;
+  const bool ok = insight::sfm::run_initial_pair_loop(
+      pairs_json, geo_dir, match_dir, fx, fy, cx, cy,
+      &store, &R1, &t1, min_tracks, &image1_id, &image2_id);
+
+  if (!ok) {
+    LOG(ERROR) << "Initial pair loop failed (no suitable pair or too few tracks)";
+    printEvent({{"type", "incremental_sfm.initial"}, {"ok", false}});
+    return 1;
+  }
+
+  int n_valid = 0;
+  for (size_t i = 0; i < store.num_tracks(); ++i)
+    if (store.is_track_valid(static_cast<int>(i))) ++n_valid;
+
+  if (!output_dir.empty()) {
+    fs::create_directories(output_dir);
+    if (!save_initial_result(store, image1_id, image2_id, R1, t1, output_dir)) return 1;
+  }
+
+  printEvent({{"type", "incremental_sfm.initial"},
+             {"ok", true},
+             {"data", {{"image1_id", image1_id},
+                      {"image2_id", image2_id},
+                      {"num_tracks", n_valid},
+                      {"output_dir", output_dir}}}});
+  return 0;
+}

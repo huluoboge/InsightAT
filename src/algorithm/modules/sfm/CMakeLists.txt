@@ -19,6 +19,10 @@ cmake_minimum_required(VERSION 3.16)
 
 find_package(Eigen3 REQUIRED)
 
+if(INSIGHTAT_USE_CERES)
+  find_package(Ceres REQUIRED)
+endif()
+
 if(NOT OPENGL_FOUND)
     find_package(OpenGL REQUIRED)
 endif()
@@ -39,6 +43,12 @@ add_library(sfm_module STATIC
     track_store.h
     track_builder.cpp
     track_builder.h
+    view_graph.cpp
+    view_graph.h
+    bundle_adjustment.cpp
+    bundle_adjustment.h
+    incremental_sfm_helpers.cpp
+    incremental_sfm_helpers.h
 )
 
 target_include_directories(sfm_module
@@ -59,6 +69,11 @@ target_link_libraries(sfm_module
     PRIVATE
         glog::glog
 )
+
+if(INSIGHTAT_USE_CERES)
+  target_compile_definitions(sfm_module PUBLIC INSIGHTAT_USE_CERES)
+  target_link_libraries(sfm_module PUBLIC Ceres::ceres)
+endif()
 
 target_compile_features(sfm_module PUBLIC cxx_std_17)
 set_property(TARGET sfm_module PROPERTY FOLDER "InsightAT/Modules")

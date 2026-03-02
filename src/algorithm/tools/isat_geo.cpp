@@ -817,21 +817,18 @@ int main(int argc, char* argv[])
                 const CameraIntrinsics& K1 = *pK1;
                 const CameraIntrinsics& K2 = *pK2;
 
-                // E: prefer GPU E if good, else E = K2^T F K1
-                Eigen::Matrix3d E_mat;
-                if (task.E_ok && task.E_inliers >= task.F_inliers) {
-                    E_mat = FloatArrayToMatrix3d(task.E);
-                } else {
-                    Eigen::Matrix3d K1m, K2m, F_mat;
-                    F_mat = FloatArrayToMatrix3d(task.F);
-                    K1m << K1.fx, 0, K1.cx, 0, K1.fy, K1.cy, 0, 0, 1;
-                    K2m << K2.fx, 0, K2.cx, 0, K2.fy, K2.cy, 0, 0, 1;
-                    E_mat = K2m.transpose() * F_mat * K1m;
-                }
+                // Two-view: always use F decomposition (E = K2^T F K1).
+                // When intrinsics are inaccurate, direct RANSAC E bakes K into inlier selection
+                // and is worse; F is estimated without K, then we apply K only for E decomposition.
+                Eigen::Matrix3d K1m, K2m, F_mat;
+                F_mat = FloatArrayToMatrix3d(task.F);
+                K1m << K1.fx, 0, K1.cx, 0, K1.fy, K1.cy, 0, 0, 1;
+                K2m << K2.fx, 0, K2.cx, 0, K2.fy, K2.cy, 0, 0, 1;
+                Eigen::Matrix3d E_mat = K2m.transpose() * F_mat * K1m;
                 E_mat = EnforceEssential(E_mat);
 
-                // Collect E-inlier correspondences
-                const std::vector<uint8_t>& inl_mask = task.E_ok ? task.E_mask : task.F_mask;
+                // Use F inliers for triangulation (consistent with F-derived E)
+                const std::vector<uint8_t>& inl_mask = task.F_mask;
                 std::vector<Eigen::Vector2d> pts1_n, pts2_n;
                 for (int k = 0; k < task.num_matches; k++) {
                     if (inl_mask[k] == 0) continue;

@@ -69,6 +69,12 @@ bool TrackStore::is_track_valid(int track_id) const {
     return (track_flags_[static_cast<size_t>(track_id)] & track_flags::kAlive) != 0;
 }
 
+bool TrackStore::track_has_triangulated_xyz(int track_id) const {
+    if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
+        return false;
+    return (track_flags_[static_cast<size_t>(track_id)] & track_flags::kHasTriangulated) != 0;
+}
+
 void TrackStore::get_track_xyz(int track_id, float* x, float* y, float* z) const {
     assert(track_id >= 0 && static_cast<size_t>(track_id) < num_tracks());
     const size_t i = static_cast<size_t>(track_id) * 3u;
@@ -83,6 +89,7 @@ void TrackStore::set_track_xyz(int track_id, float x, float y, float z) {
     track_xyz_[i]     = x;
     track_xyz_[i + 1] = y;
     track_xyz_[i + 2] = z;
+    track_flags_[static_cast<size_t>(track_id)] |= track_flags::kHasTriangulated;
 }
 
 void TrackStore::set_track_retriangulation_flag(int track_id, bool value) {

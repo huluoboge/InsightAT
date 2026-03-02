@@ -294,13 +294,9 @@ static TwoViewResult reconstructPair(TwoViewTask& task,
     const bool have_K  = K1.valid() && K2.valid();
     const Eigen::Matrix3d F_mat = FloatArrayToMatrix3d(task.F);
 
-    // ── Step 1: establish which inlier set to use ─────────────────────────
-    // Prefer E inliers if isat_geo already used known intrinsics.
-    // Otherwise fall back to F inliers.
-    const std::vector<uint8_t>& inlier_mask_src =
-        (task.E_ok && task.E_inliers >= min_points) ? task.E_mask : task.F_mask;
-    const int n_inliers_src =
-        (task.E_ok && task.E_inliers >= min_points) ? task.E_inliers : task.F_inliers;
+    // ── Step 1: use F inliers (consistent with E = K^T F K when K present) ──
+    const std::vector<uint8_t>& inlier_mask_src = task.F_mask;
+    const int n_inliers_src = task.F_inliers;
 
     if (n_inliers_src < min_points) {
         VLOG(1) << "  Pair " << task.image1_id << "-" << task.image2_id
@@ -343,14 +339,10 @@ static TwoViewResult reconstructPair(TwoViewTask& task,
         VLOG(1) << "  Estimated focal from F: f=" << f << " px";
     }
 
-    // ── Step 3: compute E (generalised K1^T F K2 when K1 != K2) ──────────
+    // ── Step 3: compute E. Use F decomposition when K is available ───────
+    // (When intrinsics are inaccurate, direct RANSAC E is worse; F then E = K^T F K is more robust.)
     Eigen::Matrix3d E_mat;
-    if (task.E_ok && task.E_inliers >= min_points) {
-        // Prefer GPU-estimated E from isat_geo (already enforced)
-        E_mat = FloatArrayToMatrix3d(task.E);
-        E_mat = EnforceEssential(E_mat);
-    } else if (have_K) {
-        // Generalised essential matrix: E = K1^T * F * K2
+    if (have_K) {
         Eigen::Matrix3d K1m, K2m;
         K1m << K1.fx, 0, K1.cx, 0, K1.fy, K1.cy, 0, 0, 1;
         K2m << K2.fx, 0, K2.cx, 0, K2.fy, K2.cy, 0, 0, 1;

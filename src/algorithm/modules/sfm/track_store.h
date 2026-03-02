@@ -40,6 +40,7 @@ namespace sfm {
 namespace track_flags {
 constexpr uint8_t kAlive = 1u << 0;
 constexpr uint8_t kNeedsRetriangulation = 1u << 1;
+constexpr uint8_t kHasTriangulated = 1u << 2;  ///< Track has valid 3D (set by set_track_xyz / triangulation).
 }
 
 namespace obs_flags {
@@ -83,6 +84,7 @@ public:
 
     /// Query track
     bool is_track_valid(int track_id) const;
+    bool track_has_triangulated_xyz(int track_id) const;
     void get_track_xyz(int track_id, float* x, float* y, float* z) const;
     void set_track_xyz(int track_id, float x, float y, float z);
     void set_track_retriangulation_flag(int track_id, bool value);

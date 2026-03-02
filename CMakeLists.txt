@@ -103,6 +103,16 @@ endif()
 find_package(Eigen3 REQUIRED)
 message(STATUS "Eigen3 version is ${EIGEN3_VERSION}")
 
+# Ceres (optional: for bundle adjustment in incremental SfM)
+set(INSIGHTAT_USE_CERES FALSE)
+find_package(Ceres QUIET)
+if(Ceres_FOUND)
+  set(INSIGHTAT_USE_CERES TRUE)
+  message(STATUS "Ceres found: ${Ceres_VERSION}, BA module enabled")
+else()
+  message(STATUS "Ceres not found; build without two-view/global BA (install libceres-dev to enable)")
+endif()
+
 
 if(IS_DEBUG)
     register_definitions(-DEIGEN_INITIALIZE_MATRICES_BY_NAN)
