@@ -29,6 +29,16 @@ void rvec_tvec_to_rt(const cv::Mat& rvec, const cv::Mat& tvec,
 
 }  // namespace
 
+bool is_resection_stable(int inlier_count,
+                         int total_correspondences,
+                         double rmse_px,
+                         double min_inlier_ratio,
+                         double max_rmse_px) {
+  if (total_correspondences <= 0) return false;
+  double ratio = static_cast<double>(inlier_count) / static_cast<double>(total_correspondences);
+  return ratio >= min_inlier_ratio && rmse_px <= max_rmse_px;
+}
+
 bool resection_single_image(const TrackStore& store,
                             int image_index,
                             double fx, double fy, double cx, double cy,
@@ -119,9 +129,53 @@ bool resection_single_image(const TrackStore& store,
     return true;
 }
 
+int resection_image_grid_coverage(const TrackStore& store,
+                                  int image_index,
+                                  int grid_cols,
+                                  int grid_rows) {
+  std::vector<int> track_ids;
+  std::vector<Observation> obs_list;
+  const int n = store.get_image_track_observations(image_index, &track_ids, &obs_list);
+  if (n == 0 || grid_cols <= 0 || grid_rows <= 0) return 0;
+  std::vector<float> uu, vv;
+  for (size_t i = 0; i < static_cast<size_t>(n); ++i) {
+    if (!store.track_has_triangulated_xyz(track_ids[i])) continue;
+    uu.push_back(obs_list[i].u);
+    vv.push_back(obs_list[i].v);
+  }
+  if (uu.size() < 2u) return uu.empty() ? 0 : 1;
+  float umin = uu[0], umax = uu[0], vmin = vv[0], vmax = vv[0];
+  for (size_t i = 1; i < uu.size(); ++i) {
+    if (uu[i] < umin) umin = uu[i];
+    if (uu[i] > umax) umax = uu[i];
+    if (vv[i] < vmin) vmin = vv[i];
+    if (vv[i] > vmax) vmax = vv[i];
+  }
+  float ur = umax - umin, vr = vmax - vmin;
+  if (ur < 1e-6f) ur = 1e-6f;
+  if (vr < 1e-6f) vr = 1e-6f;
+  std::vector<std::vector<bool>> cell_used(static_cast<size_t>(grid_rows),
+                                           std::vector<bool>(static_cast<size_t>(grid_cols), false));
+  for (size_t i = 0; i < uu.size(); ++i) {
+    int c = static_cast<int>((uu[i] - umin) / ur * grid_cols);
+    int r = static_cast<int>((vv[i] - vmin) / vr * grid_rows);
+    if (c >= grid_cols) c = grid_cols - 1;
+    if (r >= grid_rows) r = grid_rows - 1;
+    if (c < 0) c = 0;
+    if (r < 0) r = 0;
+    cell_used[static_cast<size_t>(r)][static_cast<size_t>(c)] = true;
+  }
+  int cells = 0;
+  for (int r = 0; r < grid_rows; ++r)
+    for (int c = 0; c < grid_cols; ++c)
+      if (cell_used[static_cast<size_t>(r)][static_cast<size_t>(c)]) ++cells;
+  return cells;
+}
+
 int choose_next_resection_image(const TrackStore& store,
                                 const std::vector<bool>& registered_indices,
-                                const std::vector<bool>* skip_indices) {
+                                const std::vector<bool>* skip_indices,
+                                int min_grid_cells) {
   const int n_images = store.num_images();
   if (n_images == 0 || static_cast<int>(registered_indices.size()) != n_images)
     return -1;
@@ -133,18 +187,20 @@ int choose_next_resection_image(const TrackStore& store,
   for (int im = 0; im < n_images; ++im) {
     if (registered_indices[static_cast<size_t>(im)]) continue;
     if (skip_indices && (*skip_indices)[static_cast<size_t>(im)]) continue;
-        std::vector<int> track_ids;
-        store.get_image_track_observations(im, &track_ids, nullptr);
-        int count = 0;
-        for (int tid : track_ids) {
-            if (store.track_has_triangulated_xyz(tid)) ++count;
-        }
-        if (count > best_count) {
-            best_count = count;
-            best_image = im;
-        }
+    if (min_grid_cells > 0 && resection_image_grid_coverage(store, im, 4, 4) < min_grid_cells)
+      continue;
+    std::vector<int> track_ids;
+    store.get_image_track_observations(im, &track_ids, nullptr);
+    int count = 0;
+    for (int tid : track_ids) {
+      if (store.track_has_triangulated_xyz(tid)) ++count;
     }
-    return best_image;
+    if (count > best_count) {
+      best_count = count;
+      best_image = im;
+    }
+  }
+  return best_image;
 }
 
 }  // namespace sfm

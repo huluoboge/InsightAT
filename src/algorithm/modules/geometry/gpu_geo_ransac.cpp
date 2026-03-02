@@ -33,6 +33,9 @@
 #include <vector>
 #include <algorithm>
 
+#include <Eigen/Dense>
+#include <Eigen/SVD>
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration + globals
@@ -1113,6 +1116,108 @@ int gpu_ransac_F(const Match2D* m, int n, float mat[9], float thresh)
 int gpu_ransac_E(const Match2D* m, int n, float mat[9], float thresh)
 {
     return run_ransac(2, 8, m, n, mat, thresh);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PnP RANSAC (CPU path: DLT + SVD; GLSL path can be added later)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int pnp_dlt_from_6(const Point3D2D* six, const float K[9], float R[9], float t[3])
+{
+    Eigen::Matrix<double, 12, 12> A;
+    A.setZero();
+    for (int i = 0; i < 6; i++) {
+        double X = (double)six[i].x, Y = (double)six[i].y, Z = (double)six[i].z;
+        double u = (double)six[i].u, v = (double)six[i].v;
+        A.row(2*i+0) << -X, -Y, -Z, -1, 0, 0, 0, 0, u*X, u*Y, u*Z, u;
+        A.row(2*i+1) << 0, 0, 0, 0, -X, -Y, -Z, -1, v*X, v*Y, v*Z, v;
+    }
+    Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
+    const Eigen::VectorXd p_flat = svd.matrixV().col(11);
+    Eigen::Matrix<double, 3, 4> P_block;
+    P_block << p_flat(0), p_flat(1), p_flat(2), p_flat(3),
+               p_flat(4), p_flat(5), p_flat(6), p_flat(7),
+               p_flat(8), p_flat(9), p_flat(10), p_flat(11);
+    Eigen::Matrix3d Kinv;
+    Kinv << 1.0/(double)K[0], 0, -(double)K[2]/(double)K[0],
+            0, 1.0/(double)K[4], -(double)K[5]/(double)K[4], 0, 0, 1;
+    Eigen::Matrix<double, 3, 4> Rt_block = Kinv * P_block;
+    Eigen::Matrix3d R_eig = Rt_block.block<3,3>(0,0);
+    Eigen::JacobiSVD<Eigen::Matrix3d> svdR(R_eig, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    R_eig = svdR.matrixU() * svdR.matrixV().transpose();
+    if (R_eig.determinant() < 0) R_eig = -R_eig;
+    Eigen::Vector3d t_eig = Rt_block.block<3,1>(0,3);
+    for (int i = 0; i < 9; i++) R[i] = (float)R_eig(i/3, i%3);
+    t[0] = (float)t_eig(0); t[1] = (float)t_eig(1); t[2] = (float)t_eig(2);
+    return 0;
+}
+
+static int pnp_count_inliers(const Point3D2D* pts, int n,
+                             const float K[9], const float R[9], const float t[3],
+                             float thresh_sq, unsigned char* mask)
+{
+    Eigen::Matrix3d R_eig;
+    for (int i = 0; i < 9; i++) R_eig(i/3, i%3) = (double)R[i];
+    Eigen::Vector3d t_eig((double)t[0], (double)t[1], (double)t[2]);
+    double fx = (double)K[0], fy = (double)K[4], cx = (double)K[2], cy = (double)K[5];
+    int inliers = 0;
+    for (int i = 0; i < n; i++) {
+        Eigen::Vector3d X((double)pts[i].x, (double)pts[i].y, (double)pts[i].z);
+        Eigen::Vector3d p = R_eig * X + t_eig;
+        if (p(2) <= 1e-12) { if (mask) mask[i] = 0; continue; }
+        double u_pred = fx * p(0)/p(2) + cx, v_pred = fy * p(1)/p(2) + cy;
+        double err_sq = ((double)pts[i].u - u_pred)*((double)pts[i].u - u_pred)
+                      + ((double)pts[i].v - v_pred)*((double)pts[i].v - v_pred);
+        int in = (err_sq <= (double)thresh_sq) ? 1 : 0;
+        if (mask) mask[i] = (unsigned char)in;
+        if (in) inliers++;
+    }
+    return inliers;
+}
+
+int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9],
+                   float R_out[9], float t_out[3],
+                   float thresh, unsigned char* inlier_mask)
+{
+    if (!pts || n < 6 || !K || !R_out || !t_out) return -1;
+    if (s_num_iter <= 0) return -1;
+    const float thresh_sq = thresh;
+    int best_inliers = -1;
+    float best_R[9], best_t[3];
+    std::vector<int> sample(6);
+    for (int iter = 0; iter < s_num_iter; iter++) {
+        for (int i = 0; i < 6; i++) sample[i] = rand() % n;
+        Point3D2D six[6];
+        for (int i = 0; i < 6; i++) six[i] = pts[sample[i]];
+        float R[9], t[3];
+        if (pnp_dlt_from_6(six, K, R, t) != 0) continue;
+        std::vector<unsigned char> tmp_mask(static_cast<size_t>(n), 0);
+        int inl = pnp_count_inliers(pts, n, K, R, t, thresh_sq, tmp_mask.data());
+        if (inl > best_inliers) {
+            best_inliers = inl;
+            for (int i = 0; i < 9; i++) best_R[i] = R[i];
+            for (int i = 0; i < 3; i++) best_t[i] = t[i];
+        }
+    }
+    if (best_inliers < 0) return -1;
+    for (int i = 0; i < 9; i++) R_out[i] = best_R[i];
+    for (int i = 0; i < 3; i++) t_out[i] = best_t[i];
+    if (inlier_mask) {
+        Eigen::Matrix3d R_eig;
+        for (int i = 0; i < 9; i++) R_eig(i/3, i%3) = (double)best_R[i];
+        Eigen::Vector3d t_eig((double)best_t[0], (double)best_t[1], (double)best_t[2]);
+        double fx = (double)K[0], fy = (double)K[4], cx = (double)K[2], cy = (double)K[5];
+        for (int i = 0; i < n; i++) {
+            Eigen::Vector3d X((double)pts[i].x, (double)pts[i].y, (double)pts[i].z);
+            Eigen::Vector3d p = R_eig * X + t_eig;
+            if (p(2) <= 1e-12) { inlier_mask[i] = 0; continue; }
+            double u_pred = fx * p(0)/p(2) + cx, v_pred = fy * p(1)/p(2) + cy;
+            double err_sq = ((double)pts[i].u - u_pred)*((double)pts[i].u - u_pred)
+                          + ((double)pts[i].v - v_pred)*((double)pts[i].v - v_pred);
+            inlier_mask[i] = (err_sq <= (double)thresh_sq) ? 1 : 0;
+        }
+    }
+    return best_inliers;
 }
 
 }  /* extern "C" */

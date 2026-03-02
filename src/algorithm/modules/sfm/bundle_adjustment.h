@@ -74,5 +74,58 @@ bool pose_only_bundle(const std::vector<Eigen::Vector3d>& pts3d,
                       double* rmse_px = nullptr,
                       int max_iterations = 30);
 
+/// Single observation for global BA: image index, point index, 2D pixel.
+struct GlobalObservation {
+  int image_index = 0;
+  int point_index = 0;
+  double u = 0.0;
+  double v = 0.0;
+};
+
+/// Global BA input: N cameras (world-to-camera), M points, intrinsics per camera or shared.
+/// Camera 0 is fixed at identity. Intrinsics: if empty, use shared fx,fy,cx,cy for all.
+struct GlobalBAInput {
+  std::vector<Eigen::Matrix3d> poses_R;
+  std::vector<Eigen::Vector3d> poses_t;
+  std::vector<Eigen::Vector3d> points3d;
+  std::vector<GlobalObservation> observations;
+  double fx = 0.0;
+  double fy = 0.0;
+  double cx = 0.0;
+  double cy = 0.0;
+};
+
+struct GlobalBAResult {
+  bool success = false;
+  std::vector<Eigen::Matrix3d> poses_R;
+  std::vector<Eigen::Vector3d> poses_t;
+  std::vector<Eigen::Vector3d> points3d;
+  double rmse_px = 0.0;
+  int num_residuals = 0;
+};
+
+/**
+ * Global bundle adjustment: optimize all poses (except cam0 fixed) and all points.
+ * Uses sparse Schur when available; otherwise DENSE_QR for small problems.
+ */
+bool global_bundle(const GlobalBAInput& input,
+                   GlobalBAResult* result,
+                   int max_iterations = 50);
+
+/**
+ * Distortion-only BA: fix poses and points, optimize radial k1,k2 per camera.
+ * Each camera has its own (k1, k2). observations reference (image_index, point_index, u, v).
+ * Intrinsics fx,fy,cx,cy shared; k1, k2 passed in/out per image.
+ */
+bool distortion_only_bundle(const std::vector<Eigen::Matrix3d>& poses_R,
+                            const std::vector<Eigen::Vector3d>& poses_t,
+                            const std::vector<Eigen::Vector3d>& points3d,
+                            const std::vector<GlobalObservation>& observations,
+                            double fx, double fy, double cx, double cy,
+                            std::vector<double>* k1_per_camera,
+                            std::vector<double>* k2_per_camera,
+                            double* rmse_px = nullptr,
+                            int max_iterations = 20);
+
 }  // namespace sfm
 }  // namespace insight

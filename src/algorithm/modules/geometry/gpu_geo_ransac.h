@@ -133,6 +133,33 @@ int gpu_ransac_F(const Match2D* matches, int n, float mat[9], float thresh);
  */
 int gpu_ransac_E(const Match2D* matches, int n, float mat[9], float thresh);
 
+/* ── PnP (Resection) ───────────────────────────────────────────────────────── */
+
+/** 3D point (world/camera) + 2D observation (pixel) for PnP. */
+typedef struct {
+    float x, y, z;   /**< 3D point (world frame). */
+    float u, v;      /**< 2D observation (pixels). */
+} Point3D2D;
+
+/**
+ * PnP RANSAC: estimate camera pose (R, t) from 3D–2D correspondences.
+ *
+ * Minimal sample : 6 points (DLT).
+ * Error metric   : squared reprojection error in pixels.
+ *
+ * @param pts     Array of n 3D–2D correspondences (world frame, pixel coords).
+ * @param n       Number of correspondences (≥ 6).
+ * @param K       Row-major 3×3 camera matrix (fx, 0, cx; 0, fy, cy; 0, 0, 1).
+ * @param R_out   Output row-major 3×3 rotation (world to camera).
+ * @param t_out   Output translation (3 floats, world to camera).
+ * @param thresh  Inlier threshold – **squared** reprojection distance (e.g. 64 for 8 px).
+ * @param inlier_mask  Optional: if non-NULL, must be n bytes; set to 1 for inliers, 0 otherwise.
+ * @return        Inlier count of the best model, or –1 on error.
+ */
+int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9],
+                  float R_out[9], float t_out[3],
+                  float thresh, unsigned char* inlier_mask);
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

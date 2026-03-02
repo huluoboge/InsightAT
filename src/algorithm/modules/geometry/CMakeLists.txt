@@ -31,6 +31,8 @@ if(NOT EGL_FOUND)
     message(FATAL_ERROR "EGL not found. geo_ransac requires EGL for headless GPU compute.")
 endif()
 
+find_package(Eigen3 REQUIRED)
+
 # ── Library target ────────────────────────────────────────────────────────────
 add_library(geo_ransac STATIC
     gpu_geo_ransac.cpp
@@ -47,6 +49,7 @@ target_include_directories(geo_ransac
 target_link_libraries(geo_ransac
     PUBLIC
         EGL::EGL
+        Eigen3::Eigen
         ${OPENGL_LIBRARIES}
         ${GLEW_LIBRARIES}
 )
