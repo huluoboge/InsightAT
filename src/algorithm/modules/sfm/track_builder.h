@@ -31,21 +31,20 @@ namespace sfm {
  * @param inlier_mask    Per-match inlier (1) or outlier (0), size = num_matches
  * @param indices        Match feature indices, size num_matches*2 [idx1, idx2, ...]
  * @param coords_pixel   Match pixel coords, size num_matches*4 [x1,y1,x2,y2, ...]
- * @param scales         Optional scales per match, size num_matches*2 [s1,s2, ...]; if empty, 1.f is used
- * @param points3d       Optional 3D points for inliers, size 3*n_inliers (x,y,z per point); if null, track xyz = (0,0,0)
+ * @param scales         Optional scales per match, size num_matches*2 [s1,s2, ...]; if empty, 1.f
+ * is used
+ * @param points3d       Optional 3D points for inliers, size 3*n_inliers (x,y,z per point); if
+ * null, track xyz = (0,0,0)
  * @return               Number of tracks added
  */
-int build_tracks_from_pair_inliers(
-    TrackStore& store,
-    int image1_index,
-    int image2_index,
-    const std::vector<uint8_t>& inlier_mask,
-    const std::vector<uint16_t>& indices,
-    const std::vector<float>& coords_pixel,
-    const std::vector<float>& scales,
-    const std::vector<float>* points3d);
+int build_tracks_from_pair_inliers(TrackStore& store, int image1_index, int image2_index,
+                                   const std::vector<uint8_t>& inlier_mask,
+                                   const std::vector<uint16_t>& indices,
+                                   const std::vector<float>& coords_pixel,
+                                   const std::vector<float>& scales,
+                                   const std::vector<float>* points3d);
 
-}  // namespace sfm
-}  // namespace insight
+} // namespace sfm
+} // namespace insight
 
 #endif /* TRACK_BUILDER_H */

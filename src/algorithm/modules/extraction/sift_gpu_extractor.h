@@ -1,140 +1,86 @@
+/**
+ * @file  sift_gpu_extractor.h
+ * @brief SIFT GPU 特征提取：封装 SiftGPU 初始化与提取，支持 L2/RootSIFT 与网格分布。
+ */
+
 #pragma once
 
-#include <memory>
-#include <vector>
-#include <string>
-#include <cmath>
+#include <cstddef>
+
 #include <algorithm>
-#include <opencv2/core.hpp>
+#include <cmath>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <glog/logging.h>
+#include <opencv2/core.hpp>
+
 #include "SiftGPU/SiftGPU.h"
 
 namespace insight {
 namespace modules {
 
-/**
- * Descriptor normalization type
- * 
- * L2: Standard L2 normalization (default in original SIFT)
- * L1_ROOT: L1 normalize + element-wise square root (RootSIFT)
- *          Better matching performance as shown in:
- *          "Three things everyone should know to improve object retrieval"
- *          Arandjelovic & Zisserman, CVPR 2012
- */
+/** 描述子归一化类型：L2 或 L1-Root (RootSIFT)。 */
 enum class DescriptorNormalization {
-    L2,       // L2 normalization: d = d / ||d||_2
-    L1_ROOT   // L1-Root normalization: d = sqrt(d / ||d||_1)
+  L2,     ///< L2 归一化
+  L1_ROOT ///< L1 + 逐元开方 (RootSIFT)
 };
 
-/**
- * SIFT GPU Parameters (pure extraction only)
- */
+/** SIFT GPU 参数（仅提取）。 */
 struct SiftGPUParams {
-    int nOctiveFrom = 0;        // Starting octave 
-    int nOctives = -1;           // Number of octaves (-1 = auto)
-    int nLevel = 3;              // Levels per octave
-    double dPeak = 0.02;         // Peak threshold (divided by nLevel)
-    int nMaxFeatures = 8000;     // Maximum features to extract
-    bool adaptDarkness = true;   // Adapt to dark images
-    bool useCuda = false;        // Use CUDA backend when available (faster than GLSL)
-    // Feature truncation method:
-    //   0 = -tc  (keep highest levels: large-scale stable features, delete after extraction)
-    //   1 = -tc2 (keep highest levels: large-scale stable features, faster - stop during extraction)
-    //   2 = -tc3 (keep lowest levels: small-scale dense features)
-    int truncateMethod = 0;
+  int n_octave_from = 0;      ///< 起始 octave
+  int n_octaves = -1;         ///< octave 数（-1 自动）
+  int n_level = 3;            ///< 每 octave 层数
+  double d_peak = 0.02;       ///< 峰值阈值（会除以 n_level）
+  int n_max_features = 8000;  ///< 最大特征数
+  bool adapt_darkness = true; ///< 适应暗图
+  bool use_cuda = false;      ///< 使用 CUDA 后端
+  int truncate_method = 0;    ///< 0=-tc, 1=-tc2, 2=-tc3
 };
 
 /**
- * SIFT GPU Feature Extractor
- * 
- * Encapsulates SiftGPU initialization and feature extraction.
- * Thread-safe: each instance owns its own GPU context.
+ * SIFT GPU 特征提取器，每实例独占 GPU 上下文，可多线程各建实例。
  */
 class SiftGPUExtractor {
 public:
-    using SiftGPUPtr = std::shared_ptr<SiftGPU>;
-    
-    SiftGPUExtractor(const SiftGPUParams& params);
-    ~SiftGPUExtractor() = default;
-    
-    // Initialize GPU context (must be called before extract)
-    bool initialize();
-    
-    // Reconfigure SIFT parameters (for dual-output mode)
-    // WARNING: SiftGPU uses global state, so reconfiguration affects the instance
-    bool reconfigure(const SiftGPUParams& new_params);
-    
-    // Extract features from image (returns float descriptors only)
-    // Returns number of features extracted
-    int extract(const cv::Mat& image,
-                std::vector<SiftGPU::SiftKeypoint>& keypoints,
-                std::vector<float>& descriptors);
-    
-    // Check if GPU is available
-    bool isInitialized() const { return initialized_; }
-    
+  using SiftGPUPtr = std::shared_ptr<SiftGPU>;
+
+  explicit SiftGPUExtractor(const SiftGPUParams& params);
+  ~SiftGPUExtractor() = default;
+
+  bool initialize();
+  bool reconfigure(const SiftGPUParams& new_params);
+
+  /** 从图像提取特征，返回提取数量。 */
+  int extract(const cv::Mat& image, std::vector<SiftGPU::SiftKeypoint>& keypoints,
+              std::vector<float>& descriptors);
+
+  bool is_initialized() const { return initialized_; }
+
 private:
-    SiftGPUParams params_;
-    SiftGPUPtr sift_gpu_;
-    bool initialized_ = false;
-    
-    // Create SiftGPU instance with parameters
-    SiftGPUPtr createSiftGPU(const SiftGPUParams& param);
+  SiftGPUParams params_;
+  SiftGPUPtr sift_gpu_;
+  bool initialized_ = false;
+
+  SiftGPUPtr create_sift_gpu(const SiftGPUParams& param);
 };
 
-/**
- * Helper Functions - Exposed for CPU Multi-threading
- * These functions can be called independently from the extraction pipeline
- */
+/** 对关键点与描述子做网格分布（可在 CPU 线程中调用）。 */
+void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
+                                std::vector<float>& descriptors, int image_width, int image_height,
+                                int grid_size = 32, int max_per_cell = 2,
+                                bool keep_orientation = true);
 
-/**
- * Apply feature distribution to keypoints and descriptors
- * This function can be called from CPU threads without GPU dependency
- * 
- * @param keypoints Input/output keypoints
- * @param descriptors Input/output float descriptors (128-dim per keypoint)
- * @param image_width Image width
- * @param image_height Image height
- * @param grid_size Grid cell size (default: 32 pixels)
- * @param max_per_cell Max features per cell (default: 2)
- * @param keep_orientation Keep multi-orientation features (default: true)
- */
-void ApplyFeatureDistribution(
-    std::vector<SiftGPU::SiftKeypoint>& keypoints,
-    std::vector<float>& descriptors,
-    int image_width,
-    int image_height,
-    int grid_size = 32,
-    int max_per_cell = 2,
-    bool keep_orientation = true);
+void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
+                                std::vector<unsigned char>& descriptors, int image_width,
+                                int image_height, int grid_size = 32, int max_per_cell = 2,
+                                bool keep_orientation = true);
 
-/**
- * Apply feature distribution to keypoints and uint8 descriptors
- */
-void ApplyFeatureDistribution(
-    std::vector<SiftGPU::SiftKeypoint>& keypoints,
-    std::vector<unsigned char>& descriptors,
-    int image_width,
-    int image_height,
-    int grid_size = 32,
-    int max_per_cell = 2,
-    bool keep_orientation = true);
-
-/**
- * L2 normalize descriptors (exposed for external use)
- */
-void L2NormalizeDescriptors(std::vector<float>& descriptors, int dim = 128);
-
-/**
- * L1-Root normalize descriptors (RootSIFT, exposed for external use)
- */
-void L1RootNormalizeDescriptors(std::vector<float>& descriptors, int dim = 128);
-
-/**
- * Convert float descriptors to uint8 (exposed for external use)
- */
-std::vector<unsigned char> ConvertDescriptorsToUChar(
-    const std::vector<float>& descriptors_float, int dim = 128);
+void l2_normalize_descriptors(std::vector<float>& descriptors, int dim = 128);
+void l1_root_normalize_descriptors(std::vector<float>& descriptors, int dim = 128);
+std::vector<unsigned char> convert_descriptors_to_uchar(const std::vector<float>& descriptors_float,
+                                                        int dim = 128);
 
 } // namespace modules
 } // namespace insight

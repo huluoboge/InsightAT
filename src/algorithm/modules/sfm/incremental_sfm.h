@@ -19,8 +19,8 @@ struct InitialPairResult {
   bool success = false;
   uint32_t image1_id = 0;
   uint32_t image2_id = 0;
-  Eigen::Matrix3d R;   ///< Cam2 rotation w.r.t. cam1
-  Eigen::Vector3d t;  ///< Cam2 translation w.r.t. cam1
+  Eigen::Matrix3d R; ///< Cam2 rotation w.r.t. cam1
+  Eigen::Vector3d t; ///< Cam2 translation w.r.t. cam1
 };
 
 /**
@@ -34,15 +34,10 @@ struct InitialPairResult {
  * @param image2_id_out     Optional: set to the chosen second image id.
  * @return true if a pair was chosen and the store has at least min_tracks_after tracks.
  */
-bool run_initial_pair_loop(const std::string& pairs_json_path,
-                           const std::string& geo_dir,
-                           const std::string& match_dir,
-                           double fx, double fy, double cx, double cy,
-                           TrackStore* store_out,
-                           Eigen::Matrix3d* R1_out,
-                           Eigen::Vector3d* t1_out,
-                           int min_tracks_after = 20,
-                           uint32_t* image1_id_out = nullptr,
+bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string& geo_dir,
+                           const std::string& match_dir, double fx, double fy, double cx, double cy,
+                           TrackStore* store_out, Eigen::Matrix3d* R1_out, Eigen::Vector3d* t1_out,
+                           int min_tracks_after = 20, uint32_t* image1_id_out = nullptr,
                            uint32_t* image2_id_out = nullptr);
 
 /**
@@ -63,12 +58,9 @@ bool run_initial_pair_loop(const std::string& pairs_json_path,
  * @param min_correspondences  Skip image if 3D–2D count below this (default 6).
  * @return Number of newly registered images.
  */
-int run_resection_loop(TrackStore* store,
-                      std::vector<Eigen::Matrix3d>* poses_R,
-                      std::vector<Eigen::Vector3d>* poses_t,
-                      std::vector<bool>* registered,
-                      double fx, double fy, double cx, double cy,
-                      int min_correspondences = 6);
+int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                       std::vector<Eigen::Vector3d>* poses_t, std::vector<bool>* registered,
+                       double fx, double fy, double cx, double cy, int min_correspondences = 6);
 
-}  // namespace sfm
-}  // namespace insight
+} // namespace sfm
+} // namespace insight

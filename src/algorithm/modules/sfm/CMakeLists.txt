@@ -18,10 +18,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 find_package(Eigen3 REQUIRED)
-
-if(INSIGHTAT_USE_CERES)
-  find_package(Ceres REQUIRED)
-endif()
+find_package(Ceres REQUIRED)
 
 if(NOT OPENGL_FOUND)
     find_package(OpenGL REQUIRED)
@@ -64,16 +61,14 @@ target_link_libraries(sfm_module
     PUBLIC
         Eigen3::Eigen
         EGL::EGL
+        Ceres::ceres
         ${OPENGL_LIBRARIES}
         ${GLEW_LIBRARIES}
     PRIVATE
         glog::glog
 )
 
-if(INSIGHTAT_USE_CERES)
-  target_compile_definitions(sfm_module PUBLIC INSIGHTAT_USE_CERES)
-  target_link_libraries(sfm_module PUBLIC Ceres::ceres)
-endif()
+target_compile_definitions(sfm_module PUBLIC INSIGHTAT_USE_CERES)
 
 target_compile_features(sfm_module PUBLIC cxx_std_17)
 set_property(TARGET sfm_module PROPERTY FOLDER "InsightAT/Modules")

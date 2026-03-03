@@ -1,0 +1,12 @@
+# InsightAT – matches doc/design/02_coding_style.md and README
+BasedOnStyle: LLVM
+Language: Cpp
+IndentWidth: 2
+ColumnLimit: 100
+AccessModifierOffset: -2
+AlignAfterOpenBracket: Align
+AlignTrailingComments: true
+BreakBeforeBraces: Attach
+FixNamespaceComments: true
+PointerAlignment: Left
+SortIncludes: true

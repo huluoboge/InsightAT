@@ -24,10 +24,10 @@ struct Observation2d {
 
 /// Two-view BA input: 2 poses (cam1 = identity), N 3D points, 2N observations.
 struct TwoViewBAInput {
-  Eigen::Matrix3d R;   ///< Rotation of cam2 w.r.t. cam1
-  Eigen::Vector3d t;  ///< Translation of cam2 w.r.t. cam1 (unit norm)
+  Eigen::Matrix3d R; ///< Rotation of cam2 w.r.t. cam1
+  Eigen::Vector3d t; ///< Translation of cam2 w.r.t. cam1 (unit norm)
   std::vector<Eigen::Vector3d> points3d;
-  std::vector<Observation2d> observations;  ///< size = sum over points of (2 obs per point)
+  std::vector<Observation2d> observations; ///< size = sum over points of (2 obs per point)
   double fx = 0.0;
   double fy = 0.0;
   double cx = 0.0;
@@ -49,9 +49,7 @@ struct TwoViewBAResult {
  * Cam1 is fixed at identity; cam2 and all points are optimized.
  * @return true if optimization converged and result is filled.
  */
-bool two_view_bundle(const TwoViewBAInput& input,
-                     TwoViewBAResult* result,
-                     int max_iterations = 50);
+bool two_view_bundle(const TwoViewBAInput& input, TwoViewBAResult* result, int max_iterations = 50);
 
 /**
  * Pose-only BA: fix 3D points, optimize single camera pose (for resection).
@@ -65,13 +63,9 @@ bool two_view_bundle(const TwoViewBAInput& input,
  * @return true if converged.
  */
 bool pose_only_bundle(const std::vector<Eigen::Vector3d>& pts3d,
-                      const std::vector<Eigen::Vector2d>& pts2d,
-                      double fx, double fy, double cx, double cy,
-                      const Eigen::Matrix3d& R_in,
-                      const Eigen::Vector3d& t_in,
-                      Eigen::Matrix3d* R_out,
-                      Eigen::Vector3d* t_out,
-                      double* rmse_px = nullptr,
+                      const std::vector<Eigen::Vector2d>& pts2d, double fx, double fy, double cx,
+                      double cy, const Eigen::Matrix3d& R_in, const Eigen::Vector3d& t_in,
+                      Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out, double* rmse_px = nullptr,
                       int max_iterations = 30);
 
 /// Single observation for global BA: image index, point index, 2D pixel.
@@ -108,9 +102,7 @@ struct GlobalBAResult {
  * Global bundle adjustment: optimize all poses (except cam0 fixed) and all points.
  * Uses sparse Schur when available; otherwise DENSE_QR for small problems.
  */
-bool global_bundle(const GlobalBAInput& input,
-                   GlobalBAResult* result,
-                   int max_iterations = 50);
+bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_iterations = 50);
 
 /**
  * Distortion-only BA: fix poses and points, optimize radial k1,k2 per camera.
@@ -120,12 +112,10 @@ bool global_bundle(const GlobalBAInput& input,
 bool distortion_only_bundle(const std::vector<Eigen::Matrix3d>& poses_R,
                             const std::vector<Eigen::Vector3d>& poses_t,
                             const std::vector<Eigen::Vector3d>& points3d,
-                            const std::vector<GlobalObservation>& observations,
-                            double fx, double fy, double cx, double cy,
-                            std::vector<double>* k1_per_camera,
-                            std::vector<double>* k2_per_camera,
-                            double* rmse_px = nullptr,
+                            const std::vector<GlobalObservation>& observations, double fx,
+                            double fy, double cx, double cy, std::vector<double>* k1_per_camera,
+                            std::vector<double>* k2_per_camera, double* rmse_px = nullptr,
                             int max_iterations = 20);
 
-}  // namespace sfm
-}  // namespace insight
+} // namespace sfm
+} // namespace insight

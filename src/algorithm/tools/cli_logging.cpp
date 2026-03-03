@@ -1,7 +1,7 @@
 #include "cli_logging.h"
-#include <glog/logging.h>
 #include <algorithm>
 #include <cctype>
+#include <glog/logging.h>
 #include <iostream>
 
 namespace insight {
@@ -15,10 +15,14 @@ int ParseLevel(const std::string& s) {
   for (char c : s) {
     lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
   }
-  if (lower == "error") return 2;
-  if (lower == "warn" || lower == "warning") return 1;
-  if (lower == "info") return 0;
-  if (lower == "debug") return 0;  // minloglevel=INFO, FLAGS_v set separately
+  if (lower == "error")
+    return 2;
+  if (lower == "warn" || lower == "warning")
+    return 1;
+  if (lower == "info")
+    return 0;
+  if (lower == "debug")
+    return 0; // minloglevel=INFO, FLAGS_v set separately
   return -1;
 }
 
@@ -31,7 +35,7 @@ bool IsDebugLevel(const std::string& s) {
   return lower == "debug";
 }
 
-}  // namespace
+} // namespace
 
 void ApplyLogLevel(bool verbose, bool quiet, const std::string& log_level) {
   if (!log_level.empty()) {
@@ -46,19 +50,19 @@ void ApplyLogLevel(bool verbose, bool quiet, const std::string& log_level) {
   }
 
   if (quiet) {
-    FLAGS_minloglevel = 2;  // ERROR
+    FLAGS_minloglevel = 2; // ERROR
     FLAGS_v = 0;
     return;
   }
   if (verbose) {
-    FLAGS_minloglevel = 0;  // INFO
+    FLAGS_minloglevel = 0; // INFO
     FLAGS_v = 0;
     return;
   }
 
-  FLAGS_minloglevel = 1;  // WARNING
+  FLAGS_minloglevel = 1; // WARNING
   FLAGS_v = 0;
 }
 
-}  // namespace tools
-}  // namespace insight
+} // namespace tools
+} // namespace insight

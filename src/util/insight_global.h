@@ -11,6 +11,6 @@ namespace insight {
 /** 进度回调：返回值 0=继续, 1=停止, 2=暂停 */
 typedef int progress_fun(float percent, const char* msg);
 
-}  // namespace insight
+} // namespace insight
 
-#endif  // INSIGHT_UTIL_GLOBAL_H
+#endif // INSIGHT_UTIL_GLOBAL_H

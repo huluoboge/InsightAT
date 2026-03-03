@@ -60,8 +60,8 @@ set(ALGORITHM_SOURCES
     modules/extraction/sift_gpu_extractor.cpp
     modules/extraction/feature_distribution.h
     modules/extraction/feature_distribution.cpp
-    modules/extraction/KeyPointsNode.h
-    modules/extraction/KeyPointsNode.cpp
+    modules/extraction/key_points_node.h
+    modules/extraction/key_points_node.cpp
     
     # Modules - Feature Matching
     modules/matching/sift_matcher.h

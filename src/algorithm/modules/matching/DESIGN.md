@@ -309,7 +309,7 @@ public:
     );
     
     // 引导式匹配（使用预计算矩阵）
-    MatchResult matchGuided(
+    MatchResult match_guided(
         const FeatureData& features1,
         const FeatureData& features2,
         const Eigen::Matrix3f* F = nullptr,

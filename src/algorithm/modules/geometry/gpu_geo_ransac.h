@@ -53,16 +53,16 @@ extern "C" {
 
 /** A 2-D point correspondence between two images. */
 typedef struct {
-    float x1, y1;   /**< Feature location in image 1 (pixels or normalised). */
-    float x2, y2;   /**< Feature location in image 2. */
+  float x1, y1; /**< Feature location in image 1 (pixels or normalised). */
+  float x2, y2; /**< Feature location in image 2. */
 } Match2D;
 
 /* ── Configuration ──────────────────────────────────────────────────────── */
 
 /** Optional runtime tuning – zero-initialise for built-in defaults. */
 typedef struct {
-    int num_iterations; /**< RANSAC iterations (0 → default 3000). */
-    int local_size_x;   /**< Compute-shader workgroup X size (0 → default 64). */
+  int num_iterations; /**< RANSAC iterations (0 → default 3000). */
+  int local_size_x;   /**< Compute-shader workgroup X size (0 → default 64). */
 } GeoRansacConfig;
 
 /* ── Life-cycle ─────────────────────────────────────────────────────────── */
@@ -72,7 +72,7 @@ typedef struct {
  * @param cfg  NULL for built-in defaults.
  * @return     0 on success, negative error code on failure.
  */
-int  gpu_geo_init(const GeoRansacConfig* cfg);
+int gpu_geo_init(const GeoRansacConfig* cfg);
 
 /** Release all GPU resources and terminate the EGL context. */
 void gpu_geo_shutdown(void);
@@ -137,8 +137,8 @@ int gpu_ransac_E(const Match2D* matches, int n, float mat[9], float thresh);
 
 /** 3D point (world/camera) + 2D observation (pixel) for PnP. */
 typedef struct {
-    float x, y, z;   /**< 3D point (world frame). */
-    float u, v;      /**< 2D observation (pixels). */
+  float x, y, z; /**< 3D point (world frame). */
+  float u, v;    /**< 2D observation (pixels). */
 } Point3D2D;
 
 /**
@@ -156,12 +156,11 @@ typedef struct {
  * @param inlier_mask  Optional: if non-NULL, must be n bytes; set to 1 for inliers, 0 otherwise.
  * @return        Inlier count of the best model, or –1 on error.
  */
-int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9],
-                  float R_out[9], float t_out[3],
-                  float thresh, unsigned char* inlier_mask);
+int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9], float R_out[9], float t_out[3],
+                   float thresh, unsigned char* inlier_mask);
 
 #ifdef __cplusplus
-}  /* extern "C" */
+} /* extern "C" */
 #endif
 
 #endif /* GPU_GEO_RANSAC_H */

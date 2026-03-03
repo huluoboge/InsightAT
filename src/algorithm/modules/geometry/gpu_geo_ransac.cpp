@@ -20,40 +20,40 @@
 
 #include "gpu_geo_ransac.h"
 
-#include <GL/glew.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <GL/glew.h>
 #include <time.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
 #include <string>
 #include <vector>
-#include <algorithm>
 
 #include <Eigen/Dense>
 #include <Eigen/SVD>
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration + globals
 // ─────────────────────────────────────────────────────────────────────────────
 
-static int s_num_iter   = 1000;
+static int s_num_iter = 1000;
 static int s_local_size = 64;
-static int s_verbose    = 0;   // enable per-call GL timer query profiling
-static int s_solver     = 1;   // 0 = full Jacobi  1 = Cholesky inverse iteration
+static int s_verbose = 0; // enable per-call GL timer query profiling
+static int s_solver = 1;  // 0 = full Jacobi  1 = Cholesky inverse iteration
 
-static EGLDisplay  s_egl_dpy  = EGL_NO_DISPLAY;
-static EGLContext  s_egl_ctx  = EGL_NO_CONTEXT;
-static EGLSurface  s_egl_surf = EGL_NO_SURFACE;
+static EGLDisplay s_egl_dpy = EGL_NO_DISPLAY;
+static EGLContext s_egl_ctx = EGL_NO_CONTEXT;
+static EGLSurface s_egl_surf = EGL_NO_SURFACE;
 
-static GLuint s_prog       = 0;
+static GLuint s_prog = 0;
+static GLuint s_prog_pnp = 0;
 static GLuint s_ssbo_match = 0;
-static GLuint s_ssbo_idx   = 0;
-static GLuint s_ssbo_res   = 0;
+static GLuint s_ssbo_idx = 0;
+static GLuint s_ssbo_res = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compute-shader GLSL template
@@ -493,35 +493,91 @@ void main()
 )GLSL";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PnP RANSAC: GPU inlier counting (CPU does 6-point DLT per iteration)
+// Input: points (5 floats per point: x,y,z,u,v), K, per-iteration R[9]+t[3].
+// Output: one inlier count per iteration.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static const char* SHADER_TEMPLATE_PNP = R"GLSL(
+#version 430
+#define NUM_ITER  %%NUM_ITER%%
+#define LOCAL_SIZE %%LOCAL_SIZE%%
+layout(local_size_x = LOCAL_SIZE) in;
+
+// Points: 5 floats per point (x,y,z,u,v), n points
+layout(std430, binding=0) readonly buffer PointsBuf { float points[]; };
+layout(std430, binding=1) readonly buffer RtBuf    { float rt[]; };      // 12 per iter: R[9], t[3]
+layout(std430, binding=2) writeonly buffer ResBuf   { float inlier_count[]; };
+
+uniform int   u_n;
+uniform float u_thresh_sq;
+uniform float u_fx;
+uniform float u_fy;
+uniform float u_cx;
+uniform float u_cy;
+
+void main() {
+  uint tid = gl_GlobalInvocationID.x;
+  if (tid >= uint(NUM_ITER)) return;
+
+  float R[9];
+  float t[3];
+  int base = int(tid) * 12;
+  for (int i = 0; i < 9; i++) R[i] = rt[base + i];
+  t[0] = rt[base + 9];  t[1] = rt[base + 10];  t[2] = rt[base + 11];
+
+  int cnt = 0;
+  for (int i = 0; i < u_n; i++) {
+    float X = points[i*5 + 0], Y = points[i*5 + 1], Z = points[i*5 + 2];
+    float u_obs = points[i*5 + 3], v_obs = points[i*5 + 4];
+    float p0 = R[0]*X + R[1]*Y + R[2]*Z + t[0];
+    float p1 = R[3]*X + R[4]*Y + R[5]*Z + t[1];
+    float p2 = R[6]*X + R[7]*Y + R[8]*Z + t[2];
+    if (p2 <= 1e-12) continue;
+    float u_pred = u_fx * (p0 / p2) + u_cx;
+    float v_pred = u_fy * (p1 / p2) + u_cy;
+    float dx = u_obs - u_pred, dy = v_obs - v_pred;
+    if (dx*dx + dy*dy <= u_thresh_sq) cnt++;
+  }
+  inlier_count[int(tid)] = float(cnt);
+}
+)GLSL";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CPU helpers – 3×3 matrix operations for Hartley normalization
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline static void mat3_mul(const double A[9], const double B[9], double C[9])
-{
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            C[i*3+j] = 0.0;
-            for (int k = 0; k < 3; k++) C[i*3+j] += A[i*3+k] * B[k*3+j];
-        }
+inline static void mat3_mul(const double A[9], const double B[9], double C[9]) {
+  for (int i = 0; i < 3; i++)
+    for (int j = 0; j < 3; j++) {
+      C[i * 3 + j] = 0.0;
+      for (int k = 0; k < 3; k++)
+        C[i * 3 + j] += A[i * 3 + k] * B[k * 3 + j];
+    }
 }
 
-inline static void mat3_transpose(const double A[9], double At[9])
-{
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) At[i*3+j] = A[j*3+i];
+inline static void mat3_transpose(const double A[9], double At[9]) {
+  for (int i = 0; i < 3; i++)
+    for (int j = 0; j < 3; j++)
+      At[i * 3 + j] = A[j * 3 + i];
 }
 
 // Inverts the Hartley normalisation matrix T:
 //   T = [[s, 0, -s*cx], [0, s, -s*cy], [0, 0, 1]]
 //   T^{-1} = [[1/s, 0, cx], [0, 1/s, cy], [0, 0, 1]]
-inline static void hartley_inverse(const double T[9], double Ti[9])
-{
-    double s  = T[0];           // T[0] = scale s ≠ 0
-    double cx = -T[2] / s;      // T[2] = -s*cx
-    double cy = -T[5] / s;
-    Ti[0]=1.0/s; Ti[1]=0.0;    Ti[2]=cx;
-    Ti[3]=0.0;   Ti[4]=1.0/s;  Ti[5]=cy;
-    Ti[6]=0.0;   Ti[7]=0.0;    Ti[8]=1.0;
+inline static void hartley_inverse(const double T[9], double Ti[9]) {
+  double s = T[0];       // T[0] = scale s ≠ 0
+  double cx = -T[2] / s; // T[2] = -s*cx
+  double cy = -T[5] / s;
+  Ti[0] = 1.0 / s;
+  Ti[1] = 0.0;
+  Ti[2] = cx;
+  Ti[3] = 0.0;
+  Ti[4] = 1.0 / s;
+  Ti[5] = cy;
+  Ti[6] = 0.0;
+  Ti[7] = 0.0;
+  Ti[8] = 1.0;
 }
 
 /**
@@ -529,177 +585,179 @@ inline static void hartley_inverse(const double T[9], double Ti[9])
  * the transformed point set has zero centroid and RMS distance √2.
  * Returns scale s and centroid (cx, cy).
  */
-static void hartley_norm(const Match2D* pts, int n, bool use_p2,
-                         double T[9])
-{
-    double cx = 0.0, cy = 0.0;
-    for (int i = 0; i < n; i++) {
-        cx += use_p2 ? pts[i].x2 : pts[i].x1;
-        cy += use_p2 ? pts[i].y2 : pts[i].y1;
-    }
-    cx /= n; cy /= n;
+static void hartley_norm(const Match2D* pts, int n, bool use_p2, double T[9]) {
+  double cx = 0.0, cy = 0.0;
+  for (int i = 0; i < n; i++) {
+    cx += use_p2 ? pts[i].x2 : pts[i].x1;
+    cy += use_p2 ? pts[i].y2 : pts[i].y1;
+  }
+  cx /= n;
+  cy /= n;
 
-    double rms = 0.0;
-    for (int i = 0; i < n; i++) {
-        double dx = (use_p2 ? pts[i].x2 : pts[i].x1) - cx;
-        double dy = (use_p2 ? pts[i].y2 : pts[i].y1) - cy;
-        rms += dx*dx + dy*dy;
-    }
-    rms = std::sqrt(rms / n);
-    if (rms < 1e-10) rms = 1.0;
+  double rms = 0.0;
+  for (int i = 0; i < n; i++) {
+    double dx = (use_p2 ? pts[i].x2 : pts[i].x1) - cx;
+    double dy = (use_p2 ? pts[i].y2 : pts[i].y1) - cy;
+    rms += dx * dx + dy * dy;
+  }
+  rms = std::sqrt(rms / n);
+  if (rms < 1e-10)
+    rms = 1.0;
 
-    double s = std::sqrt(2.0) / rms;
-    T[0]=s;   T[1]=0.0; T[2]=-s*cx;
-    T[3]=0.0; T[4]=s;   T[5]=-s*cy;
-    T[6]=0.0; T[7]=0.0; T[8]=1.0;
+  double s = std::sqrt(2.0) / rms;
+  T[0] = s;
+  T[1] = 0.0;
+  T[2] = -s * cx;
+  T[3] = 0.0;
+  T[4] = s;
+  T[5] = -s * cy;
+  T[6] = 0.0;
+  T[7] = 0.0;
+  T[8] = 1.0;
 }
 
 /** Apply Hartley normalization to a copy of the matches. */
-static std::vector<Match2D> normalize_matches(const Match2D* src, int n,
-                                               double T1[9], double T2[9])
-{
-    hartley_norm(src, n, false, T1);
-    hartley_norm(src, n, true,  T2);
+static std::vector<Match2D> normalize_matches(const Match2D* src, int n, double T1[9],
+                                              double T2[9]) {
+  hartley_norm(src, n, false, T1);
+  hartley_norm(src, n, true, T2);
 
-    std::vector<Match2D> out(n);
-    for (int i = 0; i < n; i++) {
-        double x1 = T1[0]*src[i].x1 + T1[2];
-        double y1 = T1[4]*src[i].y1 + T1[5];
-        double x2 = T2[0]*src[i].x2 + T2[2];
-        double y2 = T2[4]*src[i].y2 + T2[5];
-        out[i] = {(float)x1, (float)y1, (float)x2, (float)y2};
-    }
-    return out;
+  std::vector<Match2D> out(n);
+  for (int i = 0; i < n; i++) {
+    double x1 = T1[0] * src[i].x1 + T1[2];
+    double y1 = T1[4] * src[i].y1 + T1[5];
+    double x2 = T2[0] * src[i].x2 + T2[2];
+    double y2 = T2[4] * src[i].y2 + T2[5];
+    out[i] = {(float)x1, (float)y1, (float)x2, (float)y2};
+  }
+  return out;
 }
 
 /** Denormalize Homography:  H = T2^{-1} * Hn * T1  */
-static void denorm_H(const double T1[9], const double T2[9],
-                     const float Hn[9], float H[9])
-{
-    double T2i[9];
-    hartley_inverse(T2, T2i);
+static void denorm_H(const double T1[9], const double T2[9], const float Hn[9], float H[9]) {
+  double T2i[9];
+  hartley_inverse(T2, T2i);
 
-    double tmp[9], res[9];
-    double Hn_d[9];
-    for (int i = 0; i < 9; i++) Hn_d[i] = Hn[i];
+  double tmp[9], res[9];
+  double Hn_d[9];
+  for (int i = 0; i < 9; i++)
+    Hn_d[i] = Hn[i];
 
-    mat3_mul(T2i, Hn_d, tmp);
-    mat3_mul(tmp,  T1,  res);
+  mat3_mul(T2i, Hn_d, tmp);
+  mat3_mul(tmp, T1, res);
 
-    for (int i = 0; i < 9; i++) H[i] = (float)(res[i] / res[8]);
+  for (int i = 0; i < 9; i++)
+    H[i] = (float)(res[i] / res[8]);
 }
 
 /** Denormalize Fundamental / Essential matrix:  F = T2ᵀ * Fn * T1  */
-static void denorm_FE(const double T1[9], const double T2[9],
-                      const float Fn[9], float F[9])
-{
-    double T2t[9];
-    mat3_transpose(T2, T2t);
+static void denorm_FE(const double T1[9], const double T2[9], const float Fn[9], float F[9]) {
+  double T2t[9];
+  mat3_transpose(T2, T2t);
 
-    double tmp[9], res[9];
-    double Fn_d[9];
-    for (int i = 0; i < 9; i++) Fn_d[i] = Fn[i];
+  double tmp[9], res[9];
+  double Fn_d[9];
+  for (int i = 0; i < 9; i++)
+    Fn_d[i] = Fn[i];
 
-    mat3_mul(T2t,  Fn_d, tmp);
-    mat3_mul(tmp,   T1,  res);
+  mat3_mul(T2t, Fn_d, tmp);
+  mat3_mul(tmp, T1, res);
 
-    for (int i = 0; i < 9; i++) F[i] = (float)res[i];
+  for (int i = 0; i < 9; i++)
+    F[i] = (float)res[i];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EGL headless context initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
-static bool check_egl(const char* msg)
-{
-    EGLint err = eglGetError();
-    if (err != EGL_SUCCESS) {
-        fprintf(stderr, "[gpu_geo] EGL error 0x%04x at %s\n", err, msg);
-        return false;
-    }
-    return true;
+static bool check_egl(const char* msg) {
+  EGLint err = eglGetError();
+  if (err != EGL_SUCCESS) {
+    fprintf(stderr, "[gpu_geo] EGL error 0x%04x at %s\n", err, msg);
+    return false;
+  }
+  return true;
 }
 
-static bool check_gl(const char* msg)
-{
-    GLenum err = glGetError();
-    if (err != GL_NO_ERROR) {
-        fprintf(stderr, "[gpu_geo] GL error 0x%04x at %s\n", err, msg);
-        return false;
-    }
-    return true;
+static bool check_gl(const char* msg) {
+  GLenum err = glGetError();
+  if (err != GL_NO_ERROR) {
+    fprintf(stderr, "[gpu_geo] GL error 0x%04x at %s\n", err, msg);
+    return false;
+  }
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shader assembly, compile, link
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::string build_shader_src(int num_iter, int local_size)
-{
-    std::string src = SHADER_TEMPLATE;
-
-    // Replace %%NUM_ITER%%
-    {
-        std::string tok = "%%NUM_ITER%%";
-        std::string val = std::to_string(num_iter);
-        size_t pos;
-        while ((pos = src.find(tok)) != std::string::npos)
-            src.replace(pos, tok.size(), val);
-    }
-    // Replace %%LOCAL_SIZE%%
-    {
-        std::string tok = "%%LOCAL_SIZE%%";
-        std::string val = std::to_string(local_size);
-        size_t pos;
-        while ((pos = src.find(tok)) != std::string::npos)
-            src.replace(pos, tok.size(), val);
-    }
-    return src;
+static std::string build_shader_src(int num_iter, int local_size) {
+  std::string src = SHADER_TEMPLATE;
+  std::string tok_iter = "%%NUM_ITER%%";
+  std::string tok_size = "%%LOCAL_SIZE%%";
+  size_t pos;
+  while ((pos = src.find(tok_iter)) != std::string::npos)
+    src.replace(pos, tok_iter.size(), std::to_string(num_iter));
+  while ((pos = src.find(tok_size)) != std::string::npos)
+    src.replace(pos, tok_size.size(), std::to_string(local_size));
+  return src;
 }
 
-static bool compile_shader(GLuint shader, const char* src)
-{
-    glShaderSource(shader, 1, &src, NULL);
-    glCompileShader(shader);
-
-    GLint ok = GL_FALSE;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        GLint len = 0;
-        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
-        std::string log(len, '\0');
-        glGetShaderInfoLog(shader, len, NULL, &log[0]);
-        fprintf(stderr, "[gpu_geo] Shader compile error:\n%s\n", log.c_str());
-        return false;
-    }
-    return true;
+static std::string build_pnp_shader_src(int num_iter, int local_size) {
+  std::string src = SHADER_TEMPLATE_PNP;
+  std::string tok_iter = "%%NUM_ITER%%";
+  std::string tok_size = "%%LOCAL_SIZE%%";
+  size_t pos;
+  while ((pos = src.find(tok_iter)) != std::string::npos)
+    src.replace(pos, tok_iter.size(), std::to_string(num_iter));
+  while ((pos = src.find(tok_size)) != std::string::npos)
+    src.replace(pos, tok_size.size(), std::to_string(local_size));
+  return src;
 }
 
-static GLuint create_program(const std::string& src)
-{
-    GLuint cs   = glCreateShader(GL_COMPUTE_SHADER);
-    if (!compile_shader(cs, src.c_str())) {
-        glDeleteShader(cs);
-        return 0;
-    }
+static bool compile_shader(GLuint shader, const char* src) {
+  glShaderSource(shader, 1, &src, NULL);
+  glCompileShader(shader);
 
-    GLuint prog = glCreateProgram();
-    glAttachShader(prog, cs);
-    glLinkProgram(prog);
+  GLint ok = GL_FALSE;
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+  if (!ok) {
+    GLint len = 0;
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
+    std::string log(len, '\0');
+    glGetShaderInfoLog(shader, len, NULL, &log[0]);
+    fprintf(stderr, "[gpu_geo] Shader compile error:\n%s\n", log.c_str());
+    return false;
+  }
+  return true;
+}
+
+static GLuint create_program(const std::string& src) {
+  GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
+  if (!compile_shader(cs, src.c_str())) {
     glDeleteShader(cs);
+    return 0;
+  }
 
-    GLint ok = GL_FALSE;
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        GLint len = 0;
-        glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
-        std::string log(len, '\0');
-        glGetProgramInfoLog(prog, len, NULL, &log[0]);
-        fprintf(stderr, "[gpu_geo] Program link error:\n%s\n", log.c_str());
-        glDeleteProgram(prog);
-        return 0;
-    }
-    return prog;
+  GLuint prog = glCreateProgram();
+  glAttachShader(prog, cs);
+  glLinkProgram(prog);
+  glDeleteShader(cs);
+
+  GLint ok = GL_FALSE;
+  glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+  if (!ok) {
+    GLint len = 0;
+    glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
+    std::string log(len, '\0');
+    glGetProgramInfoLog(prog, len, NULL, &log[0]);
+    fprintf(stderr, "[gpu_geo] Program link error:\n%s\n", log.c_str());
+    glDeleteProgram(prog);
+    return 0;
+  }
+  return prog;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -708,392 +766,406 @@ static GLuint create_program(const std::string& src)
 
 extern "C" {
 
-int gpu_geo_init(const GeoRansacConfig* cfg)
-{
-    if (cfg) {
-        if (cfg->num_iterations > 0) s_num_iter   = cfg->num_iterations;
-        if (cfg->local_size_x   > 0) s_local_size = cfg->local_size_x;
-    }
+int gpu_geo_init(const GeoRansacConfig* cfg) {
+  if (cfg) {
+    if (cfg->num_iterations > 0)
+      s_num_iter = cfg->num_iterations;
+    if (cfg->local_size_x > 0)
+      s_local_size = cfg->local_size_x;
+  }
 
-    // ── EGL display ──────────────────────────────────────────────────────────
-    // On systems with multiple GPUs (e.g. Intel + NVIDIA), eglGetDisplay()
-    // picks whichever device the driver enumerates first – often the Intel
-    // integrated GPU.  We use EGL_EXT_device_enumeration +
-    // EGL_EXT_platform_device to iterate over all EGL devices and prefer the
-    // one whose vendor/renderer string contains "NVIDIA" or "GeForce".
-    // Fallback order:
-    //   1. EGL device enumeration → NVIDIA device
-    //   2. EGL_MESA_platform_surfaceless (Mesa only)
-    //   3. eglGetDisplay(EGL_DEFAULT_DISPLAY) + 1×1 pbuffer
+  // ── EGL display ──────────────────────────────────────────────────────────
+  // On systems with multiple GPUs (e.g. Intel + NVIDIA), eglGetDisplay()
+  // picks whichever device the driver enumerates first – often the Intel
+  // integrated GPU.  We use EGL_EXT_device_enumeration +
+  // EGL_EXT_platform_device to iterate over all EGL devices and prefer the
+  // one whose vendor/renderer string contains "NVIDIA" or "GeForce".
+  // Fallback order:
+  //   1. EGL device enumeration → NVIDIA device
+  //   2. EGL_MESA_platform_surfaceless (Mesa only)
+  //   3. eglGetDisplay(EGL_DEFAULT_DISPLAY) + 1×1 pbuffer
 
-    // ── 1. Try EGL device enumeration to find NVIDIA ─────────────────────────
-    {
-        typedef EGLBoolean (*PFNEGLQUERYDEVICESEXTPROC)(
-            EGLint, EGLDeviceEXT*, EGLint*);
-        typedef EGLDisplay (*PFNEGLGETPLATFORMDISPLAYEXTFN)(
-            EGLenum, void*, const EGLAttrib*);
-        typedef const char* (*PFNEGLQUERYDEVICESTRINGEXTPROC)(
-            EGLDeviceEXT, EGLint);
+  // ── 1. Try EGL device enumeration to find NVIDIA ─────────────────────────
+  {
+    typedef EGLBoolean (*PFNEGLQUERYDEVICESEXTPROC)(EGLint, EGLDeviceEXT*, EGLint*);
+    typedef EGLDisplay (*PFNEGLGETPLATFORMDISPLAYEXTFN)(EGLenum, void*, const EGLAttrib*);
+    typedef const char* (*PFNEGLQUERYDEVICESTRINGEXTPROC)(EGLDeviceEXT, EGLint);
 
-        const char* client_exts = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
-        bool has_dev_enum = client_exts &&
-            std::string(client_exts).find("EGL_EXT_device_enumeration") != std::string::npos;
-        bool has_dev_plat = client_exts &&
-            std::string(client_exts).find("EGL_EXT_platform_device") != std::string::npos;
+    const char* client_exts = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    bool has_dev_enum =
+        client_exts &&
+        std::string(client_exts).find("EGL_EXT_device_enumeration") != std::string::npos;
+    bool has_dev_plat = client_exts && std::string(client_exts).find("EGL_EXT_platform_device") !=
+                                           std::string::npos;
 
-        if (has_dev_enum && has_dev_plat) {
-            auto queryDevices = (PFNEGLQUERYDEVICESEXTPROC)
-                eglGetProcAddress("eglQueryDevicesEXT");
-            auto getPlatformDisplay = (PFNEGLGETPLATFORMDISPLAYEXTFN)
-                eglGetProcAddress("eglGetPlatformDisplayEXT");
-            auto queryDeviceStr = (PFNEGLQUERYDEVICESTRINGEXTPROC)
-                eglGetProcAddress("eglQueryDeviceStringEXT");
+    if (has_dev_enum && has_dev_plat) {
+      auto queryDevices = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+      auto getPlatformDisplay =
+          (PFNEGLGETPLATFORMDISPLAYEXTFN)eglGetProcAddress("eglGetPlatformDisplayEXT");
+      auto queryDeviceStr =
+          (PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
 
-            if (queryDevices && getPlatformDisplay && queryDeviceStr) {
-                EGLint num_devs = 0;
-                queryDevices(0, NULL, &num_devs);
+      if (queryDevices && getPlatformDisplay && queryDeviceStr) {
+        EGLint num_devs = 0;
+        queryDevices(0, NULL, &num_devs);
 
-                std::vector<EGLDeviceEXT> devs(num_devs);
-                queryDevices(num_devs, devs.data(), &num_devs);
+        std::vector<EGLDeviceEXT> devs(num_devs);
+        queryDevices(num_devs, devs.data(), &num_devs);
 
-                // Try each device; prefer NVIDIA
-                for (int di = 0; di < num_devs && s_egl_dpy == EGL_NO_DISPLAY; ++di) {
-                    const char* dev_str = queryDeviceStr(devs[di], EGL_EXTENSIONS);
-                    bool is_nvidia = dev_str &&
-                        (std::string(dev_str).find("EGL_NV_") != std::string::npos ||
-                         std::string(dev_str).find("nvidia") != std::string::npos ||
-                         std::string(dev_str).find("NVIDIA") != std::string::npos);
+        // Try each device; prefer NVIDIA
+        for (int di = 0; di < num_devs && s_egl_dpy == EGL_NO_DISPLAY; ++di) {
+          const char* dev_str = queryDeviceStr(devs[di], EGL_EXTENSIONS);
+          bool is_nvidia = dev_str && (std::string(dev_str).find("EGL_NV_") != std::string::npos ||
+                                       std::string(dev_str).find("nvidia") != std::string::npos ||
+                                       std::string(dev_str).find("NVIDIA") != std::string::npos);
 
-                    if (!is_nvidia && num_devs > 1) continue; // skip non-NVIDIA if others exist
+          if (!is_nvidia && num_devs > 1)
+            continue; // skip non-NVIDIA if others exist
 
-                    EGLDisplay dpy = getPlatformDisplay(
-                        EGL_PLATFORM_DEVICE_EXT, devs[di], NULL);
-                    if (dpy != EGL_NO_DISPLAY) {
-                        EGLint major, minor;
-                        if (eglInitialize(dpy, &major, &minor)) {
-                            // Check vendor after init
-                            const char* vendor = eglQueryString(dpy, EGL_VENDOR);
-                            fprintf(stderr, "[gpu_geo] EGL device %d vendor: %s\n",
-                                    di, vendor ? vendor : "(unknown)");
-                            s_egl_dpy = dpy;
-                        } else {
-                            eglGetError(); // clear
-                        }
-                    }
-                }
-                // If no NVIDIA found, fall back to first device
-                if (s_egl_dpy == EGL_NO_DISPLAY && num_devs > 0) {
-                    EGLDisplay dpy = getPlatformDisplay(
-                        EGL_PLATFORM_DEVICE_EXT, devs[0], NULL);
-                    if (dpy != EGL_NO_DISPLAY && eglInitialize(dpy, NULL, NULL))
-                        s_egl_dpy = dpy;
-                    else
-                        eglGetError();
-                }
+          EGLDisplay dpy = getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, devs[di], NULL);
+          if (dpy != EGL_NO_DISPLAY) {
+            EGLint major, minor;
+            if (eglInitialize(dpy, &major, &minor)) {
+              // Check vendor after init
+              const char* vendor = eglQueryString(dpy, EGL_VENDOR);
+              fprintf(stderr, "[gpu_geo] EGL device %d vendor: %s\n", di,
+                      vendor ? vendor : "(unknown)");
+              s_egl_dpy = dpy;
+            } else {
+              eglGetError(); // clear
             }
+          }
         }
-    }
-
-    // ── 2. Mesa surfaceless ───────────────────────────────────────────────────
-    if (s_egl_dpy == EGL_NO_DISPLAY) {
-        const char* egl_exts = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
-        bool has_surfaceless = egl_exts &&
-            std::string(egl_exts).find("EGL_MESA_platform_surfaceless") != std::string::npos;
-        if (has_surfaceless) {
-            PFNEGLGETPLATFORMDISPLAYEXTPROC getPlatformDisplay =
-                (PFNEGLGETPLATFORMDISPLAYEXTPROC)
-                eglGetProcAddress("eglGetPlatformDisplayEXT");
-            if (getPlatformDisplay)
-                s_egl_dpy = getPlatformDisplay(
-                    EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+        // If no NVIDIA found, fall back to first device
+        if (s_egl_dpy == EGL_NO_DISPLAY && num_devs > 0) {
+          EGLDisplay dpy = getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, devs[0], NULL);
+          if (dpy != EGL_NO_DISPLAY && eglInitialize(dpy, NULL, NULL))
+            s_egl_dpy = dpy;
+          else
+            eglGetError();
         }
+      }
     }
+  }
 
-    // ── 3. Default display fallback ───────────────────────────────────────────
-    if (s_egl_dpy == EGL_NO_DISPLAY)
-        s_egl_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-
-    if (s_egl_dpy == EGL_NO_DISPLAY) {
-        fprintf(stderr, "[gpu_geo] Cannot get EGL display\n");
-        return -1;
+  // ── 2. Mesa surfaceless ───────────────────────────────────────────────────
+  if (s_egl_dpy == EGL_NO_DISPLAY) {
+    const char* egl_exts = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    bool has_surfaceless = egl_exts && std::string(egl_exts).find(
+                                           "EGL_MESA_platform_surfaceless") != std::string::npos;
+    if (has_surfaceless) {
+      PFNEGLGETPLATFORMDISPLAYEXTPROC getPlatformDisplay =
+          (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+      if (getPlatformDisplay)
+        s_egl_dpy = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
     }
+  }
 
-    if (!eglInitialize(s_egl_dpy, NULL, NULL)) {
-        check_egl("eglInitialize");
-        return -2;
+  // ── 3. Default display fallback ───────────────────────────────────────────
+  if (s_egl_dpy == EGL_NO_DISPLAY)
+    s_egl_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+
+  if (s_egl_dpy == EGL_NO_DISPLAY) {
+    fprintf(stderr, "[gpu_geo] Cannot get EGL display\n");
+    return -1;
+  }
+
+  if (!eglInitialize(s_egl_dpy, NULL, NULL)) {
+    check_egl("eglInitialize");
+    return -2;
+  }
+
+  eglBindAPI(EGL_OPENGL_API);
+
+  // ── Config ───────────────────────────────────────────────────────────────
+  EGLint cfg_attr[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+                       EGL_NONE};
+  EGLConfig egl_cfg;
+  EGLint num_cfg = 0;
+  if (!eglChooseConfig(s_egl_dpy, cfg_attr, &egl_cfg, 1, &num_cfg) || num_cfg == 0) {
+    fprintf(stderr, "[gpu_geo] No matching EGL config\n");
+    check_egl("eglChooseConfig");
+    return -3;
+  }
+
+  // ── Context ───────────────────────────────────────────────────────────────
+  EGLint ctx_attr[] = {EGL_CONTEXT_MAJOR_VERSION,
+                       4,
+                       EGL_CONTEXT_MINOR_VERSION,
+                       3,
+                       EGL_CONTEXT_OPENGL_PROFILE_MASK,
+                       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                       EGL_NONE};
+  s_egl_ctx = eglCreateContext(s_egl_dpy, egl_cfg, EGL_NO_CONTEXT, ctx_attr);
+  if (s_egl_ctx == EGL_NO_CONTEXT) {
+    check_egl("eglCreateContext");
+    return -4;
+  }
+
+  // ── Surface: 1×1 pbuffer (needed when surfaceless is unavailable) ─────────
+  EGLint pbuf_attr[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+  s_egl_surf = eglCreatePbufferSurface(s_egl_dpy, egl_cfg, pbuf_attr);
+  // Surface is optional on surfaceless; ignore failure
+  if (s_egl_surf == EGL_NO_SURFACE)
+    eglGetError(); // clear error
+
+  EGLSurface draw_surf = (s_egl_surf != EGL_NO_SURFACE) ? s_egl_surf : EGL_NO_SURFACE;
+  if (!eglMakeCurrent(s_egl_dpy, draw_surf, draw_surf, s_egl_ctx)) {
+    check_egl("eglMakeCurrent");
+    return -5;
+  }
+
+  // ── GLEW ──────────────────────────────────────────────────────────────────
+  // glewExperimental allows loading extensions without a GLX/WGL display.
+  // glewInit() may return non-GLEW_OK on surfaceless EGL because it tries to
+  // initialise GLX extensions that don't exist; this is harmless as long as
+  // the core GL functions we need (glDispatchCompute, SSBOs) are available.
+  glewExperimental = GL_TRUE;
+  GLenum glew_err = glewInit();
+  // Clear any GL error left by glewInit (common with EGL surfaceless)
+  while (glGetError() != GL_NO_ERROR) {
+  }
+
+  if (glew_err != GLEW_OK) {
+    // Tolerate GLX-related "unknown display" errors from GLEW on surfaceless
+    // EGL; verify the critical extension is actually available instead.
+    fprintf(stderr, "[gpu_geo] glewInit note: %s (checking GL 4.3 manually)\n",
+            glewGetErrorString(glew_err));
+  }
+
+  // Verify that Compute Shader support was loaded (GL 4.3 core + ARB)
+  if (!glDispatchCompute) {
+    fprintf(stderr, "[gpu_geo] glDispatchCompute not found – need OpenGL 4.3+\n");
+    return -6;
+  }
+
+  // ── Compile shaders ──────────────────────────────────────────────────────
+  std::string src = build_shader_src(s_num_iter, s_local_size);
+  s_prog = create_program(src);
+  if (!s_prog)
+    return -7;
+
+  std::string src_pnp = build_pnp_shader_src(s_num_iter, s_local_size);
+  s_prog_pnp = create_program(src_pnp);
+  if (!s_prog_pnp)
+    return -7;
+
+  // ── Allocate persistent SSBOs ─────────────────────────────────────────────
+  glGenBuffers(1, &s_ssbo_match);
+  glGenBuffers(1, &s_ssbo_idx);
+  glGenBuffers(1, &s_ssbo_res);
+  if (!check_gl("glGenBuffers"))
+    return -8;
+
+  // ── Warm-up dispatch: force GPU JIT for both solver branches ──────────────
+  // NVIDIA JIT-compiles the compute shader on the very first glDispatchCompute.
+  // If the user calls gpu_geo_set_solver(1) before any dispatch, the IPI branch
+  // can produce wrong results on that first call due to JIT races.  Running two
+  // minimal 1-workgroup dispatches here (one per solver) fully JIT-compiles both
+  // branches before returning, eliminating the first-call hazard entirely.
+  {
+    // 8 dummy degenerate matches (all zero – yields garbage H but that's fine)
+    const int WU_K = 8;
+    float dummy_pts[WU_K * 4] = {};
+    int dummy_idx[WU_K] = {};
+    float dummy_res[10] = {};
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_match);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_pts), dummy_pts, GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s_ssbo_match);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_idx);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_idx), dummy_idx, GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s_ssbo_idx);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_res);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_res), dummy_res, GL_DYNAMIC_READ);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s_ssbo_res);
+
+    glUseProgram(s_prog);
+    GLint loc_model = glGetUniformLocation(s_prog, "u_model");
+    GLint loc_thresh = glGetUniformLocation(s_prog, "u_thresh");
+    GLint loc_n = glGetUniformLocation(s_prog, "u_n");
+    GLint loc_solver = glGetUniformLocation(s_prog, "u_solver");
+
+    for (int s = 0; s <= 1; s++) {    // s=0 Jacobi, s=1 IPI
+      glUniform1i(loc_model, 0);      // H model
+      glUniform1f(loc_thresh, 1e30f); // accept everything (degenerate data ok)
+      glUniform1i(loc_n, WU_K);
+      glUniform1i(loc_solver, s);
+      glDispatchCompute(1, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
+    glFinish(); // wait for both JITs to complete
+    while (glGetError() != GL_NO_ERROR) {
+    } // clear any errors from degenerate input
+  }
 
-    eglBindAPI(EGL_OPENGL_API);
-
-    // ── Config ───────────────────────────────────────────────────────────────
-    EGLint cfg_attr[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-        EGL_SURFACE_TYPE,    EGL_PBUFFER_BIT,
-        EGL_NONE
-    };
-    EGLConfig egl_cfg;
-    EGLint    num_cfg = 0;
-    if (!eglChooseConfig(s_egl_dpy, cfg_attr, &egl_cfg, 1, &num_cfg) || num_cfg == 0) {
-        fprintf(stderr, "[gpu_geo] No matching EGL config\n");
-        check_egl("eglChooseConfig");
-        return -3;
-    }
-
-    // ── Context ───────────────────────────────────────────────────────────────
-    EGLint ctx_attr[] = {
-        EGL_CONTEXT_MAJOR_VERSION, 4,
-        EGL_CONTEXT_MINOR_VERSION, 3,
-        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-        EGL_NONE
-    };
-    s_egl_ctx = eglCreateContext(s_egl_dpy, egl_cfg, EGL_NO_CONTEXT, ctx_attr);
-    if (s_egl_ctx == EGL_NO_CONTEXT) {
-        check_egl("eglCreateContext");
-        return -4;
-    }
-
-    // ── Surface: 1×1 pbuffer (needed when surfaceless is unavailable) ─────────
-    EGLint pbuf_attr[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
-    s_egl_surf = eglCreatePbufferSurface(s_egl_dpy, egl_cfg, pbuf_attr);
-    // Surface is optional on surfaceless; ignore failure
-    if (s_egl_surf == EGL_NO_SURFACE) eglGetError();   // clear error
-
-    EGLSurface draw_surf = (s_egl_surf != EGL_NO_SURFACE) ? s_egl_surf : EGL_NO_SURFACE;
-    if (!eglMakeCurrent(s_egl_dpy, draw_surf, draw_surf, s_egl_ctx)) {
-        check_egl("eglMakeCurrent");
-        return -5;
-    }
-
-    // ── GLEW ──────────────────────────────────────────────────────────────────
-    // glewExperimental allows loading extensions without a GLX/WGL display.
-    // glewInit() may return non-GLEW_OK on surfaceless EGL because it tries to
-    // initialise GLX extensions that don't exist; this is harmless as long as
-    // the core GL functions we need (glDispatchCompute, SSBOs) are available.
-    glewExperimental = GL_TRUE;
-    GLenum glew_err = glewInit();
-    // Clear any GL error left by glewInit (common with EGL surfaceless)
-    while (glGetError() != GL_NO_ERROR) {}
-
-    if (glew_err != GLEW_OK) {
-        // Tolerate GLX-related "unknown display" errors from GLEW on surfaceless
-        // EGL; verify the critical extension is actually available instead.
-        fprintf(stderr, "[gpu_geo] glewInit note: %s (checking GL 4.3 manually)\n",
-                glewGetErrorString(glew_err));
-    }
-
-    // Verify that Compute Shader support was loaded (GL 4.3 core + ARB)
-    if (!glDispatchCompute) {
-        fprintf(stderr, "[gpu_geo] glDispatchCompute not found – need OpenGL 4.3+\n");
-        return -6;
-    }
-
-    // ── Compile shader ────────────────────────────────────────────────────────
-    std::string src = build_shader_src(s_num_iter, s_local_size);
-    s_prog = create_program(src);
-    if (!s_prog) return -7;
-
-    // ── Allocate persistent SSBOs ─────────────────────────────────────────────
-    glGenBuffers(1, &s_ssbo_match);
-    glGenBuffers(1, &s_ssbo_idx);
-    glGenBuffers(1, &s_ssbo_res);
-    if (!check_gl("glGenBuffers")) return -8;
-
-    // ── Warm-up dispatch: force GPU JIT for both solver branches ──────────────
-    // NVIDIA JIT-compiles the compute shader on the very first glDispatchCompute.
-    // If the user calls gpu_geo_set_solver(1) before any dispatch, the IPI branch
-    // can produce wrong results on that first call due to JIT races.  Running two
-    // minimal 1-workgroup dispatches here (one per solver) fully JIT-compiles both
-    // branches before returning, eliminating the first-call hazard entirely.
-    {
-        // 8 dummy degenerate matches (all zero – yields garbage H but that's fine)
-        const int WU_K = 8;
-        float dummy_pts[WU_K * 4] = {};
-        int   dummy_idx[WU_K]     = {};
-        float dummy_res[10]       = {};
-
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_match);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_pts), dummy_pts, GL_STATIC_DRAW);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s_ssbo_match);
-
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_idx);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_idx), dummy_idx, GL_STATIC_DRAW);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s_ssbo_idx);
-
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_res);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_res), dummy_res, GL_DYNAMIC_READ);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s_ssbo_res);
-
-        glUseProgram(s_prog);
-        GLint loc_model  = glGetUniformLocation(s_prog, "u_model");
-        GLint loc_thresh = glGetUniformLocation(s_prog, "u_thresh");
-        GLint loc_n      = glGetUniformLocation(s_prog, "u_n");
-        GLint loc_solver = glGetUniformLocation(s_prog, "u_solver");
-
-        for (int s = 0; s <= 1; s++) {  // s=0 Jacobi, s=1 IPI
-            glUniform1i(loc_model,  0);     // H model
-            glUniform1f(loc_thresh, 1e30f); // accept everything (degenerate data ok)
-            glUniform1i(loc_n,      WU_K);
-            glUniform1i(loc_solver, s);
-            glDispatchCompute(1, 1, 1);
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-        }
-        glFinish();                             // wait for both JITs to complete
-        while (glGetError() != GL_NO_ERROR) {}  // clear any errors from degenerate input
-    }
-
-    fprintf(stdout, "[gpu_geo] Initialised OK – %d iterations / workgroup %d\n",
-            s_num_iter, s_local_size);
-    return 0;
+  fprintf(stdout, "[gpu_geo] Initialised OK – %d iterations / workgroup %d\n", s_num_iter,
+          s_local_size);
+  return 0;
 }
 
-void gpu_geo_shutdown(void)
-{
-    if (s_ssbo_match) { glDeleteBuffers(1, &s_ssbo_match); s_ssbo_match = 0; }
-    if (s_ssbo_idx)   { glDeleteBuffers(1, &s_ssbo_idx);   s_ssbo_idx   = 0; }
-    if (s_ssbo_res)   { glDeleteBuffers(1, &s_ssbo_res);   s_ssbo_res   = 0; }
-    if (s_prog)       { glDeleteProgram(s_prog);            s_prog       = 0; }
+void gpu_geo_shutdown(void) {
+  if (s_ssbo_match) {
+    glDeleteBuffers(1, &s_ssbo_match);
+    s_ssbo_match = 0;
+  }
+  if (s_ssbo_idx) {
+    glDeleteBuffers(1, &s_ssbo_idx);
+    s_ssbo_idx = 0;
+  }
+  if (s_ssbo_res) {
+    glDeleteBuffers(1, &s_ssbo_res);
+    s_ssbo_res = 0;
+  }
+  if (s_prog) {
+    glDeleteProgram(s_prog);
+    s_prog = 0;
+  }
 
-    if (s_egl_surf != EGL_NO_SURFACE)
-        eglDestroySurface(s_egl_dpy, s_egl_surf);
-    if (s_egl_ctx  != EGL_NO_CONTEXT)
-        eglDestroyContext(s_egl_dpy, s_egl_ctx);
-    if (s_egl_dpy  != EGL_NO_DISPLAY) {
-        eglMakeCurrent(s_egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        eglTerminate(s_egl_dpy);
-    }
-    s_egl_surf = EGL_NO_SURFACE;
-    s_egl_ctx  = EGL_NO_CONTEXT;
-    s_egl_dpy  = EGL_NO_DISPLAY;
+  if (s_egl_surf != EGL_NO_SURFACE)
+    eglDestroySurface(s_egl_dpy, s_egl_surf);
+  if (s_egl_ctx != EGL_NO_CONTEXT)
+    eglDestroyContext(s_egl_dpy, s_egl_ctx);
+  if (s_egl_dpy != EGL_NO_DISPLAY) {
+    eglMakeCurrent(s_egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglTerminate(s_egl_dpy);
+  }
+  s_egl_surf = EGL_NO_SURFACE;
+  s_egl_ctx = EGL_NO_CONTEXT;
+  s_egl_dpy = EGL_NO_DISPLAY;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal dispatch function
 // ─────────────────────────────────────────────────────────────────────────────
 
-static int run_ransac(int model, int K,
-                      const Match2D* matches_raw, int n,
-                      float mat[9], float thresh)
-{
-    if (!s_prog) {
-        fprintf(stderr, "[gpu_geo] Not initialised – call gpu_geo_init() first\n");
-        return -1;
-    }
-    if (n < K) {
-        fprintf(stderr, "[gpu_geo] Too few matches (%d < %d)\n", n, K);
-        return -1;
-    }
+static int run_ransac(int model, int K, const Match2D* matches_raw, int n, float mat[9],
+                      float thresh) {
+  if (!s_prog) {
+    fprintf(stderr, "[gpu_geo] Not initialised – call gpu_geo_init() first\n");
+    return -1;
+  }
+  if (n < K) {
+    fprintf(stderr, "[gpu_geo] Too few matches (%d < %d)\n", n, K);
+    return -1;
+  }
 
-    // ── Hartley normalization ─────────────────────────────────────────────────
-    double T1[9], T2[9];
-    std::vector<Match2D> norm_pts = normalize_matches(matches_raw, n, T1, T2);
-    const Match2D* matches = norm_pts.data();
+  // ── Hartley normalization ─────────────────────────────────────────────────
+  double T1[9], T2[9];
+  std::vector<Match2D> norm_pts = normalize_matches(matches_raw, n, T1, T2);
+  const Match2D* matches = norm_pts.data();
 
-    // ── Upload matches ────────────────────────────────────────────────────────
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_match);
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 (GLsizeiptr)(n * sizeof(Match2D)),
-                 matches, GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s_ssbo_match);
+  // ── Upload matches ────────────────────────────────────────────────────────
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_match);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(n * sizeof(Match2D)), matches,
+               GL_STATIC_DRAW);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s_ssbo_match);
 
-    // ── Generate + upload random indices (heap allocation, not stack) ─────────
-    std::vector<int> idx(static_cast<size_t>(s_num_iter) * K);
-    for (int& v : idx) v = rand() % n;
+  // ── Generate + upload random indices (heap allocation, not stack) ─────────
+  std::vector<int> idx(static_cast<size_t>(s_num_iter) * K);
+  for (int& v : idx)
+    v = rand() % n;
 
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_idx);
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 (GLsizeiptr)(idx.size() * sizeof(int)),
-                 idx.data(), GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s_ssbo_idx);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_idx);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(idx.size() * sizeof(int)), idx.data(),
+               GL_STATIC_DRAW);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s_ssbo_idx);
 
-    // ── Allocate result buffer (stride = 10 floats per iteration) ────────────
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_res);
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 (GLsizeiptr)(s_num_iter * 10 * sizeof(float)),
-                 NULL, GL_DYNAMIC_READ);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s_ssbo_res);
+  // ── Allocate result buffer (stride = 10 floats per iteration) ────────────
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_res);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(s_num_iter * 10 * sizeof(float)), NULL,
+               GL_DYNAMIC_READ);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s_ssbo_res);
 
-    // ── Scale threshold: user provides pixel² (H) or pixel² Sampson (F/E). ─────
-    // GPU computes errors in Hartley-normalised coordinates, so thresh must be
-    // converted to normalised units.
-    //   T1[0] = s1, T2[0] = s2  (isotropic Hartley scale factors)
-    //   H  (forward squared transfer in image-2 space): err_norm = err_px * s2² → thresh_norm = thresh * s2²
-    //   F/E (squared Sampson):                          Sampson_norm ≈ Sampson_px * s1·s2 → thresh_norm = thresh * s1·s2
-    double s1 = T1[0], s2 = T2[0];
-    float thresh_norm = (model == 0)
-        ? (float)((double)thresh * s2 * s2)
-        : (float)((double)thresh * s1 * s2);
+  // ── Scale threshold: user provides pixel² (H) or pixel² Sampson (F/E). ─────
+  // GPU computes errors in Hartley-normalised coordinates, so thresh must be
+  // converted to normalised units.
+  //   T1[0] = s1, T2[0] = s2  (isotropic Hartley scale factors)
+  //   H  (forward squared transfer in image-2 space): err_norm = err_px * s2² → thresh_norm =
+  //   thresh * s2² F/E (squared Sampson):                          Sampson_norm ≈ Sampson_px *
+  //   s1·s2 → thresh_norm = thresh * s1·s2
+  double s1 = T1[0], s2 = T2[0];
+  float thresh_norm =
+      (model == 0) ? (float)((double)thresh * s2 * s2) : (float)((double)thresh * s1 * s2);
 
-    // ── Set uniforms + dispatch ───────────────────────────────────────────────
-    glUseProgram(s_prog);
-    glUniform1i(glGetUniformLocation(s_prog, "u_model"),  model);
-    glUniform1f(glGetUniformLocation(s_prog, "u_thresh"), thresh_norm);
-    glUniform1i(glGetUniformLocation(s_prog, "u_n"),      n);
-    glUniform1i(glGetUniformLocation(s_prog, "u_solver"), s_solver);
+  // ── Set uniforms + dispatch ───────────────────────────────────────────────
+  glUseProgram(s_prog);
+  glUniform1i(glGetUniformLocation(s_prog, "u_model"), model);
+  glUniform1f(glGetUniformLocation(s_prog, "u_thresh"), thresh_norm);
+  glUniform1i(glGetUniformLocation(s_prog, "u_n"), n);
+  glUniform1i(glGetUniformLocation(s_prog, "u_solver"), s_solver);
 
-    GLuint num_groups = (GLuint)((s_num_iter + s_local_size - 1) / s_local_size);
+  GLuint num_groups = (GLuint)((s_num_iter + s_local_size - 1) / s_local_size);
 
-    // ── Optional: GL timer queries for profiling ──────────────────────────────
-    // Measures: upload / GPU dispatch / readback separately.
-    // Enabled by gpu_geo_set_verbose(1).
-    struct timespec _cpu0, _cpu1, _cpu2, _cpu3;
-    GLuint _tq = 0;
-    if (s_verbose) {
-        glGenQueries(1, &_tq);
-        clock_gettime(CLOCK_MONOTONIC, &_cpu0);
-    }
+  // ── Optional: GL timer queries for profiling ──────────────────────────────
+  // Measures: upload / GPU dispatch / readback separately.
+  // Enabled by gpu_geo_set_verbose(1).
+  struct timespec _cpu0, _cpu1, _cpu2, _cpu3;
+  GLuint _tq = 0;
+  if (s_verbose) {
+    glGenQueries(1, &_tq);
+    clock_gettime(CLOCK_MONOTONIC, &_cpu0);
+  }
 
-    if (_tq) glBeginQuery(GL_TIME_ELAPSED, _tq);
-    glDispatchCompute(num_groups, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    if (_tq) {
-        glEndQuery(GL_TIME_ELAPSED);
-        clock_gettime(CLOCK_MONOTONIC, &_cpu1);
-    }
+  if (_tq)
+    glBeginQuery(GL_TIME_ELAPSED, _tq);
+  glDispatchCompute(num_groups, 1, 1);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  if (_tq) {
+    glEndQuery(GL_TIME_ELAPSED);
+    clock_gettime(CLOCK_MONOTONIC, &_cpu1);
+  }
 
-    // ── Read back results and find best ──────────────────────────────────────
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_res);
-    if (s_verbose) clock_gettime(CLOCK_MONOTONIC, &_cpu2);
-    const float* res = (const float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-    if (!res) {
-        check_gl("glMapBuffer");
-        return -1;
-    }
+  // ── Read back results and find best ──────────────────────────────────────
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_res);
+  if (s_verbose)
+    clock_gettime(CLOCK_MONOTONIC, &_cpu2);
+  const float* res = (const float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+  if (!res) {
+    check_gl("glMapBuffer");
+    return -1;
+  }
 
-    int best = 0;
-    for (int i = 1; i < s_num_iter; i++) {
-        if (res[i*10 + 9] > res[best*10 + 9]) best = i;
-    }
+  int best = 0;
+  for (int i = 1; i < s_num_iter; i++) {
+    if (res[i * 10 + 9] > res[best * 10 + 9])
+      best = i;
+  }
 
-    float norm_mat[9];
-    for (int i = 0; i < 9; i++) norm_mat[i] = res[best*10 + i];
-    int inliers = (int)res[best*10 + 9];
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  float norm_mat[9];
+  for (int i = 0; i < 9; i++)
+    norm_mat[i] = res[best * 10 + i];
+  int inliers = (int)res[best * 10 + 9];
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
-    // ── Print profiling breakdown ─────────────────────────────────────────────
-    if (_tq) {
-        clock_gettime(CLOCK_MONOTONIC, &_cpu3);
-        // CPU-side time from dispatch call to glMemoryBarrier return
-        double t_barrier = (_cpu1.tv_sec - _cpu0.tv_sec)*1e3
-                         + (_cpu1.tv_nsec - _cpu0.tv_nsec)*1e-6;
-        // CPU-side time for glMapBuffer (includes actual readback DMA)
-        double t_readback = (_cpu3.tv_sec - _cpu2.tv_sec)*1e3
-                          + (_cpu3.tv_nsec - _cpu2.tv_nsec)*1e-6;
-        // GPU-side elapsed (wall-clock inside the GPU pipeline)
-        GLuint64 gpu_ns = 0;
-        glGetQueryObjectui64v(_tq, GL_QUERY_RESULT, &gpu_ns);
-        glDeleteQueries(1, &_tq);
-        fprintf(stderr,
+  // ── Print profiling breakdown ─────────────────────────────────────────────
+  if (_tq) {
+    clock_gettime(CLOCK_MONOTONIC, &_cpu3);
+    // CPU-side time from dispatch call to glMemoryBarrier return
+    double t_barrier = (_cpu1.tv_sec - _cpu0.tv_sec) * 1e3 + (_cpu1.tv_nsec - _cpu0.tv_nsec) * 1e-6;
+    // CPU-side time for glMapBuffer (includes actual readback DMA)
+    double t_readback =
+        (_cpu3.tv_sec - _cpu2.tv_sec) * 1e3 + (_cpu3.tv_nsec - _cpu2.tv_nsec) * 1e-6;
+    // GPU-side elapsed (wall-clock inside the GPU pipeline)
+    GLuint64 gpu_ns = 0;
+    glGetQueryObjectui64v(_tq, GL_QUERY_RESULT, &gpu_ns);
+    glDeleteQueries(1, &_tq);
+    fprintf(stderr,
             "[gpu_geo/profile] GPU dispatch=%.3fms  "
             "CPU(barrier)=%.3fms  CPU(readback)=%.3fms  "
             "n=%d  iter=%d\n",
             gpu_ns * 1e-6, t_barrier, t_readback, n, s_num_iter);
-    }
+  }
 
-    // ── Denormalize ───────────────────────────────────────────────────────────
-    if (model == 0) denorm_H( T1, T2, norm_mat, mat);
-    else            denorm_FE(T1, T2, norm_mat, mat);
+  // ── Denormalize ───────────────────────────────────────────────────────────
+  if (model == 0)
+    denorm_H(T1, T2, norm_mat, mat);
+  else
+    denorm_FE(T1, T2, norm_mat, mat);
 
-    return inliers;
+  return inliers;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1101,124 +1173,216 @@ static int run_ransac(int model, int K,
 // ─────────────────────────────────────────────────────────────────────────────
 
 void gpu_geo_set_verbose(int v) { s_verbose = v; }
-void gpu_geo_set_solver(int s)  { s_solver  = s; }  // 0=Jacobi 1=Cholesky-InvIter
+void gpu_geo_set_solver(int s) { s_solver = s; } // 0=Jacobi 1=Cholesky-InvIter
 
-int gpu_ransac_H(const Match2D* m, int n, float mat[9], float thresh)
-{
-    return run_ransac(0, 4, m, n, mat, thresh);
+int gpu_ransac_H(const Match2D* m, int n, float mat[9], float thresh) {
+  return run_ransac(0, 4, m, n, mat, thresh);
 }
 
-int gpu_ransac_F(const Match2D* m, int n, float mat[9], float thresh)
-{
-    return run_ransac(1, 8, m, n, mat, thresh);
+int gpu_ransac_F(const Match2D* m, int n, float mat[9], float thresh) {
+  return run_ransac(1, 8, m, n, mat, thresh);
 }
 
-int gpu_ransac_E(const Match2D* m, int n, float mat[9], float thresh)
-{
-    return run_ransac(2, 8, m, n, mat, thresh);
+int gpu_ransac_E(const Match2D* m, int n, float mat[9], float thresh) {
+  return run_ransac(2, 8, m, n, mat, thresh);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PnP RANSAC (CPU path: DLT + SVD; GLSL path can be added later)
+// PnP RANSAC: CPU 6-point DLT per iteration; GPU (GLSL) inlier counting
 // ─────────────────────────────────────────────────────────────────────────────
 
-static int pnp_dlt_from_6(const Point3D2D* six, const float K[9], float R[9], float t[3])
-{
-    Eigen::Matrix<double, 12, 12> A;
-    A.setZero();
-    for (int i = 0; i < 6; i++) {
-        double X = (double)six[i].x, Y = (double)six[i].y, Z = (double)six[i].z;
-        double u = (double)six[i].u, v = (double)six[i].v;
-        A.row(2*i+0) << -X, -Y, -Z, -1, 0, 0, 0, 0, u*X, u*Y, u*Z, u;
-        A.row(2*i+1) << 0, 0, 0, 0, -X, -Y, -Z, -1, v*X, v*Y, v*Z, v;
-    }
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
-    const Eigen::VectorXd p_flat = svd.matrixV().col(11);
-    Eigen::Matrix<double, 3, 4> P_block;
-    P_block << p_flat(0), p_flat(1), p_flat(2), p_flat(3),
-               p_flat(4), p_flat(5), p_flat(6), p_flat(7),
-               p_flat(8), p_flat(9), p_flat(10), p_flat(11);
-    Eigen::Matrix3d Kinv;
-    Kinv << 1.0/(double)K[0], 0, -(double)K[2]/(double)K[0],
-            0, 1.0/(double)K[4], -(double)K[5]/(double)K[4], 0, 0, 1;
-    Eigen::Matrix<double, 3, 4> Rt_block = Kinv * P_block;
-    Eigen::Matrix3d R_eig = Rt_block.block<3,3>(0,0);
-    Eigen::JacobiSVD<Eigen::Matrix3d> svdR(R_eig, Eigen::ComputeFullU | Eigen::ComputeFullV);
-    R_eig = svdR.matrixU() * svdR.matrixV().transpose();
-    if (R_eig.determinant() < 0) R_eig = -R_eig;
-    Eigen::Vector3d t_eig = Rt_block.block<3,1>(0,3);
-    for (int i = 0; i < 9; i++) R[i] = (float)R_eig(i/3, i%3);
-    t[0] = (float)t_eig(0); t[1] = (float)t_eig(1); t[2] = (float)t_eig(2);
-    return 0;
+static int pnp_dlt_from_6(const Point3D2D* six, const float K[9], float R[9], float t[3]) {
+  Eigen::Matrix<double, 12, 12> A;
+  A.setZero();
+  for (int i = 0; i < 6; i++) {
+    double X = (double)six[i].x, Y = (double)six[i].y, Z = (double)six[i].z;
+    double u = (double)six[i].u, v = (double)six[i].v;
+    A.row(2 * i + 0) << -X, -Y, -Z, -1, 0, 0, 0, 0, u * X, u * Y, u * Z, u;
+    A.row(2 * i + 1) << 0, 0, 0, 0, -X, -Y, -Z, -1, v * X, v * Y, v * Z, v;
+  }
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
+  const Eigen::VectorXd p_flat = svd.matrixV().col(11);
+  Eigen::Matrix<double, 3, 4> P_block;
+  P_block << p_flat(0), p_flat(1), p_flat(2), p_flat(3), p_flat(4), p_flat(5), p_flat(6), p_flat(7),
+      p_flat(8), p_flat(9), p_flat(10), p_flat(11);
+  Eigen::Matrix3d Kinv;
+  Kinv << 1.0 / (double)K[0], 0, -(double)K[2] / (double)K[0], 0, 1.0 / (double)K[4],
+      -(double)K[5] / (double)K[4], 0, 0, 1;
+  Eigen::Matrix<double, 3, 4> Rt_block = Kinv * P_block;
+  Eigen::Matrix3d R_eig = Rt_block.block<3, 3>(0, 0);
+  Eigen::JacobiSVD<Eigen::Matrix3d> svdR(R_eig, Eigen::ComputeFullU | Eigen::ComputeFullV);
+  R_eig = svdR.matrixU() * svdR.matrixV().transpose();
+  if (R_eig.determinant() < 0)
+    R_eig = -R_eig;
+  Eigen::Vector3d t_eig = Rt_block.block<3, 1>(0, 3);
+  for (int i = 0; i < 9; i++)
+    R[i] = (float)R_eig(i / 3, i % 3);
+  t[0] = (float)t_eig(0);
+  t[1] = (float)t_eig(1);
+  t[2] = (float)t_eig(2);
+  return 0;
 }
 
-static int pnp_count_inliers(const Point3D2D* pts, int n,
-                             const float K[9], const float R[9], const float t[3],
-                             float thresh_sq, unsigned char* mask)
-{
-    Eigen::Matrix3d R_eig;
-    for (int i = 0; i < 9; i++) R_eig(i/3, i%3) = (double)R[i];
-    Eigen::Vector3d t_eig((double)t[0], (double)t[1], (double)t[2]);
-    double fx = (double)K[0], fy = (double)K[4], cx = (double)K[2], cy = (double)K[5];
-    int inliers = 0;
-    for (int i = 0; i < n; i++) {
-        Eigen::Vector3d X((double)pts[i].x, (double)pts[i].y, (double)pts[i].z);
-        Eigen::Vector3d p = R_eig * X + t_eig;
-        if (p(2) <= 1e-12) { if (mask) mask[i] = 0; continue; }
-        double u_pred = fx * p(0)/p(2) + cx, v_pred = fy * p(1)/p(2) + cy;
-        double err_sq = ((double)pts[i].u - u_pred)*((double)pts[i].u - u_pred)
-                      + ((double)pts[i].v - v_pred)*((double)pts[i].v - v_pred);
-        int in = (err_sq <= (double)thresh_sq) ? 1 : 0;
-        if (mask) mask[i] = (unsigned char)in;
-        if (in) inliers++;
+static int pnp_count_inliers(const Point3D2D* pts, int n, const float K[9], const float R[9],
+                             const float t[3], float thresh_sq, unsigned char* mask) {
+  Eigen::Matrix3d R_eig;
+  for (int i = 0; i < 9; i++)
+    R_eig(i / 3, i % 3) = (double)R[i];
+  Eigen::Vector3d t_eig((double)t[0], (double)t[1], (double)t[2]);
+  double fx = (double)K[0], fy = (double)K[4], cx = (double)K[2], cy = (double)K[5];
+  int inliers = 0;
+  for (int i = 0; i < n; i++) {
+    Eigen::Vector3d X((double)pts[i].x, (double)pts[i].y, (double)pts[i].z);
+    Eigen::Vector3d p = R_eig * X + t_eig;
+    if (p(2) <= 1e-12) {
+      if (mask)
+        mask[i] = 0;
+      continue;
     }
-    return inliers;
+    double u_pred = fx * p(0) / p(2) + cx, v_pred = fy * p(1) / p(2) + cy;
+    double err_sq = ((double)pts[i].u - u_pred) * ((double)pts[i].u - u_pred) +
+                    ((double)pts[i].v - v_pred) * ((double)pts[i].v - v_pred);
+    int in = (err_sq <= (double)thresh_sq) ? 1 : 0;
+    if (mask)
+      mask[i] = (unsigned char)in;
+    if (in)
+      inliers++;
+  }
+  return inliers;
 }
 
-int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9],
-                   float R_out[9], float t_out[3],
-                   float thresh, unsigned char* inlier_mask)
-{
-    if (!pts || n < 6 || !K || !R_out || !t_out) return -1;
-    if (s_num_iter <= 0) return -1;
-    const float thresh_sq = thresh;
-    int best_inliers = -1;
-    float best_R[9], best_t[3];
+int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9], float R_out[9], float t_out[3],
+                   float thresh, unsigned char* inlier_mask) {
+  if (!pts || n < 6 || !K || !R_out || !t_out)
+    return -1;
+  if (s_num_iter <= 0)
+    return -1;
+  const float thresh_sq = thresh;
+  const float fx = K[0], fy = K[4], cx = K[2], cy = K[5];
+
+  if (s_prog_pnp) {
+    // GPU path: CPU does 6-point DLT per iteration; GPU counts inliers in parallel
+    std::vector<float> rt_buf(static_cast<size_t>(s_num_iter) * 12u, 0.f);
     std::vector<int> sample(6);
     for (int iter = 0; iter < s_num_iter; iter++) {
-        for (int i = 0; i < 6; i++) sample[i] = rand() % n;
-        Point3D2D six[6];
-        for (int i = 0; i < 6; i++) six[i] = pts[sample[i]];
-        float R[9], t[3];
-        if (pnp_dlt_from_6(six, K, R, t) != 0) continue;
-        std::vector<unsigned char> tmp_mask(static_cast<size_t>(n), 0);
-        int inl = pnp_count_inliers(pts, n, K, R, t, thresh_sq, tmp_mask.data());
-        if (inl > best_inliers) {
-            best_inliers = inl;
-            for (int i = 0; i < 9; i++) best_R[i] = R[i];
-            for (int i = 0; i < 3; i++) best_t[i] = t[i];
-        }
+      for (int i = 0; i < 6; i++)
+        sample[i] = rand() % n;
+      Point3D2D six_pts[6];
+      for (int i = 0; i < 6; i++)
+        six_pts[i] = pts[sample[i]];
+      float R[9], t[3];
+      if (pnp_dlt_from_6(six_pts, K, R, t) != 0)
+        continue;
+      int base = iter * 12;
+      for (int i = 0; i < 9; i++)
+        rt_buf[static_cast<size_t>(base) + i] = R[i];
+      rt_buf[static_cast<size_t>(base) + 9] = t[0];
+      rt_buf[static_cast<size_t>(base) + 10] = t[1];
+      rt_buf[static_cast<size_t>(base) + 11] = t[2];
     }
-    if (best_inliers < 0) return -1;
-    for (int i = 0; i < 9; i++) R_out[i] = best_R[i];
-    for (int i = 0; i < 3; i++) t_out[i] = best_t[i];
-    if (inlier_mask) {
-        Eigen::Matrix3d R_eig;
-        for (int i = 0; i < 9; i++) R_eig(i/3, i%3) = (double)best_R[i];
-        Eigen::Vector3d t_eig((double)best_t[0], (double)best_t[1], (double)best_t[2]);
-        double fx = (double)K[0], fy = (double)K[4], cx = (double)K[2], cy = (double)K[5];
-        for (int i = 0; i < n; i++) {
-            Eigen::Vector3d X((double)pts[i].x, (double)pts[i].y, (double)pts[i].z);
-            Eigen::Vector3d p = R_eig * X + t_eig;
-            if (p(2) <= 1e-12) { inlier_mask[i] = 0; continue; }
-            double u_pred = fx * p(0)/p(2) + cx, v_pred = fy * p(1)/p(2) + cy;
-            double err_sq = ((double)pts[i].u - u_pred)*((double)pts[i].u - u_pred)
-                          + ((double)pts[i].v - v_pred)*((double)pts[i].v - v_pred);
-            inlier_mask[i] = (err_sq <= (double)thresh_sq) ? 1 : 0;
-        }
+
+    std::vector<float> points_flat(static_cast<size_t>(n) * 5u);
+    for (int i = 0; i < n; i++) {
+      points_flat[static_cast<size_t>(i) * 5u + 0] = pts[i].x;
+      points_flat[static_cast<size_t>(i) * 5u + 1] = pts[i].y;
+      points_flat[static_cast<size_t>(i) * 5u + 2] = pts[i].z;
+      points_flat[static_cast<size_t>(i) * 5u + 3] = pts[i].u;
+      points_flat[static_cast<size_t>(i) * 5u + 4] = pts[i].v;
     }
+
+    GLuint ssbo_pts = 0, ssbo_rt = 0, ssbo_res = 0;
+    glGenBuffers(1, &ssbo_pts);
+    glGenBuffers(1, &ssbo_rt);
+    glGenBuffers(1, &ssbo_res);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_pts);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 static_cast<GLsizeiptr>(points_flat.size() * sizeof(float)), points_flat.data(),
+                 GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo_pts);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_rt);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(rt_buf.size() * sizeof(float)),
+                 rt_buf.data(), GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo_rt);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_res);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(s_num_iter) * sizeof(float),
+                 NULL, GL_DYNAMIC_READ);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo_res);
+
+    glUseProgram(s_prog_pnp);
+    glUniform1i(glGetUniformLocation(s_prog_pnp, "u_n"), n);
+    glUniform1f(glGetUniformLocation(s_prog_pnp, "u_thresh_sq"), thresh_sq);
+    glUniform1f(glGetUniformLocation(s_prog_pnp, "u_fx"), fx);
+    glUniform1f(glGetUniformLocation(s_prog_pnp, "u_fy"), fy);
+    glUniform1f(glGetUniformLocation(s_prog_pnp, "u_cx"), cx);
+    glUniform1f(glGetUniformLocation(s_prog_pnp, "u_cy"), cy);
+
+    GLuint num_groups = (GLuint)((s_num_iter + s_local_size - 1) / s_local_size);
+    glDispatchCompute(num_groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_res);
+    const float* counts = (const float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+    if (!counts) {
+      glDeleteBuffers(1, &ssbo_pts);
+      glDeleteBuffers(1, &ssbo_rt);
+      glDeleteBuffers(1, &ssbo_res);
+      return -1;
+    }
+    int best = 0;
+    for (int i = 1; i < s_num_iter; i++)
+      if (counts[i] > counts[best])
+        best = i;
+    int best_inliers = static_cast<int>(counts[best]);
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    glDeleteBuffers(1, &ssbo_pts);
+    glDeleteBuffers(1, &ssbo_rt);
+    glDeleteBuffers(1, &ssbo_res);
+
+    if (best_inliers < 0)
+      return -1;
+    int base = best * 12;
+    for (int i = 0; i < 9; i++)
+      R_out[i] = rt_buf[static_cast<size_t>(base) + i];
+    t_out[0] = rt_buf[static_cast<size_t>(base) + 9];
+    t_out[1] = rt_buf[static_cast<size_t>(base) + 10];
+    t_out[2] = rt_buf[static_cast<size_t>(base) + 11];
+    if (inlier_mask)
+      pnp_count_inliers(pts, n, K, R_out, t_out, thresh_sq, inlier_mask);
     return best_inliers;
+  }
+
+  // CPU fallback
+  int best_inliers = -1;
+  float best_R[9], best_t[3];
+  std::vector<int> sample(6);
+  for (int iter = 0; iter < s_num_iter; iter++) {
+    for (int i = 0; i < 6; i++)
+      sample[i] = rand() % n;
+    Point3D2D six_pts[6];
+    for (int i = 0; i < 6; i++)
+      six_pts[i] = pts[sample[i]];
+    float R[9], t[3];
+    if (pnp_dlt_from_6(six_pts, K, R, t) != 0)
+      continue;
+    std::vector<unsigned char> tmp_mask(static_cast<size_t>(n), 0);
+    int inl = pnp_count_inliers(pts, n, K, R, t, thresh_sq, tmp_mask.data());
+    if (inl > best_inliers) {
+      best_inliers = inl;
+      for (int i = 0; i < 9; i++)
+        best_R[i] = R[i];
+      for (int i = 0; i < 3; i++)
+        best_t[i] = t[i];
+    }
+  }
+  if (best_inliers < 0)
+    return -1;
+  for (int i = 0; i < 9; i++)
+    R_out[i] = best_R[i];
+  for (int i = 0; i < 3; i++)
+    t_out[i] = best_t[i];
+  if (inlier_mask)
+    pnp_count_inliers(pts, n, K, R_out, t_out, thresh_sq, inlier_mask);
+  return best_inliers;
 }
 
-}  /* extern "C" */
-
+} /* extern "C" */

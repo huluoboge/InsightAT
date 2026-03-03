@@ -1,22 +1,25 @@
 /**
- * @file string_utils.h
- * @brief 字符串工具（从原 Common 迁入）
+ * @file  string_utils.h
+ * @brief 字符串工具：split / trim / toLowerStr / StringPrintf / GetUUID。
  */
 
+#pragma once
 #ifndef INSIGHT_UTIL_STRING_UTILS_H
 #define INSIGHT_UTIL_STRING_UTILS_H
 
-#include <vector>
-#include <string>
-#include <sstream>
+#include "insight_global.h"
+
 #include <algorithm>
 #include <cstdarg>
-#include "insight_global.h"
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace insight {
 
 /** 按分隔符拆分字符串 */
-static bool split(const std::string& src, const std::string& delim, std::vector<std::string>& vec_value) {
+static bool split(const std::string& src, const std::string& delim,
+                  std::vector<std::string>& vec_value) {
   bool bDelimiterExist = false;
   if (!delim.empty()) {
     vec_value.clear();
@@ -63,6 +66,6 @@ void StringAppendV(std::string* dst, const char* format, va_list ap);
 std::string StringPrintf(const char* format, ...);
 std::string GetUUID();
 
-}  // namespace insight
+} // namespace insight
 
-#endif  // INSIGHT_UTIL_STRING_UTILS_H
+#endif // INSIGHT_UTIL_STRING_UTILS_H

@@ -27,7 +27,7 @@ struct PairGeoInfo {
   bool twoview_ok = false;
   bool stable = false;
   int num_valid_points = 0;
-  int E_inliers = 0;  ///< For connectivity / quality weighting
+  int E_inliers = 0; ///< For connectivity / quality weighting
 };
 
 /**
@@ -35,7 +35,7 @@ struct PairGeoInfo {
  * Connectivity is derived from how many pairs each image appears in.
  */
 class ViewGraph {
- public:
+public:
   ViewGraph() = default;
 
   void add_pair(const PairGeoInfo& info);
@@ -46,17 +46,15 @@ class ViewGraph {
 
   /// Score for pair index: stability + log(1 + num_valid_points) + connectivity.
   /// Weights: w_stable=1, w_points=0.5, w_connect=0.3 (tunable).
-  double get_pair_score(size_t pair_index,
-                       double w_stable = 1.0,
-                       double w_points = 0.5,
-                       double w_connect = 0.3) const;
+  double get_pair_score(size_t pair_index, double w_stable = 1.0, double w_points = 0.5,
+                        double w_connect = 0.3) const;
 
   /// Best initial pair: both images not in \p registered, twoview_ok && stable, max score.
   /// Returns (image1_id, image2_id) or nullopt if none.
-  std::optional<std::pair<uint32_t, uint32_t>> choose_initial_pair(
-      const std::set<uint32_t>& registered) const;
+  std::optional<std::pair<uint32_t, uint32_t>>
+  choose_initial_pair(const std::set<uint32_t>& registered) const;
 
- private:
+private:
   std::vector<PairGeoInfo> pairs_;
   /// Per-image degree (number of pairs containing this image). Rebuilt when needed.
   mutable std::vector<int> image_degree_;
@@ -65,5 +63,5 @@ class ViewGraph {
   void ensure_degree_computed() const;
 };
 
-}  // namespace sfm
-}  // namespace insight
+} // namespace sfm
+} // namespace insight

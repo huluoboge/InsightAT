@@ -12,28 +12,32 @@
 namespace insight {
 namespace sfm {
 
-bool build_view_graph_from_geo(const std::string& pairs_json_path,
-                               const std::string& geo_dir,
+bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::string& geo_dir,
                                ViewGraph* out) {
-  if (!out) return false;
+  if (!out)
+    return false;
   out->reserve(4096);
   std::ifstream file(pairs_json_path);
-  if (!file.is_open()) return false;
+  if (!file.is_open())
+    return false;
   nlohmann::json j;
   try {
     file >> j;
   } catch (...) {
     return false;
   }
-  if (!j.contains("pairs") || !j["pairs"].is_array()) return false;
+  if (!j.contains("pairs") || !j["pairs"].is_array())
+    return false;
   std::string dir = geo_dir;
-  if (!dir.empty() && dir.back() != '/') dir += '/';
+  if (!dir.empty() && dir.back() != '/')
+    dir += '/';
   for (const auto& p : j["pairs"]) {
     uint32_t id1 = insight::tools::getImageIdFromPair(p, "image1_id");
     uint32_t id2 = insight::tools::getImageIdFromPair(p, "image2_id");
     std::string geo_path = dir + std::to_string(id1) + "_" + std::to_string(id2) + ".isat_geo";
     insight::io::IDCReader reader(geo_path);
-    if (!reader.isValid()) continue;
+    if (!reader.isValid())
+      continue;
     const auto& meta = reader.getMetadata();
     PairGeoInfo info;
     info.image1_id = id1;
@@ -58,5 +62,5 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path,
   return true;
 }
 
-}  // namespace sfm
-}  // namespace insight
+} // namespace sfm
+} // namespace insight

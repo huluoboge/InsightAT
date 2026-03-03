@@ -16,9 +16,8 @@ namespace sfm {
 /// Load pairs from JSON (array "pairs" with image1_id, image2_id), then fill
 /// ViewGraph from each pair's .isat_geo in geo_dir. Skips missing/invalid geo.
 /// Geo path: geo_dir + "/" + image1_id + "_" + image2_id + ".isat_geo"
-bool build_view_graph_from_geo(const std::string& pairs_json_path,
-                               const std::string& geo_dir,
+bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::string& geo_dir,
                                ViewGraph* out);
 
-}  // namespace sfm
-}  // namespace insight
+} // namespace sfm
+} // namespace insight

@@ -2,7 +2,8 @@
  * @file  resection.h
  * @brief Resection (PnP) for incremental SfM: RANSAC PnP + pose-only BA.
  *
- * Uses OpenCV solvePnPRansac when available; pose refinement via pose_only_bundle (Ceres).
+ * Uses GPU RANSAC PnP (gpu_ransac_pnp) when gpu_geo_init() has been called;
+ * pose refinement via pose_only_bundle (Ceres).
  * World frame = cam0 frame; poses are world-to-camera.
  */
 
@@ -25,11 +26,8 @@ namespace sfm {
  * @param max_rmse_px    Maximum acceptable RMSE in pixels (default 10.0).
  * @return true if resection is considered stable.
  */
-bool is_resection_stable(int inlier_count,
-                         int total_correspondences,
-                         double rmse_px,
-                         double min_inlier_ratio = 0.4,
-                         double max_rmse_px = 10.0);
+bool is_resection_stable(int inlier_count, int total_correspondences, double rmse_px,
+                         double min_inlier_ratio = 0.4, double max_rmse_px = 10.0);
 
 /**
  * Run resection for a single unregistered image: collect 3D–2D from tracks
@@ -44,13 +42,9 @@ bool is_resection_stable(int inlier_count,
  * @param inliers_out     Optional: number of inliers after RANSAC.
  * @return true if resection succeeded (enough inliers and BA converged).
  */
-bool resection_single_image(const TrackStore& store,
-                            int image_index,
-                            double fx, double fy, double cx, double cy,
-                            Eigen::Matrix3d* R_out,
-                            Eigen::Vector3d* t_out,
-                            int min_inliers = 6,
-                            double ransac_thresh_px = 8.0,
+bool resection_single_image(const TrackStore& store, int image_index, double fx, double fy,
+                            double cx, double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
+                            int min_inliers = 6, double ransac_thresh_px = 8.0,
                             int* inliers_out = nullptr);
 
 /**
@@ -60,9 +54,7 @@ bool resection_single_image(const TrackStore& store,
  *
  * @return Number of cells with >= 1 observation (0 if none or no triangulated obs).
  */
-int resection_image_grid_coverage(const TrackStore& store,
-                                  int image_index,
-                                  int grid_cols = 4,
+int resection_image_grid_coverage(const TrackStore& store, int image_index, int grid_cols = 4,
                                   int grid_rows = 4);
 
 /**
@@ -73,7 +65,8 @@ int resection_image_grid_coverage(const TrackStore& store,
  * @param store              Track store.
  * @param registered_indices  Set of image indices already registered.
  * @param skip_indices       Optional: if non-null, images with skip_indices[i]==true are excluded.
- * @param min_grid_cells     Minimum number of grid cells with observations (0 = disable). Default 3.
+ * @param min_grid_cells     Minimum number of grid cells with observations (0 = disable).
+ * Default 3.
  * @return Image index with max correspondences (and meeting min_grid_cells), or -1 if none.
  */
 int choose_next_resection_image(const TrackStore& store,
@@ -81,5 +74,5 @@ int choose_next_resection_image(const TrackStore& store,
                                 const std::vector<bool>* skip_indices = nullptr,
                                 int min_grid_cells = 3);
 
-}  // namespace sfm
-}  // namespace insight
+} // namespace sfm
+} // namespace insight

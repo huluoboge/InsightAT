@@ -4,50 +4,51 @@
  */
 
 #include "pca_whitening_cuda.h"
+#include <cmath>
+#include <cstring>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cusolverDn.h>
 #include <glog/logging.h>
-#include <cmath>
-#include <cstring>
 #include <stdexcept>
 
 namespace insight {
 namespace algorithm {
 namespace retrieval {
 
-#define CUDA_CHECK(call)                                                                 \
-  do {                                                                                   \
-    cudaError_t err = (call);                                                            \
-    if (err != cudaSuccess) {                                                            \
-      LOG(ERROR) << "CUDA error " << (int)err << " " << cudaGetErrorString(err);         \
-      return false;                                                                     \
-    }                                                                                    \
+#define CUDA_CHECK(call)                                                                           \
+  do {                                                                                             \
+    cudaError_t err = (call);                                                                      \
+    if (err != cudaSuccess) {                                                                      \
+      LOG(ERROR) << "CUDA error " << (int)err << " " << cudaGetErrorString(err);                   \
+      return false;                                                                                \
+    }                                                                                              \
   } while (0)
 
-#define CUBLAS_CHECK(call)                                                               \
-  do {                                                                                   \
-    cublasStatus_t st = (call);                                                          \
-    if (st != CUBLAS_STATUS_SUCCESS) {                                                   \
-      LOG(ERROR) << "cuBLAS error " << (int)st;                                         \
-      return false;                                                                     \
-    }                                                                                    \
+#define CUBLAS_CHECK(call)                                                                         \
+  do {                                                                                             \
+    cublasStatus_t st = (call);                                                                    \
+    if (st != CUBLAS_STATUS_SUCCESS) {                                                             \
+      LOG(ERROR) << "cuBLAS error " << (int)st;                                                    \
+      return false;                                                                                \
+    }                                                                                              \
   } while (0)
 
-#define CUSOLVER_CHECK(call)                                                             \
-  do {                                                                                   \
-    cusolverStatus_t st = (call);                                                         \
-    if (st != CUSOLVER_STATUS_SUCCESS) {                                                \
-      LOG(ERROR) << "cuSOLVER error " << (int)st;                                        \
-      return false;                                                                     \
-    }                                                                                    \
+#define CUSOLVER_CHECK(call)                                                                       \
+  do {                                                                                             \
+    cusolverStatus_t st = (call);                                                                  \
+    if (st != CUSOLVER_STATUS_SUCCESS) {                                                           \
+      LOG(ERROR) << "cuSOLVER error " << (int)st;                                                  \
+      return false;                                                                                \
+    }                                                                                              \
   } while (0)
 
 __global__ void kernel_subtract_mean(float* __restrict__ X, const float* __restrict__ mean,
                                      int num_rows, int num_cols) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   int total = num_rows * num_cols;
-  if (idx >= total) return;
+  if (idx >= total)
+    return;
   int row = idx / num_cols;
   int col = idx % num_cols;
   X[idx] -= mean[col];
@@ -56,7 +57,8 @@ __global__ void kernel_subtract_mean(float* __restrict__ X, const float* __restr
 __global__ void kernel_compute_mean(const float* __restrict__ X, float* __restrict__ mean,
                                     int num_rows, int num_cols) {
   int col = blockIdx.x * blockDim.x + threadIdx.x;
-  if (col >= num_cols) return;
+  if (col >= num_cols)
+    return;
   float sum = 0.0f;
   for (int row = 0; row < num_rows; ++row) {
     sum += X[row * num_cols + col];
@@ -68,16 +70,16 @@ __global__ void kernel_transpose_rowmajor_to_colmajor(const float* __restrict__ 
                                                       float* __restrict__ dst, int n, int d) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   int total = n * d;
-  if (idx >= total) return;
+  if (idx >= total)
+    return;
   int row = idx / d;
   int col = idx % d;
   dst[col * n + row] = src[idx];
 }
 
-bool trainPCAOnGPU(const float* vlad_vectors, int num_samples, int input_dim, int n_components,
-                   bool whiten, std::vector<float>& mean_out,
-                   std::vector<float>& components_out,
-                   std::vector<float>& explained_variance_out) {
+bool train_pca_on_gpu(const float* vlad_vectors, int num_samples, int input_dim, int n_components,
+                      bool whiten, std::vector<float>& mean_out, std::vector<float>& components_out,
+                      std::vector<float>& explained_variance_out) {
   (void)whiten;
   if (vlad_vectors == nullptr || num_samples <= 0 || input_dim <= 0 || n_components <= 0 ||
       n_components > input_dim) {
@@ -91,7 +93,7 @@ bool trainPCAOnGPU(const float* vlad_vectors, int num_samples, int input_dim, in
 
   float* d_X = nullptr;
   float* d_mean = nullptr;
-  float* d_X_cm = nullptr;  // column-major [d x n] for gemm
+  float* d_X_cm = nullptr; // column-major [d x n] for gemm
   float* d_cov = nullptr;
 
   CUDA_CHECK(cudaMalloc(&d_X, n_d * sizeof(float)));
@@ -112,8 +114,8 @@ bool trainPCAOnGPU(const float* vlad_vectors, int num_samples, int input_dim, in
   CUDA_CHECK(cudaDeviceSynchronize());
 
   // 3. Transpose to column-major [d x n] for cov = X_cm * X_cm^T
-  kernel_transpose_rowmajor_to_colmajor<<<(n_d + 255) / 256, 256>>>(d_X, d_X_cm,
-                                                                    num_samples, input_dim);
+  kernel_transpose_rowmajor_to_colmajor<<<(n_d + 255) / 256, 256>>>(d_X, d_X_cm, num_samples,
+                                                                    input_dim);
   CUDA_CHECK(cudaGetLastError());
   CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -123,8 +125,8 @@ bool trainPCAOnGPU(const float* vlad_vectors, int num_samples, int input_dim, in
   float beta = 0.0f;
   // cov = alpha * X_cm * X_cm^T  -> [d x d], column-major
   CUBLAS_CHECK(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, input_dim, input_dim,
-                           num_samples, &alpha, d_X_cm, input_dim, d_X_cm, input_dim, &beta,
-                           d_cov, input_dim));
+                           num_samples, &alpha, d_X_cm, input_dim, d_X_cm, input_dim, &beta, d_cov,
+                           input_dim));
   cublasDestroy(cublas_handle);
 
   // 4. Symmetric eigenvalue decomposition (cuSOLVER overwrites d_cov with eigenvectors)
@@ -133,8 +135,8 @@ bool trainPCAOnGPU(const float* vlad_vectors, int num_samples, int input_dim, in
 
   int lwork = 0;
   CUSOLVER_CHECK(cusolverDnSsyevd_bufferSize(cusolver_handle, CUSOLVER_EIG_MODE_VECTOR,
-                                             CUBLAS_FILL_MODE_LOWER, input_dim, d_cov,
-                                             input_dim, nullptr, &lwork));
+                                             CUBLAS_FILL_MODE_LOWER, input_dim, d_cov, input_dim,
+                                             nullptr, &lwork));
   float* d_work = nullptr;
   float* d_eigenvalues = nullptr;
   int* d_info = nullptr;
@@ -142,9 +144,9 @@ bool trainPCAOnGPU(const float* vlad_vectors, int num_samples, int input_dim, in
   CUDA_CHECK(cudaMalloc(&d_eigenvalues, input_dim * sizeof(float)));
   CUDA_CHECK(cudaMalloc(&d_info, sizeof(int)));
 
-  CUSOLVER_CHECK(cusolverDnSsyevd(cusolver_handle, CUSOLVER_EIG_MODE_VECTOR,
-                                   CUBLAS_FILL_MODE_LOWER, input_dim, d_cov, input_dim,
-                                   d_eigenvalues, d_work, lwork, d_info));
+  CUSOLVER_CHECK(cusolverDnSsyevd(cusolver_handle, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_LOWER,
+                                  input_dim, d_cov, input_dim, d_eigenvalues, d_work, lwork,
+                                  d_info));
   int info_host = 0;
   CUDA_CHECK(cudaMemcpy(&info_host, d_info, sizeof(int), cudaMemcpyDeviceToHost));
   cudaFree(d_work);
@@ -188,9 +190,11 @@ bool trainPCAOnGPU(const float* vlad_vectors, int num_samples, int input_dim, in
   CUDA_CHECK(cudaFree(d_cov));
 
   float total_var = 0.0f;
-  for (float v : eigenvalues_host) total_var += v;
+  for (float v : eigenvalues_host)
+    total_var += v;
   float retained_var = 0.0f;
-  for (float v : explained_variance_out) retained_var += v;
+  for (float v : explained_variance_out)
+    retained_var += v;
   LOG(INFO) << "PCA (GPU) training complete: variance retained = "
             << (total_var > 1e-20f ? (retained_var / total_var * 100.0f) : 0.0f) << "%";
 

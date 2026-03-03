@@ -14,7 +14,7 @@ namespace tools {
 /// \param log_level  Value of --log-level (error|warn|info|debug), or empty
 void ApplyLogLevel(bool verbose, bool quiet, const std::string& log_level);
 
-}  // namespace tools
-}  // namespace insight
+} // namespace tools
+} // namespace insight
 
-#endif  // INSIGHTAT_TOOLS_CLI_LOGGING_H
+#endif // INSIGHTAT_TOOLS_CLI_LOGGING_H

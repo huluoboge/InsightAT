@@ -25,12 +25,12 @@
 #pragma once
 
 #include <Eigen/Core>
-#include <Eigen/SVD>
 #include <Eigen/Geometry>
-#include <vector>
+#include <Eigen/SVD>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 namespace insight {
 namespace sfm {
@@ -41,60 +41,56 @@ namespace sfm {
 
 /// Pinhole intrinsics (principal point at (cx, cy), no distortion)
 struct Intrinsics {
-    double fx = 0.0;
-    double fy = 0.0;
-    double cx = 0.0;
-    double cy = 0.0;
+  double fx = 0.0;
+  double fy = 0.0;
+  double cx = 0.0;
+  double cy = 0.0;
 
-    bool valid() const { return fx > 0.0 && fy > 0.0; }
+  bool valid() const { return fx > 0.0 && fy > 0.0; }
 
-    /// Build camera matrix K
-    Eigen::Matrix3d K() const {
-        Eigen::Matrix3d m;
-        m << fx,  0.0, cx,
-             0.0, fy,  cy,
-             0.0, 0.0, 1.0;
-        return m;
-    }
-    /// Build K⁻¹ exactly
-    Eigen::Matrix3d Kinv() const {
-        Eigen::Matrix3d m;
-        m << 1.0/fx, 0.0,    -cx/fx,
-             0.0,    1.0/fy, -cy/fy,
-             0.0,    0.0,     1.0;
-        return m;
-    }
+  /// Build camera matrix K
+  Eigen::Matrix3d K() const {
+    Eigen::Matrix3d m;
+    m << fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0;
+    return m;
+  }
+  /// Build K⁻¹ exactly
+  Eigen::Matrix3d Kinv() const {
+    Eigen::Matrix3d m;
+    m << 1.0 / fx, 0.0, -cx / fx, 0.0, 1.0 / fy, -cy / fy, 0.0, 0.0, 1.0;
+    return m;
+  }
 };
 
 /// Result of a single two-view reconstruction
 struct TwoViewResult {
-    bool success = false;
+  bool success = false;
 
-    Eigen::Matrix3d R;            ///< Rotation: X_cam2 = R * X_cam1 frame shift
-    Eigen::Vector3d t;            ///< Translation (unit norm)
+  Eigen::Matrix3d R; ///< Rotation: X_cam2 = R * X_cam1 frame shift
+  Eigen::Vector3d t; ///< Translation (unit norm)
 
-    std::vector<Eigen::Vector3d> points3d;   ///< Triangulated 3-D points (in cam1 frame)
-    std::vector<int>             inlier_ids; ///< Original inlier match indices
+  std::vector<Eigen::Vector3d> points3d; ///< Triangulated 3-D points (in cam1 frame)
+  std::vector<int> inlier_ids;           ///< Original inlier match indices
 
-    double focal_refined  = 0.0;  ///< Refined focal length (px) after BA; 0 = not refined
-    double reprojection_rmse = 0.0; ///< Final RMSE after BA (px)
-    int    num_valid_points  = 0;
-    std::string quality;          ///< "good" / "poor" / "degenerate"
+  double focal_refined = 0.0;     ///< Refined focal length (px) after BA; 0 = not refined
+  double reprojection_rmse = 0.0; ///< Final RMSE after BA (px)
+  int num_valid_points = 0;
+  std::string quality; ///< "good" / "poor" / "degenerate"
 };
 
 /// Degeneracy detection result (F vs H model selection, COLMAP-style)
 struct DegeneracyResult {
-    bool is_degenerate = false;     ///< true if scene is planar/pure-rotation, F unreliable
-    int  model_preferred = 0;       ///< 0=general (F), 1=planar (H)
-    double h_over_f_ratio = 0.0;    ///< H_inliers / F_inliers (when H estimated)
+  bool is_degenerate = false;  ///< true if scene is planar/pure-rotation, F unreliable
+  int model_preferred = 0;     ///< 0=general (F), 1=planar (H)
+  double h_over_f_ratio = 0.0; ///< H_inliers / F_inliers (when H estimated)
 };
 
 /// Stability metrics for two-view triangulation
 struct StabilityMetrics {
-    double median_parallax_deg = 0.0;   ///< Median parallax angle (degrees), >2° typically OK
-    double median_depth_baseline = 0.0;  ///< Median depth/baseline ratio, 2-500 typically OK
-    int    num_valid = 0;                ///< Points used for metrics (positive depth both cams)
-    bool   is_stable = false;           ///< true if parallax and depth/baseline in acceptable range
+  double median_parallax_deg = 0.0;   ///< Median parallax angle (degrees), >2° typically OK
+  double median_depth_baseline = 0.0; ///< Median depth/baseline ratio, 2-500 typically OK
+  int num_valid = 0;                  ///< Points used for metrics (positive depth both cams)
+  bool is_stable = false;             ///< true if parallax and depth/baseline in acceptable range
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,9 +109,7 @@ struct StabilityMetrics {
  * @param f_min, f_max  Search range (pixels). Defaults cover typical aerial cameras.
  * @return Estimated focal length (> 0) or -1 on failure.
  */
-double FocalFromFundamental(const Eigen::Matrix3d& F,
-                            double cx, double cy,
-                            double f_min = 100.0,
+double FocalFromFundamental(const Eigen::Matrix3d& F, double cx, double cy, double f_min = 100.0,
                             double f_max = 50000.0);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,11 +138,9 @@ Eigen::Matrix3d EnforceEssential(const Eigen::Matrix3d& M);
  * @param[out] t    Best translation (unit norm).
  * @return number of cheirality-consistent points for the chosen solution.
  */
-int DecomposeEssential(const Eigen::Matrix3d&         E,
-                        const std::vector<Eigen::Vector2d>& pts1_n,
-                        const std::vector<Eigen::Vector2d>& pts2_n,
-                        Eigen::Matrix3d& R,
-                        Eigen::Vector3d& t);
+int DecomposeEssential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector2d>& pts1_n,
+                       const std::vector<Eigen::Vector2d>& pts2_n, Eigen::Matrix3d& R,
+                       Eigen::Vector3d& t);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Linear triangulation (DLT)
@@ -165,10 +157,8 @@ int DecomposeEssential(const Eigen::Matrix3d&         E,
  * @return 3-D point in cam1 frame (homogeneous component w is 1), or
  *         (0,0,0) if the system is degenerate.
  */
-Eigen::Vector3d TriangulatePoint(const Eigen::Vector2d& x1,
-                                  const Eigen::Vector2d& x2,
-                                  const Eigen::Matrix3d& R,
-                                  const Eigen::Vector3d& t);
+Eigen::Vector3d TriangulatePoint(const Eigen::Vector2d& x1, const Eigen::Vector2d& x2,
+                                 const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
 
 /**
  * Triangulate a set of normalised correspondences.
@@ -178,12 +168,9 @@ Eigen::Vector3d TriangulatePoint(const Eigen::Vector2d& x1,
  * @param R, t            Relative pose.
  * @return vector of 3-D points in cam1 frame (same length as pts1_n).
  */
-std::vector<Eigen::Vector3d> TriangulatePoints(
-        const std::vector<Eigen::Vector2d>& pts1_n,
-        const std::vector<Eigen::Vector2d>& pts2_n,
-        const Eigen::Matrix3d& R,
-        const Eigen::Vector3d& t);
-
+std::vector<Eigen::Vector3d> TriangulatePoints(const std::vector<Eigen::Vector2d>& pts1_n,
+                                               const std::vector<Eigen::Vector2d>& pts2_n,
+                                               const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. Degeneracy detection (F vs H, COLMAP-style)
@@ -221,32 +208,30 @@ DegeneracyResult DetectDegeneracy(int F_inliers, int H_inliers, int num_matches)
  * @param min_depth_baseline   Min depth/B ratio. Default 2.0.
  * @param max_depth_baseline   Max depth/B ratio. Default 500.0.
  */
-StabilityMetrics ComputeStabilityMetrics(
-    const std::vector<Eigen::Vector3d>& points3d,
-    const std::vector<Eigen::Vector2d>& pts1_n,
-    const std::vector<Eigen::Vector2d>& pts2_n,
-    const Eigen::Matrix3d& R,
-    const Eigen::Vector3d& t,
-    double min_parallax_deg = 2.0,
-    double min_depth_baseline = 2.0,
-    double max_depth_baseline = 500.0);
+StabilityMetrics ComputeStabilityMetrics(const std::vector<Eigen::Vector3d>& points3d,
+                                         const std::vector<Eigen::Vector2d>& pts1_n,
+                                         const std::vector<Eigen::Vector2d>& pts2_n,
+                                         const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+                                         double min_parallax_deg = 2.0,
+                                         double min_depth_baseline = 2.0,
+                                         double max_depth_baseline = 500.0);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. Convenience: convert row-major float[9] ↔ Eigen::Matrix3d
 // ─────────────────────────────────────────────────────────────────────────────
 
 inline Eigen::Matrix3d FloatArrayToMatrix3d(const float m[9]) {
-    Eigen::Matrix3d R;
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            R(i, j) = static_cast<double>(m[i*3 + j]);
-    return R;
+  Eigen::Matrix3d R;
+  for (int i = 0; i < 3; i++)
+    for (int j = 0; j < 3; j++)
+      R(i, j) = static_cast<double>(m[i * 3 + j]);
+  return R;
 }
 
 inline void Matrix3dToFloatArray(const Eigen::Matrix3d& M, float out[9]) {
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            out[i*3 + j] = static_cast<float>(M(i, j));
+  for (int i = 0; i < 3; i++)
+    for (int j = 0; j < 3; j++)
+      out[i * 3 + j] = static_cast<float>(M(i, j));
 }
 
 } // namespace sfm

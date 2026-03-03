@@ -1,9 +1,10 @@
 /**
- * @file numeric.cpp
- * @brief 数值工具实现（从 Common 迁入）
+ * @file  numeric.cpp
+ * @brief 数值工具实现：CrossProductMatrix、旋转、LookAt、getRotationMagnitude 等。
  */
 
 #include "numeric.h"
+
 #include <fstream>
 
 namespace insight {
@@ -87,7 +88,8 @@ void MeanAndVarianceAlongRows(const Mat& A, Vec* mean_pointer, Vec* variance_poi
 
 bool exportMatToTextFile(const Mat& mat, const std::string& filename, const std::string& sPrefix) {
   std::ofstream outfile(filename.c_str(), std::ios_base::out);
-  if (!outfile.is_open()) return false;
+  if (!outfile.is_open())
+    return false;
   outfile << sPrefix << "=[" << std::endl;
   for (int j = 0; j < mat.rows(); ++j) {
     for (int i = 0; i < mat.cols(); ++i)
@@ -99,4 +101,4 @@ bool exportMatToTextFile(const Mat& mat, const std::string& filename, const std:
   return true;
 }
 
-}  // namespace insight
+} // namespace insight

@@ -29,79 +29,61 @@ find_package(glog REQUIRED)
 # ─────────────────────────────────────────────────────────────
 
 set(UI_SOURCES
-    # UI System Config
-    UISystemConfig.h
-    UISystemConfig.cpp
-    
-    # Models
-    models/ProjectDocument.h
-    models/ProjectDocument.cpp
-    models/WorkspaceTreeModel.h
-    models/WorkspaceTreeModel.cpp
-    
-    # Main Window
-    MainWindow.h
-    MainWindow.cpp
-    
-    # Dialogs
-    dialogs/NewProjectDialog.h
-    dialogs/NewProjectDialog.cpp
-    # dialogs/ImageGroupDialog.h
-    # dialogs/ImageGroupDialog.cpp
-    dialogs/ProjectInfoDialog.h
-    dialogs/ProjectInfoDialog.cpp
-    dialogs/CoordinateSystemConfigDialog.h
-    dialogs/CoordinateSystemConfigDialog.cpp
-    dialogs/ImageGroupDetailPanel.h
-    dialogs/ImageGroupDetailPanel.cpp
-    dialogs/ImageEditorDialog.h
-    dialogs/ImageEditorDialog.cpp
-    dialogs/ImagePreviewDialog.h
-    dialogs/ImagePreviewDialog.cpp
-    dialogs/NewATTaskDialog.h
-    dialogs/NewATTaskDialog.cpp
-    
-    # Utils (Coordinates from Common)
-    utils/Coordinates.h
-    utils/Coordinates.cpp
-    
-    # Widgets
-    widgets/SpatialReferenceDialog.h
-    widgets/SpatialReferenceDialog.cpp
-    widgets/SpatialReferenceTool.ui
-    widgets/CameraModelWidget.h
-    widgets/CameraModelWidget.cpp
-    widgets/CoordinateSystemConfigWidget.h
-    widgets/CoordinateSystemConfigWidget.cpp
-    widgets/CameraParameterEditorWidget.h
-    widgets/CameraParameterEditorWidget.cpp
-    widgets/ImageGroupsManagementPanel.h
-    widgets/ImageGroupsManagementPanel.cpp
-    
-    # GPS/GNSS Import Wizards
-    widgets/GPSPointsWizardDialog.h
-    widgets/GPSPointsWizardDialog.cpp
-    widgets/GPSPointsWizardDialog.ui
-    widgets/GPSPointsWizardModel.h
-    widgets/GPSPointsWizardModel.cpp
-    widgets/GPSPointsWizardDelegate.h
-    widgets/GPSPointsWizardDelegate.cpp
-    widgets/GNSSMeasurementImportDialog.h
-    widgets/GNSSMeasurementImportDialog.cpp
-    
-    # Panels
-    panels/ATTaskPanel.h
-    panels/ATTaskPanel.cpp
+    system_config.h
+    system_config.cpp
+    models/project_document.h
+    models/project_document.cpp
+    models/workspace_tree_model.h
+    models/workspace_tree_model.cpp
+    main_window.h
+    main_window.cpp
+    dialogs/new_project_dialog.h
+    dialogs/new_project_dialog.cpp
+    dialogs/project_info_dialog.h
+    dialogs/project_info_dialog.cpp
+    dialogs/coordinate_system_config_dialog.h
+    dialogs/coordinate_system_config_dialog.cpp
+    dialogs/image_group_detail_panel.h
+    dialogs/image_group_detail_panel.cpp
+    dialogs/image_editor_dialog.h
+    dialogs/image_editor_dialog.cpp
+    dialogs/image_preview_dialog.h
+    dialogs/image_preview_dialog.cpp
+    dialogs/new_at_task_dialog.h
+    dialogs/new_at_task_dialog.cpp
+    utils/coordinates.h
+    utils/coordinates.cpp
+    widgets/spatial_reference_dialog.h
+    widgets/spatial_reference_dialog.cpp
+    widgets/spatial_reference_tool.ui
+    widgets/camera_model_widget.h
+    widgets/camera_model_widget.cpp
+    widgets/coordinate_system_config_widget.h
+    widgets/coordinate_system_config_widget.cpp
+    widgets/camera_parameter_editor_widget.h
+    widgets/camera_parameter_editor_widget.cpp
+    widgets/image_groups_management_panel.h
+    widgets/image_groups_management_panel.cpp
+    widgets/gps_points_wizard_dialog.h
+    widgets/gps_points_wizard_dialog.cpp
+    widgets/gps_points_wizard_dialog.ui
+    widgets/gps_points_wizard_model.h
+    widgets/gps_points_wizard_model.cpp
+    widgets/gps_points_wizard_delegate.h
+    widgets/gps_points_wizard_delegate.cpp
+    widgets/gnss_measurement_import_dialog.h
+    widgets/gnss_measurement_import_dialog.cpp
+    panels/at_task_panel.h
+    panels/at_task_panel.cpp
 )
 
 set(UI_HEADERS
-    models/ProjectDocument.h
-    models/WorkspaceTreeModel.h
-    MainWindow.h
-    dialogs/NewProjectDialog.h
-    # dialogs/ImageGroupDialog.h
-    widgets/SpatialReferenceDialog.h
-    widgets/CameraModelWidget.h
+    models/project_document.h
+    models/workspace_tree_model.h
+    main_window.h
+    dialogs/new_project_dialog.h
+    widgets/spatial_reference_dialog.h
+    widgets/camera_model_widget.h
 )
 
 # ─────────────────────────────────────────────────────────────

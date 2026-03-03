@@ -1,12 +1,13 @@
 /**
- * @file string_utils.cpp
- * @brief 字符串工具实现（从 Common 迁入，GetUUID 改为 C++11 实现，无 Boost）
+ * @file  string_utils.cpp
+ * @brief 字符串工具实现：StringPrintf / StringAppendV / GetUUID。
  */
 
 #include "string_utils.h"
-#include <memory>
+
 #include <cstdarg>
 #include <cstdio>
+#include <memory>
 #include <random>
 #include <sstream>
 
@@ -23,8 +24,7 @@ std::string GetUUID() {
   if (CoCreateGuid(&guid) != S_OK) {
     return "";
   }
-  snprintf(buffer, sizeof(buffer),
-           "%08X%04X%04x%02X%02X%02X%02X%02X%02X%02X%02X",
+  snprintf(buffer, sizeof(buffer), "%08X%04X%04x%02X%02X%02X%02X%02X%02X%02X%02X",
            (unsigned)guid.Data1, (unsigned)guid.Data2, (unsigned)guid.Data3,
            (unsigned)guid.Data4[0], (unsigned)guid.Data4[1], (unsigned)guid.Data4[2],
            (unsigned)guid.Data4[3], (unsigned)guid.Data4[4], (unsigned)guid.Data4[5],
@@ -84,4 +84,4 @@ std::string StringPrintf(const char* format, ...) {
   return result;
 }
 
-}  // namespace insight
+} // namespace insight

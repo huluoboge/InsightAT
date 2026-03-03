@@ -58,7 +58,7 @@ extern "C" {
  * Initialise EGL surfaceless context + GLEW + compile both compute shaders.
  * @return 0 on success, negative on failure.
  */
-int  gpu_twoview_init(void);
+int gpu_twoview_init(void);
 
 /** Release all GPU resources and terminate the EGL context. */
 void gpu_twoview_shutdown(void);
@@ -78,10 +78,7 @@ void gpu_twoview_shutdown(void);
  *               Points with negative depth in either camera are written as NaN.
  * @return       Number of valid (finite, positive-depth) points.
  */
-int gpu_triangulate(const float* pts_n, int n,
-                    const float  R[9],
-                    const float  t[3],
-                    float*       X_out);
+int gpu_triangulate(const float* pts_n, int n, const float R[9], const float t[3], float* X_out);
 
 /* ── BA residuals ───────────────────────────────────────────────────────── */
 
@@ -109,21 +106,12 @@ int gpu_triangulate(const float* pts_n, int n,
  * @param wrss_out   Output sum of (Huber residual)²  (divided by n_valid).
  * @param valid_out  Output number of non-NaN, positive-depth points.
  */
-void gpu_ba_residuals(const float* pts_px,
-                      const float* X,
-                      int          n,
-                      const float  R[9],
-                      const float  t[3],
-                      float        f,
-                      float        cx,
-                      float        cy,
-                      float        huber_k,
-                      float*       residuals_out,
-                      float*       wrss_out,
-                      int*         valid_out);
+void gpu_ba_residuals(const float* pts_px, const float* X, int n, const float R[9],
+                      const float t[3], float f, float cx, float cy, float huber_k,
+                      float* residuals_out, float* wrss_out, int* valid_out);
 
 #ifdef __cplusplus
-}  /* extern "C" */
+} /* extern "C" */
 #endif
 
 #endif /* GPU_TWOVIEW_SFM_H */

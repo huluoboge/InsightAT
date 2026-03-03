@@ -15,12 +15,12 @@ cmake_minimum_required(VERSION 3.20)
 # ─────────────────────────────────────────────────────────────
 set(DATABASE_SOURCES
     database_types.cpp
-    CameraSensorDatabase.cpp
+    camera_sensor_database.cpp
 )
 
 set(DATABASE_HEADERS
     database_types.h
-    CameraSensorDatabase.h
+    camera_sensor_database.h
 )
 
 # ─────────────────────────────────────────────────────────────
