@@ -18,10 +18,10 @@ CoordinateSystemConfigDialog::CoordinateSystemConfigDialog(QWidget* parent) : QD
   setModal(true);
   setMinimumWidth(600);
   setMinimumHeight(500);
-  initializeUI();
+  initialize_ui();
 }
 
-void CoordinateSystemConfigDialog::initializeUI() {
+void CoordinateSystemConfigDialog::initialize_ui() {
   QVBoxLayout* mainLayout = new QVBoxLayout(this);
   mainLayout->setSpacing(10);
   mainLayout->setContentsMargins(10, 10, 10, 10);
@@ -36,11 +36,10 @@ void CoordinateSystemConfigDialog::initializeUI() {
 
   // 获取 OK 按钮并初始状态为禁用
   QPushButton* okBtn = buttonBox->button(QDialogButtonBox::Ok);
-  okBtn->setEnabled(m_configWidget->IsValid());
+  okBtn->setEnabled(m_configWidget->is_valid());
 
-  // 连接验证信号到 OK 按钮启用状态
-  connect(m_configWidget, &CoordinateSystemConfigWidget::validationChanged, this,
-          &CoordinateSystemConfigDialog::onValidationChanged);
+  connect(m_configWidget, &CoordinateSystemConfigWidget::validation_changed, this,
+          &CoordinateSystemConfigDialog::on_validation_changed);
 
   // 连接 OK/Cancel 按钮
   connect(buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -50,7 +49,7 @@ void CoordinateSystemConfigDialog::initializeUI() {
   setLayout(mainLayout);
 }
 
-void CoordinateSystemConfigDialog::onValidationChanged(bool valid) {
+void CoordinateSystemConfigDialog::on_validation_changed(bool valid) {
   QPushButton* okBtn = findChild<QPushButton*>();
   QDialogButtonBox* buttonBox = findChild<QDialogButtonBox*>();
   if (buttonBox) {
@@ -61,12 +60,12 @@ void CoordinateSystemConfigDialog::onValidationChanged(bool valid) {
   }
 }
 
-database::CoordinateSystem CoordinateSystemConfigDialog::GetCoordinateSystem() const {
-  return m_configWidget->GetCoordinateSystem();
+database::CoordinateSystem CoordinateSystemConfigDialog::get_coordinate_system() const {
+  return m_configWidget->get_coordinate_system();
 }
 
-void CoordinateSystemConfigDialog::SetCoordinateSystem(const database::CoordinateSystem& coordSys) {
-  m_configWidget->SetCoordinateSystem(coordSys);
+void CoordinateSystemConfigDialog::set_coordinate_system(const database::CoordinateSystem& coord_sys) {
+  m_configWidget->set_coordinate_system(coord_sys);
 }
 
 }  // namespace ui

@@ -6,7 +6,7 @@
 
 ### 1.1 依赖解耦规则 (Critical)
 为了保证算法的可移植性和可测试性，软件遵循严格的层级依赖限制：
-- **`src/algorithm/`**：**禁止包含任何 Qt 头文件或链接 Qt 库**。所有字符串处理应使用 `std::string`，集合使用 STL 容器（如 `std::vector`），数学计算使用 Eigen。
+- **`src/algorithm/`**：**禁止包含任何 Qt 头文件或链接 Qt 库**。所有字符串处理应使用 `std::string`，集合使用 STL 容器（如 `std::vector`），数学计算使用 Eigen。**算法层不依赖 `src/database/`**：相机内参、畸变等由算法侧最小结构描述（如 `insight::camera::Intrinsics`），仅包含 fx, fy, cx, cy 与 5 个畸变参数；由调用边界（CLI 从 JSON 加载、或 UI 从 database 导出）填充后传入算法，database 只负责导出算法所需的 JSON 或由工具层做一次转换。
 - **`src/database/`**：**禁止依赖 Qt**。数据结构必须是纯粹的 C++ 类/结构体，以便在非 GUI 环境下进行序列化和反序列化。
 - **`src/ui/`**：允许使用 Qt。负责将 `std::string` 转为 `QString`，将 STL 容器转为 Qt Model，以及调用算法层接口。
 
@@ -34,8 +34,9 @@
 
 ### 2.2 相机畸变模型
 - 支持 **Pinhole**, **Brown-Conrady**, **Fisheye** 等模型。
-- 畸变参数序列采用标量存储：`k1, k2, k3, k4, p1, p2, b1, b2`。
+- 畸变参数序列采用标量存储：`k1, k2, k3, p1, p2`（与 Bentley ContextCapture 透视模型 5 参数对齐）。
 - 坐标归一化是在去畸变前进行的标准流程。
+- **算法层**：使用 `insight::camera::Intrinsics`（仅 fx, fy, cx, cy, k1–p2），定义于 `src/algorithm/modules/camera/camera_types.h`，算法不依赖 database；resection、去畸变、reject_outliers 等均接受该类型。**database 层**：`CameraModel` 存完整元数据与序列化；需调用算法时由工具/UI 从 JSON 或 `CameraModel` 填充 `Intrinsics` 后传入。
 
 ### 2.3 任务快照 (Task Snapshot)
 - 由于 `Project` 包含大量数据，快照采用 **“影子拷贝 (Shallow-to-Mid Copy)”**。

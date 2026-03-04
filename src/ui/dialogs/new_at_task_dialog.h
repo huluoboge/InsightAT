@@ -50,14 +50,14 @@ public:
    *
    * @return 用户输入的任务名称
    */
-  std::string getTaskName() const;
+  std::string get_task_name() const;
 
   /**
    * 获取选中的父任务索引（在 at_tasks 数组中的位置）
    *
    * @return 父任务的索引，如果选择 "None" 则返回 -1
    */
-  uint32_t getParentTaskIndex() const;
+  uint32_t get_parent_task_index() const;
 
 private slots:
   /**

@@ -17,7 +17,7 @@ namespace sfm {
 // Helper: essential-matrix residual r(f) = |σ₁(E) - σ₂(E)|
 // ─────────────────────────────────────────────────────────────────────────────
 
-static double EssentialResidual(const Eigen::Matrix3d& F, double cx, double cy, double f) {
+static double essential_residual(const Eigen::Matrix3d& F, double cx, double cy, double f) {
   // K = diag(f, f, 1) with pp at (cx, cy)
   Eigen::Matrix3d K;
   K << f, 0.0, cx, 0.0, f, cy, 0.0, 0.0, 1.0;
@@ -31,8 +31,8 @@ static double EssentialResidual(const Eigen::Matrix3d& F, double cx, double cy, 
 // 1. FocalFromFundamental
 // ─────────────────────────────────────────────────────────────────────────────
 
-double FocalFromFundamental(const Eigen::Matrix3d& F, double cx, double cy, double f_min,
-                            double f_max) {
+double focal_from_fundamental(const Eigen::Matrix3d& F, double cx, double cy, double f_min,
+                              double f_max) {
   // Phase 1: coarse grid search (log-spaced, 200 steps)
   constexpr int N_GRID = 200;
   double best_f = (f_min + f_max) * 0.5;
@@ -40,7 +40,7 @@ double FocalFromFundamental(const Eigen::Matrix3d& F, double cx, double cy, doub
   const double log_lo = std::log(f_min), log_hi = std::log(f_max);
   for (int i = 0; i < N_GRID; ++i) {
     double f = std::exp(log_lo + (log_hi - log_lo) * i / (N_GRID - 1));
-    double r = EssentialResidual(F, cx, cy, f);
+    double r = essential_residual(F, cx, cy, f);
     if (r < best_r) {
       best_r = r;
       best_f = f;
@@ -52,27 +52,27 @@ double FocalFromFundamental(const Eigen::Matrix3d& F, double cx, double cy, doub
   double lo = best_f / 1.1, hi = best_f * 1.1;
   double x1 = hi - phi * (hi - lo);
   double x2 = lo + phi * (hi - lo);
-  double f1 = EssentialResidual(F, cx, cy, x1);
-  double f2 = EssentialResidual(F, cx, cy, x2);
+  double f1 = essential_residual(F, cx, cy, x1);
+  double f2 = essential_residual(F, cx, cy, x2);
   for (int iter = 0; iter < 60; ++iter) {
     if (f1 < f2) {
       hi = x2;
       x2 = x1;
       f2 = f1;
       x1 = hi - phi * (hi - lo);
-      f1 = EssentialResidual(F, cx, cy, x1);
+      f1 = essential_residual(F, cx, cy, x1);
     } else {
       lo = x1;
       x1 = x2;
       f1 = f2;
       x2 = lo + phi * (hi - lo);
-      f2 = EssentialResidual(F, cx, cy, x2);
+      f2 = essential_residual(F, cx, cy, x2);
     }
     if ((hi - lo) < 0.01)
       break;
   }
   best_f = (lo + hi) * 0.5;
-  best_r = EssentialResidual(F, cx, cy, best_f);
+  best_r = essential_residual(F, cx, cy, best_f);
 
   // Sanity: if residual is very large, F might be degenerate
   if (best_r > 1e3)
@@ -84,7 +84,7 @@ double FocalFromFundamental(const Eigen::Matrix3d& F, double cx, double cy, doub
 // 2. EnforceEssential
 // ─────────────────────────────────────────────────────────────────────────────
 
-Eigen::Matrix3d EnforceEssential(const Eigen::Matrix3d& M) {
+Eigen::Matrix3d enforce_essential(const Eigen::Matrix3d& M) {
   Eigen::JacobiSVD<Eigen::Matrix3d> svd(M, Eigen::ComputeFullU | Eigen::ComputeFullV);
   Eigen::Vector3d s = svd.singularValues();
   double avg = (s[0] + s[1]) * 0.5;
@@ -99,7 +99,7 @@ Eigen::Matrix3d EnforceEssential(const Eigen::Matrix3d& M) {
 // Triangulate a single point (returns cam1-frame depth of the point).
 // Returns (X, depth1, depth2); depth < 0 means behind camera.
 static std::tuple<Eigen::Vector3d, double, double>
-TriangulateForCheirality(const Eigen::Vector2d& x1n, const Eigen::Vector2d& x2n,
+triangulate_for_cheirality(const Eigen::Vector2d& x1n, const Eigen::Vector2d& x2n,
                          const Eigen::Matrix3d& R, const Eigen::Vector3d& t) {
   // P1 = [I | 0], P2 = [R | t]
   // Build the 4×4 system  A x = 0
@@ -126,7 +126,7 @@ TriangulateForCheirality(const Eigen::Vector2d& x1n, const Eigen::Vector2d& x2n,
   return {X, depth1, depth2};
 }
 
-int DecomposeEssential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector2d>& pts1_n,
+int decompose_essential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector2d>& pts1_n,
                        const std::vector<Eigen::Vector2d>& pts2_n, Eigen::Matrix3d& R_out,
                        Eigen::Vector3d& t_out) {
   assert(pts1_n.size() == pts2_n.size());
@@ -165,7 +165,7 @@ int DecomposeEssential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector
     const auto& [R, t] = candidates[ci];
     int count = 0;
     for (int i = 0; i < N_check; ++i) {
-      auto [X, d1, d2] = TriangulateForCheirality(pts1_n[i], pts2_n[i], R, t);
+      auto [X, d1, d2] = triangulate_for_cheirality(pts1_n[i], pts2_n[i], R, t);
       if (d1 > 0.0 && d2 > 0.0)
         ++count;
     }
@@ -184,7 +184,7 @@ int DecomposeEssential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector
 // 4a. Degeneracy detection
 // ─────────────────────────────────────────────────────────────────────────────
 
-DegeneracyResult DetectDegeneracy(int F_inliers, int H_inliers, int num_matches) {
+DegeneracyResult detect_degeneracy(int F_inliers, int H_inliers, int num_matches) {
   DegeneracyResult out;
   out.is_degenerate = false;
   out.model_preferred = 0;
@@ -226,7 +226,7 @@ static double RadToDeg(double rad) {
   return rad * 180.0 / kPi;
 }
 
-StabilityMetrics ComputeStabilityMetrics(const std::vector<Eigen::Vector3d>& points3d,
+StabilityMetrics compute_stability_metrics(const std::vector<Eigen::Vector3d>& points3d,
                                          const std::vector<Eigen::Vector2d>& pts1_n,
                                          const std::vector<Eigen::Vector2d>& pts2_n,
                                          const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
@@ -306,15 +306,15 @@ StabilityMetrics ComputeStabilityMetrics(const std::vector<Eigen::Vector3d>& poi
 // 4. Triangulation
 // ─────────────────────────────────────────────────────────────────────────────
 
-Eigen::Vector3d TriangulatePoint(const Eigen::Vector2d& x1, const Eigen::Vector2d& x2,
+Eigen::Vector3d triangulate_point(const Eigen::Vector2d& x1, const Eigen::Vector2d& x2,
                                  const Eigen::Matrix3d& R, const Eigen::Vector3d& t) {
-  auto [X, d1, d2] = TriangulateForCheirality(x1, x2, R, t);
+  auto [X, d1, d2] = triangulate_for_cheirality(x1, x2, R, t);
   (void)d1;
   (void)d2;
   return X;
 }
 
-std::vector<Eigen::Vector3d> TriangulatePoints(const std::vector<Eigen::Vector2d>& pts1_n,
+std::vector<Eigen::Vector3d> triangulate_points(const std::vector<Eigen::Vector2d>& pts1_n,
                                                const std::vector<Eigen::Vector2d>& pts2_n,
                                                const Eigen::Matrix3d& R, const Eigen::Vector3d& t) {
   const int N = (int)pts1_n.size();
@@ -323,7 +323,7 @@ std::vector<Eigen::Vector3d> TriangulatePoints(const std::vector<Eigen::Vector2d
   const Eigen::Vector3d nan3(kNaN, kNaN, kNaN);
 
   for (int i = 0; i < N; ++i) {
-    auto [X, d1, d2] = TriangulateForCheirality(pts1_n[i], pts2_n[i], R, t);
+    auto [X, d1, d2] = triangulate_for_cheirality(pts1_n[i], pts2_n[i], R, t);
     if (d1 > 0.0 && d2 > 0.0)
       result[i] = X;
     else

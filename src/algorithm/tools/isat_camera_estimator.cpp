@@ -358,7 +358,7 @@ int main(int argc, char* argv[]) {
   }
 
   // ── Configure logging ──────────────────────────────────────────────────
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   // ── Load sensor DB ─────────────────────────────────────────────────────
   if (!sensor_db.empty()) {

@@ -217,7 +217,7 @@ void ImageGroupDialog::onCreateGroup() {
   case 0: // GroupLevel
     m_imageGroup.camera_mode = insight::database::ImageGroup::CameraMode::kGroupLevel;
     // 从 CameraModelWidget 获取相机参数
-    m_imageGroup.group_camera = m_cameraWidget->getCameraModel();
+    m_imageGroup.group_camera = m_cameraWidget->get_camera_model();
     break;
 
   case 1: // ImageLevel
@@ -262,7 +262,7 @@ bool ImageGroupDialog::validateInput() {
   // 如果是 GroupLevel 模式，检查相机参数
   int modeId = m_cameraModelGroup->checkedId();
   if (modeId == 0) { // GroupLevel
-    if (!m_cameraWidget->validateCamera()) {
+    if (!m_cameraWidget->validate_camera()) {
       QMessageBox::warning(this, "输入错误", "请检查相机参数的有效性！");
       return false;
     }

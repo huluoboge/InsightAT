@@ -15,7 +15,7 @@
 
 namespace insight {
 
-bool parseCoordinates(std::vector<Coordinate>& coords, const std::string& dataBse) {
+bool parse_coordinates(std::vector<Coordinate>& coords, const std::string& dataBse) {
   if (!stlplus::file_exists(dataBse))
     return false;
   coords.clear();
@@ -37,7 +37,7 @@ bool parseCoordinates(std::vector<Coordinate>& coords, const std::string& dataBs
   return true;
 }
 
-bool Coordinate::isOK() const {
+bool Coordinate::is_ok() const {
   if (EPSGName.empty())
     return false;
   OGRSpatialReference oPGS;
@@ -47,7 +47,7 @@ bool Coordinate::isOK() const {
   return oPGS.importFromEPSG(epsg) == OGRERR_NONE;
 }
 
-bool Coordinate::isProject(bool* ok) const {
+bool Coordinate::is_project(bool* ok) const {
   OGRSpatialReference oPGS;
   std::stringstream ss(EPSGName);
   int epsg = 0;
@@ -79,7 +79,7 @@ int Coordinate::EPSG(bool* ok) const {
   return epsg;
 }
 
-bool Coordinate::coordToSR(const Coordinate& coord, OGRSpatialReference& sr) {
+bool Coordinate::coord_to_sr(const Coordinate& coord, OGRSpatialReference& sr) {
   bool ok = false;
   int fromEPSG = coord.EPSG(&ok);
   if (ok) {

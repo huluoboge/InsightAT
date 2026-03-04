@@ -22,18 +22,17 @@ namespace ui {
 CameraModelWidget::CameraModelWidget(QWidget* parent) : QWidget(parent) {
   // 初始化相机模型为默认值
   m_camera = insight::database::CameraModel();
-  initializeUI();
+  initialize_ui();
 }
 
 CameraModelWidget::~CameraModelWidget() = default;
 
-insight::database::CameraModel CameraModelWidget::getCameraModel() const {
-  // 读取 UI 值并返回相机模型
-  const_cast<CameraModelWidget*>(this)->updateCameraModel();
+insight::database::CameraModel CameraModelWidget::get_camera_model() const {
+  const_cast<CameraModelWidget*>(this)->update_camera_model();
   return m_camera;
 }
 
-void CameraModelWidget::setCameraModel(const insight::database::CameraModel& camera) {
+void CameraModelWidget::set_camera_model(const insight::database::CameraModel& camera) {
   m_blockSignals = true;
   m_camera = camera;
 
@@ -51,17 +50,14 @@ void CameraModelWidget::setCameraModel(const insight::database::CameraModel& cam
   m_k1SpinBox->setValue(camera.k1);
   m_k2SpinBox->setValue(camera.k2);
   m_k3SpinBox->setValue(camera.k3);
-  m_k4SpinBox->setValue(camera.k4);
   m_p1SpinBox->setValue(camera.p1);
   m_p2SpinBox->setValue(camera.p2);
-  m_b1SpinBox->setValue(camera.b1);
-  m_b2SpinBox->setValue(camera.b2);
 
   m_blockSignals = false;
-  updateValidationStatus();
+  update_validation_status();
 }
 
-bool CameraModelWidget::validateCamera() const {
+bool CameraModelWidget::validate_camera() const {
   const auto& camera = m_camera;
 
   // 检查分辨率
@@ -91,7 +87,7 @@ bool CameraModelWidget::validateCamera() const {
   return true;
 }
 
-void CameraModelWidget::clearAll() {
+void CameraModelWidget::clear_all() {
   m_blockSignals = true;
 
   m_widthSpinBox->setValue(0);
@@ -107,17 +103,14 @@ void CameraModelWidget::clearAll() {
   m_k1SpinBox->setValue(0);
   m_k2SpinBox->setValue(0);
   m_k3SpinBox->setValue(0);
-  m_k4SpinBox->setValue(0);
   m_p1SpinBox->setValue(0);
   m_p2SpinBox->setValue(0);
-  m_b1SpinBox->setValue(0);
-  m_b2SpinBox->setValue(0);
 
   m_blockSignals = false;
-  updateValidationStatus();
+  update_validation_status();
 }
 
-void CameraModelWidget::initializeUI() {
+void CameraModelWidget::initialize_ui() {
   QVBoxLayout* mainLayout = new QVBoxLayout(this);
   mainLayout->setSpacing(10);
   mainLayout->setContentsMargins(10, 10, 10, 10);
@@ -268,13 +261,6 @@ void CameraModelWidget::initializeUI() {
   m_k3SpinBox->setDecimals(6);
   m_k3SpinBox->setSingleStep(0.001);
   radialLayout->addWidget(m_k3SpinBox);
-  radialLayout->addWidget(new QLabel("k4", this));
-  m_k4SpinBox = new QDoubleSpinBox(this);
-  m_k4SpinBox->setRange(-1, 1);
-  m_k4SpinBox->setValue(0);
-  m_k4SpinBox->setDecimals(6);
-  m_k4SpinBox->setSingleStep(0.001);
-  radialLayout->addWidget(m_k4SpinBox);
   radialLayout->addStretch();
   distortionLayout->addLayout(radialLayout);
 
@@ -298,26 +284,6 @@ void CameraModelWidget::initializeUI() {
   tangentialLayout->addStretch();
   distortionLayout->addLayout(tangentialLayout);
 
-  // 薄棱畸变
-  QHBoxLayout* thinPrismLayout = new QHBoxLayout();
-  thinPrismLayout->addWidget(new QLabel("薄棱：", this));
-  thinPrismLayout->addWidget(new QLabel("b1", this));
-  m_b1SpinBox = new QDoubleSpinBox(this);
-  m_b1SpinBox->setRange(-1, 1);
-  m_b1SpinBox->setValue(0);
-  m_b1SpinBox->setDecimals(6);
-  m_b1SpinBox->setSingleStep(0.001);
-  thinPrismLayout->addWidget(m_b1SpinBox);
-  thinPrismLayout->addWidget(new QLabel("b2", this));
-  m_b2SpinBox = new QDoubleSpinBox(this);
-  m_b2SpinBox->setRange(-1, 1);
-  m_b2SpinBox->setValue(0);
-  m_b2SpinBox->setDecimals(6);
-  m_b2SpinBox->setSingleStep(0.001);
-  thinPrismLayout->addWidget(m_b2SpinBox);
-  thinPrismLayout->addStretch();
-  distortionLayout->addLayout(thinPrismLayout);
-
   mainLayout->addWidget(distortionGroup);
 
   // ─────────────────────────────────────────────────────────
@@ -339,57 +305,51 @@ void CameraModelWidget::initializeUI() {
   // ─────────────────────────────────────────────────────────
 
   connect(m_cameraTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
 
   connect(m_widthSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_heightSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_focalLengthSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_sensorWidthSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_sensorHeightSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_pixelSizeSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_focalLength35mmSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_cxSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_cySpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
 
   connect(m_k1SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_k2SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_k3SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
-  connect(m_k4SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_p1SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
   connect(m_p2SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
-  connect(m_b1SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
-  connect(m_b2SpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CameraModelWidget::onParameterChanged);
+          &CameraModelWidget::on_parameter_changed);
 }
 
-void CameraModelWidget::onParameterChanged() {
+void CameraModelWidget::on_parameter_changed() {
   if (m_blockSignals) {
     return;
   }
 
-  updateCameraModel();
-  updateValidationStatus();
-  emit cameraModelChanged(m_camera);
+  update_camera_model();
+  update_validation_status();
+  emit camera_model_changed(m_camera);
 }
 
-void CameraModelWidget::updateValidationStatus() {
-  bool isValid = validateCamera();
+void CameraModelWidget::update_validation_status() {
+  bool isValid = validate_camera();
 
   if (isValid) {
     m_validationStatusLabel->setText("状态：✓ 有效");
@@ -400,7 +360,7 @@ void CameraModelWidget::updateValidationStatus() {
   }
 
   // 检查畸变
-  if (!m_camera.HasDistortion()) {
+  if (!m_camera.has_distortion()) {
     m_distortionWarningLabel->setText("⚠ 无畸变参数，假设使用无畸变模型");
     m_distortionWarningLabel->setStyleSheet("color: orange;");
   } else {
@@ -408,7 +368,7 @@ void CameraModelWidget::updateValidationStatus() {
   }
 }
 
-void CameraModelWidget::updateCameraModel() {
+void CameraModelWidget::update_camera_model() {
   m_camera.width = static_cast<uint32_t>(m_widthSpinBox->value());
   m_camera.height = static_cast<uint32_t>(m_heightSpinBox->value());
   m_camera.focal_length = m_focalLengthSpinBox->value();
@@ -422,11 +382,8 @@ void CameraModelWidget::updateCameraModel() {
   m_camera.k1 = m_k1SpinBox->value();
   m_camera.k2 = m_k2SpinBox->value();
   m_camera.k3 = m_k3SpinBox->value();
-  m_camera.k4 = m_k4SpinBox->value();
   m_camera.p1 = m_p1SpinBox->value();
   m_camera.p2 = m_p2SpinBox->value();
-  m_camera.b1 = m_b1SpinBox->value();
-  m_camera.b2 = m_b2SpinBox->value();
 }
 
 }  // namespace ui

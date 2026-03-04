@@ -314,7 +314,7 @@ int main(int argc, char* argv[]) {
   bool nms_keep_orientation = !cmd.used("nms-no-orient");
 
   // Set logging level
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   bool use_cuda_extract = (extract_backend == "cuda");
   // Setup SIFT parameters (pure extraction only)
@@ -601,11 +601,11 @@ int main(int argc, char* argv[]) {
             schema.quantization_scale = use_uint8 ? 512.0f : 1.0f;
 
             auto metadata =
-                insight::io::createFeatureMetadata(task.image_path, "SIFT_GPU",
+                insight::io::create_feature_metadata(task.image_path, "SIFT_GPU",
                                                    "1.2", // Version bump for dual-output support
                                                    params_json, schema, 0);
 
-            writer.setMetadata(metadata);
+            writer.set_metadata(metadata);
 
             // Add keypoints (x, y, scale, orientation)
             std::vector<float> kpt_data;
@@ -616,16 +616,16 @@ int main(int argc, char* argv[]) {
               kpt_data.push_back(kp.o);
             }
 
-            writer.addBlob("keypoints", kpt_data.data(), kpt_data.size() * sizeof(float), "float32",
+            writer.add_blob("keypoints", kpt_data.data(), kpt_data.size() * sizeof(float), "float32",
                            {(int)keypoints.size(), 4});
 
             // Add descriptors (uint8 or float32)
             if (use_uint8) {
-              writer.addBlob("descriptors", descriptors_uchar.data(),
+              writer.add_blob("descriptors", descriptors_uchar.data(),
                              descriptors_uchar.size() * sizeof(unsigned char), "uint8",
                              {(int)keypoints.size(), 128});
             } else {
-              writer.addBlob("descriptors", descriptors.data(), descriptors.size() * sizeof(float),
+              writer.add_blob("descriptors", descriptors.data(), descriptors.size() * sizeof(float),
                              "float32", {(int)keypoints.size(), 128});
             }
 

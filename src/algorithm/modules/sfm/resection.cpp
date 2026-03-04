@@ -5,6 +5,7 @@
 
 #include "resection.h"
 
+#include "../camera/camera_utils.h"
 #include "../geometry/gpu_geo_ransac.h"
 #include "bundle_adjustment.h"
 
@@ -122,6 +123,111 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
   if (!pose_only_bundle(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_eig, t_eig, &R_refined,
+                        &t_refined, &rmse, 30)) {
+    if (inliers_out)
+      *inliers_out = n_inliers;
+    *R_out = R_eig;
+    *t_out = t_eig;
+    return true;
+  }
+  *R_out = R_refined;
+  *t_out = t_refined;
+#else
+  *R_out = R_eig;
+  *t_out = t_eig;
+#endif
+  if (inliers_out)
+    *inliers_out = n_inliers;
+  return true;
+}
+
+bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store, int image_index,
+                            Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
+                            int min_inliers, double ransac_thresh_px,
+                            int* inliers_out) {
+  if (!K.has_distortion()) {
+    return resection_single_image(store, image_index, K.fx, K.fy, K.cx, K.cy, R_out, t_out,
+                                  min_inliers, ransac_thresh_px, inliers_out);
+  }
+
+  // Collect raw observations (distorted pixels) for this image.
+  std::vector<int> track_ids;
+  std::vector<Observation> obs_list;
+  const int n = store.get_image_track_observations(image_index, &track_ids, &obs_list);
+  if (n < static_cast<int>(min_inliers))
+    return false;
+
+  // Batch-undistort 2D observations → undistorted pixel coordinates.
+  std::vector<float> u_raw(static_cast<size_t>(n)), v_raw(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    u_raw[static_cast<size_t>(i)] = obs_list[static_cast<size_t>(i)].u;
+    v_raw[static_cast<size_t>(i)] = obs_list[static_cast<size_t>(i)].v;
+  }
+  std::vector<float> u_und(static_cast<size_t>(n)), v_und(static_cast<size_t>(n));
+  camera::undistort_points(K, u_raw.data(), v_raw.data(), u_und.data(), v_und.data(), n);
+
+  // Build 3D–2D correspondences using undistorted 2D points.
+  std::vector<Point3D2D> pts_pnp;
+  pts_pnp.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const int tid = track_ids[static_cast<size_t>(i)];
+    if (!store.track_has_triangulated_xyz(tid))
+      continue;
+    float x, y, z;
+    store.get_track_xyz(tid, &x, &y, &z);
+    Point3D2D pt;
+    pt.x = x;
+    pt.y = y;
+    pt.z = z;
+    pt.u = u_und[static_cast<size_t>(i)];
+    pt.v = v_und[static_cast<size_t>(i)];
+    pts_pnp.push_back(pt);
+  }
+  if (static_cast<int>(pts_pnp.size()) < min_inliers)
+    return false;
+
+  const int num_pts = static_cast<int>(pts_pnp.size());
+  const float fx = static_cast<float>(K.fx), fy = static_cast<float>(K.fy);
+  const float cx = static_cast<float>(K.cx), cy = static_cast<float>(K.cy);
+  float K_mat[9] = {fx, 0.f, cx, 0.f, fy, cy, 0.f, 0.f, 1.f};
+  const float thresh_sq = static_cast<float>(ransac_thresh_px * ransac_thresh_px);
+  float R_init[9], t_init[3];
+  std::vector<unsigned char> inlier_mask(static_cast<size_t>(num_pts), 0);
+
+  ensure_gpu_geo_init();
+  const int n_inliers =
+      gpu_ransac_pnp(pts_pnp.data(), num_pts, K_mat, R_init, t_init, thresh_sq, inlier_mask.data());
+  if (n_inliers < min_inliers) {
+    if (inliers_out)
+      *inliers_out = n_inliers >= 0 ? n_inliers : 0;
+    return false;
+  }
+
+  Eigen::Matrix3d R_eig;
+  Eigen::Vector3d t_eig;
+  float_rt_to_eigen(R_init, t_init, &R_eig, &t_eig);
+
+  std::vector<Eigen::Vector3d> inlier_pts3d;
+  std::vector<Eigen::Vector2d> inlier_pts2d;
+  inlier_pts3d.reserve(static_cast<size_t>(n_inliers));
+  inlier_pts2d.reserve(static_cast<size_t>(n_inliers));
+  for (int i = 0; i < num_pts; ++i) {
+    if (!inlier_mask[static_cast<size_t>(i)])
+      continue;
+    inlier_pts3d.push_back(
+        Eigen::Vector3d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].x),
+                        static_cast<double>(pts_pnp[static_cast<size_t>(i)].y),
+                        static_cast<double>(pts_pnp[static_cast<size_t>(i)].z)));
+    inlier_pts2d.push_back(
+        Eigen::Vector2d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].u),
+                        static_cast<double>(pts_pnp[static_cast<size_t>(i)].v)));
+  }
+
+#if defined(INSIGHTAT_USE_CERES) && INSIGHTAT_USE_CERES
+  Eigen::Matrix3d R_refined = R_eig;
+  Eigen::Vector3d t_refined = t_eig;
+  double rmse = 0.0;
+  if (!pose_only_bundle(inlier_pts3d, inlier_pts2d, K.fx, K.fy, K.cx, K.cy, R_eig, t_eig, &R_refined,
                         &t_refined, &rmse, 30)) {
     if (inliers_out)
       *inliers_out = n_inliers;

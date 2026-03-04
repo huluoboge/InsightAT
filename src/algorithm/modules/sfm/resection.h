@@ -5,10 +5,14 @@
  * Uses GPU RANSAC PnP (gpu_ransac_pnp) when gpu_geo_init() has been called;
  * pose refinement via pose_only_bundle (Ceres).
  * World frame = cam0 frame; poses are world-to-camera.
+ *
+ * When intrinsics have distortion (camera::Intrinsics), 2D observations are
+ * pre-undistorted (via undistort_points) before the pinhole PnP kernel and BA.
  */
 
 #pragma once
 
+#include "../camera/camera_types.h"
 #include "track_store.h"
 #include <Eigen/Core>
 #include <vector>
@@ -44,6 +48,25 @@ bool is_resection_stable(int inlier_count, int total_correspondences, double rms
  */
 bool resection_single_image(const TrackStore& store, int image_index, double fx, double fy,
                             double cx, double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
+                            int min_inliers = 6, double ransac_thresh_px = 8.0,
+                            int* inliers_out = nullptr);
+
+/**
+ * Overload: run resection with algorithm intrinsics (camera::Intrinsics).
+ *
+ * If K.has_distortion(), observations are batch-undistorted before PnP.
+ *
+ * @param K               Algorithm intrinsics (from JSON or filled at call boundary).
+ * @param store           Full track store.
+ * @param image_index     Unregistered image index.
+ * @param min_inliers     Minimum RANSAC inliers (default 6).
+ * @param ransac_thresh_px RANSAC reprojection threshold in pixels.
+ * @param R_out, t_out    Output pose (world to camera).
+ * @param inliers_out     Optional: number of RANSAC inliers.
+ * @return true if resection succeeded.
+ */
+bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store, int image_index,
+                            Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 6, double ransac_thresh_px = 8.0,
                             int* inliers_out = nullptr);
 

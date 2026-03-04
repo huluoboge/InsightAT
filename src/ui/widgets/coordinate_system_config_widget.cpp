@@ -13,12 +13,12 @@ namespace ui {
 CoordinateSystemConfigWidget::CoordinateSystemConfigWidget(QWidget* parent)
     : QWidget(parent), m_currentType(database::CoordinateSystem::Type::kLocal) {
   setWindowTitle("Configure Coordinate System");
-  initializeUI();
-  connectSignals();
-  updateUIState();
+  initialize_ui();
+  connect_signals();
+  update_ui_state();
 }
 
-void CoordinateSystemConfigWidget::initializeUI() {
+void CoordinateSystemConfigWidget::initialize_ui() {
   QVBoxLayout* mainLayout = new QVBoxLayout(this);
   mainLayout->setSpacing(10);
   mainLayout->setContentsMargins(10, 10, 10, 10);
@@ -185,48 +185,48 @@ void CoordinateSystemConfigWidget::initializeUI() {
   setLayout(mainLayout);
 }
 
-void CoordinateSystemConfigWidget::connectSignals() {
+void CoordinateSystemConfigWidget::connect_signals() {
   // 坐标系类型选择
   connect(m_radioLocal, QOverload<bool>::of(&QRadioButton::toggled), this,
-          &CoordinateSystemConfigWidget::onCoordinateTypeChanged);
+          &CoordinateSystemConfigWidget::on_coordinate_type_changed);
   connect(m_radioEPSG, QOverload<bool>::of(&QRadioButton::toggled), this,
-          &CoordinateSystemConfigWidget::onCoordinateTypeChanged);
+          &CoordinateSystemConfigWidget::on_coordinate_type_changed);
   connect(m_radioENU, QOverload<bool>::of(&QRadioButton::toggled), this,
-          &CoordinateSystemConfigWidget::onCoordinateTypeChanged);
+          &CoordinateSystemConfigWidget::on_coordinate_type_changed);
   connect(m_radioWKT, QOverload<bool>::of(&QRadioButton::toggled), this,
-          &CoordinateSystemConfigWidget::onCoordinateTypeChanged);
+          &CoordinateSystemConfigWidget::on_coordinate_type_changed);
 
   // EPSG 相关
   connect(m_epsgBrowseBtn, &QPushButton::clicked, this,
-          &CoordinateSystemConfigWidget::onEPSGBrowse);
+          &CoordinateSystemConfigWidget::on_epsg_browse);
   connect(m_epsgEdit, &QLineEdit::textChanged, this,
-          &CoordinateSystemConfigWidget::onEPSGTextChanged);
+          &CoordinateSystemConfigWidget::on_epsg_text_changed);
 
   // ENU 相关
   connect(m_enuRefLatSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CoordinateSystemConfigWidget::onENUReferenceChanged);
+          &CoordinateSystemConfigWidget::on_enu_reference_changed);
   connect(m_enuRefLonSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CoordinateSystemConfigWidget::onENUReferenceChanged);
+          &CoordinateSystemConfigWidget::on_enu_reference_changed);
   connect(m_enuRefAltSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CoordinateSystemConfigWidget::onENUReferenceChanged);
+          &CoordinateSystemConfigWidget::on_enu_reference_changed);
   connect(m_enuOriginXSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CoordinateSystemConfigWidget::onENUOriginChanged);
+          &CoordinateSystemConfigWidget::on_enu_origin_changed);
   connect(m_enuOriginYSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CoordinateSystemConfigWidget::onENUOriginChanged);
+          &CoordinateSystemConfigWidget::on_enu_origin_changed);
   connect(m_enuOriginZSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-          &CoordinateSystemConfigWidget::onENUOriginChanged);
+          &CoordinateSystemConfigWidget::on_enu_origin_changed);
 
   // WKT 相关
-  connect(m_wktBrowseBtn, &QPushButton::clicked, this, &CoordinateSystemConfigWidget::onWKTBrowse);
+  connect(m_wktBrowseBtn, &QPushButton::clicked, this, &CoordinateSystemConfigWidget::on_wkt_browse);
   connect(m_wktEdit, &QPlainTextEdit::textChanged, this,
-          &CoordinateSystemConfigWidget::onWKTTextChanged);
+          &CoordinateSystemConfigWidget::on_wkt_text_changed);
 
   // RotationConvention
   connect(m_radioPhotogrammetry, QOverload<bool>::of(&QRadioButton::toggled), this,
-          &CoordinateSystemConfigWidget::onRotationConventionChanged);
+          &CoordinateSystemConfigWidget::on_rotation_convention_changed);
 }
 
-void CoordinateSystemConfigWidget::updateUIState() {
+void CoordinateSystemConfigWidget::update_ui_state() {
   // 更新 QStackedWidget 页面
   if (m_radioLocal->isChecked()) {
     m_stackedWidget->setCurrentWidget(m_pageLocal);
@@ -242,46 +242,46 @@ void CoordinateSystemConfigWidget::updateUIState() {
     m_currentType = database::CoordinateSystem::Type::kWKT;
   }
 
-  validateForm();
+  validate_form();
 }
 
-void CoordinateSystemConfigWidget::validateForm() {
+void CoordinateSystemConfigWidget::validate_form() {
   bool valid = false;
 
   switch (m_currentType) {
   case database::CoordinateSystem::Type::kLocal:
-    valid = validateLocalMode();
+    valid = validate_local_mode();
     break;
   case database::CoordinateSystem::Type::kEPSG:
-    valid = validateEPSGMode();
+    valid = validate_epsg_mode();
     break;
   case database::CoordinateSystem::Type::kENU:
-    valid = validateENUMode();
+    valid = validate_enu_mode();
     break;
   case database::CoordinateSystem::Type::kWKT:
-    valid = validateWKTMode();
+    valid = validate_wkt_mode();
     break;
   }
 
   if (m_isValid != valid) {
     m_isValid = valid;
-    emit validationChanged(valid);
+    emit validation_changed(valid);
   }
 }
 
-bool CoordinateSystemConfigWidget::validateLocalMode() const {
+bool CoordinateSystemConfigWidget::validate_local_mode() const {
   // LOCAL 总是有效
   return true;
 }
 
-bool CoordinateSystemConfigWidget::validateEPSGMode() const {
+bool CoordinateSystemConfigWidget::validate_epsg_mode() const {
   // EPSG 需要非空的 definition
   bool valid = !m_epsgEdit->text().isEmpty();
   m_epsgErrorLabel->setText(valid ? "" : "EPSG code is required");
   return valid;
 }
 
-bool CoordinateSystemConfigWidget::validateENUMode() const {
+bool CoordinateSystemConfigWidget::validate_enu_mode() const {
   // ENU：纬度 [-90, 90]，经度 [-180, 180]
   double lat = m_enuRefLatSpinBox->value();
   double lon = m_enuRefLonSpinBox->value();
@@ -301,7 +301,7 @@ bool CoordinateSystemConfigWidget::validateENUMode() const {
   return valid;
 }
 
-bool CoordinateSystemConfigWidget::validateWKTMode() const {
+bool CoordinateSystemConfigWidget::validate_wkt_mode() const {
   // WKT：至少包含"PROJCS"或"GEOGCS"
   QString wkt = m_wktEdit->toPlainText().trimmed();
   bool valid = wkt.contains("PROJCS") || wkt.contains("GEOGCS");
@@ -309,45 +309,45 @@ bool CoordinateSystemConfigWidget::validateWKTMode() const {
   return valid;
 }
 
-void CoordinateSystemConfigWidget::onCoordinateTypeChanged() { updateUIState(); }
+void CoordinateSystemConfigWidget::on_coordinate_type_changed() { update_ui_state(); }
 
-void CoordinateSystemConfigWidget::onEPSGBrowse() {
+void CoordinateSystemConfigWidget::on_epsg_browse() {
   SpatialReferenceDialog dialog(this);
   if (dialog.exec() == QDialog::Accepted) {
     // 获取选择的坐标系
-    auto coord = dialog.SelectCoordinate();
+    auto coord = dialog.select_coordinate();
     // 填充 EPSG code
     m_epsgEdit->setText(QString::fromStdString(coord.EPSGName));
-    validateForm();
+    validate_form();
   }
 }
 
-void CoordinateSystemConfigWidget::onEPSGTextChanged() { validateForm(); }
+void CoordinateSystemConfigWidget::on_epsg_text_changed() { validate_form(); }
 
-void CoordinateSystemConfigWidget::onENUReferenceChanged() { validateForm(); }
+void CoordinateSystemConfigWidget::on_enu_reference_changed() { validate_form(); }
 
-void CoordinateSystemConfigWidget::onENUOriginChanged() {
+void CoordinateSystemConfigWidget::on_enu_origin_changed() {
   // Origin 是可选的，只需要验证 Reference Point
-  validateForm();
+  validate_form();
 }
 
-void CoordinateSystemConfigWidget::onWKTBrowse() {
+void CoordinateSystemConfigWidget::on_wkt_browse() {
   SpatialReferenceDialog dialog(this);
   if (dialog.exec() == QDialog::Accepted) {
-    auto coord = dialog.SelectCoordinate();
+    auto coord = dialog.select_coordinate();
     // 填充 WKT definition
     m_wktEdit->setPlainText(QString::fromStdString(coord.WKT));
-    validateForm();
+    validate_form();
   }
 }
 
-void CoordinateSystemConfigWidget::onWKTTextChanged() { validateForm(); }
+void CoordinateSystemConfigWidget::on_wkt_text_changed() { validate_form(); }
 
-void CoordinateSystemConfigWidget::onRotationConventionChanged() {
+void CoordinateSystemConfigWidget::on_rotation_convention_changed() {
   // 旋转规约已更新，无需特殊验证
 }
 
-database::CoordinateSystem CoordinateSystemConfigWidget::GetCoordinateSystem() const {
+database::CoordinateSystem CoordinateSystemConfigWidget::get_coordinate_system() const {
   database::CoordinateSystem coordSys;
 
   // 坐标系类型和定义
@@ -399,47 +399,45 @@ database::CoordinateSystem CoordinateSystemConfigWidget::GetCoordinateSystem() c
   return coordSys;
 }
 
-void CoordinateSystemConfigWidget::SetCoordinateSystem(const database::CoordinateSystem& coordSys) {
-  // 设置坐标系类型
-  switch (coordSys.type) {
+void CoordinateSystemConfigWidget::set_coordinate_system(const database::CoordinateSystem& coord_sys) {
+  switch (coord_sys.type) {
   case database::CoordinateSystem::Type::kLocal:
     m_radioLocal->setChecked(true);
     break;
   case database::CoordinateSystem::Type::kEPSG:
     m_radioEPSG->setChecked(true);
-    m_epsgEdit->setText(QString::fromStdString(coordSys.definition));
+    m_epsgEdit->setText(QString::fromStdString(coord_sys.definition));
     break;
   case database::CoordinateSystem::Type::kENU:
     m_radioENU->setChecked(true);
-    if (coordSys.reference.has_value()) {
-      m_enuRefLatSpinBox->setValue(coordSys.reference->lat);
-      m_enuRefLonSpinBox->setValue(coordSys.reference->lon);
-      m_enuRefAltSpinBox->setValue(coordSys.reference->alt);
+    if (coord_sys.reference.has_value()) {
+      m_enuRefLatSpinBox->setValue(coord_sys.reference->lat);
+      m_enuRefLonSpinBox->setValue(coord_sys.reference->lon);
+      m_enuRefAltSpinBox->setValue(coord_sys.reference->alt);
     }
-    if (coordSys.origin.has_value()) {
-      m_enuOriginXSpinBox->setValue(coordSys.origin->x);
-      m_enuOriginYSpinBox->setValue(coordSys.origin->y);
-      m_enuOriginZSpinBox->setValue(coordSys.origin->z);
+    if (coord_sys.origin.has_value()) {
+      m_enuOriginXSpinBox->setValue(coord_sys.origin->x);
+      m_enuOriginYSpinBox->setValue(coord_sys.origin->y);
+      m_enuOriginZSpinBox->setValue(coord_sys.origin->z);
     }
     break;
   case database::CoordinateSystem::Type::kWKT:
     m_radioWKT->setChecked(true);
-    m_wktEdit->setPlainText(QString::fromStdString(coordSys.definition));
+    m_wktEdit->setPlainText(QString::fromStdString(coord_sys.definition));
     break;
   }
 
-  // 设置 RotationConvention
-  if (coordSys.rotation_convention ==
+  if (coord_sys.rotation_convention ==
       database::CoordinateSystem::RotationConvention::kOmegaPhiKappa) {
     m_radioPhotogrammetry->setChecked(true);
   } else {
     m_radioAerospace->setChecked(true);
   }
 
-  updateUIState();
+  update_ui_state();
 }
 
-bool CoordinateSystemConfigWidget::IsValid() const { return m_isValid; }
+bool CoordinateSystemConfigWidget::is_valid() const { return m_isValid; }
 
 }  // namespace ui
 }  // namespace insight

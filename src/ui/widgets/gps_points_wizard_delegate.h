@@ -12,8 +12,8 @@
 
 namespace insight {
 struct ImportDataBaseDocument {
-  virtual bool checkFieldData(int rowFrom, const std::vector<int>& fieldIndex) = 0;
-  virtual QList<QString> fieldNames() const = 0;
+  virtual bool check_field_data(int rowFrom, const std::vector<int>& fieldIndex) = 0;
+  virtual QList<QString> field_names() const = 0;
 };
 
 class GPSPointsWizardDelegate : public QStyledItemDelegate {
@@ -21,7 +21,7 @@ class GPSPointsWizardDelegate : public QStyledItemDelegate {
 public:
   explicit GPSPointsWizardDelegate(QObject* parent = 0);
 
-  void setDataBseDocument(ImportDataBaseDocument* doc) { _doc = doc; }
+  void set_database_document(ImportDataBaseDocument* doc) { _doc = doc; }
 
   QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
                         const QModelIndex& index) const;

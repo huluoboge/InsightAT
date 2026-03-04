@@ -48,60 +48,32 @@ public:
    *
    * @return 完整的 CoordinateSystem 对象
    */
-  database::CoordinateSystem GetCoordinateSystem() const;
-
-  /**
-   * 加载已有的坐标系配置到小部件
-   *
-   * @param[in] coordSys 要加载的坐标系
-   */
-  void SetCoordinateSystem(const database::CoordinateSystem& coordSys);
-
-  /**
-   * 检查当前配置是否有效
-   *
-   * @return 有效返回 true
-   */
-  bool IsValid() const;
+  database::CoordinateSystem get_coordinate_system() const;
+  void set_coordinate_system(const database::CoordinateSystem& coord_sys);
+  bool is_valid() const;
 
 signals:
-  /**
-   * 验证状态变化信号
-   *
-   * @param[in] valid 表单是否有效
-   */
-  void validationChanged(bool valid);
+  void validation_changed(bool valid);
 
 private slots:
-  // 坐标系类型选择
-  void onCoordinateTypeChanged();
-
-  // EPSG 模式
-  void onEPSGBrowse();
-  void onEPSGTextChanged();
-
-  // ENU 模式
-  void onENUReferenceChanged();
-  void onENUOriginChanged();
-
-  // WKT 模式
-  void onWKTBrowse();
-  void onWKTTextChanged();
-
-  // RotationConvention 选择
-  void onRotationConventionChanged();
+  void on_coordinate_type_changed();
+  void on_epsg_browse();
+  void on_epsg_text_changed();
+  void on_enu_reference_changed();
+  void on_enu_origin_changed();
+  void on_wkt_browse();
+  void on_wkt_text_changed();
+  void on_rotation_convention_changed();
 
 private:
-  void initializeUI();
-  void connectSignals();
-  void updateUIState();
-  void validateForm();
-
-  // 验证辅助方法
-  bool validateLocalMode() const;
-  bool validateEPSGMode() const;
-  bool validateENUMode() const;
-  bool validateWKTMode() const;
+  void initialize_ui();
+  void connect_signals();
+  void update_ui_state();
+  void validate_form();
+  bool validate_local_mode() const;
+  bool validate_epsg_mode() const;
+  bool validate_enu_mode() const;
+  bool validate_wkt_mode() const;
 
   // 坐标系类型选择
   QRadioButton* m_radioLocal = nullptr;

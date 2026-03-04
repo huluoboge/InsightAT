@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "../camera/camera_types.h"
 #include "track_store.h"
 #include <Eigen/Core>
 #include <string>
@@ -61,6 +62,38 @@ bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string
 int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                        std::vector<Eigen::Vector3d>* poses_t, std::vector<bool>* registered,
                        double fx, double fy, double cx, double cy, int min_correspondences = 6);
+
+/**
+ * Overload: run_initial_pair_loop with algorithm intrinsics (camera::Intrinsics).
+ *
+ * If K.has_distortion(), outlier rejection uses the intrinsics-aware overload
+ * to pre-undistort observations.
+ */
+bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string& geo_dir,
+                           const std::string& match_dir, const camera::Intrinsics& K,
+                           TrackStore* store_out, Eigen::Matrix3d* R1_out, Eigen::Vector3d* t1_out,
+                           int min_tracks_after = 20, uint32_t* image1_id_out = nullptr,
+                           uint32_t* image2_id_out = nullptr);
+
+/**
+ * Overload: run_resection_loop with algorithm intrinsics (camera::Intrinsics).
+ *
+ * Uses resection_single_image(K, ...) so distorted observations are
+ * pre-undistorted before the PnP solver.
+ */
+int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                       std::vector<Eigen::Vector3d>* poses_t, std::vector<bool>* registered,
+                       const camera::Intrinsics& K, int min_correspondences = 6);
+
+/**
+ * Overload: per-image intrinsics (multiple cameras). intrinsics_per_image[i] = K for image i.
+ * Size must match store->num_images(). Fallback fx,fy,cx,cy used when vector null or lookup missing.
+ */
+int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                       std::vector<Eigen::Vector3d>* poses_t, std::vector<bool>* registered,
+                       const std::vector<camera::Intrinsics>* intrinsics_per_image,
+                       double fx, double fy, double cx, double cy,
+                       int min_correspondences = 6);
 
 } // namespace sfm
 } // namespace insight

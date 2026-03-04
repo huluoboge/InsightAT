@@ -36,12 +36,12 @@ ATTaskPanel::ATTaskPanel(ProjectDocument* document, QWidget* parent)
       m_statusLabel(nullptr), m_exportButton(nullptr) {
 
   setWindowTitle("AT Task Editor");
-  initUI();
+  init_ui();
 }
 
 ATTaskPanel::~ATTaskPanel() = default;
 
-bool ATTaskPanel::loadTask(const std::string& task_id) {
+bool ATTaskPanel::load_task(const std::string& task_id) {
   if (!m_document) {
     LOG(ERROR) << "ProjectDocument is null";
     return false;
@@ -57,13 +57,13 @@ bool ATTaskPanel::loadTask(const std::string& task_id) {
   }
 
   m_currentTaskId = task_id;
-  refreshUI();
+  refresh_ui();
   return true;
 }
 
-std::string ATTaskPanel::getCurrentTaskId() const { return m_currentTaskId; }
+std::string ATTaskPanel::get_current_task_id() const { return m_currentTaskId; }
 
-void ATTaskPanel::initUI() {
+void ATTaskPanel::init_ui() {
   QVBoxLayout* mainLayout = new QVBoxLayout(this);
 
   // ─── 顶部：任务信息
@@ -118,14 +118,14 @@ void ATTaskPanel::initUI() {
   m_siftGPUButton->setMinimumHeight(40);
   m_siftGPUButton->setStyleSheet(
       "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }");
-  connect(m_siftGPUButton, &QPushButton::clicked, this, &ATTaskPanel::onRunSiftGPUClicked);
+  connect(m_siftGPUButton, &QPushButton::clicked, this, &ATTaskPanel::on_run_sift_gpu_clicked);
   exportLayout->addWidget(m_siftGPUButton);
 
   exportLayout->addSpacing(20);
 
   // Export 按钮
   m_exportButton = new QPushButton("Export to COLMAP");
-  connect(m_exportButton, &QPushButton::clicked, this, &ATTaskPanel::onExportClicked);
+  connect(m_exportButton, &QPushButton::clicked, this, &ATTaskPanel::on_export_clicked);
   exportLayout->addWidget(m_exportButton);
 
   QLabel* exportPlaceholder =
@@ -140,10 +140,10 @@ void ATTaskPanel::initUI() {
   mainLayout->addWidget(m_tabWidget);
 
   // ─── 自动保存：监听任务名称变更
-  connect(m_taskNameEdit, &QLineEdit::textChanged, this, &ATTaskPanel::onTaskNameChanged);
+  connect(m_taskNameEdit, &QLineEdit::textChanged, this, &ATTaskPanel::on_task_name_changed);
 }
 
-void ATTaskPanel::refreshUI() {
+void ATTaskPanel::refresh_ui() {
   if (m_currentTaskId.empty() || !m_document) {
     m_taskNameEdit->clear();
     m_taskIdLabel->setText("");
@@ -182,7 +182,7 @@ void ATTaskPanel::refreshUI() {
   m_statusLabel->setText("Loaded");
 }
 
-void ATTaskPanel::onExportClicked() {
+void ATTaskPanel::on_export_clicked() {
   if (m_currentTaskId.empty() || !m_document) {
     LOG(WARNING) << "No task loaded";
     return;
@@ -193,7 +193,7 @@ void ATTaskPanel::onExportClicked() {
   m_statusLabel->setText("Exporting...");
 }
 
-void ATTaskPanel::onRunSiftGPUClicked() {
+void ATTaskPanel::on_run_sift_gpu_clicked() {
   if (m_currentTaskId.empty() || !m_document) {
     QMessageBox::warning(this, "Warning", "No task loaded");
     return;
@@ -339,16 +339,16 @@ void ATTaskPanel::onRunSiftGPUClicked() {
   LOG(INFO) << "SIFT GPU process started successfully";
 }
 
-void ATTaskPanel::onTaskNameChanged() {
+void ATTaskPanel::on_task_name_changed() {
   // 监听任务名称的实时变更，立即保存
   if (m_currentTaskId.empty() || !m_document) {
     return;
   }
 
-  saveTask();
+  save_task();
 }
 
-void ATTaskPanel::saveTask() {
+void ATTaskPanel::save_task() {
   if (m_currentTaskId.empty() || !m_document) {
     LOG(WARNING) << "No task loaded";
     return;

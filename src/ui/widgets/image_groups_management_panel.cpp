@@ -20,14 +20,13 @@ namespace insight::ui::widgets {
 
 ImageGroupsManagementPanel::ImageGroupsManagementPanel(QWidget* parent)
     : QWidget(parent), m_projectDocument(nullptr) {
-  InitializeUI();
-  ConnectSignals();
+  initialize_ui();
+  connect_signals();
 }
 
 ImageGroupsManagementPanel::~ImageGroupsManagementPanel() = default;
 
-void ImageGroupsManagementPanel::SetProjectDocument(ProjectDocument* doc) {
-  // 断开旧连接
+void ImageGroupsManagementPanel::set_project_document(ProjectDocument* doc) {
   if (m_projectDocument) {
     disconnect(m_projectDocument, nullptr, this, nullptr);
   }
@@ -35,22 +34,20 @@ void ImageGroupsManagementPanel::SetProjectDocument(ProjectDocument* doc) {
   m_projectDocument = doc;
 
   if (m_projectDocument) {
-    // 连接信号
     connect(m_projectDocument, &ProjectDocument::projectCleared, this,
-            &ImageGroupsManagementPanel::onProjectChanged);
+            &ImageGroupsManagementPanel::on_project_changed);
     connect(m_projectDocument, &ProjectDocument::imageGroupAdded, this,
-            &ImageGroupsManagementPanel::onImageGroupAdded);
+            &ImageGroupsManagementPanel::on_image_group_added);
     connect(m_projectDocument, &ProjectDocument::imageGroupRemoved, this,
-            &ImageGroupsManagementPanel::onImageGroupRemoved);
+            &ImageGroupsManagementPanel::on_image_group_removed);
     connect(m_projectDocument, &ProjectDocument::imageGroupChanged, this,
-            &ImageGroupsManagementPanel::onImageGroupChanged);
+            &ImageGroupsManagementPanel::on_image_group_changed);
 
-    // 初始加载
-    RefreshGroupList();
+    refresh_group_list();
   }
 }
 
-void ImageGroupsManagementPanel::InitializeUI() {
+void ImageGroupsManagementPanel::initialize_ui() {
   auto mainLayout = new QVBoxLayout(this);
   mainLayout->setContentsMargins(8, 8, 8, 8);
   mainLayout->setSpacing(8);
@@ -88,11 +85,11 @@ void ImageGroupsManagementPanel::InitializeUI() {
   setLayout(mainLayout);
 }
 
-void ImageGroupsManagementPanel::ConnectSignals() {
-  connect(m_newGroupButton, &QPushButton::clicked, this, &ImageGroupsManagementPanel::onNewGroup);
+void ImageGroupsManagementPanel::connect_signals() {
+  connect(m_newGroupButton, &QPushButton::clicked, this, &ImageGroupsManagementPanel::on_new_group);
 }
 
-void ImageGroupsManagementPanel::RefreshGroupList() {
+void ImageGroupsManagementPanel::refresh_group_list() {
   if (!m_projectDocument) {
     m_groupTable->setRowCount(0);
     return;
@@ -104,11 +101,11 @@ void ImageGroupsManagementPanel::RefreshGroupList() {
   m_groupTable->setRowCount(groups.size());
 
   for (size_t i = 0; i < groups.size(); ++i) {
-    UpdateTableRow(&groups[i], static_cast<int>(i));
+    update_table_row(&groups[i], static_cast<int>(i));
   }
 }
 
-void ImageGroupsManagementPanel::UpdateTableRow(const database::ImageGroup* group, int row) {
+void ImageGroupsManagementPanel::update_table_row(const database::ImageGroup* group, int row) {
   if (!group || row < 0 || row >= m_groupTable->rowCount()) {
     return;
   }
@@ -146,14 +143,14 @@ void ImageGroupsManagementPanel::UpdateTableRow(const database::ImageGroup* grou
   auto importBtn = new QPushButton(tr("Import"), this);
   importBtn->setMaximumWidth(70);
   importBtn->setProperty("group_id", static_cast<uint>(group->group_id));
-  connect(importBtn, &QPushButton::clicked, this, &ImageGroupsManagementPanel::onImportImages);
+  connect(importBtn, &QPushButton::clicked, this, &ImageGroupsManagementPanel::on_import_images);
   m_groupTable->setCellWidget(row, 3, importBtn);
 
   // 列 4: [编辑] 按钮
   auto editBtn = new QPushButton(tr("Edit"), this);
   editBtn->setMaximumWidth(70);
   editBtn->setProperty("group_id", static_cast<uint>(group->group_id));
-  connect(editBtn, &QPushButton::clicked, this, &ImageGroupsManagementPanel::onEditGroup);
+  connect(editBtn, &QPushButton::clicked, this, &ImageGroupsManagementPanel::on_edit_group);
   m_groupTable->setCellWidget(row, 4, editBtn);
 
   // 列 5: [删除] 按钮
@@ -161,11 +158,11 @@ void ImageGroupsManagementPanel::UpdateTableRow(const database::ImageGroup* grou
   deleteBtn->setMaximumWidth(70);
   deleteBtn->setProperty("group_id", static_cast<uint>(group->group_id));
   deleteBtn->setStyleSheet("QPushButton { background-color: #ffcccc; }");
-  connect(deleteBtn, &QPushButton::clicked, this, &ImageGroupsManagementPanel::onDeleteGroup);
+  connect(deleteBtn, &QPushButton::clicked, this, &ImageGroupsManagementPanel::on_delete_group);
   m_groupTable->setCellWidget(row, 5, deleteBtn);
 }
 
-std::string ImageGroupsManagementPanel::GetNextGroupName() {
+std::string ImageGroupsManagementPanel::get_next_group_name() {
   if (!m_projectDocument) {
     return "photo_group0";
   }
@@ -192,13 +189,13 @@ std::string ImageGroupsManagementPanel::GetNextGroupName() {
 // 槽函数
 // ═══════════════════════════════════════════════════════════════
 
-void ImageGroupsManagementPanel::onNewGroup() {
+void ImageGroupsManagementPanel::on_new_group() {
   if (!m_projectDocument) {
     LOG(WARNING) << "ProjectDocument not set";
     return;
   }
 
-  std::string groupName = GetNextGroupName();
+  std::string groupName = get_next_group_name();
 
   // 创建新分组（通过 ProjectDocument）
   uint32_t groupId = m_projectDocument->createImageGroup(
@@ -216,7 +213,7 @@ void ImageGroupsManagementPanel::onNewGroup() {
   LOG(INFO) << "Created new image group: " << groupName;
 }
 
-void ImageGroupsManagementPanel::onImportImages() {
+void ImageGroupsManagementPanel::on_import_images() {
   // 获取点击的按钮
   auto btn = qobject_cast<QPushButton*>(sender());
   if (!btn) {
@@ -248,17 +245,17 @@ void ImageGroupsManagementPanel::onImportImages() {
   if (!m_imageEditorDialog) {
     m_imageEditorDialog = std::make_unique<ImageEditorDialog>(m_projectDocument, this);
     // 连接 imagesChanged 信号到刷新表格
-    connect(m_imageEditorDialog.get(), &ImageEditorDialog::imagesChanged, this,
-            &ImageGroupsManagementPanel::onImageGroupChanged);
+    connect(m_imageEditorDialog.get(), &ImageEditorDialog::images_changed, this,
+            &ImageGroupsManagementPanel::on_image_group_changed);
   }
 
-  m_imageEditorDialog->LoadGroup(targetGroup);
+  m_imageEditorDialog->load_group(targetGroup);
   m_imageEditorDialog->show();
   m_imageEditorDialog->raise();
   m_imageEditorDialog->activateWindow();
 }
 
-void ImageGroupsManagementPanel::onEditGroup() {
+void ImageGroupsManagementPanel::on_edit_group() {
   // 获取点击的按钮
   auto btn = qobject_cast<QPushButton*>(sender());
   if (!btn) {
@@ -273,13 +270,13 @@ void ImageGroupsManagementPanel::onEditGroup() {
   auto& project = m_projectDocument->project();
   for (auto& group : project.image_groups) {
     if (group.group_id == groupId) {
-      emit editGroupRequested(&group);
+      emit edit_group_requested(&group);
       return;
     }
   }
 }
 
-void ImageGroupsManagementPanel::onDeleteGroup() {
+void ImageGroupsManagementPanel::on_delete_group() {
   // 获取点击的按钮
   auto btn = qobject_cast<QPushButton*>(sender());
   if (!btn) {
@@ -319,21 +316,21 @@ void ImageGroupsManagementPanel::onDeleteGroup() {
   }
 }
 
-void ImageGroupsManagementPanel::onProjectChanged() { RefreshGroupList(); }
+void ImageGroupsManagementPanel::on_project_changed() { refresh_group_list(); }
 
-void ImageGroupsManagementPanel::onImageGroupAdded(uint32_t group_id) {
+void ImageGroupsManagementPanel::on_image_group_added(uint32_t group_id) {
   Q_UNUSED(group_id);
-  RefreshGroupList();
+  refresh_group_list();
 }
 
-void ImageGroupsManagementPanel::onImageGroupRemoved(uint32_t group_id) {
+void ImageGroupsManagementPanel::on_image_group_removed(uint32_t group_id) {
   Q_UNUSED(group_id);
-  RefreshGroupList();
+  refresh_group_list();
 }
 
-void ImageGroupsManagementPanel::onImageGroupChanged(uint32_t group_id) {
-  // 更新特定行的数据（可选，目前简单地刷新整个列表）
-  RefreshGroupList();
+void ImageGroupsManagementPanel::on_image_group_changed(uint32_t group_id) {
+  Q_UNUSED(group_id);
+  refresh_group_list();
 }
 
 }  // namespace insight::ui::widgets

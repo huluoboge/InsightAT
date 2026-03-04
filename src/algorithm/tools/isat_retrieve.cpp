@@ -519,7 +519,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Set logging level
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   // Log configuration
   LOG(INFO) << "=== Image Pair Retrieval Configuration ===";

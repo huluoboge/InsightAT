@@ -17,13 +17,13 @@ namespace insight::ui::widgets {
 CameraParameterEditorWidget::CameraParameterEditorWidget(QWidget* parent)
     : QWidget(parent), m_currentMode(database::ImageGroup::CameraMode::kGroupLevel),
       m_isEditable(true) {
-  InitializeUI();
-  ConnectSignals();
+  initialize_ui();
+  connect_signals();
 }
 
 CameraParameterEditorWidget::~CameraParameterEditorWidget() = default;
 
-void CameraParameterEditorWidget::InitializeUI() {
+void CameraParameterEditorWidget::initialize_ui() {
   auto mainLayout = new QVBoxLayout(this);
   mainLayout->setContentsMargins(8, 8, 8, 8);
   mainLayout->setSpacing(8);
@@ -256,24 +256,6 @@ void CameraParameterEditorWidget::InitializeUI() {
     layout->addWidget(m_p2SpinBox, row, 3);
     row++;
 
-    // b1, b2 (棱镜畸变)
-    m_b1Label = new QLabel(tr("b1:"), this);
-    m_b1SpinBox = new QDoubleSpinBox(this);
-    m_b1SpinBox->setRange(-1.0, 1.0);
-    m_b1SpinBox->setValue(0.0);
-    m_b1SpinBox->setSingleStep(0.001);
-    m_b1SpinBox->setDecimals(8);
-    layout->addWidget(m_b1Label, row, 0);
-    layout->addWidget(m_b1SpinBox, row, 1);
-
-    m_b2Label = new QLabel(tr("b2:"), this);
-    m_b2SpinBox = new QDoubleSpinBox(this);
-    m_b2SpinBox->setRange(-1.0, 1.0);
-    m_b2SpinBox->setValue(0.0);
-    m_b2SpinBox->setSingleStep(0.001);
-    m_b2SpinBox->setDecimals(8);
-    layout->addWidget(m_b2Label, row, 2);
-    layout->addWidget(m_b2SpinBox, row, 3);
   }
   mainLayout->addWidget(m_distortionBox);
 
@@ -293,68 +275,64 @@ void CameraParameterEditorWidget::InitializeUI() {
   setLayout(mainLayout);
 }
 
-void CameraParameterEditorWidget::ConnectSignals() {
+void CameraParameterEditorWidget::connect_signals() {
   // 内参字段
   connect(m_focalLengthPxSpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onFocalLengthPxEdited);
+          &CameraParameterEditorWidget::on_focal_length_px_edited);
   connect(m_principalPointXSpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onPrincipalPointXEdited);
+          &CameraParameterEditorWidget::on_principal_point_x_edited);
   connect(m_principalPointYSpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onPrincipalPointYEdited);
+          &CameraParameterEditorWidget::on_principal_point_y_edited);
   connect(m_imageWidthSpinBox, QOverload<>::of(&QSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onImageWidthEdited);
+          &CameraParameterEditorWidget::on_image_width_edited);
   connect(m_imageHeightSpinBox, QOverload<>::of(&QSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onImageHeightEdited);
+          &CameraParameterEditorWidget::on_image_height_edited);
   connect(m_sensorWidthMmSpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onSensorWidthMmEdited);
+          &CameraParameterEditorWidget::on_sensor_width_mm_edited);
   connect(m_sensorHeightMmSpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onSensorHeightMmEdited);
+          &CameraParameterEditorWidget::on_sensor_height_mm_edited);
   connect(m_focalLengthMmSpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onFocalLengthMmEdited);
+          &CameraParameterEditorWidget::on_focal_length_mm_edited);
   connect(m_focalLength35mmSpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onFocalLength35mmEdited);
+          &CameraParameterEditorWidget::on_focal_length_35mm_edited);
 
   // 畸变参数
   connect(m_k1SpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onDistortionParameterEdited);
+          &CameraParameterEditorWidget::on_distortion_parameter_edited);
   connect(m_k2SpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onDistortionParameterEdited);
+          &CameraParameterEditorWidget::on_distortion_parameter_edited);
   connect(m_k3SpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onDistortionParameterEdited);
+          &CameraParameterEditorWidget::on_distortion_parameter_edited);
   connect(m_p1SpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onDistortionParameterEdited);
+          &CameraParameterEditorWidget::on_distortion_parameter_edited);
   connect(m_p2SpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onDistortionParameterEdited);
-  connect(m_b1SpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onDistortionParameterEdited);
-  connect(m_b2SpinBox, QOverload<>::of(&QDoubleSpinBox::editingFinished), this,
-          &CameraParameterEditorWidget::onDistortionParameterEdited);
+          &CameraParameterEditorWidget::on_distortion_parameter_edited);
 
   // 相机模式切换
   connect(m_cameraModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          &CameraParameterEditorWidget::onCameraModeChanged);
+          &CameraParameterEditorWidget::on_camera_mode_changed);
 
   // 分组名称
   connect(m_groupNameEdit, &QLineEdit::editingFinished, this,
-          &CameraParameterEditorWidget::fieldModified);
+          &CameraParameterEditorWidget::field_modified);
 
   // 按钮
   connect(m_autoEstimateButton, &QPushButton::clicked, this,
-          &CameraParameterEditorWidget::autoEstimateRequested);
+          &CameraParameterEditorWidget::auto_estimate_requested);
   connect(m_selectPresetButton, &QPushButton::clicked, this,
-          &CameraParameterEditorWidget::fieldModified); // Placeholder
+          &CameraParameterEditorWidget::field_modified); // Placeholder
 }
 
 // ═══════════════════════════════════════════════════════════════
 // 公开方法
 // ═══════════════════════════════════════════════════════════════
 
-void CameraParameterEditorWidget::LoadCamera(const database::CameraModel& camera) {
+void CameraParameterEditorWidget::load_camera(const database::CameraModel& camera) {
   blockSignals(true); // 防止信号在加载期间触发
 
   m_autoEstimateButton->setEnabled(true);
 
-  // 加载内参（camera_mode 由外部通过 SetMode() 设置）
+  // 加载内参（camera_mode 由外部通过 set_mode() 设置）
   m_focalLengthPxSpinBox->setValue(camera.focal_length);
   m_principalPointXSpinBox->setValue(camera.principal_point_x);
   m_principalPointYSpinBox->setValue(camera.principal_point_y);
@@ -372,15 +350,13 @@ void CameraParameterEditorWidget::LoadCamera(const database::CameraModel& camera
   m_k3SpinBox->setValue(camera.k3);
   m_p1SpinBox->setValue(camera.p1);
   m_p2SpinBox->setValue(camera.p2);
-  m_b1SpinBox->setValue(camera.b1);
-  m_b2SpinBox->setValue(camera.b2);
 
   blockSignals(false);
 
-  // 注意: camera_mode 不属于 CameraModel，应由外部代码通过 SetMode() 调用设置
+  // 注意: camera_mode 不属于 CameraModel，应由外部代码通过 set_mode() 调用设置
 }
 
-database::CameraModel CameraParameterEditorWidget::GetCamera() const {
+database::CameraModel CameraParameterEditorWidget::get_camera() const {
   database::CameraModel camera;
 
   // 注意: camera_mode 不属于 CameraModel，由 ImageGroup 管理
@@ -401,25 +377,23 @@ database::CameraModel CameraParameterEditorWidget::GetCamera() const {
   camera.k3 = m_k3SpinBox->value();
   camera.p1 = m_p1SpinBox->value();
   camera.p2 = m_p2SpinBox->value();
-  camera.b1 = m_b1SpinBox->value();
-  camera.b2 = m_b2SpinBox->value();
 
   return camera;
 }
 
-void CameraParameterEditorWidget::SetGroupName(const std::string& name) {
+void CameraParameterEditorWidget::set_group_name(const std::string& name) {
   m_groupNameEdit->setText(QString::fromStdString(name));
 }
 
-std::string CameraParameterEditorWidget::GetGroupName() const {
+std::string CameraParameterEditorWidget::get_group_name() const {
   return m_groupNameEdit->text().toStdString();
 }
 
-void CameraParameterEditorWidget::ShowGroupNameField(bool show) {
+void CameraParameterEditorWidget::show_group_name_field(bool show) {
   m_groupInfoBox->setVisible(show);
 }
 
-void CameraParameterEditorWidget::SetEditable(bool editable) {
+void CameraParameterEditorWidget::set_editable(bool editable) {
   m_isEditable = editable;
   m_groupNameEdit->setReadOnly(!editable);
   m_cameraModeCombo->setEnabled(editable);
@@ -437,18 +411,16 @@ void CameraParameterEditorWidget::SetEditable(bool editable) {
   m_k3SpinBox->setReadOnly(!editable);
   m_p1SpinBox->setReadOnly(!editable);
   m_p2SpinBox->setReadOnly(!editable);
-  m_b1SpinBox->setReadOnly(!editable);
-  m_b2SpinBox->setReadOnly(!editable);
 }
 
-void CameraParameterEditorWidget::SetMode(database::ImageGroup::CameraMode mode) {
+void CameraParameterEditorWidget::set_mode(database::ImageGroup::CameraMode mode) {
   m_currentMode = mode;
   int modeIndex = m_cameraModeCombo->findData(static_cast<int>(mode));
   m_cameraModeCombo->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
-  UpdateUIByMode(mode);
+  update_ui_by_mode(mode);
 }
 
-database::ImageGroup::CameraMode CameraParameterEditorWidget::GetMode() const {
+database::ImageGroup::CameraMode CameraParameterEditorWidget::get_mode() const {
   return m_currentMode;
 }
 
@@ -456,74 +428,74 @@ database::ImageGroup::CameraMode CameraParameterEditorWidget::GetMode() const {
 // 槽函数
 // ═══════════════════════════════════════════════════════════════
 
-void CameraParameterEditorWidget::onFocalLengthPxEdited() {
+void CameraParameterEditorWidget::on_focal_length_px_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onPrincipalPointXEdited() {
+void CameraParameterEditorWidget::on_principal_point_x_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onPrincipalPointYEdited() {
+void CameraParameterEditorWidget::on_principal_point_y_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onImageWidthEdited() {
+void CameraParameterEditorWidget::on_image_width_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onImageHeightEdited() {
+void CameraParameterEditorWidget::on_image_height_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onSensorWidthMmEdited() {
+void CameraParameterEditorWidget::on_sensor_width_mm_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onSensorHeightMmEdited() {
+void CameraParameterEditorWidget::on_sensor_height_mm_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onFocalLengthMmEdited() {
+void CameraParameterEditorWidget::on_focal_length_mm_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onFocalLength35mmEdited() {
+void CameraParameterEditorWidget::on_focal_length_35mm_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onDistortionParameterEdited() {
+void CameraParameterEditorWidget::on_distortion_parameter_edited() {
   if (m_isEditable) {
-    emit fieldModified();
+    emit field_modified();
   }
 }
 
-void CameraParameterEditorWidget::onCameraModeChanged(int index) {
+void CameraParameterEditorWidget::on_camera_mode_changed(int index) {
   auto mode =
       static_cast<database::ImageGroup::CameraMode>(m_cameraModeCombo->itemData(index).toInt());
   m_currentMode = mode;
-  UpdateUIByMode(mode);
+  update_ui_by_mode(mode);
   if (m_isEditable) {
-    emit modeChanged(mode);
-    emit fieldModified();
+    emit mode_changed(mode);
+    emit field_modified();
   }
 }
 
@@ -531,21 +503,21 @@ void CameraParameterEditorWidget::onCameraModeChanged(int index) {
 // 私有方法
 // ═══════════════════════════════════════════════════════════════
 
-void CameraParameterEditorWidget::UpdateUIByMode(database::ImageGroup::CameraMode mode) {
+void CameraParameterEditorWidget::update_ui_by_mode(database::ImageGroup::CameraMode mode) {
   switch (mode) {
   case database::ImageGroup::CameraMode::kGroupLevel:
-    UpdateGroupLevelUI();
+    update_group_level_ui();
     break;
   case database::ImageGroup::CameraMode::kImageLevel:
-    UpdateImageLevelUI();
+    update_image_level_ui();
     break;
   case database::ImageGroup::CameraMode::kRigBased:
-    UpdateRigBasedUI();
+    update_rig_based_ui();
     break;
   }
 }
 
-void CameraParameterEditorWidget::UpdateGroupLevelUI() {
+void CameraParameterEditorWidget::update_group_level_ui() {
   // GroupLevel: 所有参数可见且可编辑
   m_focalLengthPxLabel->setVisible(true);
   m_focalLengthPxSpinBox->setVisible(true);
@@ -581,9 +553,6 @@ void CameraParameterEditorWidget::UpdateGroupLevelUI() {
   m_k3SpinBox->setEnabled(true);
   m_p1SpinBox->setEnabled(true);
   m_p2SpinBox->setEnabled(true);
-  m_b1SpinBox->setEnabled(true);
-  m_b2SpinBox->setEnabled(true);
-
   m_distortionBox->setVisible(true);
   m_distortionBox->setEnabled(true);
 
@@ -591,7 +560,7 @@ void CameraParameterEditorWidget::UpdateGroupLevelUI() {
   m_rigBasedPlaceholder->setVisible(false);
 }
 
-void CameraParameterEditorWidget::UpdateImageLevelUI() {
+void CameraParameterEditorWidget::update_image_level_ui() {
   // ImageLevel: 参数显示但灰显（仅用于显示，实际在图像列表编辑）
   m_focalLengthPxLabel->setVisible(true);
   m_focalLengthPxSpinBox->setVisible(true);
@@ -628,7 +597,7 @@ void CameraParameterEditorWidget::UpdateImageLevelUI() {
   m_rigBasedPlaceholder->setVisible(false);
 }
 
-void CameraParameterEditorWidget::UpdateRigBasedUI() {
+void CameraParameterEditorWidget::update_rig_based_ui() {
   // RigBased: 隐藏所有参数，显示占位符
   m_focalLengthPxLabel->setVisible(false);
   m_focalLengthPxSpinBox->setVisible(false);

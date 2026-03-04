@@ -109,8 +109,8 @@ struct StabilityMetrics {
  * @param f_min, f_max  Search range (pixels). Defaults cover typical aerial cameras.
  * @return Estimated focal length (> 0) or -1 on failure.
  */
-double FocalFromFundamental(const Eigen::Matrix3d& F, double cx, double cy, double f_min = 100.0,
-                            double f_max = 50000.0);
+double focal_from_fundamental(const Eigen::Matrix3d& F, double cx, double cy, double f_min = 100.0,
+                              double f_max = 50000.0);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Enforce essential matrix constraint
@@ -118,7 +118,7 @@ double FocalFromFundamental(const Eigen::Matrix3d& F, double cx, double cy, doub
 
 /// Project M (unnormalised 3×3) onto the essential-matrix manifold:
 /// set singular values to (1, 1, 0).
-Eigen::Matrix3d EnforceEssential(const Eigen::Matrix3d& M);
+Eigen::Matrix3d enforce_essential(const Eigen::Matrix3d& M);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. E decomposition + cheirality
@@ -138,9 +138,9 @@ Eigen::Matrix3d EnforceEssential(const Eigen::Matrix3d& M);
  * @param[out] t    Best translation (unit norm).
  * @return number of cheirality-consistent points for the chosen solution.
  */
-int DecomposeEssential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector2d>& pts1_n,
-                       const std::vector<Eigen::Vector2d>& pts2_n, Eigen::Matrix3d& R,
-                       Eigen::Vector3d& t);
+int decompose_essential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector2d>& pts1_n,
+                        const std::vector<Eigen::Vector2d>& pts2_n, Eigen::Matrix3d& R,
+                        Eigen::Vector3d& t);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Linear triangulation (DLT)
@@ -157,8 +157,8 @@ int DecomposeEssential(const Eigen::Matrix3d& E, const std::vector<Eigen::Vector
  * @return 3-D point in cam1 frame (homogeneous component w is 1), or
  *         (0,0,0) if the system is degenerate.
  */
-Eigen::Vector3d TriangulatePoint(const Eigen::Vector2d& x1, const Eigen::Vector2d& x2,
-                                 const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
+Eigen::Vector3d triangulate_point(const Eigen::Vector2d& x1, const Eigen::Vector2d& x2,
+                                  const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
 
 /**
  * Triangulate a set of normalised correspondences.
@@ -168,9 +168,9 @@ Eigen::Vector3d TriangulatePoint(const Eigen::Vector2d& x1, const Eigen::Vector2
  * @param R, t            Relative pose.
  * @return vector of 3-D points in cam1 frame (same length as pts1_n).
  */
-std::vector<Eigen::Vector3d> TriangulatePoints(const std::vector<Eigen::Vector2d>& pts1_n,
-                                               const std::vector<Eigen::Vector2d>& pts2_n,
-                                               const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
+std::vector<Eigen::Vector3d> triangulate_points(const std::vector<Eigen::Vector2d>& pts1_n,
+                                                const std::vector<Eigen::Vector2d>& pts2_n,
+                                                const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. Degeneracy detection (F vs H, COLMAP-style)
@@ -188,7 +188,7 @@ std::vector<Eigen::Vector3d> TriangulatePoints(const std::vector<Eigen::Vector2d
  * @param num_matches Total number of matches.
  * @return DegeneracyResult with is_degenerate, model_preferred.
  */
-DegeneracyResult DetectDegeneracy(int F_inliers, int H_inliers, int num_matches);
+DegeneracyResult detect_degeneracy(int F_inliers, int H_inliers, int num_matches);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 6. Stability metrics (parallax, depth/baseline)
@@ -208,19 +208,19 @@ DegeneracyResult DetectDegeneracy(int F_inliers, int H_inliers, int num_matches)
  * @param min_depth_baseline   Min depth/B ratio. Default 2.0.
  * @param max_depth_baseline   Max depth/B ratio. Default 500.0.
  */
-StabilityMetrics ComputeStabilityMetrics(const std::vector<Eigen::Vector3d>& points3d,
-                                         const std::vector<Eigen::Vector2d>& pts1_n,
-                                         const std::vector<Eigen::Vector2d>& pts2_n,
-                                         const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
-                                         double min_parallax_deg = 2.0,
-                                         double min_depth_baseline = 2.0,
-                                         double max_depth_baseline = 500.0);
+StabilityMetrics compute_stability_metrics(const std::vector<Eigen::Vector3d>& points3d,
+                                           const std::vector<Eigen::Vector2d>& pts1_n,
+                                           const std::vector<Eigen::Vector2d>& pts2_n,
+                                           const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+                                           double min_parallax_deg = 2.0,
+                                           double min_depth_baseline = 2.0,
+                                           double max_depth_baseline = 500.0);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. Convenience: convert row-major float[9] ↔ Eigen::Matrix3d
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline Eigen::Matrix3d FloatArrayToMatrix3d(const float m[9]) {
+inline Eigen::Matrix3d float_array_to_matrix3d(const float m[9]) {
   Eigen::Matrix3d R;
   for (int i = 0; i < 3; i++)
     for (int j = 0; j < 3; j++)
@@ -228,7 +228,7 @@ inline Eigen::Matrix3d FloatArrayToMatrix3d(const float m[9]) {
   return R;
 }
 
-inline void Matrix3dToFloatArray(const Eigen::Matrix3d& M, float out[9]) {
+inline void matrix3d_to_float_array(const Eigen::Matrix3d& M, float out[9]) {
   for (int i = 0; i < 3; i++)
     for (int j = 0; j < 3; j++)
       out[i * 3 + j] = static_cast<float>(M(i, j));

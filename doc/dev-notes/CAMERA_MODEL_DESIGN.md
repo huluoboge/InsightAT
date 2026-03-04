@@ -80,10 +80,9 @@ struct CameraModel {
     aspect_ratio;                 // 宽高比（fy/fx）
     skew;                         // 像素偏斜
     
-    // 4. Brown-Conrady 畸变参数
-    k1, k2, k3, k4;              // 径向畸变
-    p1, p2;                       // 切向畸变
-    b1, b2;                       // 薄棱镜畸变
+    // 4. 畸变参数（与 Bentley ContextCapture 一致，5 参数）
+    k1, k2, k3;                  // 径向畸变（Bentley K₁,K₂,K₃）
+    p1, p2;                       // 切向畸变（Bentley P₁,P₂）
     
     // 5. 元数据
     camera_name, make, model;     // 相机识别信息
@@ -137,37 +136,37 @@ struct CameraModel {
 [1]   [ 0    0     1  ] [ 1 ]
 ```
 
-#### 2.2.3 Brown-Conrady 畸变参数
+#### 2.2.3 畸变参数（与 Bentley ContextCapture 一致）
 
-完整的8参数模型：
+参考：[Bentley ContextCapture 透视相机模型](https://docs.bentley.com/LiveContent/web/ContextCapture%20Help-v17/en/GUID-2D452A8A-A4FE-450D-A0CA-9336DCF1238A.html)
+
+完整投影链：`x = F · D(Π(O · R · (X − C))) + x₀`
+
+其中畸变函数 D 作用于归一化平面坐标 (u, v)（Π 之后），r² = u² + v²：
 
 ```
-径向畸变：
-  r² = u_norm² + v_norm²
-  r_dist = r(1 + k1·r² + k2·r⁴ + k3·r⁶ + k4·r⁸)
+径向因子：
+  (1 + k1·r² + k2·r⁴ + k3·r⁶)
 
-切向畸变：
-  δu_tan = p1(2u_norm·v_norm + p2(r² + 2u_norm²)) 
-         + b1·u_norm + b2·v_norm
-  δv_tan = p2(2u_norm·v_norm + p1(r² + 2v_norm²)) 
-         + b1·v_norm + b2·u_norm
+完整畸变（归一化 → 畸变归一化）：
+  u_dist = (1 + k1·r² + k2·r⁴ + k3·r⁶)·u
+         + 2·p2·u·v + p1·(r² + 2·u²)
 
-最终畸变像素：
-  u_dist = u_norm·r_dist + δu_tan
-  v_dist = v_norm·r_dist + δv_tan
+  v_dist = (1 + k1·r² + k2·r⁴ + k3·r⁶)·v
+         + 2·p1·u·v + p2·(r² + 2·v²)
 ```
 
-**参数范围参考**：
+存储的 p1 = Bentley P₁，p2 = Bentley P₂。
 
-| 参数 | 典型范围 | 物理意义 |
-|------|----------|---------|
-| k1 | -1e-4 ~ 1e-2 | 主要径向畸变（桶形/枕形） |
-| k2 | -1e-4 ~ 1e-4 | 高阶径向修正 |
-| k3 | -1e-6 ~ 1e-6 | 极高阶径向修正 |
-| k4 | ≈ 0 | 罕见使用 |
-| p1 | -1e-4 ~ 1e-4 | 由装配偏差引起 |
-| p2 | -1e-4 ~ 1e-4 | 由装配偏差引起 |
-| b1, b2 | ≈ 0 | 普通相机通常为0 |
+**参数对应（Bentley ↔ InsightAT）**：
+
+| InsightAT | Bentley | 典型范围 | 物理意义 |
+|-----------|---------|----------|---------|
+| k1 | K₁ | -1e-4 ~ 1e-2 | 主要径向畸变（桶形/枕形） |
+| k2 | K₂ | -1e-4 ~ 1e-4 | 高阶径向修正 |
+| k3 | K₃ | -1e-6 ~ 1e-6 | 极高阶径向修正 |
+| p1 | P₁ | -1e-4 ~ 1e-4 | 切向畸变（由装配偏差引起） |
+| p2 | P₂ | -1e-4 ~ 1e-4 | 切向畸变（由装配偏差引起） |
 
 ### 2.3 OptimizationFlags 设计
 
@@ -180,15 +179,12 @@ struct OptimizationFlags {
     bool aspect_ratio = false;
     bool skew = false;
     
-    // 畸变参数优化标记
+    // 畸变参数优化标记（5 参数，与 Bentley 一致）
     bool k1 = false;
     bool k2 = false;
     bool k3 = false;
-    bool k4 = false;
     bool p1 = false;
     bool p2 = false;
-    bool b1 = false;
-    bool b2 = false;
 };
 ```
 
@@ -213,7 +209,6 @@ struct OptimizationFlags {
    flags.k3 = true;
    flags.p1 = true;
    flags.p2 = true;
-   // k4, b1, b2 通常不优化
    ```
 
 3. **固定内参（已标定）**
@@ -557,14 +552,11 @@ CEREAL_CLASS_VERSION(insight::database::CameraModel, 2);
 | | principal_point_y | double | 0.0 | px | 主点Y |
 | | aspect_ratio | double | 1.0 | - | 宽高比 |
 | | skew | double | 0.0 | - | 偏斜 |
-| **径向畸变** | k1 | double | 0.0 | - | 1阶 |
-| | k2 | double | 0.0 | - | 2阶 |
-| | k3 | double | 0.0 | - | 3阶 |
-| | k4 | double | 0.0 | - | 4阶 |
-| **切向畸变** | p1 | double | 0.0 | - | X方向 |
-| | p2 | double | 0.0 | - | Y方向 |
-| **棱镜畸变** | b1 | double | 0.0 | - | X分量 |
-| | b2 | double | 0.0 | - | Y分量 |
+| **径向畸变** | k1 | double | 0.0 | - | 1阶（Bentley K₁） |
+| | k2 | double | 0.0 | - | 2阶（Bentley K₂） |
+| | k3 | double | 0.0 | - | 3阶（Bentley K₃） |
+| **切向畸变** | p1 | double | 0.0 | - | Bentley P₁ |
+| | p2 | double | 0.0 | - | Bentley P₂ |
 | **元数据** | camera_name | string | "" | - | 相机名称 |
 | | make | string | "" | - | 制造商 |
 | | model | string | "" | - | 型号 |

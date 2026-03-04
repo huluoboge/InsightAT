@@ -66,8 +66,8 @@ struct CoordinateSystem {
   std::optional<Origin> origin;
   std::optional<ReferencePoint> reference;
 
-  std::string ToString() const;
-  bool IsValid() const;
+  std::string to_string() const;
+  bool is_valid() const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const version) {
     ar(CEREAL_NVP(type), CEREAL_NVP(rotation_convention), CEREAL_NVP(definition));
@@ -108,10 +108,10 @@ struct InputPose {
 
   AngleUnit angle_unit = AngleUnit::kDegrees;
 
-  void Reset();
-  bool HasData() const;
-  std::string ToString() const;
-  bool IsValid() const;
+  void reset();
+  bool has_data() const;
+  std::string to_string() const;
+  bool is_valid() const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
     ar(CEREAL_NVP(x), CEREAL_NVP(y), CEREAL_NVP(z), CEREAL_NVP(has_position));
@@ -165,7 +165,7 @@ struct GCPMeasurement {
   // 图像观测列表（多图像观测）
   std::vector<Observation> observations; ///< 该GCP在各个图像中的观测
 
-  bool IsValid() const;
+  bool is_valid() const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
     ar(CEREAL_NVP(gcp_id), CEREAL_NVP(gcp_name));
@@ -203,7 +203,7 @@ struct Measurement {
     uint8_t num_satellites = 0;
     double hdop = 0.0, vdop = 0.0;
 
-    bool IsValid() const;
+    bool is_valid() const;
 
     template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
       ar(CEREAL_NVP(x), CEREAL_NVP(y), CEREAL_NVP(z));
@@ -227,7 +227,7 @@ struct Measurement {
     double gyro_x = 0.0, gyro_y = 0.0, gyro_z = 0.0;
     double cov_gyr_xx = 0.0, cov_gyr_yy = 0.0, cov_gyr_zz = 0.0;
 
-    bool IsValid() const;
+    bool is_valid() const;
 
     template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
       ar(CEREAL_NVP(has_attitude), CEREAL_NVP(roll), CEREAL_NVP(pitch), CEREAL_NVP(yaw));
@@ -246,7 +246,7 @@ struct Measurement {
     double rel_qx = 0.0, rel_qy = 0.0, rel_qz = 0.0, rel_qw = 1.0;
     double confidence = 0.0;
 
-    bool IsValid() const;
+    bool is_valid() const;
 
     template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
       ar(CEREAL_NVP(reference_image_id));
@@ -264,8 +264,8 @@ struct Measurement {
   std::optional<IMUMeasurement> imu;
   std::optional<SLAMMeasurement> slam;
 
-  std::string ToString() const;
-  bool IsValid() const;
+  std::string to_string() const;
+  bool is_valid() const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
     ar(CEREAL_NVP(type), CEREAL_NVP(image_id), CEREAL_NVP(timestamp));
@@ -352,8 +352,8 @@ struct CameraRig {
     double cov_pos_xx = 0.0, cov_pos_yy = 0.0, cov_pos_zz = 0.0; ///< 位置方差
     double cov_rot_xx = 0.0, cov_rot_yy = 0.0, cov_rot_zz = 0.0; ///< 旋转方差
 
-    bool IsValid() const;
-    std::string ToString() const;
+    bool is_valid() const;
+    std::string to_string() const;
 
     template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
       ar(CEREAL_NVP(camera_id), CEREAL_NVP(position_name));
@@ -379,7 +379,7 @@ struct CameraRig {
    * - 所有相机ID唯一
    * - 所有挂载点有效
    */
-  bool IsValid() const;
+  bool is_valid() const;
 
   /**
    * 根据camera_id查找挂载点
@@ -387,17 +387,17 @@ struct CameraRig {
    * @param[in] camera_id 相机ID
    * @return 挂载点指针，未找到返回nullptr
    */
-  const CameraMount* FindCameraMount(uint32_t camera_id) const;
+  const CameraMount* find_camera_mount(uint32_t camera_id) const;
 
   /**
    * 获取详细描述
    */
-  std::string ToString() const;
+  std::string to_string() const;
 
   /**
    * 获取简洁摘要
    */
-  std::string GetSummary() const;
+  std::string get_summary() const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
     ar(CEREAL_NVP(rig_id), CEREAL_NVP(rig_name), CEREAL_NVP(calib_status));
@@ -440,19 +440,15 @@ struct OptimizationFlags {
   bool k1 = false; ///< 1阶径向畸变
   bool k2 = false; ///< 2阶径向畸变
   bool k3 = false; ///< 3阶径向畸变
-  bool k4 = false; ///< 4阶径向畸变（可选）
 
-  bool p1 = false; ///< 1阶切向畸变
-  bool p2 = false; ///< 2阶切向畸变
-
-  bool b1 = false; ///< 薄棱镜畸变 X
-  bool b2 = false; ///< 薄棱镜畸变 Y
+  bool p1 = false; ///< 切向畸变 P₁（Bentley P₁）
+  bool p2 = false; ///< 切向畸变 P₂（Bentley P₂）
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const /*version*/) {
     ar(CEREAL_NVP(focal_length), CEREAL_NVP(principal_point_x), CEREAL_NVP(principal_point_y),
        CEREAL_NVP(aspect_ratio), CEREAL_NVP(skew));
-    ar(CEREAL_NVP(k1), CEREAL_NVP(k2), CEREAL_NVP(k3), CEREAL_NVP(k4));
-    ar(CEREAL_NVP(p1), CEREAL_NVP(p2), CEREAL_NVP(b1), CEREAL_NVP(b2));
+    ar(CEREAL_NVP(k1), CEREAL_NVP(k2), CEREAL_NVP(k3));
+    ar(CEREAL_NVP(p1), CEREAL_NVP(p2));
   }
 };
 
@@ -467,22 +463,26 @@ struct OptimizationFlags {
  *
  * 支持的相机模型：
  * - Pinhole：标准针孔相机（无畸变）
- * - Brown-Conrady：完整的8参数畸变模型（k1,k2,k3,p1,p2,b1,b2）
+ * - BrownConrady：5参数畸变模型，与 Bentley ContextCapture 一致（k1,k2,k3,p1,p2）
  * - SimpleDistortion：简化模型（仅k1,k2）
  * - Fisheye：鱼眼镜头
  *
- * Brown-Conrady畸变模型定义：
+ * 畸变模型与 Bentley ContextCapture 透视相机模型完全一致：
+ *   https://docs.bentley.com/LiveContent/web/ContextCapture%20Help-v17/en/GUID-2D452A8A-A4FE-450D-A0CA-9336DCF1238A.html
+ *
  *   r² = u_norm² + v_norm²
  *
- *   r_dist = r × (1 + k1×r² + k2×r⁴ + k3×r⁶ + k4×r⁸)
+ *   径向因子：(1 + k1×r² + k2×r⁴ + k3×r⁶)
  *
- *   u_distorted = u_norm × r_dist + p1×(2×u_norm×v_norm + p2×(r² + 2×u_norm²))
- *               + b1×u_norm + b2×v_norm
+ *   u_distorted = (1 + k1×r² + k2×r⁴ + k3×r⁶)×u_norm
+ *               + 2×p2×u_norm×v_norm + p1×(r² + 2×u_norm²)
  *
- *   v_distorted = v_norm × r_dist + p2×(2×u_norm×v_norm + p1×(r² + 2×v_norm²))
- *               + b2×u_norm + b1×v_norm
+ *   v_distorted = (1 + k1×r² + k2×r⁴ + k3×r⁶)×v_norm
+ *               + 2×p1×u_norm×v_norm + p2×(r² + 2×v_norm²)
  *
- * 参数估计和优化算法独立实现于：src/camera/camera_utils.h
+ *   其中 p1 = Bentley P₁，p2 = Bentley P₂。
+ *
+ * 参数估计和优化算法独立实现于：src/algorithm/modules/camera/camera_utils.h
  */
 struct CameraModel {
   enum class Type : int {
@@ -521,16 +521,12 @@ struct CameraModel {
   // 3. Brown-Conrady畸变参数
   // ─────────────────────────────────────────────────────────
 
-  double k1 = 0.0; ///< 1阶径向畸变
-  double k2 = 0.0; ///< 2阶径向畸变
-  double k3 = 0.0; ///< 3阶径向畸变
-  double k4 = 0.0; ///< 4阶径向畸变
+  double k1 = 0.0; ///< 1阶径向畸变（Bentley K₁）
+  double k2 = 0.0; ///< 2阶径向畸变（Bentley K₂）
+  double k3 = 0.0; ///< 3阶径向畸变（Bentley K₃）
 
-  double p1 = 0.0; ///< 1阶切向畸变
-  double p2 = 0.0; ///< 2阶切向畸变
-
-  double b1 = 0.0; ///< 薄棱镜畸变 X
-  double b2 = 0.0; ///< 薄棱镜畸变 Y
+  double p1 = 0.0; ///< 切向畸变 P₁（Bentley P₁）
+  double p2 = 0.0; ///< 切向畸变 P₂（Bentley P₂）
 
   // ─────────────────────────────────────────────────────────
   // 4. 元数据和优化标记
@@ -557,30 +553,30 @@ struct CameraModel {
    * - 焦距 > 0 且合理
    * - 主点在图像范围内
    */
-  bool IsValid() const;
+  bool is_valid() const;
 
   /**
    * @brief 获取详细的相机参数描述
    * @return 多行格式化字符串
    */
-  std::string ToString() const;
+  std::string to_string() const;
 
   /**
    * @brief 获取简洁的相机摘要
    * @return 单行摘要
    */
-  std::string GetSummary() const;
+  std::string get_summary() const;
 
   /**
    * @brief 检查是否有任何畸变参数非零
    * @return 如果任何畸变参数非零返回true
    */
-  bool HasDistortion() const;
+  bool has_distortion() const;
 
   /**
    * @brief 重置所有参数为默认值
    */
-  void Reset();
+  void reset();
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const version) {
     ar(CEREAL_NVP(type), CEREAL_NVP(width), CEREAL_NVP(height));
@@ -588,13 +584,15 @@ struct CameraModel {
        CEREAL_NVP(focal_length_35mm));
     ar(CEREAL_NVP(focal_length), CEREAL_NVP(principal_point_x), CEREAL_NVP(principal_point_y),
        CEREAL_NVP(aspect_ratio), CEREAL_NVP(skew));
-    ar(CEREAL_NVP(k1), CEREAL_NVP(k2), CEREAL_NVP(k3), CEREAL_NVP(k4));
-    ar(CEREAL_NVP(p1), CEREAL_NVP(p2), CEREAL_NVP(b1), CEREAL_NVP(b2));
+    ar(CEREAL_NVP(k1), CEREAL_NVP(k2), CEREAL_NVP(k3));
+    ar(CEREAL_NVP(p1), CEREAL_NVP(p2));
     ar(CEREAL_NVP(camera_name), CEREAL_NVP(make), CEREAL_NVP(model), CEREAL_NVP(lens_model),
        CEREAL_NVP(serial_number));
     if (version > 0) {
       ar(CEREAL_NVP(optimization_flags));
     }
+    // v3: k4/b1/b2 已移除，与 Bentley ContextCapture 透视模型对齐（5 参数：k1,k2,k3,p1,p2）
+    (void)version;
   }
 };
 
@@ -609,8 +607,8 @@ struct Image {
   std::optional<CameraModel> camera; ///< 图像级相机参数（可选，仅在图像级模式时使用）
   std::optional<Measurement::GNSSMeasurement> gnss_data; ///< v2: GNSS测量数据（可选）
 
-  std::string ToString() const;
-  bool IsValid() const;
+  std::string to_string() const;
+  bool is_valid() const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const version) {
     ar(CEREAL_NVP(image_id), CEREAL_NVP(filename));
@@ -700,7 +698,7 @@ struct ImageGroup {
    * 在组级模式下：直接设置 group_camera
    * 在图像级模式下：为所有未设置相机的图像应用此参数
    */
-  void ApplyCameraModel(const CameraModel& camera, CameraMode mode);
+  void apply_camera_model(const CameraModel& camera, CameraMode mode);
 
   /**
    * 获取特定图像的相机参数
@@ -712,7 +710,7 @@ struct ImageGroup {
    * - 在图像级模式下：返回图像自己的参数（如果存在）
    * - 在Rig模式下：需在Project中查询对应的Rig和相机参数
    */
-  const CameraModel* GetCameraForImage(uint32_t image_id) const;
+  const CameraModel* get_camera_for_image(uint32_t image_id) const;
 
   /**
    * 添加图像到分组
@@ -720,7 +718,7 @@ struct ImageGroup {
    * @param[in] image 图像对象
    * @return 添加成功返回true
    */
-  bool AddImage(const Image& image);
+  bool add_image(const Image& image);
 
   /**
    * 找到图像在分组中的索引
@@ -728,7 +726,7 @@ struct ImageGroup {
    * @param[in] image_id 图像ID
    * @return 索引位置，未找到返回 -1
    */
-  int FindImageIndex(uint32_t image_id) const;
+  int find_image_index(uint32_t image_id) const;
 
   /**
    * 验证分组的一致性
@@ -740,14 +738,14 @@ struct ImageGroup {
    * - 在组级模式下group_camera必须存在
    * - 在图像级模式下每个图像必须有相机参数
    */
-  bool IsValid() const;
+  bool is_valid() const;
 
   /**
    * 获取人类可读的描述
    *
    * @return 分组的格式化描述字符串
    */
-  std::string ToString() const;
+  std::string to_string() const;
 
   /**
    * 从组级模式转换到图像级模式
@@ -755,14 +753,14 @@ struct ImageGroup {
    * 会将 group_camera 复制到所有未设置相机的图像
    * 返回后可安全清空 group_camera
    */
-  bool ConvertToImageLevel();
+  bool convert_to_image_level();
 
   /**
    * 从图像级模式转换到组级模式
    *
    * @return 转换成功返回true（要求所有图像的相机参数相同）
    */
-  bool ConvertToGroupLevel();
+  bool convert_to_group_level();
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const version) {
     ar(CEREAL_NVP(group_id), CEREAL_NVP(group_name), CEREAL_NVP(camera_mode));
@@ -862,7 +860,7 @@ struct ATTask {
    * @param[in] image_id 图像ID
    * @return 相机参数指针，未找到返回nullptr
    */
-  const CameraModel* GetCameraForImage(uint32_t group_id, uint32_t image_id) const;
+  const CameraModel* get_camera_for_image(uint32_t group_id, uint32_t image_id) const;
 
   /**
    * 查找包含指定图像的分组
@@ -870,16 +868,16 @@ struct ATTask {
    * @param[in] image_id 图像ID
    * @return 分组指针，未找到返回nullptr
    */
-  const ImageGroup* FindGroupByImageId(uint32_t image_id) const;
+  const ImageGroup* find_group_by_image_id(uint32_t image_id) const;
 
   /**
    * 获取所有有效图像总数（跨所有分组）
    *
    * @return 图像总数
    */
-  size_t GetTotalImageCount() const;
+  size_t get_total_image_count() const;
 
-  std::string ToString() const;
+  std::string to_string() const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const version) {
     ar(CEREAL_NVP(id));
@@ -962,14 +960,14 @@ struct Project {
    *
    * @return 所有分组中的总图像数
    */
-  size_t GetTotalImageCount() const;
+  size_t get_total_image_count() const;
 
   /**
    * 获取项目中的总测量数据条数
    *
    * @return 测量数据的总条数
    */
-  size_t GetTotalMeasurementCount() const { return measurements.size(); }
+  size_t get_total_measurement_count() const { return measurements.size(); }
 
   /**
    * 获取特定类型的测量数据个数
@@ -977,7 +975,7 @@ struct Project {
    * @param[in] type 测量类型
    * @return 该类型测量数据的个数
    */
-  size_t GetMeasurementCountByType(Measurement::Type type) const;
+  size_t get_measurement_count_by_type(Measurement::Type type) const;
 
   /**
    * 验证项目数据的一致性
@@ -991,21 +989,21 @@ struct Project {
    * - 所有图像分组有效性
    * - 初始位姿有效性（如果存在）
    */
-  bool IsValid() const;
+  bool is_valid() const;
 
   /**
    * 获取人类可读的项目描述
    *
    * @return 格式化的项目信息字符串
    */
-  std::string ToString() const;
+  std::string to_string() const;
 
   /**
    * 获取项目摘要统计信息
    *
    * @return 包含项目关键统计的字符串
    */
-  std::string GetSummary() const;
+  std::string get_summary() const;
 
   /**
    * 根据图像 ID 查找所属的分组
@@ -1013,7 +1011,7 @@ struct Project {
    * @param[in] image_id 图像ID
    * @return 分组指针，未找到返回nullptr
    */
-  const ImageGroup* FindGroupByImageId(uint32_t image_id) const;
+  const ImageGroup* find_group_by_image_id(uint32_t image_id) const;
 
   /**
    * 获取指定图像观测到的所有GCP IDs
@@ -1024,9 +1022,9 @@ struct Project {
    * 使用缓存机制提高性能：
    * - 首次调用时构建索引
    * - 后续调用直接返回缓存结果
-   * - 修改gcp_database后需调用InvalidateGCPCache()
+   * - 修改gcp_database后需调用invalidate_gcp_cache()
    */
-  std::vector<uint32_t> GetGCPsForImage(uint32_t image_id) const;
+  std::vector<uint32_t> get_gcps_for_image(uint32_t image_id) const;
 
   /**
    * 获取指定GCP的完整信息
@@ -1034,17 +1032,17 @@ struct Project {
    * @param[in] gcp_id GCP ID
    * @return GCPMeasurement指针，未找到返回nullptr
    */
-  const GCPMeasurement* GetGCP(uint32_t gcp_id) const;
+  const GCPMeasurement* get_gcp(uint32_t gcp_id) const;
 
   /**
    * 在修改gcp_database后调用此方法使缓存失效
    *
    * 设计说明：
-   * - 缓存索引在GetGCPsForImage()调用时懒加载
+   * - 缓存索引在get_gcps_for_image()调用时懒加载
    * - 每次修改GCP数据库后，需调用此方法
    * - 这样确保数据一致性，避免两边计算不一致
    */
-  void InvalidateGCPCache() const;
+  void invalidate_gcp_cache() const;
 
   /**
    * 重建GCP缓存索引
@@ -1053,7 +1051,7 @@ struct Project {
    *
    * 遍历所有GCP及其observations，构建image_id -> gcp_ids映射
    */
-  bool RebuildGCPCache() const;
+  bool rebuild_gcp_cache() const;
 
   /**
    * 根据图像 ID 查找对应的相机参数
@@ -1063,7 +1061,7 @@ struct Project {
    *
    * 自动搜索所有分组中的图像
    */
-  const CameraModel* GetCameraForImageId(uint32_t image_id) const;
+  const CameraModel* get_camera_for_image_id(uint32_t image_id) const;
 
   // ── CameraRig 相关方法
 
@@ -1073,7 +1071,7 @@ struct Project {
    * @param[in] rig_id Rig ID
    * @return Rig指针，未找到返回nullptr
    */
-  const CameraRig* GetCameraRig(uint32_t rig_id) const;
+  const CameraRig* get_camera_rig(uint32_t rig_id) const;
 
   /**
    * 为某个Rig中的特定相机获取相机参数
@@ -1086,7 +1084,7 @@ struct Project {
    * 1. 从ImageGroup中获取 rig_mount_info
    * 2. 调用此方法获取对应的相机参数
    */
-  const CameraModel* GetCameraForRigMount(uint32_t rig_id, uint32_t camera_id) const;
+  const CameraModel* get_camera_for_rig_mount(uint32_t rig_id, uint32_t camera_id) const;
 
   /**
    * 验证Rig的一致性
@@ -1098,7 +1096,7 @@ struct Project {
    * - Rig本身有效
    * - 所有挂载的相机都有对应的相机参数
    */
-  bool ValidateRig(uint32_t rig_id) const;
+  bool validate_rig(uint32_t rig_id) const;
 
   template <class Archive> void serialize(Archive& ar, std::uint32_t const version) {
     ar(CEREAL_NVP(name), CEREAL_NVP(uuid), CEREAL_NVP(creation_time));
@@ -1151,9 +1149,9 @@ CEREAL_CLASS_VERSION(insight::database::Measurement::GNSSMeasurement, 1);
 CEREAL_CLASS_VERSION(insight::database::Measurement::IMUMeasurement, 1);
 CEREAL_CLASS_VERSION(insight::database::Measurement::SLAMMeasurement, 1);
 CEREAL_CLASS_VERSION(insight::database::OptimizedPose, 1);
-CEREAL_CLASS_VERSION(insight::database::OptimizationFlags, 1);
+CEREAL_CLASS_VERSION(insight::database::OptimizationFlags, 2); ///< v2: 移除 k4/b1/b2，与 Bentley 对齐
 CEREAL_CLASS_VERSION(insight::database::OptimizationConfig, 1); ///< v1: 新增优化参数配置
-CEREAL_CLASS_VERSION(insight::database::CameraModel, 2); ///< v2: 增加OptimizationFlags字段
+CEREAL_CLASS_VERSION(insight::database::CameraModel, 3); ///< v3: 移除 k4/b1/b2，与 Bentley ContextCapture 5 参数对齐
 CEREAL_CLASS_VERSION(insight::database::CameraRig, 1);
 CEREAL_CLASS_VERSION(insight::database::CameraRig::CameraMount, 1);
 CEREAL_CLASS_VERSION(insight::database::Image, 2);      ///< v2: 增加gnss_data字段

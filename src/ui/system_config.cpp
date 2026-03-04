@@ -37,11 +37,13 @@ UISystemConfig::UISystemConfig() {
 
 UISystemConfig::~UISystemConfig() = default;
 
-void UISystemConfig::setConfigPath(const std::string& configPath) { m_configPath = configPath; }
+void UISystemConfig::set_config_path(const std::string& config_path) {
+  m_configPath = config_path;
+}
 
-std::string UISystemConfig::configPath() const { return m_configPath; }
+std::string UISystemConfig::config_path() const { return m_configPath; }
 
-bool UISystemConfig::loadCoordinateDatabases() {
+bool UISystemConfig::load_coordinate_databases() {
   // 构建完整路径
   std::string geoCoord = stlplus::create_filespec(m_configPath, "GEOGCS_Database.csv");
   std::string prjCoord = stlplus::create_filespec(m_configPath, "PROJCS_Database.csv");
@@ -65,14 +67,14 @@ bool UISystemConfig::loadCoordinateDatabases() {
   }
 
   // 加载地理坐标系
-  if (!insight::parseCoordinates(m_geoCoordinates, geoCoord)) {
+  if (!insight::parse_coordinates(m_geoCoordinates, geoCoord)) {
     LOG(ERROR) << "Failed to parse GEOGCS database from: " << geoCoord;
     return false;
   }
   LOG(INFO) << "Loaded " << m_geoCoordinates.size() << " geographic coordinate systems";
 
   // 加载投影坐标系
-  if (!insight::parseCoordinates(m_projCoordinates, prjCoord)) {
+  if (!insight::parse_coordinates(m_projCoordinates, prjCoord)) {
     LOG(ERROR) << "Failed to parse PROJCS database from: " << prjCoord;
     return false;
   }
@@ -89,19 +91,19 @@ bool UISystemConfig::loadCoordinateDatabases() {
   return true;
 }
 
-const std::vector<Coordinate>& UISystemConfig::getGeoCoordinates() const {
+const std::vector<Coordinate>& UISystemConfig::get_geo_coordinates() const {
   return m_geoCoordinates;
 }
 
-const std::vector<Coordinate>& UISystemConfig::getProjCoordinates() const {
+const std::vector<Coordinate>& UISystemConfig::get_proj_coordinates() const {
   return m_projCoordinates;
 }
 
-const std::vector<Coordinate>& UISystemConfig::getAllCoordinates() const {
+const std::vector<Coordinate>& UISystemConfig::get_all_coordinates() const {
   return m_allCoordinates;
 }
 
-Coordinate UISystemConfig::findByEPSG(int epsg) const {
+Coordinate UISystemConfig::find_by_epsg(int epsg) const {
   // 在合并列表中查找
   for (const auto& coord : m_allCoordinates) {
     bool ok = false;
@@ -114,7 +116,7 @@ Coordinate UISystemConfig::findByEPSG(int epsg) const {
   return Coordinate();
 }
 
-std::vector<Coordinate> UISystemConfig::searchByKeyword(const std::string& keyword) const {
+std::vector<Coordinate> UISystemConfig::search_by_keyword(const std::string& keyword) const {
   std::vector<Coordinate> results;
 
   if (keyword.empty()) {

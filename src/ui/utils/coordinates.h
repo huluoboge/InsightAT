@@ -20,16 +20,16 @@ struct WKTTreeItem {
 };
 
 struct Coordinate {
-  bool isOK() const;
+  bool is_ok() const;
   std::string EPSGName;
   std::string CoordinateName;
   std::string WKT;
-  bool isProject(bool* ok) const;
+  bool is_project(bool* ok) const;
   int EPSG(bool* ok = nullptr) const;
-  static bool coordToSR(const Coordinate& coord, OGRSpatialReference& sr);
+  static bool coord_to_sr(const Coordinate& coord, OGRSpatialReference& sr);
 };
 
-bool parseCoordinates(std::vector<Coordinate>& coords, const std::string& dataBse);
+bool parse_coordinates(std::vector<Coordinate>& coords, const std::string& dataBse);
 
 }  // namespace insight
 

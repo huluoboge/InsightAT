@@ -74,187 +74,49 @@ private slots:
   // 文件菜单 - File Menu
   // ─────────────────────────────────────────────────────
 
-  /**
-   * 新建项目
-   */
-  void onNewProject();
-
-  /**
-   * 打开项目文件
-   */
-  void onOpenProject();
-
-  /**
-   * 保存项目
-   */
-  void onSaveProject();
-
-  /**
-   * 另存为
-   */
-  void onSaveProjectAs();
-
-  /**
-   * 退出应用
-   */
-  void onExit();
-
-  // ─────────────────────────────────────────────────────
-  // 编辑菜单 - Edit Menu
-  // ─────────────────────────────────────────────────────
-
-  /**
-   * 查看和编辑项目信息
-   */
-  void onProjectInfo();
+  void on_new_project();
+  void on_open_project();
+  void on_save_project();
+  void on_save_project_as();
+  void on_exit();
+  void on_project_info();
 
   /**
    * 设置坐标系
    */
-  void onSetCoordinateSystem();
+  void on_set_coordinate_system();
 
-  /**
-   * 添加图像分组
-   */
-  void onAddImageGroup();
-
-  /**
-   * 添加相机Rig
-   */
-  void onAddCameraRig();
-
-  /**
-   * 导入GCP数据
-   */
-  void onImportGCPs();
-
-  /**
-   * 新建 AT Task
-   */
-  void onCreateATTask();
-
-  // ─────────────────────────────────────────────────────
-  // 视图菜单 - View Menu
-  // ─────────────────────────────────────────────────────
-
-  /**
-   * 切换左侧工作区面板
-   */
-  void onToggleWorkspacePanel();
-
-  /**
-   * 切换属性面板
-   */
-  void onTogglePropertyPanel();
-
-  // ─────────────────────────────────────────────────────
-  // 帮助菜单 - Help Menu
-  // ─────────────────────────────────────────────────────
-
-  /**
-   * 显示关于对话框
-   */
-  void onAbout();
-
-  /**
-   * 显示关于Qt对话框
-   */
-  void onAboutQt();
-
-  // ─────────────────────────────────────────────────────
-  // ProjectDocument 信号槽
-  // ─────────────────────────────────────────────────────
-
-  /**
-   * 项目创建时更新窗口标题
-   */
-  void onProjectCreated();
-
-  /**
-   * 项目打开时更新窗口标题
-   */
-  void onProjectOpened();
-
-  /**
-   * 项目保存时更新窗口标题
-   */
-  void onProjectSaved();
-
-  /**
-   * 项目修改状态改变时更新窗口标题
-   */
-  void onModificationChanged(bool modified);
-
-  /**
-   * 工作区树视图双击事件处理
-   */
-  void onWorkspaceTreeDoubleClicked(const QModelIndex& index);
-
-  /**
-   * 工作区树视图选中事件处理（单击选中）
-   */
-  void onWorkspaceTreeSelectionChanged(const QModelIndex& index);
-
-  /**
-   * Image Groups 节点被选中时，显示 ImageGroupsManagementPanel
-   */
-  void onImageGroupsNodeSelected();
-
-  /**
-   * 处理编辑分组请求
-   */
-  void onEditImageGroup(database::ImageGroup* group);
+  void on_add_image_group();
+  void on_add_camera_rig();
+  void on_import_gcps();
+  void on_create_at_task();
+  void on_toggle_workspace_panel();
+  void on_toggle_property_panel();
+  void on_about();
+  void on_about_qt();
+  void on_project_created();
+  void on_project_opened();
+  void on_project_saved();
+  void on_modification_changed(bool modified);
+  void on_workspace_tree_double_clicked(const QModelIndex& index);
+  void on_workspace_tree_selection_changed(const QModelIndex& index);
+  void on_image_groups_node_selected();
+  void on_edit_image_group(database::ImageGroup* group);
 
 private:
   // ─────────────────────────────────────────────────────
   // 初始化方法
   // ─────────────────────────────────────────────────────
 
-  /**
-   * 创建菜单栏
-   */
-  void createMenuBar();
-
-  /**
-   * 创建工具栏
-   */
-  void createToolBar();
-
-  /**
-   * 创建工作区 (中央部件)
-   */
-  void createWorkspace();
-
-  /**
-   * 创建状态栏
-   */
-  void createStatusBar();
-
-  /**
-   * 连接所有信号槽
-   */
-  void connectSignalsSlots();
-
-  /**
-   * 加载应用设置 (窗口大小、位置等)
-   */
-  void loadSettings();
-
-  /**
-   * 保存应用设置
-   */
-  void saveSettings();
-
-  /**
-   * 保存当前项目（如果有修改）
-   * @return true 如果用户选择保存或放弃，false 如果用户取消
-   */
-  bool maybeSave();
-
-  /**
-   * 更新窗口标题
-   */
-  void updateWindowTitle();
+  void create_menu_bar();
+  void create_tool_bar();
+  void create_workspace();
+  void create_status_bar();
+  void connect_signals_slots();
+  void load_settings();
+  void save_settings();
+  bool maybe_save();
+  void update_window_title();
 
   // ─────────────────────────────────────────────────────
   // 成员变量

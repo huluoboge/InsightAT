@@ -226,6 +226,11 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
   const size_t n_points = input.points3d.size();
   if (n_cams == 0)
     return false;
+  const bool use_per_camera =
+      input.fx_per_camera.size() == static_cast<size_t>(n_cams) &&
+      input.fy_per_camera.size() == static_cast<size_t>(n_cams) &&
+      input.cx_per_camera.size() == static_cast<size_t>(n_cams) &&
+      input.cy_per_camera.size() == static_cast<size_t>(n_cams);
 
   std::vector<double> cam_aa(n_cams * 3), cam_t(n_cams * 3);
   for (int i = 0; i < n_cams; ++i) {
@@ -243,13 +248,20 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
   }
 
   ceres::Problem problem;
-  const double fx = input.fx, fy = input.fy, cx = input.cx, cy = input.cy;
   ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
 
   for (const auto& obs : input.observations) {
     if (obs.image_index < 0 || obs.image_index >= n_cams || obs.point_index < 0 ||
         static_cast<size_t>(obs.point_index) >= n_points)
       continue;
+    double fx = input.fx, fy = input.fy, cx = input.cx, cy = input.cy;
+    if (use_per_camera) {
+      const size_t c = static_cast<size_t>(obs.image_index);
+      fx = input.fx_per_camera[c];
+      fy = input.fy_per_camera[c];
+      cx = input.cx_per_camera[c];
+      cy = input.cy_per_camera[c];
+    }
     double* cam_aa_ptr = cam_aa.data() + static_cast<size_t>(obs.image_index) * 3;
     double* cam_t_ptr = cam_t.data() + static_cast<size_t>(obs.image_index) * 3;
     double* point_ptr = points_flat.data() + static_cast<size_t>(obs.point_index) * 3;

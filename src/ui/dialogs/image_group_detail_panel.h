@@ -34,12 +34,12 @@ public:
   /**
    * @brief 设置项目文档指针
    */
-  void SetProjectDocument(ProjectDocument* doc);
+  void set_project_document(ProjectDocument* doc);
 
   /**
    * @brief 加载分组数据到对话框
    */
-  void LoadGroup(database::ImageGroup* group);
+  void load_group(database::ImageGroup* group);
 
 protected:
   void closeEvent(QCloseEvent* event) override;

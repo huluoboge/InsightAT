@@ -205,10 +205,10 @@ void ImageEditorDialog::InitializeUI() {
           &ImageEditorDialog::OnTableSelectionChanged);
 }
 
-void ImageEditorDialog::LoadGroup(database::ImageGroup* group) {
+void ImageEditorDialog::load_group(database::ImageGroup* group) {
   m_currentGroup = group;
   if (!m_currentGroup) {
-    LOG(ERROR) << "ImageEditorDialog::LoadGroup - group pointer is null";
+    LOG(ERROR) << "ImageEditorDialog::load_group - group pointer is null";
     return;
   }
 
@@ -270,7 +270,7 @@ void ImageEditorDialog::PopulateTable() {
           if (m_projectDocument) {
             m_projectDocument->saveProject();
           }
-          emit imagesChanged(m_currentGroup->group_id);
+          emit images_changed(m_currentGroup->group_id);
         }
       }
     });
@@ -365,7 +365,7 @@ void ImageEditorDialog::OnAddImagesClicked() {
     if (m_projectDocument) {
       m_projectDocument->saveProject();
     }
-    emit imagesChanged(m_currentGroup->group_id);
+    emit images_changed(m_currentGroup->group_id);
   }
 }
 
@@ -404,7 +404,7 @@ void ImageEditorDialog::OnAddFolderClicked() {
     if (m_projectDocument) {
       m_projectDocument->saveProject();
     }
-    emit imagesChanged(m_currentGroup->group_id);
+    emit images_changed(m_currentGroup->group_id);
     QMessageBox::information(this, "Success", QString("Added %1 images").arg(addedCount));
   }
 }
@@ -520,17 +520,15 @@ void ImageEditorDialog::OnImportGNSSClicked() {
   gnssDialog.setFile(gnssFilePath);
 
   // Default settings: Geographic coordinates (Lat/Lon) with uniform covariance
-  gnssDialog.setCoordinateType(true); // true = geographic (Lat/Lon), false = projected (X/Y/Z)
-  gnssDialog.setUseUniformCovariance(true);
-  gnssDialog.setUniformCovariance(1.0, 2.0); // σ_xy=1m, σ_z=2m
-  gnssDialog.setImportRotation(false);       // Initially disabled
+  gnssDialog.set_coordinate_type(true); // true = geographic (Lat/Lon), false = projected (X/Y/Z)
+  gnssDialog.set_use_uniform_covariance(true);
+  gnssDialog.set_uniform_covariance(1.0, 2.0); // σ_xy=1m, σ_z=2m
+  gnssDialog.set_import_rotation(false);        // Initially disabled
 
-  // Show the dialog modally
   if (gnssDialog.exec() == QDialog::Accepted) {
     try {
-      // Get the GNSS measurements from the dialog
       std::vector<database::Measurement::GNSSMeasurement> gnssData =
-          gnssDialog.getGNSSMeasurements();
+          gnssDialog.get_gnss_measurements();
 
       if (gnssData.empty()) {
         QMessageBox::warning(this, "No Data", "No GNSS data was extracted from the file");
@@ -584,7 +582,7 @@ void ImageEditorDialog::OnClearGNSSClicked() {
 
   if (m_projectDocument) {
     m_projectDocument->saveProject();
-    emit imagesChanged(m_currentGroup->group_id);
+    emit images_changed(m_currentGroup->group_id);
   }
 
   QMessageBox::information(this, "Success", "GNSS data cleared");
@@ -701,7 +699,7 @@ void ImageEditorDialog::DeleteSelectedRows() {
     m_projectDocument->saveProject();
   }
 
-  emit imagesChanged(m_currentGroup->group_id);
+  emit images_changed(m_currentGroup->group_id);
 }
 
 void ImageEditorDialog::OnEditGNSSClicked() {
@@ -804,7 +802,7 @@ void ImageEditorDialog::OnEditGNSSClicked() {
 
       if (m_projectDocument) {
         m_projectDocument->saveProject();
-        emit imagesChanged(m_currentGroup->group_id);
+        emit images_changed(m_currentGroup->group_id);
       }
 
       UpdateGNSSDetailsPanel();
@@ -887,7 +885,7 @@ void ImageEditorDialog::OnSetAllCovarianceClicked() {
       if (updatedCount > 0) {
         if (m_projectDocument) {
           m_projectDocument->saveProject();
-          emit imagesChanged(m_currentGroup->group_id);
+          emit images_changed(m_currentGroup->group_id);
         }
         UpdateGNSSDetailsPanel();
         QMessageBox::information(this, "Success",

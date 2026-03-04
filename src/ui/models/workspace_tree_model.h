@@ -44,7 +44,7 @@ signals:
   /**
    * 树被刷新完成后发出此信号
    */
-  void treeRefreshed();
+  void tree_refreshed();
 
 public:
   /**
@@ -109,7 +109,7 @@ public:
    *
    * @param[in] doc 项目文档指针
    */
-  void setProjectDocument(ProjectDocument* doc);
+  void set_project_document(ProjectDocument* doc);
 
   // ─────────────────────────────────────────────────────────
   // QAbstractItemModel 接口实现
@@ -129,53 +129,30 @@ public:
   /**
    * 获取指定索引对应的树节点
    */
-  TreeNode* getNode(const QModelIndex& index) const;
+  TreeNode* get_node(const QModelIndex& index) const;
 
-  /**
-   * 刷新整个树
-   */
-  void refreshTree();
+  void refresh_tree();
 
 public slots:
-  // 响应ProjectDocument的信号
-  void onProjectChanged();
-  void onImageGroupAdded(uint32_t group_id);
-  void onImageGroupRemoved(uint32_t group_id);
-  void onImageGroupChanged(uint32_t group_id);
-  void onCameraRigAdded(uint32_t rig_id);
-  void onCameraRigRemoved(uint32_t rig_id);
-  void onCameraRigChanged(uint32_t rig_id);
-  void onGCPAdded(uint32_t gcp_id);
-  void onGCPRemoved(uint32_t gcp_id);
-  void onGCPChanged(uint32_t gcp_id);
-  void onATTaskCreated(const QString& task_id);
-  void onATTaskRemoved(const QString& task_id);
-  void onATTaskChanged(const QString& task_id);
+  void on_project_changed();
+  void on_image_group_added(uint32_t group_id);
+  void on_image_group_removed(uint32_t group_id);
+  void on_image_group_changed(uint32_t group_id);
+  void on_camera_rig_added(uint32_t rig_id);
+  void on_camera_rig_removed(uint32_t rig_id);
+  void on_camera_rig_changed(uint32_t rig_id);
+  void on_gcp_added(uint32_t gcp_id);
+  void on_gcp_removed(uint32_t gcp_id);
+  void on_gcp_changed(uint32_t gcp_id);
+  void on_at_task_created(const QString& task_id);
+  void on_at_task_removed(const QString& task_id);
+  void on_at_task_changed(const QString& task_id);
 
 private:
-  // ─────────────────────────────────────────────────────────
-  // 内部方法
-  // ─────────────────────────────────────────────────────────
-
-  /**
-   * 构建整个树的内部结构
-   */
-  void buildTree();
-
-  /**
-   * 清空树
-   */
-  void clearTree();
-
-  /**
-   * 递归查找指定 taskId 的节点
-   */
-  TreeNode* findATTaskNode(TreeNode* node, const std::string& taskId);
-
-  /**
-   * 增量更新 AT Task 节点（只更新名称，不重建整个树）
-   */
-  void updateATTaskNode(const std::string& taskId);
+  void build_tree();
+  void clear_tree();
+  TreeNode* find_at_task_node(TreeNode* node, const std::string& taskId);
+  void update_at_task_node(const std::string& taskId);
 
 private:
   ProjectDocument* m_document;

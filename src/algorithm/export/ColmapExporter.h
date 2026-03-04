@@ -50,50 +50,20 @@ public:
    *                    - "link_images": true/false (是否符号链接图像)
    * @return 成功返回true
    */
-  bool exportProject(const insight::database::Project& project, const std::string& outputDir,
-                     const std::map<std::string, std::string>& options = {});
+  bool export_project(const insight::database::Project& project, const std::string& outputDir,
+                      const std::map<std::string, std::string>& options = {});
 
-  /**
-   * 获取最后一次操作的错误信息
-   */
-  std::string getLastError() const { return m_lastError; }
+  std::string get_last_error() const { return m_lastError; }
 
 private:
-  /**
-   * 创建输出目录结构
-   */
-  bool createDirectoryStructure(const std::string& outputDir);
-
-  /**
-   * 创建COLMAP数据库（database.db）
-   */
-  bool createCOLMAPDatabase(const insight::database::Project& project, const std::string& dbPath);
-
-  /**
-   * 将图像文件链接到输出目录
-   */
-  bool linkImageFiles(const insight::database::Project& project, const std::string& outputDir,
-                      const std::map<std::string, std::string>& options);
-
-  /**
-   * 创建稀疏模型文件（images.txt, cameras.txt, points3D.txt）
-   */
-  bool createSparseFiles(const insight::database::Project& project, const std::string& sparseDir);
-
-  /**
-   * 写入 images.txt
-   */
-  bool writeImagesText(const insight::database::Project& project, const std::string& filepath);
-
-  /**
-   * 写入 cameras.txt
-   */
-  bool writeCamerasText(const insight::database::Project& project, const std::string& filepath);
-
-  /**
-   * 写入 points3D.txt
-   */
-  bool writePoints3DText(const insight::database::Project& project, const std::string& filepath);
+  bool create_directory_structure(const std::string& outputDir);
+  bool create_colmap_database(const insight::database::Project& project, const std::string& dbPath);
+  bool link_image_files(const insight::database::Project& project, const std::string& outputDir,
+                        const std::map<std::string, std::string>& options);
+  bool create_sparse_files(const insight::database::Project& project, const std::string& sparseDir);
+  bool write_images_text(const insight::database::Project& project, const std::string& filepath);
+  bool write_cameras_text(const insight::database::Project& project, const std::string& filepath);
+  bool write_points3d_text(const insight::database::Project& project, const std::string& filepath);
 
 private:
   std::string m_lastError;

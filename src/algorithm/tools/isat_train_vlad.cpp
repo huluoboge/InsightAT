@@ -55,21 +55,21 @@ std::vector<float> sampleDescriptorsMultiFile(const std::vector<std::string>& fe
 
   for (const auto& file : feature_files) {
     IDCReader reader(file);
-    if (!reader.isValid()) {
+    if (!reader.is_valid()) {
       LOG(WARNING) << "Skipping invalid file: " << file;
       continue;
     }
 
     // Read descriptors
-    auto desc_blob = reader.getBlobDescriptor("descriptors");
+    auto desc_blob = reader.get_blob_descriptor("descriptors");
     std::string dtype = desc_blob["dtype"];
 
     std::vector<float> descriptors;
     if (dtype == "float32") {
-      descriptors = reader.readBlob<float>("descriptors");
+      descriptors = reader.read_blob<float>("descriptors");
     } else if (dtype == "uint8") {
       // uint8 descriptors were scaled by 512 during storage, need to reverse
-      auto desc_uint8 = reader.readBlob<uint8_t>("descriptors");
+      auto desc_uint8 = reader.read_blob<uint8_t>("descriptors");
       descriptors.resize(desc_uint8.size());
       for (size_t i = 0; i < desc_uint8.size(); ++i) {
         descriptors[i] = static_cast<float>(desc_uint8[i]) / 512.0f;
@@ -253,7 +253,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Set logging level
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   LOG(INFO) << "=== VLAD Codebook Training ===";
   LOG(INFO) << "Feature directory: " << feature_dir;
@@ -365,19 +365,19 @@ int main(int argc, char* argv[]) {
 
       // Read descriptors
       IDCReader reader(file);
-      if (!reader.isValid()) {
+      if (!reader.is_valid()) {
         LOG(WARNING) << "Skipping invalid file: " << file;
         continue;
       }
 
-      auto desc_blob = reader.getBlobDescriptor("descriptors");
+      auto desc_blob = reader.get_blob_descriptor("descriptors");
       std::string dtype = desc_blob["dtype"];
 
       std::vector<float> desc;
       if (dtype == "float32") {
-        desc = reader.readBlob<float>("descriptors");
+        desc = reader.read_blob<float>("descriptors");
       } else if (dtype == "uint8") {
-        auto desc_uint8 = reader.readBlob<uint8_t>("descriptors");
+        auto desc_uint8 = reader.read_blob<uint8_t>("descriptors");
         desc.resize(desc_uint8.size());
         for (size_t j = 0; j < desc_uint8.size(); ++j) {
           desc[j] = static_cast<float>(desc_uint8[j]) / 512.0f;
@@ -396,7 +396,7 @@ int main(int argc, char* argv[]) {
       std::vector<float> vlad;
       if (cmd.used('S')) {
         // Load keypoints for scale weighting
-        auto keypoints = reader.readBlob<float>("keypoints");
+        auto keypoints = reader.read_blob<float>("keypoints");
         if (keypoints.empty()) {
           LOG(WARNING) << "No keypoints for scale weighting in " << file;
           continue;

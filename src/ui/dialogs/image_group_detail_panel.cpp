@@ -38,9 +38,9 @@ ImageGroupDetailPanel::ImageGroupDetailPanel(QWidget* parent)
 
 ImageGroupDetailPanel::~ImageGroupDetailPanel() = default;
 
-void ImageGroupDetailPanel::SetProjectDocument(ProjectDocument* doc) { m_projectDocument = doc; }
+void ImageGroupDetailPanel::set_project_document(ProjectDocument* doc) { m_projectDocument = doc; }
 
-void ImageGroupDetailPanel::LoadGroup(database::ImageGroup* group) {
+void ImageGroupDetailPanel::load_group(database::ImageGroup* group) {
   if (!group) {
     return;
   }
@@ -52,22 +52,22 @@ void ImageGroupDetailPanel::LoadGroup(database::ImageGroup* group) {
 
   // 加载相机参数到编辑器
   if (group->group_camera) {
-    m_cameraEditor->LoadCamera(*group->group_camera);
+    m_cameraEditor->load_camera(*group->group_camera);
   } else {
     // 创建默认相机模型
     database::CameraModel defaultCamera;
     // 注意: camera_mode 属于 ImageGroup，不属于 CameraModel
-    m_cameraEditor->LoadCamera(defaultCamera);
+    m_cameraEditor->load_camera(defaultCamera);
   }
 
   // 设置编辑器的模式
-  m_cameraEditor->SetMode(group->camera_mode);
+  m_cameraEditor->set_mode(group->camera_mode);
 
   // 设置分组名称
-  m_cameraEditor->SetGroupName(group->group_name);
+  m_cameraEditor->set_group_name(group->group_name);
 
   // 显示分组名称字段
-  m_cameraEditor->ShowGroupNameField(true);
+  m_cameraEditor->show_group_name_field(true);
 
   // 显示对话框
   show();
@@ -104,11 +104,11 @@ void ImageGroupDetailPanel::InitializeUI() {
 }
 
 void ImageGroupDetailPanel::ConnectSignals() {
-  connect(m_cameraEditor, &widgets::CameraParameterEditorWidget::fieldModified, this,
+  connect(m_cameraEditor, &widgets::CameraParameterEditorWidget::field_modified, this,
           &ImageGroupDetailPanel::onCameraParameterModified);
-  connect(m_cameraEditor, &widgets::CameraParameterEditorWidget::modeChanged, this,
+  connect(m_cameraEditor, &widgets::CameraParameterEditorWidget::mode_changed, this,
           &ImageGroupDetailPanel::onCameraParameterModeChanged);
-  connect(m_cameraEditor, &widgets::CameraParameterEditorWidget::autoEstimateRequested, this,
+  connect(m_cameraEditor, &widgets::CameraParameterEditorWidget::auto_estimate_requested, this,
           &ImageGroupDetailPanel::onAutoEstimateRequested);
 }
 
@@ -118,7 +118,7 @@ void ImageGroupDetailPanel::SaveGroupData() {
   }
 
   // 保存分组名称
-  std::string newName = m_cameraEditor->GetGroupName();
+  std::string newName = m_cameraEditor->get_group_name();
   if (newName != m_currentGroup->group_name) {
     m_currentGroup->group_name = newName;
     // 更新窗口标题
@@ -126,13 +126,13 @@ void ImageGroupDetailPanel::SaveGroupData() {
   }
 
   // 保存相机参数（仅 GroupLevel 模式）
-  auto camera = m_cameraEditor->GetCamera();
+  auto camera = m_cameraEditor->get_camera();
   if (m_currentGroup->camera_mode == database::ImageGroup::CameraMode::kGroupLevel) {
     m_currentGroup->group_camera = camera;
   }
 
   // 更新相机模式（从编辑器获取）
-  auto newMode = m_cameraEditor->GetMode();
+  auto newMode = m_cameraEditor->get_mode();
   m_currentGroup->camera_mode = newMode;
 
   // 通知 ProjectDocument 分组数据已改变
@@ -181,7 +181,7 @@ void ImageGroupDetailPanel::onAutoEstimateRequested() {
   }
   inputObj["image_paths"] = imagesArray;
 
-  std::string configPath = UISystemConfig::instance().configPath();
+  std::string configPath = UISystemConfig::instance().config_path();
   // 确保是绝对路径
   if (QFileInfo(QString::fromStdString(configPath)).isRelative()) {
     configPath =
@@ -282,7 +282,7 @@ void ImageGroupDetailPanel::onAutoEstimateRequested() {
     database::CameraModel cam = jsonToCamera(groupObj["camera"].toObject());
 
     m_currentGroup->group_camera = cam;
-    m_cameraEditor->LoadCamera(cam);
+    m_cameraEditor->load_camera(cam);
     SaveGroupData();
 
     QMessageBox::information(this, tr("Success"), tr("Camera parameters estimated successfully."));
@@ -337,7 +337,7 @@ void ImageGroupDetailPanel::onAutoEstimateRequested() {
       }
 
       // 刷新 UI
-      LoadGroup(m_currentGroup); // 重新加载当前组（虽然它的 ID 没变，但内容变了）
+      load_group(m_currentGroup);
       m_projectDocument->notifyImageGroupChanged(originalId);
       emit groupDataChanged(originalId);
 

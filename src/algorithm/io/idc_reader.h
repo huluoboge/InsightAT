@@ -32,26 +32,13 @@ public:
   explicit IDCReader(const std::string& filepath);
   ~IDCReader() = default;
 
-  // Get JSON metadata
-  const nlohmann::json& getMetadata() const { return metadata_; }
-
-  // Get blob descriptor by name
-  nlohmann::json getBlobDescriptor(const std::string& blob_name) const;
-
-  // Read raw blob data
-  std::vector<uint8_t> readBlobRaw(const std::string& blob_name);
-
-  // Read typed blob data
-  template <typename T> std::vector<T> readBlob(const std::string& blob_name);
-
-  // Get payload offset (start of binary data)
-  size_t getPayloadOffset() const { return payload_offset_; }
-
-  // Check if file is valid IDC format
-  bool isValid() const { return is_valid_; }
-
-  // Get descriptor schema (with fallback to v1.0 inference)
-  std::optional<DescriptorSchema> getDescriptorSchema() const;
+  const nlohmann::json& get_metadata() const { return metadata_; }
+  nlohmann::json get_blob_descriptor(const std::string& blob_name) const;
+  std::vector<uint8_t> read_blob_raw(const std::string& blob_name);
+  template <typename T> std::vector<T> read_blob(const std::string& blob_name);
+  size_t get_payload_offset() const { return payload_offset_; }
+  bool is_valid() const { return is_valid_; }
+  std::optional<DescriptorSchema> get_descriptor_schema() const;
 
 private:
   std::string filepath_;
@@ -64,12 +51,12 @@ private:
   static constexpr size_t ALIGNMENT = 8;
 
   // Parse header and load metadata
-  bool parseHeader();
+  bool parse_header();
 };
 
 // Template implementation
-template <typename T> std::vector<T> IDCReader::readBlob(const std::string& blob_name) {
-  auto blob_desc = getBlobDescriptor(blob_name);
+template <typename T> std::vector<T> IDCReader::read_blob(const std::string& blob_name) {
+  auto blob_desc = get_blob_descriptor(blob_name);
 
   if (blob_desc.is_null()) {
     LOG(ERROR) << "Blob '" << blob_name << "' not found in " << filepath_;

@@ -55,7 +55,7 @@ using namespace insight::sfm;
 
 static constexpr const char* kEventPrefix = "ISAT_EVENT ";
 
-static void printEvent(const json& j) {
+static void print_event(const json& j) {
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
 }
@@ -87,11 +87,11 @@ struct CalibEntry {
 // Load summary from a .isat_twoview file  (no blobs)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static bool loadTvHeader(CalibEntry& e) {
+static bool load_tv_header(CalibEntry& e) {
   IDCReader rdr(e.twoview_path);
-  if (!rdr.isValid())
+  if (!rdr.is_valid())
     return false;
-  const auto& meta = rdr.getMetadata();
+  const auto& meta = rdr.get_metadata();
   if (!meta.value("success", false))
     return false;
 
@@ -99,8 +99,8 @@ static bool loadTvHeader(CalibEntry& e) {
   e.reprojection_rmse = meta.value("reprojection_rmse_px", 1e9);
   e.n_points = meta.value("num_points_3d", 0);
   e.quality = meta.value("quality", "poor");
-  e.image1_id = insight::tools::getImageIdFromPair(meta["image_pair"], "image1_id");
-  e.image2_id = insight::tools::getImageIdFromPair(meta["image_pair"], "image2_id");
+  e.image1_id = insight::tools::get_image_id_from_pair(meta["image_pair"], "image1_id");
+  e.image2_id = insight::tools::get_image_id_from_pair(meta["image_pair"], "image2_id");
 
   const auto& pose = meta["pose"];
   const auto& Rv = pose["R"];
@@ -114,15 +114,15 @@ static bool loadTvHeader(CalibEntry& e) {
 }
 
 // Load full pixel correspondences and 3-D points for Phase-2 evaluation
-static bool loadTvFull(CalibEntry& e) {
+static bool load_tv_full(CalibEntry& e) {
   if (e.loaded)
     return true;
 
   // Load points3d from .isat_twoview
   IDCReader tv_rdr(e.twoview_path);
-  if (!tv_rdr.isValid())
+  if (!tv_rdr.is_valid())
     return false;
-  auto pts_blob = tv_rdr.readBlob<double>("points3d");
+  auto pts_blob = tv_rdr.read_blob<double>("points3d");
   const int Np = (int)pts_blob.size() / 3;
   if (Np == 0)
     return false;
@@ -130,7 +130,7 @@ static bool loadTvFull(CalibEntry& e) {
   for (int i = 0; i < Np; ++i)
     e.points3d[i] = {pts_blob[i * 3], pts_blob[i * 3 + 1], pts_blob[i * 3 + 2]};
 
-  auto ids_blob = tv_rdr.readBlob<int32_t>("inlier_ids");
+  auto ids_blob = tv_rdr.read_blob<int32_t>("inlier_ids");
   if (ids_blob.size() != (size_t)Np)
     return false;
 
@@ -138,9 +138,9 @@ static bool loadTvFull(CalibEntry& e) {
   if (e.match_path.empty())
     return false;
   IDCReader match_rdr(e.match_path);
-  if (!match_rdr.isValid())
+  if (!match_rdr.is_valid())
     return false;
-  auto coords = match_rdr.readBlob<float>("coords_pixel");
+  auto coords = match_rdr.read_blob<float>("coords_pixel");
   const int N_all = (int)coords.size() / 4;
 
   e.pts1_px.resize(Np);
@@ -160,7 +160,7 @@ static bool loadTvFull(CalibEntry& e) {
 // Evaluate a candidate focal length: mean reprojection error over all pairs
 // ─────────────────────────────────────────────────────────────────────────────
 
-static double evalFocal(std::vector<CalibEntry>& entries, double f, double cx, double cy,
+static double eval_focal(std::vector<CalibEntry>& entries, double f, double cx, double cy,
                         int min_pts) {
   double sq_sum = 0.0;
   int count = 0;
@@ -178,7 +178,7 @@ static double evalFocal(std::vector<CalibEntry>& entries, double f, double cx, d
       pts1_n[i] = {(e.pts1_px[i][0] - cx) / f, (e.pts1_px[i][1] - cy) / f};
       pts2_n[i] = {(e.pts2_px[i][0] - cx) / f, (e.pts2_px[i][1] - cy) / f};
     }
-    auto X_new = TriangulatePoints(pts1_n, pts2_n, e.R, e.t);
+    auto X_new = insight::sfm::triangulate_points(pts1_n, pts2_n, e.R, e.t);
 
     for (int i = 0; i < (int)X_new.size(); ++i) {
       const auto& X = X_new[i];
@@ -210,7 +210,7 @@ static double evalFocal(std::vector<CalibEntry>& entries, double f, double cx, d
 // Weighted median (O(N log N))
 // ─────────────────────────────────────────────────────────────────────────────
 
-static double weightedMedian(const std::vector<double>& vals, const std::vector<double>& weights) {
+static double weighted_median(const std::vector<double>& vals, const std::vector<double>& weights) {
   assert(vals.size() == weights.size());
   if (vals.empty())
     return 0.0;
@@ -293,7 +293,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   double cx = (cx_override > 0.0) ? cx_override : (image_width * 0.5);
   double cy = (cy_override > 0.0) ? cy_override : (image_height * 0.5);
@@ -307,7 +307,7 @@ int main(int argc, char* argv[]) {
       continue;
     CalibEntry e;
     e.twoview_path = de.path().string();
-    if (!loadTvHeader(e))
+    if (!load_tv_header(e))
       continue;
     if (e.reprojection_rmse > rmse_thresh)
       continue;
@@ -340,7 +340,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  const double f0 = weightedMedian(focals, weights);
+  const double f0 = weighted_median(focals, weights);
   LOG(WARNING) << "Phase-1 weighted-median focal = " << f0 << " px  (" << focals.size()
                << " pairs)";
 
@@ -350,7 +350,7 @@ int main(int argc, char* argv[]) {
   for (auto& e : entries) {
     if (e.quality != "good")
       continue;
-    if (loadTvFull(e))
+    if (load_tv_full(e))
       ++n_loaded;
   }
   LOG(WARNING) << "Loaded full correspondences for " << n_loaded << " pairs";
@@ -364,31 +364,31 @@ int main(int argc, char* argv[]) {
     double lo = f0 / 1.2, hi = f0 * 1.2;
     double x1 = hi - phi * (hi - lo);
     double x2 = lo + phi * (hi - lo);
-    double r1 = evalFocal(entries, x1, cx, cy, min_pts);
-    double r2 = evalFocal(entries, x2, cx, cy, min_pts);
+    double r1 = eval_focal(entries, x1, cx, cy, min_pts);
+    double r2 = eval_focal(entries, x2, cx, cy, min_pts);
     for (int iter = 0; iter < 60; ++iter) {
       if (r1 < r2) {
         hi = x2;
         x2 = x1;
         r2 = r1;
         x1 = hi - phi * (hi - lo);
-        r1 = evalFocal(entries, x1, cx, cy, min_pts);
+        r1 = eval_focal(entries, x1, cx, cy, min_pts);
       } else {
         lo = x1;
         x1 = x2;
         r1 = r2;
         x2 = lo + phi * (hi - lo);
-        r2 = evalFocal(entries, x2, cx, cy, min_pts);
+        r2 = eval_focal(entries, x2, cx, cy, min_pts);
       }
       if ((hi - lo) < 0.5)
         break;
     }
     f_best = (lo + hi) * 0.5;
-    rmse_best = evalFocal(entries, f_best, cx, cy, min_pts);
+    rmse_best = eval_focal(entries, f_best, cx, cy, min_pts);
     LOG(WARNING) << "Phase-2 refined focal = " << f_best << " px  (rmse=" << rmse_best << " px)";
   } else {
     LOG(WARNING) << "Skipping Phase-2 (not enough loaded pairs). Using Phase-1 estimate.";
-    rmse_best = evalFocal(entries, f_best, cx, cy, min_pts);
+    rmse_best = eval_focal(entries, f_best, cx, cy, min_pts);
   }
 
   // ── Write K.json ──────────────────────────────────────────────────────────
@@ -405,13 +405,13 @@ int main(int argc, char* argv[]) {
   std::ofstream out_file(output_json);
   if (!out_file.is_open()) {
     LOG(ERROR) << "Cannot open output: " << output_json;
-    printEvent({{"type", "calibrate.complete"},
+    print_event({{"type", "calibrate.complete"},
                 {"ok", false},
                 {"error", "cannot open output: " + output_json}});
     return 1;
   }
   out_file << K.dump(2) << "\n";
-  printEvent({{"type", "calibrate.complete"},
+  print_event({{"type", "calibrate.complete"},
               {"ok", true},
               {"data",
                {{"output_json", output_json},

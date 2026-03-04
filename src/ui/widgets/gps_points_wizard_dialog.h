@@ -45,36 +45,33 @@ public:
   ~GPSPointsWizardDialog();
   void setFile(const QString& fileFullPath);
 
-  GPSPointsDocument* getDoc() { return &m_document; }
-  bool isImportByName() const;
+  GPSPointsDocument* get_doc() { return &m_document; }
+  bool is_import_by_name() const;
 
   /**
    * @brief 是否导入旋转数据
    * @return true 表示用户勾选了导入旋转
    */
-  bool isImportRotation() const;
+  bool is_import_rotation() const;
 
 public slots:
-  void updateModel();
-  void preview(); // 预览
-  void checkEnablePreview();
-  void validImport();
-  void enableSelectImportOption(bool enable);
-
-  // 不再使用：hasOmegaPhiKappa(), angleUnit(), coordinateSystem(), eulerAngleSystem()
-  // 这些旋转相关的参数应该在坐标系设置中配置，不在这里
+  void update_model();
+  void preview();
+  void check_enable_preview();
+  void valid_import();
+  void enable_select_import_option(bool enable);
 
 protected:
   bool valid();
-  void getFieldIndex(int& rowFrom, std::vector<int>& fieldIndex);
+  void get_field_index(int& rowFrom, std::vector<int>& fieldIndex);
 
-  /**
-   * @brief 获取字段配置 - 子类可以重写以定制字段
-   * @return 字段配置结构
-   */
-  virtual FieldConfiguration getFieldConfiguration() const;
+  virtual FieldConfiguration get_field_configuration() const;
 
-  virtual bool showCustemDialog() { return true; }
+  virtual bool show_custom_dialog() { return true; }
+
+  // ImportDataBaseDocument interface
+  QList<QString> field_names() const override;
+  bool check_field_data(int rowFrom, const std::vector<int>& fieldIndex) override;
 
   Ui::GPSPointsWizardDialog ui;
   GPSPointsDocument m_document;

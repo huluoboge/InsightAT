@@ -11,14 +11,14 @@ IDCWriter::IDCWriter(const std::string& filepath) : filepath_(filepath) {
 
 IDCWriter::~IDCWriter() = default;
 
-void IDCWriter::setMetadata(const nlohmann::json& metadata) {
+void IDCWriter::set_metadata(const nlohmann::json& metadata) {
   metadata_ = metadata;
   if (!metadata_.contains("blobs")) {
     metadata_["blobs"] = nlohmann::json::array();
   }
 }
 
-void IDCWriter::addBlob(const std::string& name, const void* data, size_t size,
+void IDCWriter::add_blob(const std::string& name, const void* data, size_t size,
                         const std::string& dtype, const std::vector<int>& shape) {
   // Record blob descriptor
   nlohmann::json blob_desc;

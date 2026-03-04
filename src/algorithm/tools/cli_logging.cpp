@@ -9,7 +9,7 @@ namespace tools {
 
 namespace {
 
-int ParseLevel(const std::string& s) {
+int parse_level(const std::string& s) {
   std::string lower;
   lower.reserve(s.size());
   for (char c : s) {
@@ -26,7 +26,7 @@ int ParseLevel(const std::string& s) {
   return -1;
 }
 
-bool IsDebugLevel(const std::string& s) {
+bool is_debug_level(const std::string& s) {
   std::string lower;
   lower.reserve(s.size());
   for (char c : s) {
@@ -37,12 +37,12 @@ bool IsDebugLevel(const std::string& s) {
 
 } // namespace
 
-void ApplyLogLevel(bool verbose, bool quiet, const std::string& log_level) {
+void apply_log_level(bool verbose, bool quiet, const std::string& log_level) {
   if (!log_level.empty()) {
-    int level = ParseLevel(log_level);
+    int level = parse_level(log_level);
     if (level >= 0) {
       FLAGS_minloglevel = level;
-      FLAGS_v = IsDebugLevel(log_level) ? 1 : 0;
+      FLAGS_v = is_debug_level(log_level) ? 1 : 0;
       return;
     }
     std::cerr << "Warning: unknown --log-level='" << log_level

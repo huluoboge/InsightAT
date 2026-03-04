@@ -37,19 +37,19 @@ using namespace insight::io;
 std::vector<float> loadDescriptorsFromFile(const std::string& feature_file) {
 
   IDCReader reader(feature_file);
-  if (!reader.isValid()) {
+  if (!reader.is_valid()) {
     LOG(ERROR) << "Invalid feature file: " << feature_file;
     return {};
   }
 
-  auto desc_blob = reader.getBlobDescriptor("descriptors");
+  auto desc_blob = reader.get_blob_descriptor("descriptors");
   std::string dtype = desc_blob["dtype"];
 
   if (dtype == "float32") {
-    return reader.readBlob<float>("descriptors");
+    return reader.read_blob<float>("descriptors");
   } else if (dtype == "uint8") {
     // Convert uint8 to float32 and reverse the 512x scaling from storage
-    auto desc_uint8 = reader.readBlob<uint8_t>("descriptors");
+    auto desc_uint8 = reader.read_blob<uint8_t>("descriptors");
     std::vector<float> desc_float(desc_uint8.size());
     for (size_t i = 0; i < desc_uint8.size(); ++i) {
       desc_float[i] = static_cast<float>(desc_uint8[i]) / 512.0f;
@@ -368,12 +368,12 @@ std::vector<float> load_or_compute_vlad(const std::string& feature_file,
   if (scale_weighted) {
     // Load keypoints to extract scales
     IDCReader reader(feature_file);
-    if (!reader.isValid()) {
+    if (!reader.is_valid()) {
       LOG(ERROR) << "Failed to open feature file for keypoints: " << feature_file;
       return {};
     }
 
-    auto keypoints = reader.readBlob<float>("keypoints");
+    auto keypoints = reader.read_blob<float>("keypoints");
     if (keypoints.empty()) {
       LOG(ERROR) << "Failed to load keypoints from " << feature_file;
       return {};

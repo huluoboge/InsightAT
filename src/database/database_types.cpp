@@ -19,7 +19,7 @@ namespace database {
 // CoordinateSystem 实现
 // ─────────────────────────────────────────────────────────────
 
-std::string CoordinateSystem::ToString() const {
+std::string CoordinateSystem::to_string() const {
   std::ostringstream oss;
 
   oss << "CoordinateSystem {\n";
@@ -62,7 +62,7 @@ std::string CoordinateSystem::ToString() const {
   return oss.str();
 }
 
-bool CoordinateSystem::IsValid() const {
+bool CoordinateSystem::is_valid() const {
   if (type == Type::kENU && !reference) {
     LOG(WARNING) << "ENU coordinate system missing reference point";
     return false;
@@ -79,7 +79,7 @@ bool CoordinateSystem::IsValid() const {
 // InputPose 实现
 // ─────────────────────────────────────────────────────────────
 
-void InputPose::Reset() {
+void InputPose::reset() {
   x = y = z = 0.0;
   has_position = false;
   omega = phi = kappa = 0.0;
@@ -87,9 +87,9 @@ void InputPose::Reset() {
   angle_unit = AngleUnit::kDegrees;
 }
 
-bool InputPose::HasData() const { return has_position || has_rotation; }
+bool InputPose::has_data() const { return has_position || has_rotation; }
 
-std::string InputPose::ToString() const {
+std::string InputPose::to_string() const {
   std::ostringstream oss;
   oss << "InputPose {\n";
   if (has_position) {
@@ -104,7 +104,7 @@ std::string InputPose::ToString() const {
   return oss.str();
 }
 
-bool InputPose::IsValid() const {
+bool InputPose::is_valid() const {
   if (has_position && (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))) {
     LOG(WARNING) << "InputPose has invalid position";
     return false;
@@ -120,7 +120,7 @@ bool InputPose::IsValid() const {
 // Measurement 实现
 // ─────────────────────────────────────────────────────────────
 
-bool Measurement::GNSSMeasurement::IsValid() const {
+bool Measurement::GNSSMeasurement::is_valid() const {
   if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
     return false;
   }
@@ -130,7 +130,7 @@ bool Measurement::GNSSMeasurement::IsValid() const {
   return true;
 }
 
-bool Measurement::IMUMeasurement::IsValid() const {
+bool Measurement::IMUMeasurement::is_valid() const {
   if (has_attitude && (!std::isfinite(roll) || !std::isfinite(pitch) || !std::isfinite(yaw))) {
     return false;
   }
@@ -148,7 +148,7 @@ bool Measurement::IMUMeasurement::IsValid() const {
 // CameraRig 实现
 // ─────────────────────────────────────────────────────────────
 
-bool CameraRig::CameraMount::IsValid() const {
+bool CameraRig::CameraMount::is_valid() const {
   if (camera_id == static_cast<uint32_t>(-1)) {
     return false;
   }
@@ -162,7 +162,7 @@ bool CameraRig::CameraMount::IsValid() const {
   return true;
 }
 
-std::string CameraRig::CameraMount::ToString() const {
+std::string CameraRig::CameraMount::to_string() const {
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(4);
   oss << "CameraMount {\n";
@@ -174,7 +174,7 @@ std::string CameraRig::CameraMount::ToString() const {
   return oss.str();
 }
 
-bool CameraRig::IsValid() const {
+bool CameraRig::is_valid() const {
   if (rig_id == static_cast<uint32_t>(-1)) {
     return false;
   }
@@ -185,7 +185,7 @@ bool CameraRig::IsValid() const {
   // Check all mounts are valid
   std::set<uint32_t> seen_ids;
   for (const auto& mount : mounts) {
-    if (!mount.IsValid()) {
+    if (!mount.is_valid()) {
       return false;
     }
     if (seen_ids.count(mount.camera_id)) {
@@ -197,7 +197,7 @@ bool CameraRig::IsValid() const {
   return true;
 }
 
-const CameraRig::CameraMount* CameraRig::FindCameraMount(uint32_t camera_id) const {
+const CameraRig::CameraMount* CameraRig::find_camera_mount(uint32_t camera_id) const {
   for (const auto& mount : mounts) {
     if (mount.camera_id == camera_id) {
       return &mount;
@@ -206,7 +206,7 @@ const CameraRig::CameraMount* CameraRig::FindCameraMount(uint32_t camera_id) con
   return nullptr;
 }
 
-std::string CameraRig::ToString() const {
+std::string CameraRig::to_string() const {
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(4);
   oss << "CameraRig {\n";
@@ -233,7 +233,7 @@ std::string CameraRig::ToString() const {
   return oss.str();
 }
 
-std::string CameraRig::GetSummary() const {
+std::string CameraRig::get_summary() const {
   std::ostringstream oss;
   oss << "Rig[id=" << rig_id << "] " << rig_name << " (" << mounts.size() << " cameras)";
   return oss.str();
@@ -243,7 +243,7 @@ std::string CameraRig::GetSummary() const {
 // GCPMeasurement 实现（独立结构）
 // ─────────────────────────────────────────────────────────────
 
-bool GCPMeasurement::IsValid() const {
+bool GCPMeasurement::is_valid() const {
   // 检查GCP ID
   if (gcp_id == static_cast<uint32_t>(-1)) {
     return false;
@@ -276,7 +276,7 @@ bool GCPMeasurement::IsValid() const {
 // Measurement 实现
 // ─────────────────────────────────────────────────────────────
 
-bool Measurement::SLAMMeasurement::IsValid() const {
+bool Measurement::SLAMMeasurement::is_valid() const {
   if (reference_image_id == static_cast<uint32_t>(-1)) {
     return false;
   }
@@ -294,7 +294,7 @@ bool Measurement::SLAMMeasurement::IsValid() const {
   return true;
 }
 
-std::string Measurement::ToString() const {
+std::string Measurement::to_string() const {
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(6);
 
@@ -335,21 +335,21 @@ std::string Measurement::ToString() const {
   return oss.str();
 }
 
-bool Measurement::IsValid() const {
+bool Measurement::is_valid() const {
   if (image_id == static_cast<uint32_t>(-1) || timestamp < 0) {
     return false;
   }
 
   switch (type) {
   case Type::kGNSS:
-    return gnss && gnss->IsValid();
+    return gnss && gnss->is_valid();
   case Type::kIMU:
-    return imu && imu->IsValid();
+    return imu && imu->is_valid();
   case Type::kGCP:
     // GCP now stored in Project, not in Measurement
     return true; // Legacy type, no validation needed
   case Type::kSLAM:
-    return slam && slam->IsValid();
+    return slam && slam->is_valid();
   case Type::kOther:
     return true;
   default:
@@ -365,12 +365,12 @@ bool Measurement::IsValid() const {
 // Image 实现
 // ─────────────────────────────────────────────────────────────
 
-std::string Image::ToString() const {
+std::string Image::to_string() const {
   std::ostringstream oss;
   oss << "Image {\n";
   oss << "  ID: " << image_id << "\n";
   oss << "  File: " << filename << "\n";
-  oss << "  InputPose: " << (input_pose.HasData() ? "present" : "none") << "\n";
+  oss << "  InputPose: " << (input_pose.has_data() ? "present" : "none") << "\n";
   if (camera) {
     oss << "  Camera: " << camera->camera_name << "\n";
   }
@@ -378,7 +378,7 @@ std::string Image::ToString() const {
   return oss.str();
 }
 
-bool Image::IsValid() const {
+bool Image::is_valid() const {
   if (image_id == 0) {
     LOG(WARNING) << "Image has invalid ID (0)";
     return false;
@@ -387,7 +387,7 @@ bool Image::IsValid() const {
     LOG(WARNING) << "Image has empty filename";
     return false;
   }
-  if (camera && !camera->IsValid()) {
+  if (camera && !camera->is_valid()) {
     LOG(WARNING) << "Image has invalid camera model";
     return false;
   }
@@ -398,7 +398,7 @@ bool Image::IsValid() const {
 // ImageGroup 实现
 // ─────────────────────────────────────────────────────────────
 
-void ImageGroup::ApplyCameraModel(const CameraModel& camera, CameraMode mode) {
+void ImageGroup::apply_camera_model(const CameraModel& camera, CameraMode mode) {
   camera_mode = mode;
 
   if (mode == CameraMode::kGroupLevel) {
@@ -414,7 +414,7 @@ void ImageGroup::ApplyCameraModel(const CameraModel& camera, CameraMode mode) {
   }
 }
 
-const CameraModel* ImageGroup::GetCameraForImage(uint32_t image_id) const {
+const CameraModel* ImageGroup::get_camera_for_image(uint32_t image_id) const {
   if (camera_mode == CameraMode::kGroupLevel) {
     // 组级模式：返回group_camera
     if (group_camera) {
@@ -432,7 +432,7 @@ const CameraModel* ImageGroup::GetCameraForImage(uint32_t image_id) const {
   }
 }
 
-bool ImageGroup::AddImage(const Image& image) {
+bool ImageGroup::add_image(const Image& image) {
   if (image.image_id == 0) {
     LOG(WARNING) << "Cannot add image with ID 0";
     return false;
@@ -450,7 +450,7 @@ bool ImageGroup::AddImage(const Image& image) {
   return true;
 }
 
-int ImageGroup::FindImageIndex(uint32_t image_id) const {
+int ImageGroup::find_image_index(uint32_t image_id) const {
   for (size_t i = 0; i < images.size(); ++i) {
     if (images[i].image_id == image_id) {
       return static_cast<int>(i);
@@ -459,7 +459,7 @@ int ImageGroup::FindImageIndex(uint32_t image_id) const {
   return -1;
 }
 
-bool ImageGroup::IsValid() const {
+bool ImageGroup::is_valid() const {
   if (images.empty()) {
     LOG(WARNING) << "ImageGroup has no images";
     return false;
@@ -477,14 +477,14 @@ bool ImageGroup::IsValid() const {
 
   if (camera_mode == CameraMode::kGroupLevel) {
     // 组级模式：必须有group_camera
-    if (!group_camera || !group_camera->IsValid()) {
+    if (!group_camera || !group_camera->is_valid()) {
       LOG(WARNING) << "ImageGroup in GroupLevel mode missing valid camera";
       return false;
     }
   } else {
     // 图像级模式：每个图像必须有相机参数
     for (const auto& img : images) {
-      if (!img.camera || !img.camera->IsValid()) {
+      if (!img.camera || !img.camera->is_valid()) {
         LOG(WARNING) << "Image " << img.image_id << " missing valid camera in ImageLevel mode";
         return false;
       }
@@ -494,7 +494,7 @@ bool ImageGroup::IsValid() const {
   return true;
 }
 
-std::string ImageGroup::ToString() const {
+std::string ImageGroup::to_string() const {
   std::ostringstream oss;
   oss << "ImageGroup {\n";
   oss << "  ID: " << group_id << "\n";
@@ -509,7 +509,7 @@ std::string ImageGroup::ToString() const {
   return oss.str();
 }
 
-bool ImageGroup::ConvertToImageLevel() {
+bool ImageGroup::convert_to_image_level() {
   if (camera_mode == CameraMode::kImageLevel) {
     return true; // 已经是图像级模式
   }
@@ -532,7 +532,7 @@ bool ImageGroup::ConvertToImageLevel() {
   return true;
 }
 
-bool ImageGroup::ConvertToGroupLevel() {
+bool ImageGroup::convert_to_group_level() {
   if (camera_mode == CameraMode::kGroupLevel) {
     return true; // 已经是组级模式
   }
@@ -581,26 +581,26 @@ bool ImageGroup::ConvertToGroupLevel() {
 // ATTask 实现
 // ─────────────────────────────────────────────────────────────
 
-const CameraModel* ATTask::GetCameraForImage(uint32_t group_id, uint32_t image_id) const {
+const CameraModel* ATTask::get_camera_for_image(uint32_t group_id, uint32_t image_id) const {
   for (const auto& group : input_snapshot.image_groups) {
     if (group.group_id == group_id) {
-      return group.GetCameraForImage(image_id);
+      return group.get_camera_for_image(image_id);
     }
   }
   LOG(WARNING) << "Group " << group_id << " not found in ATTask";
   return nullptr;
 }
 
-const ImageGroup* ATTask::FindGroupByImageId(uint32_t image_id) const {
+const ImageGroup* ATTask::find_group_by_image_id(uint32_t image_id) const {
   for (const auto& group : input_snapshot.image_groups) {
-    if (group.FindImageIndex(image_id) >= 0) {
+    if (group.find_image_index(image_id) >= 0) {
       return &group;
     }
   }
   return nullptr;
 }
 
-size_t ATTask::GetTotalImageCount() const {
+size_t ATTask::get_total_image_count() const {
   size_t count = 0;
   for (const auto& group : input_snapshot.image_groups) {
     count += group.images.size();
@@ -608,14 +608,14 @@ size_t ATTask::GetTotalImageCount() const {
   return count;
 }
 
-std::string ATTask::ToString() const {
+std::string ATTask::to_string() const {
   std::ostringstream oss;
   oss << "ATTask {\n";
   oss << "  ID: " << id << "\n";
   oss << "  InputSnapshot: " << input_snapshot.measurements.size() << " measurements\n";
   oss << "  ImageGroups: " << input_snapshot.image_groups.size() << " groups\n";
 
-  size_t total_images = GetTotalImageCount();
+  size_t total_images = get_total_image_count();
   oss << "  TotalImages: " << total_images << "\n";
 
   for (const auto& group : input_snapshot.image_groups) {
@@ -634,7 +634,7 @@ std::string ATTask::ToString() const {
 // CameraModel 实现
 // ─────────────────────────────────────────────────────────────
 
-bool CameraModel::IsValid() const {
+bool CameraModel::is_valid() const {
   // 基本检查：分辨率
   if (width == 0 || height == 0) {
     return false;
@@ -666,7 +666,7 @@ bool CameraModel::IsValid() const {
   return true;
 }
 
-std::string CameraModel::ToString() const {
+std::string CameraModel::to_string() const {
   std::ostringstream oss;
 
   oss << "CameraModel {\n";
@@ -713,16 +713,10 @@ std::string CameraModel::ToString() const {
   }
 
   // 畸变参数
-  if (HasDistortion()) {
+  if (has_distortion()) {
     oss << "  Distortion:\n";
-    oss << "    Radial: k1=" << k1 << ", k2=" << k2 << ", k3=" << k3;
-    if (k4 != 0.0)
-      oss << ", k4=" << k4;
-    oss << "\n";
+    oss << "    Radial: k1=" << k1 << ", k2=" << k2 << ", k3=" << k3 << "\n";
     oss << "    Tangential: p1=" << p1 << ", p2=" << p2 << "\n";
-    if (b1 != 0.0 || b2 != 0.0) {
-      oss << "    Prism: b1=" << b1 << ", b2=" << b2 << "\n";
-    }
   }
 
   // 元数据
@@ -779,7 +773,7 @@ std::string CameraModel::ToString() const {
 // Project 实现
 // ─────────────────────────────────────────────────────────────
 
-size_t Project::GetTotalImageCount() const {
+size_t Project::get_total_image_count() const {
   size_t count = 0;
   for (const auto& group : image_groups) {
     count += group.images.size();
@@ -787,7 +781,7 @@ size_t Project::GetTotalImageCount() const {
   return count;
 }
 
-size_t Project::GetMeasurementCountByType(Measurement::Type type) const {
+size_t Project::get_measurement_count_by_type(Measurement::Type type) const {
   size_t count = 0;
   for (const auto& measurement : measurements) {
     if (measurement.type == type) {
@@ -797,7 +791,7 @@ size_t Project::GetMeasurementCountByType(Measurement::Type type) const {
   return count;
 }
 
-bool Project::IsValid() const {
+bool Project::is_valid() const {
   // 检查基本元数据
   if (name.empty()) {
     LOG(WARNING) << "Project has empty name";
@@ -817,14 +811,14 @@ bool Project::IsValid() const {
   }
 
   // 检查输入坐标系
-  if (!input_coordinate_system.IsValid()) {
+  if (!input_coordinate_system.is_valid()) {
     LOG(WARNING) << "Project has invalid input coordinate system";
     return false;
   }
 
   // 检查所有测量数据
   for (const auto& measurement : measurements) {
-    if (!measurement.IsValid()) {
+    if (!measurement.is_valid()) {
       LOG(WARNING) << "Project has invalid measurement";
       return false;
     }
@@ -832,14 +826,14 @@ bool Project::IsValid() const {
 
   // 检查所有图像分组
   for (const auto& group : image_groups) {
-    if (!group.IsValid()) {
+    if (!group.is_valid()) {
       LOG(WARNING) << "Project has invalid image group: " << group.group_id;
       return false;
     }
   }
 
   // 检查初始位姿（如果存在）
-  if (initial_pose && !initial_pose->IsValid()) {
+  if (initial_pose && !initial_pose->is_valid()) {
     LOG(WARNING) << "Project has invalid initial pose";
     return false;
   }
@@ -847,7 +841,7 @@ bool Project::IsValid() const {
   return true;
 }
 
-std::string Project::ToString() const {
+std::string Project::to_string() const {
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(2);
 
@@ -877,15 +871,15 @@ std::string Project::ToString() const {
     oss << "\n";
   }
 
-  oss << "  InputCoordinateSystem: " << input_coordinate_system.ToString().substr(0, 30) << "...\n";
+  oss << "  InputCoordinateSystem: " << input_coordinate_system.to_string().substr(0, 30) << "...\n";
   oss << "  Measurements: " << measurements.size() << "\n";
-  oss << "    - GNSS: " << GetMeasurementCountByType(Measurement::Type::kGNSS) << "\n";
-  oss << "    - IMU: " << GetMeasurementCountByType(Measurement::Type::kIMU) << "\n";
-  oss << "    - GCP: " << GetMeasurementCountByType(Measurement::Type::kGCP) << "\n";
-  oss << "    - SLAM: " << GetMeasurementCountByType(Measurement::Type::kSLAM) << "\n";
+  oss << "    - GNSS: " << get_measurement_count_by_type(Measurement::Type::kGNSS) << "\n";
+  oss << "    - IMU: " << get_measurement_count_by_type(Measurement::Type::kIMU) << "\n";
+  oss << "    - GCP: " << get_measurement_count_by_type(Measurement::Type::kGCP) << "\n";
+  oss << "    - SLAM: " << get_measurement_count_by_type(Measurement::Type::kSLAM) << "\n";
 
   oss << "  ImageGroups: " << image_groups.size() << "\n";
-  size_t total_images = GetTotalImageCount();
+  size_t total_images = get_total_image_count();
   oss << "  TotalImages: " << total_images << "\n";
 
   for (const auto& group : image_groups) {
@@ -905,33 +899,33 @@ std::string Project::ToString() const {
   return oss.str();
 }
 
-std::string Project::GetSummary() const {
+std::string Project::get_summary() const {
   std::ostringstream oss;
   oss << name << " (UUID: " << uuid.substr(0, 8) << "...)\n";
-  oss << "  Images: " << GetTotalImageCount() << " | ";
+  oss << "  Images: " << get_total_image_count() << " | ";
   oss << "Measurements: " << measurements.size() << " | ";
   oss << "Author: " << author << "\n";
-  oss << "  GNSS: " << GetMeasurementCountByType(Measurement::Type::kGNSS);
-  oss << " | IMU: " << GetMeasurementCountByType(Measurement::Type::kIMU);
-  oss << " | GCP: " << GetMeasurementCountByType(Measurement::Type::kGCP);
-  oss << " | SLAM: " << GetMeasurementCountByType(Measurement::Type::kSLAM) << "\n";
+  oss << "  GNSS: " << get_measurement_count_by_type(Measurement::Type::kGNSS);
+  oss << " | IMU: " << get_measurement_count_by_type(Measurement::Type::kIMU);
+  oss << " | GCP: " << get_measurement_count_by_type(Measurement::Type::kGCP);
+  oss << " | SLAM: " << get_measurement_count_by_type(Measurement::Type::kSLAM) << "\n";
 
   return oss.str();
 }
 
-const ImageGroup* Project::FindGroupByImageId(uint32_t image_id) const {
+const ImageGroup* Project::find_group_by_image_id(uint32_t image_id) const {
   for (const auto& group : image_groups) {
-    if (group.FindImageIndex(image_id) >= 0) {
+    if (group.find_image_index(image_id) >= 0) {
       return &group;
     }
   }
   return nullptr;
 }
 
-const CameraModel* Project::GetCameraForImageId(uint32_t image_id) const {
-  const ImageGroup* group = FindGroupByImageId(image_id);
+const CameraModel* Project::get_camera_for_image_id(uint32_t image_id) const {
+  const ImageGroup* group = find_group_by_image_id(image_id);
   if (group) {
-    return group->GetCameraForImage(image_id);
+    return group->get_camera_for_image(image_id);
   }
   return nullptr;
 }
@@ -940,10 +934,10 @@ const CameraModel* Project::GetCameraForImageId(uint32_t image_id) const {
 // Project GCP 缓存和查询实现
 // ─────────────────────────────────────────────────────────────
 
-std::vector<uint32_t> Project::GetGCPsForImage(uint32_t image_id) const {
+std::vector<uint32_t> Project::get_gcps_for_image(uint32_t image_id) const {
   // 如果缓存无效，重建缓存
   if (!cache_valid) {
-    RebuildGCPCache();
+    rebuild_gcp_cache();
   }
 
   // 查询缓存
@@ -955,7 +949,7 @@ std::vector<uint32_t> Project::GetGCPsForImage(uint32_t image_id) const {
   return {}; // 返回空向量
 }
 
-const GCPMeasurement* Project::GetGCP(uint32_t gcp_id) const {
+const GCPMeasurement* Project::get_gcp(uint32_t gcp_id) const {
   auto it = gcp_database.find(gcp_id);
   if (it != gcp_database.end()) {
     return &(it->second);
@@ -963,12 +957,12 @@ const GCPMeasurement* Project::GetGCP(uint32_t gcp_id) const {
   return nullptr;
 }
 
-void Project::InvalidateGCPCache() const {
+void Project::invalidate_gcp_cache() const {
   cache_valid = false;
   image_to_gcp_cache.clear();
 }
 
-bool Project::RebuildGCPCache() const {
+bool Project::rebuild_gcp_cache() const {
   image_to_gcp_cache.clear();
 
   // 遍历所有GCP，构建索引
@@ -987,7 +981,7 @@ bool Project::RebuildGCPCache() const {
 // Project CameraRig 相关实现
 // ─────────────────────────────────────────────────────────────
 
-const CameraRig* Project::GetCameraRig(uint32_t rig_id) const {
+const CameraRig* Project::get_camera_rig(uint32_t rig_id) const {
   auto it = camera_rigs.find(rig_id);
   if (it != camera_rigs.end()) {
     return &(it->second);
@@ -995,14 +989,14 @@ const CameraRig* Project::GetCameraRig(uint32_t rig_id) const {
   return nullptr;
 }
 
-const CameraModel* Project::GetCameraForRigMount(uint32_t rig_id, uint32_t camera_id) const {
-  const auto* rig = GetCameraRig(rig_id);
+const CameraModel* Project::get_camera_for_rig_mount(uint32_t rig_id, uint32_t camera_id) const {
+  const auto* rig = get_camera_rig(rig_id);
   if (!rig) {
     return nullptr;
   }
 
   // 在Rig中查找该相机的挂载点
-  const auto* mount = rig->FindCameraMount(camera_id);
+  const auto* mount = rig->find_camera_mount(camera_id);
   if (!mount) {
     return nullptr;
   }
@@ -1019,15 +1013,15 @@ const CameraModel* Project::GetCameraForRigMount(uint32_t rig_id, uint32_t camer
   return nullptr;
 }
 
-bool Project::ValidateRig(uint32_t rig_id) const {
-  const auto* rig = GetCameraRig(rig_id);
-  if (!rig || !rig->IsValid()) {
+bool Project::validate_rig(uint32_t rig_id) const {
+  const auto* rig = get_camera_rig(rig_id);
+  if (!rig || !rig->is_valid()) {
     return false;
   }
 
   // 检查所有挂载的相机是否有相机参数
   for (const auto& mount : rig->mounts) {
-    if (!GetCameraForRigMount(rig_id, mount.camera_id)) {
+    if (!get_camera_for_rig_mount(rig_id, mount.camera_id)) {
       return false;
     }
   }
@@ -1035,9 +1029,8 @@ bool Project::ValidateRig(uint32_t rig_id) const {
   return true;
 }
 
-bool CameraModel::HasDistortion() const {
-  return (k1 != 0.0 || k2 != 0.0 || k3 != 0.0 || k4 != 0.0 || p1 != 0.0 || p2 != 0.0 || b1 != 0.0 ||
-          b2 != 0.0);
+bool CameraModel::has_distortion() const {
+  return (k1 != 0.0 || k2 != 0.0 || k3 != 0.0 || p1 != 0.0 || p2 != 0.0);
 }
 
 } // namespace database

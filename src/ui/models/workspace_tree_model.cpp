@@ -23,45 +23,43 @@ WorkspaceTreeModel::WorkspaceTreeModel(ProjectDocument* doc, QObject* parent)
 
   // 连接 ProjectDocument 的信号
   connect(m_document, &ProjectDocument::projectCreated, this,
-          &WorkspaceTreeModel::onProjectChanged);
-  connect(m_document, &ProjectDocument::projectOpened, this, &WorkspaceTreeModel::onProjectChanged);
+          &WorkspaceTreeModel::on_project_changed);
+  connect(m_document, &ProjectDocument::projectOpened, this, &WorkspaceTreeModel::on_project_changed);
   connect(m_document, &ProjectDocument::projectCleared, this,
-          &WorkspaceTreeModel::onProjectChanged);
+          &WorkspaceTreeModel::on_project_changed);
 
   connect(m_document, &ProjectDocument::imageGroupAdded, this,
-          &WorkspaceTreeModel::onImageGroupAdded);
+          &WorkspaceTreeModel::on_image_group_added);
   connect(m_document, &ProjectDocument::imageGroupRemoved, this,
-          &WorkspaceTreeModel::onImageGroupRemoved);
+          &WorkspaceTreeModel::on_image_group_removed);
   connect(m_document, &ProjectDocument::imageGroupChanged, this,
-          &WorkspaceTreeModel::onImageGroupChanged);
+          &WorkspaceTreeModel::on_image_group_changed);
 
   connect(m_document, &ProjectDocument::cameraRigAdded, this,
-          &WorkspaceTreeModel::onCameraRigAdded);
+          &WorkspaceTreeModel::on_camera_rig_added);
   connect(m_document, &ProjectDocument::cameraRigRemoved, this,
-          &WorkspaceTreeModel::onCameraRigRemoved);
+          &WorkspaceTreeModel::on_camera_rig_removed);
   connect(m_document, &ProjectDocument::cameraRigChanged, this,
-          &WorkspaceTreeModel::onCameraRigChanged);
+          &WorkspaceTreeModel::on_camera_rig_changed);
 
-  connect(m_document, &ProjectDocument::gcpAdded, this, &WorkspaceTreeModel::onGCPAdded);
-  connect(m_document, &ProjectDocument::gcpRemoved, this, &WorkspaceTreeModel::onGCPRemoved);
-  connect(m_document, &ProjectDocument::gcpChanged, this, &WorkspaceTreeModel::onGCPChanged);
+  connect(m_document, &ProjectDocument::gcpAdded, this, &WorkspaceTreeModel::on_gcp_added);
+  connect(m_document, &ProjectDocument::gcpRemoved, this, &WorkspaceTreeModel::on_gcp_removed);
+  connect(m_document, &ProjectDocument::gcpChanged, this, &WorkspaceTreeModel::on_gcp_changed);
 
-  connect(m_document, &ProjectDocument::atTaskCreated, this, &WorkspaceTreeModel::onATTaskCreated);
-  connect(m_document, &ProjectDocument::atTaskRemoved, this, &WorkspaceTreeModel::onATTaskRemoved);
-  connect(m_document, &ProjectDocument::atTaskChanged, this, &WorkspaceTreeModel::onATTaskChanged);
+  connect(m_document, &ProjectDocument::atTaskCreated, this, &WorkspaceTreeModel::on_at_task_created);
+  connect(m_document, &ProjectDocument::atTaskRemoved, this, &WorkspaceTreeModel::on_at_task_removed);
+  connect(m_document, &ProjectDocument::atTaskChanged, this, &WorkspaceTreeModel::on_at_task_changed);
 
-  // 初始化根节点
   m_root = std::make_unique<TreeNode>(ProjectRoot, "Workspace");
 
-  // 如果已有项目，构建树
   if (m_document->isProjectLoaded()) {
-    buildTree();
+    build_tree();
   }
 }
 
 WorkspaceTreeModel::~WorkspaceTreeModel() {}
 
-void WorkspaceTreeModel::setProjectDocument(ProjectDocument* doc) {
+void WorkspaceTreeModel::set_project_document(ProjectDocument* doc) {
   if (m_document == doc) {
     return;
   }
@@ -69,48 +67,44 @@ void WorkspaceTreeModel::setProjectDocument(ProjectDocument* doc) {
   m_document = doc;
 
   if (!m_document) {
-    clearTree();
+    clear_tree();
     return;
   }
 
-  // 连接新的 ProjectDocument 信号
   connect(m_document, &ProjectDocument::projectCreated, this,
-          &WorkspaceTreeModel::onProjectChanged);
-  connect(m_document, &ProjectDocument::projectOpened, this, &WorkspaceTreeModel::onProjectChanged);
+          &WorkspaceTreeModel::on_project_changed);
+  connect(m_document, &ProjectDocument::projectOpened, this, &WorkspaceTreeModel::on_project_changed);
   connect(m_document, &ProjectDocument::projectCleared, this,
-          &WorkspaceTreeModel::onProjectChanged);
+          &WorkspaceTreeModel::on_project_changed);
 
   connect(m_document, &ProjectDocument::imageGroupAdded, this,
-          &WorkspaceTreeModel::onImageGroupAdded);
+          &WorkspaceTreeModel::on_image_group_added);
   connect(m_document, &ProjectDocument::imageGroupRemoved, this,
-          &WorkspaceTreeModel::onImageGroupRemoved);
+          &WorkspaceTreeModel::on_image_group_removed);
   connect(m_document, &ProjectDocument::imageGroupChanged, this,
-          &WorkspaceTreeModel::onImageGroupChanged);
+          &WorkspaceTreeModel::on_image_group_changed);
 
   connect(m_document, &ProjectDocument::cameraRigAdded, this,
-          &WorkspaceTreeModel::onCameraRigAdded);
+          &WorkspaceTreeModel::on_camera_rig_added);
   connect(m_document, &ProjectDocument::cameraRigRemoved, this,
-          &WorkspaceTreeModel::onCameraRigRemoved);
+          &WorkspaceTreeModel::on_camera_rig_removed);
   connect(m_document, &ProjectDocument::cameraRigChanged, this,
-          &WorkspaceTreeModel::onCameraRigChanged);
+          &WorkspaceTreeModel::on_camera_rig_changed);
 
-  connect(m_document, &ProjectDocument::gcpAdded, this, &WorkspaceTreeModel::onGCPAdded);
-  connect(m_document, &ProjectDocument::gcpRemoved, this, &WorkspaceTreeModel::onGCPRemoved);
-  connect(m_document, &ProjectDocument::gcpChanged, this, &WorkspaceTreeModel::onGCPChanged);
+  connect(m_document, &ProjectDocument::gcpAdded, this, &WorkspaceTreeModel::on_gcp_added);
+  connect(m_document, &ProjectDocument::gcpRemoved, this, &WorkspaceTreeModel::on_gcp_removed);
+  connect(m_document, &ProjectDocument::gcpChanged, this, &WorkspaceTreeModel::on_gcp_changed);
 
-  connect(m_document, &ProjectDocument::atTaskCreated, this, &WorkspaceTreeModel::onATTaskCreated);
-  connect(m_document, &ProjectDocument::atTaskRemoved, this, &WorkspaceTreeModel::onATTaskRemoved);
-  connect(m_document, &ProjectDocument::atTaskChanged, this, &WorkspaceTreeModel::onATTaskChanged);
+  connect(m_document, &ProjectDocument::atTaskCreated, this, &WorkspaceTreeModel::on_at_task_created);
+  connect(m_document, &ProjectDocument::atTaskRemoved, this, &WorkspaceTreeModel::on_at_task_removed);
+  connect(m_document, &ProjectDocument::atTaskChanged, this, &WorkspaceTreeModel::on_at_task_changed);
 
-  // 初始化根节点
   m_root = std::make_unique<TreeNode>(ProjectRoot, "Project");
 
-  // 如果已有项目，构建树
   if (m_document->isProjectLoaded()) {
-    buildTree();
+    build_tree();
   }
 
-  // 通知视图数据已改变
   beginResetModel();
   endResetModel();
 }
@@ -207,7 +201,7 @@ Qt::ItemFlags WorkspaceTreeModel::flags(const QModelIndex& index) const {
 // 公共方法
 // ─────────────────────────────────────────────────────────────
 
-WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::getNode(const QModelIndex& index) const {
+WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::get_node(const QModelIndex& index) const {
   if (!index.isValid()) {
     return m_root.get();
   }
@@ -215,25 +209,20 @@ WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::getNode(const QModelIndex& ind
   return static_cast<TreeNode*>(index.internalPointer());
 }
 
-void WorkspaceTreeModel::refreshTree() {
+void WorkspaceTreeModel::refresh_tree() {
   beginResetModel();
-  clearTree();
+  clear_tree();
   if (m_document && m_document->isProjectLoaded()) {
-    buildTree();
+    build_tree();
   }
   endResetModel();
 
-  // 树刷新完成，发出信号
-  emit treeRefreshed();
+  emit tree_refreshed();
 }
 
-// ─────────────────────────────────────────────────────────────
-// Slots
-// ─────────────────────────────────────────────────────────────
+void WorkspaceTreeModel::on_project_changed() { refresh_tree(); }
 
-void WorkspaceTreeModel::onProjectChanged() { refreshTree(); }
-
-void WorkspaceTreeModel::onImageGroupAdded(uint32_t group_id) {
+void WorkspaceTreeModel::on_image_group_added(uint32_t group_id) {
   // 找到 ImagesNode 或创建它
   TreeNode* imagesNode = nullptr;
   for (auto& child : m_root->children) {
@@ -274,7 +263,7 @@ void WorkspaceTreeModel::onImageGroupAdded(uint32_t group_id) {
   endInsertRows();
 }
 
-void WorkspaceTreeModel::onImageGroupRemoved(uint32_t group_id) {
+void WorkspaceTreeModel::on_image_group_removed(uint32_t group_id) {
   // 找到并移除该分组
   for (size_t i = 0; i < m_root->children.size(); ++i) {
     auto& child = m_root->children[i];
@@ -292,42 +281,36 @@ void WorkspaceTreeModel::onImageGroupRemoved(uint32_t group_id) {
   }
 }
 
-void WorkspaceTreeModel::onImageGroupChanged(uint32_t group_id) {
-  // 刷新该分组的显示
-  // TODO: 实现增量更新而不是完全刷新
-  refreshTree();
+void WorkspaceTreeModel::on_image_group_changed(uint32_t group_id) {
+  Q_UNUSED(group_id);
+  refresh_tree();
 }
 
-void WorkspaceTreeModel::onCameraRigAdded(uint32_t rig_id) {
-  // 类似 onImageGroupAdded 的逻辑
-  refreshTree();
+void WorkspaceTreeModel::on_camera_rig_added(uint32_t rig_id) {
+  Q_UNUSED(rig_id);
+  refresh_tree();
 }
 
-void WorkspaceTreeModel::onCameraRigRemoved(uint32_t rig_id) { refreshTree(); }
+void WorkspaceTreeModel::on_camera_rig_removed(uint32_t rig_id) { refresh_tree(); }
 
-void WorkspaceTreeModel::onCameraRigChanged(uint32_t rig_id) { refreshTree(); }
+void WorkspaceTreeModel::on_camera_rig_changed(uint32_t rig_id) { refresh_tree(); }
 
-void WorkspaceTreeModel::onGCPAdded(uint32_t gcp_id) { refreshTree(); }
+void WorkspaceTreeModel::on_gcp_added(uint32_t gcp_id) { refresh_tree(); }
 
-void WorkspaceTreeModel::onGCPRemoved(uint32_t gcp_id) { refreshTree(); }
+void WorkspaceTreeModel::on_gcp_removed(uint32_t gcp_id) { refresh_tree(); }
 
-void WorkspaceTreeModel::onGCPChanged(uint32_t gcp_id) { refreshTree(); }
+void WorkspaceTreeModel::on_gcp_changed(uint32_t gcp_id) { refresh_tree(); }
 
-void WorkspaceTreeModel::onATTaskCreated(const QString& task_id) { refreshTree(); }
+void WorkspaceTreeModel::on_at_task_created(const QString& task_id) { refresh_tree(); }
 
-void WorkspaceTreeModel::onATTaskRemoved(const QString& task_id) { refreshTree(); }
+void WorkspaceTreeModel::on_at_task_removed(const QString& task_id) { refresh_tree(); }
 
-void WorkspaceTreeModel::onATTaskChanged(const QString& task_id) {
-  // 任务被修改（如名称改变），增量更新节点而不是重建整个树
+void WorkspaceTreeModel::on_at_task_changed(const QString& task_id) {
   std::string taskIdStr = task_id.toStdString();
-  updateATTaskNode(taskIdStr);
+  update_at_task_node(taskIdStr);
 }
 
-// ─────────────────────────────────────────────────────────────
-// 内部方法
-// ─────────────────────────────────────────────────────────────
-
-void WorkspaceTreeModel::buildTree() {
+void WorkspaceTreeModel::build_tree() {
   if (!m_document || !m_document->isProjectLoaded()) {
     return;
   }
@@ -484,9 +467,9 @@ void WorkspaceTreeModel::buildTree() {
   }
 }
 
-void WorkspaceTreeModel::clearTree() { m_root->children.clear(); }
+void WorkspaceTreeModel::clear_tree() { m_root->children.clear(); }
 
-WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::findATTaskNode(TreeNode* node,
+WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::find_at_task_node(TreeNode* node,
                                                                  const std::string& taskId) {
   if (!node) {
     return nullptr;
@@ -497,9 +480,8 @@ WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::findATTaskNode(TreeNode* node,
     return node;
   }
 
-  // 递归搜索子节点
   for (auto& child : node->children) {
-    TreeNode* result = findATTaskNode(child.get(), taskId);
+    TreeNode* result = find_at_task_node(child.get(), taskId);
     if (result) {
       return result;
     }
@@ -508,13 +490,12 @@ WorkspaceTreeModel::TreeNode* WorkspaceTreeModel::findATTaskNode(TreeNode* node,
   return nullptr;
 }
 
-void WorkspaceTreeModel::updateATTaskNode(const std::string& taskId) {
+void WorkspaceTreeModel::update_at_task_node(const std::string& taskId) {
   if (!m_document || !m_document->isProjectLoaded()) {
     return;
   }
 
-  // 查找树中对应的节点
-  TreeNode* taskNode = findATTaskNode(m_root.get(), taskId);
+  TreeNode* taskNode = find_at_task_node(m_root.get(), taskId);
   if (!taskNode) {
     LOG(WARNING) << "AT Task node not found in tree: " << taskId;
     return;

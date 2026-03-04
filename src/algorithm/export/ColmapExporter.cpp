@@ -20,34 +20,30 @@ namespace fs = std::filesystem;
 namespace insight {
 namespace algorithm {
 
-bool ColmapExporter::exportProject(const insight::database::Project& project,
-                                   const std::string& outputDir,
-                                   const std::map<std::string, std::string>& options) {
+bool ColmapExporter::export_project(const insight::database::Project& project,
+                                    const std::string& outputDir,
+                                    const std::map<std::string, std::string>& options) {
   LOG(INFO) << "Starting COLMAP export to: " << outputDir;
 
   try {
-    // 1. 创建目录结构
-    if (!createDirectoryStructure(outputDir)) {
+    if (!create_directory_structure(outputDir)) {
       m_lastError = "Failed to create directory structure";
       return false;
     }
 
-    // 2. 创建COLMAP数据库
     std::string dbPath = outputDir + "/database.db";
-    if (!createCOLMAPDatabase(project, dbPath)) {
+    if (!create_colmap_database(project, dbPath)) {
       m_lastError = "Failed to create COLMAP database";
       return false;
     }
 
-    // 3. 链接或复制图像文件
-    if (!linkImageFiles(project, outputDir, options)) {
+    if (!link_image_files(project, outputDir, options)) {
       m_lastError = "Failed to link image files";
       return false;
     }
 
-    // 4. 创建稀疏模型文件
     std::string sparseDir = outputDir + "/sparse/0";
-    if (!createSparseFiles(project, sparseDir)) {
+    if (!create_sparse_files(project, sparseDir)) {
       m_lastError = "Failed to create sparse files";
       return false;
     }
@@ -62,7 +58,7 @@ bool ColmapExporter::exportProject(const insight::database::Project& project,
   }
 }
 
-bool ColmapExporter::createDirectoryStructure(const std::string& outputDir) {
+bool ColmapExporter::create_directory_structure(const std::string& outputDir) {
   try {
     fs::path base(outputDir);
     fs::create_directories(base / "images");
@@ -75,8 +71,8 @@ bool ColmapExporter::createDirectoryStructure(const std::string& outputDir) {
   }
 }
 
-bool ColmapExporter::createCOLMAPDatabase(const insight::database::Project& project,
-                                          const std::string& dbPath) {
+bool ColmapExporter::create_colmap_database(const insight::database::Project& project,
+                                             const std::string& dbPath) {
   // TODO: 实现COLMAP数据库创建
   // 这需要：
   // 1. SQLite库支持
@@ -97,9 +93,9 @@ bool ColmapExporter::createCOLMAPDatabase(const insight::database::Project& proj
   return true;
 }
 
-bool ColmapExporter::linkImageFiles(const insight::database::Project& project,
-                                    const std::string& outputDir,
-                                    const std::map<std::string, std::string>& options) {
+bool ColmapExporter::link_image_files(const insight::database::Project& project,
+                                      const std::string& outputDir,
+                                      const std::map<std::string, std::string>& options) {
   std::string imagesDir = outputDir + "/images";
 
   // 获取选项
@@ -144,30 +140,30 @@ bool ColmapExporter::linkImageFiles(const insight::database::Project& project,
   return true;
 }
 
-bool ColmapExporter::createSparseFiles(const insight::database::Project& project,
-                                       const std::string& sparseDir) {
+bool ColmapExporter::create_sparse_files(const insight::database::Project& project,
+                                          const std::string& sparseDir) {
   // 创建images.txt
   std::string imagesPath = sparseDir + "/images.txt";
-  if (!writeImagesText(project, imagesPath)) {
+  if (!write_images_text(project, imagesPath)) {
     return false;
   }
 
   // 创建cameras.txt
   std::string camerasPath = sparseDir + "/cameras.txt";
-  if (!writeCamerasText(project, camerasPath)) {
+  if (!write_cameras_text(project, camerasPath)) {
     return false;
   }
 
   // 创建points3D.txt
   std::string points3DPath = sparseDir + "/points3D.txt";
-  if (!writePoints3DText(project, points3DPath)) {
+  if (!write_points3d_text(project, points3DPath)) {
     return false;
   }
 
   return true;
 }
 
-bool ColmapExporter::writeImagesText(const insight::database::Project& project,
+bool ColmapExporter::write_images_text(const insight::database::Project& project,
                                      const std::string& filepath) {
   std::ofstream file(filepath);
   if (!file.is_open()) {
@@ -200,7 +196,7 @@ bool ColmapExporter::writeImagesText(const insight::database::Project& project,
   return true;
 }
 
-bool ColmapExporter::writeCamerasText(const insight::database::Project& project,
+bool ColmapExporter::write_cameras_text(const insight::database::Project& project,
                                       const std::string& filepath) {
   std::ofstream file(filepath);
   if (!file.is_open()) {
@@ -230,7 +226,7 @@ bool ColmapExporter::writeCamerasText(const insight::database::Project& project,
   return true;
 }
 
-bool ColmapExporter::writePoints3DText(const insight::database::Project& project,
+bool ColmapExporter::write_points3d_text(const insight::database::Project& project,
                                        const std::string& filepath) {
   std::ofstream file(filepath);
   if (!file.is_open()) {

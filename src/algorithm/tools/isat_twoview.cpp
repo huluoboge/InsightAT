@@ -118,8 +118,8 @@ loadPairs(const std::string& json_path, const std::string& geo_dir, const std::s
   int idx = 0;
   for (const auto& pair : j["pairs"]) {
     TwoViewTask t;
-    t.image1_id = insight::tools::getImageIdFromPair(pair, "image1_id");
-    t.image2_id = insight::tools::getImageIdFromPair(pair, "image2_id");
+    t.image1_id = insight::tools::get_image_id_from_pair(pair, "image1_id");
+    t.image2_id = insight::tools::get_image_id_from_pair(pair, "image2_id");
     t.geo_file = geo_dir + "/" + std::to_string(t.image1_id) + "_" + std::to_string(t.image2_id) +
                  ".isat_geo";
     t.match_file = match_dir + "/" + std::to_string(t.image1_id) + "_" +
@@ -140,11 +140,11 @@ loadPairs(const std::string& json_path, const std::string& geo_dir, const std::s
 static void loadGeoAndMatch(TwoViewTask& task) {
   // Load .isat_geo
   IDCReader geo(task.geo_file);
-  if (!geo.isValid()) {
+  if (!geo.is_valid()) {
     LOG(WARNING) << "Invalid .isat_geo: " << task.geo_file;
     return;
   }
-  const auto& meta = geo.getMetadata();
+  const auto& meta = geo.get_metadata();
   const auto& gm = meta["geometry"];
 
   task.F_ok = gm["F"]["estimated"].get<bool>();
@@ -163,7 +163,7 @@ static void loadGeoAndMatch(TwoViewTask& task) {
   if (meta["image_pair"].contains("camera2_id"))
     task.camera2_id = meta["image_pair"]["camera2_id"].get<uint32_t>();
 
-  auto F_blob = geo.readBlob<float>("F_matrix");
+  auto F_blob = geo.read_blob<float>("F_matrix");
   if (F_blob.size() == 9)
     std::copy(F_blob.begin(), F_blob.end(), task.F);
   else {
@@ -171,17 +171,17 @@ static void loadGeoAndMatch(TwoViewTask& task) {
     return;
   }
 
-  auto Fm_blob = geo.readBlob<uint8_t>("F_inliers");
+  auto Fm_blob = geo.read_blob<uint8_t>("F_inliers");
   task.F_mask = Fm_blob;
 
   if (task.E_ok) {
-    auto E_blob = geo.readBlob<float>("E_matrix");
+    auto E_blob = geo.read_blob<float>("E_matrix");
     if (E_blob.size() == 9)
       std::copy(E_blob.begin(), E_blob.end(), task.E);
     else
       task.E_ok = false;
 
-    auto Em_blob = geo.readBlob<uint8_t>("E_inliers");
+    auto Em_blob = geo.read_blob<uint8_t>("E_inliers");
     task.E_mask = Em_blob;
   }
 
@@ -190,13 +190,13 @@ static void loadGeoAndMatch(TwoViewTask& task) {
     task.H_ok = gm["H"]["estimated"].get<bool>();
     task.H_inliers = task.H_ok ? gm["H"]["num_inliers"].get<int>() : 0;
     if (task.H_ok) {
-      auto H_blob = geo.readBlob<float>("H_matrix");
+      auto H_blob = geo.read_blob<float>("H_matrix");
       if (H_blob.size() == 9)
         std::copy(H_blob.begin(), H_blob.end(), task.H);
       else
         task.H_ok = false;
       if (task.H_ok) {
-        auto Hm_blob = geo.readBlob<uint8_t>("H_inliers");
+        auto Hm_blob = geo.read_blob<uint8_t>("H_inliers");
         task.H_mask = Hm_blob;
       }
     }
@@ -208,17 +208,17 @@ static void loadGeoAndMatch(TwoViewTask& task) {
     task.degeneracy.h_over_f_ratio = dg["h_over_f_ratio"].get<double>();
   } else if (task.H_ok && task.F_ok) {
     // Old .isat_geo without degeneracy in meta: compute from F/H inliers
-    task.degeneracy = DetectDegeneracy(task.F_inliers, task.H_inliers, task.num_matches);
+    task.degeneracy = insight::sfm::detect_degeneracy(task.F_inliers, task.H_inliers, task.num_matches);
   }
 
   // Load .isat_match (pixel coords)
   IDCReader match(task.match_file);
-  if (!match.isValid()) {
+  if (!match.is_valid()) {
     LOG(WARNING) << "Invalid .isat_match: " << task.match_file;
     task.F_ok = false;
     return;
   }
-  task.coords_pixel = match.readBlob<float>("coords_pixel");
+  task.coords_pixel = match.read_blob<float>("coords_pixel");
   task.num_matches = (int)task.coords_pixel.size() / 4;
 }
 
@@ -253,7 +253,7 @@ static void writeTwoView(const TwoViewTask& task, const std::string& output_dir)
   }
 
   IDCWriter writer(out);
-  writer.setMetadata(meta);
+  writer.set_metadata(meta);
 
   if (r.success && !r.points3d.empty()) {
     // Collect valid (inlier) points and their source indices
@@ -269,9 +269,9 @@ static void writeTwoView(const TwoViewTask& task, const std::string& output_dir)
     }
     if (!pts_flat.empty()) {
       const int Np = (int)pts_flat.size() / 3;
-      writer.addBlob("points3d", pts_flat.data(), pts_flat.size() * sizeof(double), "float64",
+      writer.add_blob("points3d", pts_flat.data(), pts_flat.size() * sizeof(double), "float64",
                      {Np, 3});
-      writer.addBlob("inlier_ids", ids.data(), ids.size() * sizeof(int32_t), "int32", {Np});
+      writer.add_blob("inlier_ids", ids.data(), ids.size() * sizeof(int32_t), "int32", {Np});
     }
   }
 
@@ -302,7 +302,7 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
   }
 
   const bool have_K = K1.valid() && K2.valid();
-  const Eigen::Matrix3d F_mat = FloatArrayToMatrix3d(task.F);
+  const Eigen::Matrix3d F_mat = insight::sfm::float_array_to_matrix3d(task.F);
 
   // ── Step 1: use F inliers (consistent with E = K^T F K when K present) ──
   const std::vector<uint8_t>& inlier_mask_src = task.F_mask;
@@ -341,9 +341,9 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
     cy = K1.cy;
   } else if (f <= 0.0) {
     // Auto-estimate from F; use zero pp as fallback
-    f = FocalFromFundamental(F_mat, 0.0, 0.0);
+    f = insight::sfm::focal_from_fundamental(F_mat, 0.0, 0.0);
     if (f <= 0.0) {
-      LOG(WARNING) << "  FocalFromFundamental failed for pair " << task.image1_id << "-"
+      LOG(WARNING) << "  focal_from_fundamental failed for pair " << task.image1_id << "-"
                    << task.image2_id;
       return result;
     }
@@ -358,12 +358,12 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
     K1m << K1.fx, 0, K1.cx, 0, K1.fy, K1.cy, 0, 0, 1;
     K2m << K2.fx, 0, K2.cx, 0, K2.fy, K2.cy, 0, 0, 1;
     E_mat = K1m.transpose() * F_mat * K2m;
-    E_mat = EnforceEssential(E_mat);
+    E_mat = insight::sfm::enforce_essential(E_mat);
   } else {
     Eigen::Matrix3d K;
     K << f, 0, cx, 0, f, cy, 0, 0, 1;
     E_mat = K.transpose() * F_mat * K;
-    E_mat = EnforceEssential(E_mat);
+    E_mat = insight::sfm::enforce_essential(E_mat);
   }
 
   // ── Step 4: normalise pixel coords (K1 for img1, K2 for img2) ────────
@@ -384,7 +384,7 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
   // ── Step 5: decompose E → (R, t) ──────────────────────────────────────
   Eigen::Matrix3d R;
   Eigen::Vector3d t;
-  const int n_cheirality = DecomposeEssential(E_mat, pts1_n, pts2_n, R, t);
+  const int n_cheirality = insight::sfm::decompose_essential(E_mat, pts1_n, pts2_n, R, t);
   if (n_cheirality < 4) {
     result.quality = "degenerate";
     return result;
@@ -446,7 +446,7 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
 
   // ── Step 8: stability (parallax, depth/baseline) ───────────────────────
   const StabilityMetrics stability =
-      ComputeStabilityMetrics(X_init, pts1_n, pts2_n, R, t, 2.0, 2.0, 500.0);
+      insight::sfm::compute_stability_metrics(X_init, pts1_n, pts2_n, R, t, 2.0, 2.0, 500.0);
   result.quality = (result.reprojection_rmse < 1.5 && stability.is_stable) ? "good" : "poor";
   return result;
 }
@@ -533,15 +533,15 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   // ── Load intrinsics map + image→camera map ───────────────────────────────────
-  CameraIntrinsicsMap cam_intrinsics = loadIntrinsicsMap(intrinsics_json);
+  CameraIntrinsicsMap cam_intrinsics = load_intrinsics_map(intrinsics_json);
   const bool have_K = !cam_intrinsics.empty();
 
   std::unordered_map<uint32_t, uint32_t> img_cam_map;
   if (have_K) {
-    img_cam_map = buildImageCameraMap(image_list_json);
+    img_cam_map = build_image_camera_map(image_list_json);
   }
 
   if (!have_K)
@@ -600,8 +600,8 @@ int main(int argc, char* argv[]) {
     // Resolve per-pair intrinsics
     CameraIntrinsics K1, K2;
     if (have_K) {
-      const CameraIntrinsics* pK1 = lookupCamera(cam_intrinsics, task.camera1_id);
-      const CameraIntrinsics* pK2 = lookupCamera(cam_intrinsics, task.camera2_id);
+      const CameraIntrinsics* pK1 = lookup_camera(cam_intrinsics, task.camera1_id);
+      const CameraIntrinsics* pK2 = lookup_camera(cam_intrinsics, task.camera2_id);
       if (pK1)
         K1 = *pK1;
       if (pK2)

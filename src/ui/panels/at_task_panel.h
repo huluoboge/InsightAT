@@ -52,46 +52,19 @@ public:
    * @param[in] task_id 任务 UUID
    * @return true 如果成功加载
    */
-  bool loadTask(const std::string& task_id);
+  bool load_task(const std::string& task_id);
 
-  /**
-   * 获取当前加载的任务 ID
-   *
-   * @return 当前任务的 UUID 字符串，或空字符串如果没有加载任务
-   */
-  std::string getCurrentTaskId() const;
+  std::string get_current_task_id() const;
 
 public slots:
-  /**
-   * Export 按钮点击处理（打开导出对话框）
-   */
-  void onExportClicked();
-
-  /**
-   * SIFT GPU 特征提取按钮点击处理
-   */
-  void onRunSiftGPUClicked();
-
-  /**
-   * 任务名称改变时自动保存
-   */
-  void onTaskNameChanged();
+  void on_export_clicked();
+  void on_run_sift_gpu_clicked();
+  void on_task_name_changed();
 
 private:
-  /**
-   * 初始化 UI 组件
-   */
-  void initUI();
-
-  /**
-   * 刷新面板显示，重新加载当前任务数据
-   */
-  void refreshUI();
-
-  /**
-   * 保存当前任务数据
-   */
-  void saveTask();
+  void init_ui();
+  void refresh_ui();
+  void save_task();
 
 private:
   ProjectDocument* m_document;

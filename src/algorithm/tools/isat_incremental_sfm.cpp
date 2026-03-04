@@ -90,25 +90,25 @@ static bool save_initial_result(const insight::sfm::TrackStore& store, uint32_t 
 
   const std::string idc_path = output_dir + "/initial_tracks.isat_tracks";
   insight::io::IDCWriter writer(idc_path);
-  writer.setMetadata(meta);
-  writer.addBlob("track_xyz", track_xyz.data(), track_xyz.size() * sizeof(float), "float32",
+  writer.set_metadata(meta);
+  writer.add_blob("track_xyz", track_xyz.data(), track_xyz.size() * sizeof(float), "float32",
                  {static_cast<int>(n_tracks), 3});
-  writer.addBlob("track_flags", track_flags.data(), track_flags.size(), "uint8",
+  writer.add_blob("track_flags", track_flags.data(), track_flags.size(), "uint8",
                  {static_cast<int>(n_tracks)});
-  writer.addBlob("track_obs_offset", track_obs_offset.data(),
+  writer.add_blob("track_obs_offset", track_obs_offset.data(),
                  track_obs_offset.size() * sizeof(uint32_t), "uint32",
                  {static_cast<int>(n_tracks) + 1});
-  writer.addBlob("obs_image_id", obs_image_id.data(), obs_image_id.size() * sizeof(uint32_t),
+  writer.add_blob("obs_image_id", obs_image_id.data(), obs_image_id.size() * sizeof(uint32_t),
                  "uint32", {static_cast<int>(obs_image_id.size())});
-  writer.addBlob("obs_feature_id", obs_feature_id.data(), obs_feature_id.size() * sizeof(uint32_t),
+  writer.add_blob("obs_feature_id", obs_feature_id.data(), obs_feature_id.size() * sizeof(uint32_t),
                  "uint32", {static_cast<int>(obs_feature_id.size())});
-  writer.addBlob("obs_u", obs_u.data(), obs_u.size() * sizeof(float), "float32",
+  writer.add_blob("obs_u", obs_u.data(), obs_u.size() * sizeof(float), "float32",
                  {static_cast<int>(obs_u.size())});
-  writer.addBlob("obs_v", obs_v.data(), obs_v.size() * sizeof(float), "float32",
+  writer.add_blob("obs_v", obs_v.data(), obs_v.size() * sizeof(float), "float32",
                  {static_cast<int>(obs_v.size())});
-  writer.addBlob("obs_scale", obs_scale.data(), obs_scale.size() * sizeof(float), "float32",
+  writer.add_blob("obs_scale", obs_scale.data(), obs_scale.size() * sizeof(float), "float32",
                  {static_cast<int>(obs_scale.size())});
-  writer.addBlob("obs_flags", obs_flags.data(), obs_flags.size(), "uint8",
+  writer.add_blob("obs_flags", obs_flags.data(), obs_flags.size(), "uint8",
                  {static_cast<int>(obs_flags.size())});
   if (!writer.write()) {
     LOG(ERROR) << "Failed to write " << idc_path;
@@ -171,24 +171,24 @@ int main(int argc, char* argv[]) {
   }
   if (cmd.checkHelp(argv[0]))
     return 0;
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   if (pairs_json.empty() || geo_dir.empty() || match_dir.empty() || intrinsics_path.empty()) {
     std::cerr << "Error: -i, -g, -m, -k are required\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
-  auto cam_map = loadIntrinsicsMap(intrinsics_path);
+  auto cam_map = load_intrinsics_map(intrinsics_path);
   if (cam_map.empty()) {
     LOG(ERROR) << "No intrinsics loaded from " << intrinsics_path;
     return 1;
   }
-  const auto* cam = lookupCamera(cam_map, 1);
+  const auto* cam = lookup_camera(cam_map, 1);
   if (!cam || !cam->valid()) {
     LOG(ERROR) << "Invalid or missing camera (use camera_id 1 or provide valid K)";
     return 1;
   }
-  const double fx = cam->fx, fy = cam->fy, cx = cam->cx, cy = cam->cy;
+  const insight::camera::Intrinsics K = cam->to_algorithm_intrinsics();
 
   if (output_dir.empty())
     output_dir = ".";
@@ -197,9 +197,9 @@ int main(int argc, char* argv[]) {
   Eigen::Matrix3d R1;
   Eigen::Vector3d t1;
   uint32_t image1_id = 0, image2_id = 0;
-  const bool ok =
-      insight::sfm::run_initial_pair_loop(pairs_json, geo_dir, match_dir, fx, fy, cx, cy, &store,
-                                          &R1, &t1, min_tracks, &image1_id, &image2_id);
+  const bool ok = insight::sfm::run_initial_pair_loop(pairs_json, geo_dir, match_dir, K, &store,
+                                                      &R1, &t1, min_tracks, &image1_id,
+                                                      &image2_id);
 
   if (!ok) {
     LOG(ERROR) << "Initial pair loop failed (no suitable pair or too few tracks)";

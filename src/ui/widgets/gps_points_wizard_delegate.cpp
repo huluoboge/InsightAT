@@ -19,7 +19,7 @@ QWidget* GPSPointsWizardDelegate::createEditor(QWidget* parent, const QStyleOpti
   // QWidget *editor = NULL;
   if (index.row() == 0) {
     QComboBox* box = new QComboBox(parent);
-    QList<QString> fields = _doc->fieldNames();
+    QList<QString> fields = _doc->field_names();
     box->insertItem(0, tr("Undefined"));
     for (int i = 0; i < fields.size(); ++i) {
       box->insertItem(i + 1, fields[i]);

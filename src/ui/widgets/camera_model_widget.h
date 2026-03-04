@@ -43,54 +43,24 @@ public:
    *
    * @return CameraModel 对象
    */
-  insight::database::CameraModel getCameraModel() const;
+  insight::database::CameraModel get_camera_model() const;
 
-  /**
-   * 设置相机模型
-   *
-   * @param[in] camera 要显示的相机模型
-   */
-  void setCameraModel(const insight::database::CameraModel& camera);
+  void set_camera_model(const insight::database::CameraModel& camera);
 
-  /**
-   * 验证相机参数的有效性
-   *
-   * @return 有效返回true
-   */
-  bool validateCamera() const;
+  bool validate_camera() const;
 
-  /**
-   * 清空所有参数
-   */
-  void clearAll();
+  void clear_all();
 
 signals:
-  /**
-   * 相机参数改变时发出
-   */
-  void cameraModelChanged(const insight::database::CameraModel& camera);
+  void camera_model_changed(const insight::database::CameraModel& camera);
 
 private slots:
-  /**
-   * 处理参数改变事件
-   */
-  void onParameterChanged();
+  void on_parameter_changed();
 
 private:
-  /**
-   * 初始化UI
-   */
-  void initializeUI();
-
-  /**
-   * 更新验证状态显示
-   */
-  void updateValidationStatus();
-
-  /**
-   * 从 UI 更新相机模型
-   */
-  void updateCameraModel();
+  void initialize_ui();
+  void update_validation_status();
+  void update_camera_model();
 
   // 基本参数
   QComboBox* m_cameraTypeCombo; ///< 相机类型
@@ -112,19 +82,14 @@ private:
   QDoubleSpinBox* m_cxSpinBox; ///< 主点 X (pixel)
   QDoubleSpinBox* m_cySpinBox; ///< 主点 Y (pixel)
 
-  // 径向畸变
-  QDoubleSpinBox* m_k1SpinBox; ///< k1 (1st radial distortion)
-  QDoubleSpinBox* m_k2SpinBox; ///< k2 (2nd radial distortion)
-  QDoubleSpinBox* m_k3SpinBox; ///< k3 (3rd radial distortion)
-  QDoubleSpinBox* m_k4SpinBox; ///< k4 (4th radial distortion)
+  // 径向畸变（Bentley K₁,K₂,K₃）
+  QDoubleSpinBox* m_k1SpinBox; ///< k1 (1st radial distortion, Bentley K₁)
+  QDoubleSpinBox* m_k2SpinBox; ///< k2 (2nd radial distortion, Bentley K₂)
+  QDoubleSpinBox* m_k3SpinBox; ///< k3 (3rd radial distortion, Bentley K₃)
 
-  // 切向畸变
-  QDoubleSpinBox* m_p1SpinBox; ///< p1 (tangential distortion)
-  QDoubleSpinBox* m_p2SpinBox; ///< p2 (tangential distortion)
-
-  // 薄棱畸变
-  QDoubleSpinBox* m_b1SpinBox; ///< b1 (thin prism distortion)
-  QDoubleSpinBox* m_b2SpinBox; ///< b2 (thin prism distortion)
+  // 切向畸变（Bentley P₁,P₂）
+  QDoubleSpinBox* m_p1SpinBox; ///< p1 = Bentley P₁
+  QDoubleSpinBox* m_p2SpinBox; ///< p2 = Bentley P₂
 
   // 验证状态显示
   QLabel* m_validationStatusLabel;  ///< 验证状态标签

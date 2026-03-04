@@ -350,10 +350,10 @@ void ProjectInfoDialog::onSaveDescription() {
 
 void ProjectInfoDialog::onSetInputCoordinateSystem() {
   CoordinateSystemConfigDialog dialog(this);
-  dialog.SetCoordinateSystem(m_project->input_coordinate_system);
+  dialog.set_coordinate_system(m_project->input_coordinate_system);
 
   if (dialog.exec() == QDialog::Accepted) {
-    auto coordSys = dialog.GetCoordinateSystem();
+    auto coordSys = dialog.get_coordinate_system();
     m_project->input_coordinate_system = coordSys;
     m_project->last_modified_time = std::chrono::duration_cast<std::chrono::seconds>(
                                         std::chrono::system_clock::now().time_since_epoch())

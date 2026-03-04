@@ -148,19 +148,19 @@ std::vector<ImagePair> retrieve_by_vocab_tree(const std::vector<ImageInfo>& imag
 
     // Load descriptors from feature file using IDC reader
     io::IDCReader reader(img.feature_file);
-    if (!reader.isValid()) {
+    if (!reader.is_valid()) {
       LOG(WARNING) << "Failed to open feature file: " << img.feature_file;
       continue;
     }
 
-    auto blob = reader.getBlobDescriptor("descriptors");
+    auto blob = reader.get_blob_descriptor("descriptors");
     std::string dtype = blob["dtype"];
 
     std::vector<float> descriptors;
     if (dtype == "float32") {
-      descriptors = reader.readBlob<float>("descriptors");
+      descriptors = reader.read_blob<float>("descriptors");
     } else if (dtype == "uint8") {
-      auto desc_uint8 = reader.readBlob<uint8_t>("descriptors");
+      auto desc_uint8 = reader.read_blob<uint8_t>("descriptors");
       descriptors.resize(desc_uint8.size());
       for (size_t j = 0; j < desc_uint8.size(); ++j) {
         descriptors[j] = static_cast<float>(desc_uint8[j]);

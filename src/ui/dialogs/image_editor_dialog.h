@@ -67,7 +67,7 @@ public:
    * Load an image group for editing
    * @param group Pointer to ImageGroup to edit (must be valid)
    */
-  void LoadGroup(database::ImageGroup* group);
+  void load_group(database::ImageGroup* group);
 
   /**
    * Get list of modified images (if needed for external processing)
@@ -85,7 +85,7 @@ signals:
    * Emitted when images are added, removed, or modified
    * @param group_id ID of the modified group
    */
-  void imagesChanged(uint32_t group_id);
+  void images_changed(uint32_t group_id);
 
 private slots:
   void OnAddImagesClicked();

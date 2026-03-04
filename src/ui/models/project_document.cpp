@@ -412,7 +412,7 @@ uint32_t ProjectDocument::addGCP(const insight::database::GCPMeasurement& gcp) {
   new_gcp.gcp_id = gcp_id;
 
   m_project.gcp_database[gcp_id] = new_gcp;
-  m_project.InvalidateGCPCache();
+  m_project.invalidate_gcp_cache();
 
   setModified(true);
   emit gcpAdded(gcp_id);
@@ -428,7 +428,7 @@ bool ProjectDocument::deleteGCP(uint32_t gcp_id) {
   }
 
   m_project.gcp_database.erase(it);
-  m_project.InvalidateGCPCache();
+  m_project.invalidate_gcp_cache();
 
   setModified(true);
   emit gcpRemoved(gcp_id);
@@ -442,7 +442,7 @@ void ProjectDocument::updateGCP(uint32_t gcp_id, const insight::database::GCPMea
   if (it != m_project.gcp_database.end()) {
     it->second = gcp;
     it->second.gcp_id = gcp_id;
-    m_project.InvalidateGCPCache();
+    m_project.invalidate_gcp_cache();
 
     setModified(true);
     emit gcpChanged(gcp_id);
@@ -451,7 +451,7 @@ void ProjectDocument::updateGCP(uint32_t gcp_id, const insight::database::GCPMea
 
 void ProjectDocument::clearAllGCPs() {
   m_project.gcp_database.clear();
-  m_project.InvalidateGCPCache();
+  m_project.invalidate_gcp_cache();
 
   setModified(true);
 }

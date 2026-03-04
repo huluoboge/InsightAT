@@ -32,13 +32,13 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
   if (!dir.empty() && dir.back() != '/')
     dir += '/';
   for (const auto& p : j["pairs"]) {
-    uint32_t id1 = insight::tools::getImageIdFromPair(p, "image1_id");
-    uint32_t id2 = insight::tools::getImageIdFromPair(p, "image2_id");
+    uint32_t id1 = insight::tools::get_image_id_from_pair(p, "image1_id");
+    uint32_t id2 = insight::tools::get_image_id_from_pair(p, "image2_id");
     std::string geo_path = dir + std::to_string(id1) + "_" + std::to_string(id2) + ".isat_geo";
     insight::io::IDCReader reader(geo_path);
-    if (!reader.isValid())
+    if (!reader.is_valid())
       continue;
-    const auto& meta = reader.getMetadata();
+    const auto& meta = reader.get_metadata();
     PairGeoInfo info;
     info.image1_id = id1;
     info.image2_id = id2;

@@ -86,7 +86,20 @@ set(ALGORITHM_SOURCES
     modules/sfm/resection.cpp
     modules/sfm/incremental_sfm.h
     modules/sfm/incremental_sfm.cpp
+    modules/sfm/incremental_sfm_engine.h
+    modules/sfm/incremental_sfm_engine.cpp
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Camera module (intrinsics + distortion) – shared by sfm_module and InsightATAlgorithm
+# ─────────────────────────────────────────────────────────────────────────────
+add_library(algorithm_camera STATIC
+    modules/camera/camera_types.h
+    modules/camera/camera_utils.h
+    modules/camera/camera_utils.cpp
+)
+target_include_directories(algorithm_camera PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set_property(TARGET algorithm_camera PROPERTY FOLDER InsightAT/Modules)
 
 # Add SuperPoint sources if available
 if(SUPERPOINT_AVAILABLE)
@@ -126,6 +139,7 @@ target_link_libraries(InsightATAlgorithm
         glog::glog
         InsightATDatabase
         util
+        algorithm_camera
         sfm_module
         ${OpenCV_LIBS}
         DBoW3
@@ -383,6 +397,7 @@ target_link_libraries(isat_incremental_sfm
         insightat_tools_logging
         InsightATAlgorithm
         sfm_module
+        algorithm_camera
         glog::glog
 )
 

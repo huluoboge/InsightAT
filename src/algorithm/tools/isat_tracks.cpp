@@ -44,7 +44,7 @@ using namespace insight::sfm;
 
 static constexpr const char* kEventPrefix = "ISAT_EVENT ";
 
-static void printEvent(const json& j) {
+static void print_event(const json& j) {
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
 }
@@ -60,7 +60,7 @@ struct PairDesc {
   std::string geo_file;
 };
 
-static std::vector<PairDesc> loadPairs(const std::string& json_path, const std::string& match_dir,
+static std::vector<PairDesc> load_pairs(const std::string& json_path, const std::string& match_dir,
                                        const std::string& geo_dir) {
   std::ifstream file(json_path);
   if (!file.is_open()) {
@@ -71,8 +71,8 @@ static std::vector<PairDesc> loadPairs(const std::string& json_path, const std::
   std::vector<PairDesc> pairs;
   for (const auto& p : j["pairs"]) {
     PairDesc d;
-    d.image1_id = insight::tools::getImageIdFromPair(p, "image1_id");
-    d.image2_id = insight::tools::getImageIdFromPair(p, "image2_id");
+    d.image1_id = insight::tools::get_image_id_from_pair(p, "image1_id");
+    d.image2_id = insight::tools::get_image_id_from_pair(p, "image2_id");
     d.match_file = match_dir + "/" + std::to_string(d.image1_id) + "_" +
                    std::to_string(d.image2_id) + ".isat_match";
     d.geo_file = geo_dir + "/" + std::to_string(d.image1_id) + "_" + std::to_string(d.image2_id) +
@@ -85,7 +85,7 @@ static std::vector<PairDesc> loadPairs(const std::string& json_path, const std::
 
 /** Return ordered image_ids (image_index = array index). From image list JSON if path non-empty,
  * else from pairs. */
-static std::vector<uint32_t> getImageIds(const std::string& image_list_path,
+static std::vector<uint32_t> get_image_ids(const std::string& image_list_path,
                                          const std::vector<PairDesc>& pairs) {
   if (!image_list_path.empty()) {
     std::ifstream f(image_list_path);
@@ -116,7 +116,7 @@ static std::vector<uint32_t> getImageIds(const std::string& image_list_path,
 }
 
 static std::unordered_map<uint32_t, int>
-buildImageIdToIndex(const std::vector<uint32_t>& image_ids) {
+build_image_id_to_index(const std::vector<uint32_t>& image_ids) {
   std::unordered_map<uint32_t, int> m;
   for (size_t i = 0; i < image_ids.size(); ++i)
     m[image_ids[static_cast<size_t>(i)]] = static_cast<int>(i);
@@ -127,7 +127,7 @@ buildImageIdToIndex(const std::vector<uint32_t>& image_ids) {
 // Union-Find for (image_id, feature_id) → track (key = uint64_t: high=image_id, low=feature_id)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static uint64_t nodeKey(uint32_t image_id, uint32_t feature_id) {
+static uint64_t node_key(uint32_t image_id, uint32_t feature_id) {
   return (static_cast<uint64_t>(image_id) << 32) | feature_id;
 }
 
@@ -135,7 +135,7 @@ struct UnionFind {
   std::unordered_map<uint64_t, int> node_id_;
   std::vector<int> parent_;
 
-  int getOrCreate(uint64_t key) {
+  int get_or_create(uint64_t key) {
     auto it = node_id_.find(key);
     if (it != node_id_.end())
       return it->second;
@@ -151,7 +151,7 @@ struct UnionFind {
     return parent_[static_cast<size_t>(i)] = find(parent_[static_cast<size_t>(i)]);
   }
 
-  int findKey(uint64_t key) { return find(getOrCreate(key)); }
+  int find_key(uint64_t key) { return find(get_or_create(key)); }
 
   void merge(int a, int b) {
     a = find(a);
@@ -160,7 +160,7 @@ struct UnionFind {
       parent_[static_cast<size_t>(a)] = b;
   }
 
-  void mergeKeys(uint64_t k1, uint64_t k2) { merge(getOrCreate(k1), getOrCreate(k2)); }
+  void merge_keys(uint64_t k1, uint64_t k2) { merge(get_or_create(k1), get_or_create(k2)); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,25 +221,25 @@ static bool save_track_store_to_idc(const TrackStore& store, const std::vector<u
   meta["num_observations"] = static_cast<int>(n_obs);
 
   IDCWriter writer(path);
-  writer.setMetadata(meta);
-  writer.addBlob("track_xyz", track_xyz.data(), track_xyz.size() * sizeof(float), "float32",
+  writer.set_metadata(meta);
+  writer.add_blob("track_xyz", track_xyz.data(), track_xyz.size() * sizeof(float), "float32",
                  {static_cast<int>(n_tracks), 3});
-  writer.addBlob("track_flags", track_flags.data(), track_flags.size(), "uint8",
+  writer.add_blob("track_flags", track_flags.data(), track_flags.size(), "uint8",
                  {static_cast<int>(n_tracks)});
-  writer.addBlob("track_obs_offset", track_obs_offset.data(),
+  writer.add_blob("track_obs_offset", track_obs_offset.data(),
                  track_obs_offset.size() * sizeof(uint32_t), "uint32",
                  {static_cast<int>(n_tracks) + 1});
-  writer.addBlob("obs_image_id", obs_image_id.data(), obs_image_id.size() * sizeof(uint32_t),
+  writer.add_blob("obs_image_id", obs_image_id.data(), obs_image_id.size() * sizeof(uint32_t),
                  "uint32", {static_cast<int>(obs_image_id.size())});
-  writer.addBlob("obs_feature_id", obs_feature_id.data(), obs_feature_id.size() * sizeof(uint32_t),
+  writer.add_blob("obs_feature_id", obs_feature_id.data(), obs_feature_id.size() * sizeof(uint32_t),
                  "uint32", {static_cast<int>(obs_feature_id.size())});
-  writer.addBlob("obs_u", obs_u.data(), obs_u.size() * sizeof(float), "float32",
+  writer.add_blob("obs_u", obs_u.data(), obs_u.size() * sizeof(float), "float32",
                  {static_cast<int>(obs_u.size())});
-  writer.addBlob("obs_v", obs_v.data(), obs_v.size() * sizeof(float), "float32",
+  writer.add_blob("obs_v", obs_v.data(), obs_v.size() * sizeof(float), "float32",
                  {static_cast<int>(obs_v.size())});
-  writer.addBlob("obs_scale", obs_scale.data(), obs_scale.size() * sizeof(float), "float32",
+  writer.add_blob("obs_scale", obs_scale.data(), obs_scale.size() * sizeof(float), "float32",
                  {static_cast<int>(obs_scale.size())});
-  writer.addBlob("obs_flags", obs_flags.data(), obs_flags.size(), "uint8",
+  writer.add_blob("obs_flags", obs_flags.data(), obs_flags.size(), "uint8",
                  {static_cast<int>(obs_flags.size())});
   if (!writer.write()) {
     LOG(ERROR) << "Failed to write " << path;
@@ -252,11 +252,11 @@ static bool save_track_store_to_idc(const TrackStore& store, const std::vector<u
 static bool load_track_store_from_idc(const std::string& path, TrackStore* store,
                                       std::vector<uint32_t>* image_ids_out) {
   IDCReader reader(path);
-  if (!reader.isValid()) {
+  if (!reader.is_valid()) {
     LOG(ERROR) << "Invalid IDC: " << path;
     return false;
   }
-  const json& meta = reader.getMetadata();
+  const json& meta = reader.get_metadata();
   const int num_images = meta["num_images"].get<int>();
   const int num_tracks = meta["num_tracks"].get<int>();
   const int num_observations = meta["num_observations"].get<int>();
@@ -270,15 +270,15 @@ static bool load_track_store_from_idc(const std::string& path, TrackStore* store
       image_ids.push_back(static_cast<uint32_t>(v.get<int64_t>()));
   }
 
-  auto track_xyz = reader.readBlob<float>("track_xyz");
-  auto track_flags = reader.readBlob<uint8_t>("track_flags");
-  auto track_obs_offset = reader.readBlob<uint32_t>("track_obs_offset");
-  auto obs_image_id = reader.readBlob<uint32_t>("obs_image_id");
-  auto obs_feature_id = reader.readBlob<uint32_t>("obs_feature_id");
-  auto obs_u = reader.readBlob<float>("obs_u");
-  auto obs_v = reader.readBlob<float>("obs_v");
-  auto obs_scale = reader.readBlob<float>("obs_scale");
-  auto obs_flags = reader.readBlob<uint8_t>("obs_flags");
+  auto track_xyz = reader.read_blob<float>("track_xyz");
+  auto track_flags = reader.read_blob<uint8_t>("track_flags");
+  auto track_obs_offset = reader.read_blob<uint32_t>("track_obs_offset");
+  auto obs_image_id = reader.read_blob<uint32_t>("obs_image_id");
+  auto obs_feature_id = reader.read_blob<uint32_t>("obs_feature_id");
+  auto obs_u = reader.read_blob<float>("obs_u");
+  auto obs_v = reader.read_blob<float>("obs_v");
+  auto obs_scale = reader.read_blob<float>("obs_scale");
+  auto obs_flags = reader.read_blob<uint8_t>("obs_flags");
 
   if (track_xyz.size() != static_cast<size_t>(num_tracks) * 3u ||
       track_flags.size() != static_cast<size_t>(num_tracks) ||
@@ -319,19 +319,19 @@ static bool load_track_store_from_idc(const std::string& path, TrackStore* store
 // Phase 1: Union-Find from match indices
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void phase1UnionFind(UnionFind* uf, const std::vector<PairDesc>& pairs) {
+static void phase1_union_find(UnionFind* uf, const std::vector<PairDesc>& pairs) {
   for (const auto& p : pairs) {
     IDCReader reader(p.match_file);
-    if (!reader.isValid())
+    if (!reader.is_valid())
       continue;
-    auto indices = reader.readBlob<uint16_t>("indices");
+    auto indices = reader.read_blob<uint16_t>("indices");
     if (indices.size() < 2)
       continue;
     const int n = static_cast<int>(indices.size() / 2);
     for (int i = 0; i < n; ++i) {
       uint16_t idx1 = indices[static_cast<size_t>(i) * 2];
       uint16_t idx2 = indices[static_cast<size_t>(i) * 2 + 1];
-      uf->mergeKeys(nodeKey(p.image1_id, idx1), nodeKey(p.image2_id, idx2));
+      uf->merge_keys(node_key(p.image1_id, idx1), node_key(p.image2_id, idx2));
     }
   }
 }
@@ -340,7 +340,7 @@ static void phase1UnionFind(UnionFind* uf, const std::vector<PairDesc>& pairs) {
 // Phase 2: Fill observations and xyz from match + geo
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void phase2FillObservations(TrackStore* store, const std::vector<PairDesc>& pairs,
+static void phase2_fill_observations(TrackStore* store, const std::vector<PairDesc>& pairs,
                                    const std::unordered_map<uint32_t, int>& image_id_to_index,
                                    const std::unordered_map<int, int>& root_to_track_id,
                                    UnionFind& uf, std::set<int>* tracks_with_xyz) {
@@ -348,16 +348,16 @@ static void phase2FillObservations(TrackStore* store, const std::vector<PairDesc
   for (const auto& p : pairs) {
     IDCReader geo_rd(p.geo_file);
     IDCReader match_rd(p.match_file);
-    if (!geo_rd.isValid() || !match_rd.isValid())
+    if (!geo_rd.is_valid() || !match_rd.is_valid())
       continue;
-    auto inlier_mask = geo_rd.readBlob<uint8_t>("F_inliers");
+    auto inlier_mask = geo_rd.read_blob<uint8_t>("F_inliers");
     if (inlier_mask.empty())
-      inlier_mask = geo_rd.readBlob<uint8_t>("E_inliers");
+      inlier_mask = geo_rd.read_blob<uint8_t>("E_inliers");
     if (inlier_mask.empty())
       continue;
-    auto indices = match_rd.readBlob<uint16_t>("indices");
-    auto coords = match_rd.readBlob<float>("coords_pixel");
-    auto scales = match_rd.readBlob<float>("scales");
+    auto indices = match_rd.read_blob<uint16_t>("indices");
+    auto coords = match_rd.read_blob<float>("coords_pixel");
+    auto scales = match_rd.read_blob<float>("scales");
     if (indices.size() < 2 || coords.size() < 4)
       continue;
     const int num_matches = static_cast<int>(inlier_mask.size());
@@ -371,10 +371,10 @@ static void phase2FillObservations(TrackStore* store, const std::vector<PairDesc
 
     std::vector<float> points3d;
     bool have_points3d = false;
-    if (geo_rd.getMetadata().contains("twoview")) {
-      points3d = geo_rd.readBlob<float>("points3d");
+    if (geo_rd.get_metadata().contains("twoview")) {
+      points3d = geo_rd.read_blob<float>("points3d");
       have_points3d =
-          (geo_rd.getMetadata()["twoview"].contains("num_valid_points") && !points3d.empty());
+          (geo_rd.get_metadata()["twoview"].contains("num_valid_points") && !points3d.empty());
     }
     int inlier_count = 0;
     for (int m = 0; m < num_matches; ++m) {
@@ -383,8 +383,8 @@ static void phase2FillObservations(TrackStore* store, const std::vector<PairDesc
       const size_t mi = static_cast<size_t>(m);
       uint16_t idx1 = indices[mi * 2];
       uint16_t idx2 = indices[mi * 2 + 1];
-      uint64_t k1 = nodeKey(p.image1_id, idx1);
-      int root = uf.findKey(k1);
+      uint64_t k1 = node_key(p.image1_id, idx1);
+      int root = uf.find_key(k1);
       auto rit = root_to_track_id.find(root);
       if (rit == root_to_track_id.end())
         continue;
@@ -455,7 +455,7 @@ int main(int argc, char* argv[]) {
   }
   if (cmd.checkHelp(argv[0]))
     return 0;
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   stats_only = cmd.used("stats");
 
   if (output_path.empty()) {
@@ -471,7 +471,7 @@ int main(int argc, char* argv[]) {
       return 1;
     LOG(INFO) << "Tracks: " << store.num_tracks() << "  Observations: " << store.num_observations()
               << "  Images: " << image_ids.size();
-    printEvent({{"type", "tracks.stats"},
+    print_event({{"type", "tracks.stats"},
                 {"ok", true},
                 {"data",
                  {{"num_tracks", static_cast<int>(store.num_tracks())},
@@ -495,18 +495,18 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  std::vector<PairDesc> pairs = loadPairs(pairs_json, match_dir, geo_dir);
+  std::vector<PairDesc> pairs = load_pairs(pairs_json, match_dir, geo_dir);
   if (pairs.empty()) {
     LOG(ERROR) << "No pairs to process";
     return 1;
   }
 
-  std::vector<uint32_t> image_ids = getImageIds(image_list, pairs);
-  std::unordered_map<uint32_t, int> image_id_to_index = buildImageIdToIndex(image_ids);
+  std::vector<uint32_t> image_ids = get_image_ids(image_list, pairs);
+  std::unordered_map<uint32_t, int> image_id_to_index = build_image_id_to_index(image_ids);
   const int n_images = static_cast<int>(image_ids.size());
 
   UnionFind uf;
-  phase1UnionFind(&uf, pairs);
+  phase1_union_find(&uf, pairs);
 
   std::unordered_map<int, int> root_to_track_id;
   int next_track = 0;
@@ -526,13 +526,13 @@ int main(int argc, char* argv[]) {
     store.add_track(0.f, 0.f, 0.f);
 
   std::set<int> tracks_with_xyz;
-  phase2FillObservations(&store, pairs, image_id_to_index, root_to_track_id, uf, &tracks_with_xyz);
+  phase2_fill_observations(&store, pairs, image_id_to_index, root_to_track_id, uf, &tracks_with_xyz);
   LOG(INFO) << "Phase 2: " << store.num_observations() << " observations, "
             << tracks_with_xyz.size() << " tracks with xyz";
 
   if (!save_track_store_to_idc(store, image_ids, output_path))
     return 1;
-  printEvent({{"type", "tracks.build"},
+  print_event({{"type", "tracks.build"},
               {"ok", true},
               {"data",
                {{"output", output_path},

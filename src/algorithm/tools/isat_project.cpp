@@ -220,7 +220,7 @@ static int runCreate(int argc, char* argv[]) {
     return 2;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   project.name = name.empty() ? fs::path(project_file).stem().string() : name;
@@ -235,7 +235,7 @@ static int runCreate(int argc, char* argv[]) {
   project.input_coordinate_system.type = CoordinateSystem::Type::kLocal;
   project.input_coordinate_system.definition = "Local";
 
-  // Note: We intentionally do NOT enforce Project::IsValid here, because groups/cameras
+  // Note: We intentionally do NOT enforce Project::is_valid here, because groups/cameras
   // may be added later and the validation policy may be stricter than the creation workflow.
 
   if (!saveProjectToFile(project_file, project)) {
@@ -284,7 +284,7 @@ static int runAddGroup(int argc, char* argv[]) {
     return 2;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   if (!loadProjectFromFile(project_file, project)) {
@@ -368,7 +368,7 @@ static int runAddImages(int argc, char* argv[]) {
     return 2;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   recursive = cmd.used('r');
   const bool dedup = !cmd.used("no-dedup");
 
@@ -593,7 +593,7 @@ static int runSetCamera(int argc, char* argv[]) {
     return 2;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   if (!loadProjectFromFile(project_file, project)) {
@@ -683,7 +683,7 @@ static int runSetCS(int argc, char* argv[]) {
     return 2;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   have_ref = cmd.used("have-ref");
 
   Project project;
@@ -759,7 +759,7 @@ static int runInspect(int argc, char* argv[]) {
     return 1;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   if (!loadProjectFromFile(project_file, project))
@@ -784,7 +784,7 @@ static int runInspect(int argc, char* argv[]) {
     out["task_detail"] = json::parse(ss.str());
   } else {
     out["project"]["image_groups"] = project.image_groups.size();
-    out["project"]["images"] = project.GetTotalImageCount();
+    out["project"]["images"] = project.get_total_image_count();
     out["project"]["measurements"] = project.measurements.size();
     out["project"]["tasks"] = project.at_tasks.size();
     out["tasks"] = json::array();
@@ -824,7 +824,7 @@ static int runLs(int argc, char* argv[]) {
     return 1;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   if (!loadProjectFromFile(project_file, project))
@@ -874,7 +874,7 @@ static int runCreateATTask(int argc, char* argv[]) {
     return 2;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   if (!loadProjectFromFile(project_file, project)) {
@@ -955,7 +955,7 @@ static int runDeleteATTask(int argc, char* argv[]) {
     return 2;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   if (!loadProjectFromFile(project_file, project)) {
@@ -1029,7 +1029,7 @@ static int runExtract(int argc, char* argv[]) {
     return 1;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   all_groups = cmd.used('a');
   export_gnss = !cmd.used("no-gnss");
@@ -1262,7 +1262,7 @@ static int runIntrinsics(int argc, char* argv[]) {
     return 1;
   }
 
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   Project project;
   if (!loadProjectFromFile(project_file, project))

@@ -19,14 +19,14 @@ namespace {
 bool load_pair_geo(const std::string& geo_path, Eigen::Matrix3d* R, Eigen::Vector3d* t,
                    std::vector<uint8_t>* inlier_mask) {
   insight::io::IDCReader reader(geo_path);
-  if (!reader.isValid())
+  if (!reader.is_valid())
     return false;
-  const auto& meta = reader.getMetadata();
+  const auto& meta = reader.get_metadata();
   if (!meta.contains("twoview"))
     return false;
-  auto R_blob = reader.readBlob<float>("R_matrix");
-  auto t_blob = reader.readBlob<float>("t_vector");
-  *inlier_mask = reader.readBlob<uint8_t>("F_inliers");
+  auto R_blob = reader.read_blob<float>("R_matrix");
+  auto t_blob = reader.read_blob<float>("t_vector");
+  *inlier_mask = reader.read_blob<uint8_t>("F_inliers");
   if (R_blob.size() != 9u || t_blob.size() != 3u || inlier_mask->empty())
     return false;
   for (int i = 0; i < 3; ++i)
@@ -41,11 +41,11 @@ bool load_pair_geo(const std::string& geo_path, Eigen::Matrix3d* R, Eigen::Vecto
 bool load_pair_match(const std::string& match_path, std::vector<uint16_t>* indices,
                      std::vector<float>* coords_pixel, std::vector<float>* scales) {
   insight::io::IDCReader reader(match_path);
-  if (!reader.isValid())
+  if (!reader.is_valid())
     return false;
-  *indices = reader.readBlob<uint16_t>("indices");
-  *coords_pixel = reader.readBlob<float>("coords_pixel");
-  *scales = reader.readBlob<float>("scales");
+  *indices = reader.read_blob<uint16_t>("indices");
+  *coords_pixel = reader.read_blob<float>("coords_pixel");
+  *scales = reader.read_blob<float>("scales");
   return !indices->empty() && coords_pixel->size() >= indices->size() * 2u;
 }
 
@@ -198,6 +198,134 @@ int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
     (*registered)[static_cast<size_t>(im)] = true;
     ++added;
     triangulate_tracks_for_new_image(store, im, *poses_R, *poses_t, *registered, fx, fy, cx, cy);
+  }
+  return added;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Intrinsics-aware wrappers (algorithm-only type, no database dependency)
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string& geo_dir,
+                           const std::string& match_dir, const camera::Intrinsics& K,
+                           TrackStore* store_out, Eigen::Matrix3d* R1_out, Eigen::Vector3d* t1_out,
+                           int min_tracks_after, uint32_t* image1_id_out, uint32_t* image2_id_out) {
+  const bool ok = run_initial_pair_loop(pairs_json_path, geo_dir, match_dir, K.fx, K.fy, K.cx, K.cy,
+                                        store_out, R1_out, t1_out, min_tracks_after, image1_id_out,
+                                        image2_id_out);
+  if (!ok || !K.has_distortion())
+    return ok;
+
+  if (store_out && R1_out && t1_out)
+    reject_outliers_two_view(store_out, *R1_out, *t1_out, K, 4.0);
+
+  return true;
+}
+
+int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                       std::vector<Eigen::Vector3d>* poses_t, std::vector<bool>* registered,
+                       const camera::Intrinsics& K, int min_correspondences) {
+  if (!store || !poses_R || !poses_t || !registered)
+    return 0;
+  const int n_images = store->num_images();
+  if (n_images < 3)
+    return 0;
+  poses_R->resize(static_cast<size_t>(n_images));
+  poses_t->resize(static_cast<size_t>(n_images));
+  registered->resize(static_cast<size_t>(n_images), false);
+  if (!(*registered)[0] || !(*registered)[1])
+    return 0;
+
+  std::vector<bool> skipped(static_cast<size_t>(n_images), false);
+  int added = 0;
+  for (;;) {
+    const int im = choose_next_resection_image(*store, *registered, &skipped);
+    if (im < 0)
+      break;
+    std::vector<int> track_ids;
+    store->get_image_track_observations(im, &track_ids, nullptr);
+    int n_corr = 0;
+    for (int tid : track_ids)
+      if (store->track_has_triangulated_xyz(tid))
+        ++n_corr;
+    if (n_corr < min_correspondences) {
+      skipped[static_cast<size_t>(im)] = true;
+      continue;
+    }
+    Eigen::Matrix3d R_im;
+    Eigen::Vector3d t_im;
+    if (!resection_single_image(K, *store, im, &R_im, &t_im, min_correspondences, 8.0, nullptr)) {
+      skipped[static_cast<size_t>(im)] = true;
+      continue;
+    }
+    (*poses_R)[static_cast<size_t>(im)] = R_im;
+    (*poses_t)[static_cast<size_t>(im)] = t_im;
+    (*registered)[static_cast<size_t>(im)] = true;
+    ++added;
+    triangulate_tracks_for_new_image(store, im, *poses_R, *poses_t, *registered,
+                                     K.fx, K.fy, K.cx, K.cy);
+  }
+  return added;
+}
+
+int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                       std::vector<Eigen::Vector3d>* poses_t, std::vector<bool>* registered,
+                       const std::vector<camera::Intrinsics>* intrinsics_per_image,
+                       double fx, double fy, double cx, double cy, int min_correspondences) {
+  if (!store || !poses_R || !poses_t || !registered)
+    return 0;
+  const int n_images = store->num_images();
+  if (n_images < 3)
+    return 0;
+  poses_R->resize(static_cast<size_t>(n_images));
+  poses_t->resize(static_cast<size_t>(n_images));
+  registered->resize(static_cast<size_t>(n_images), false);
+  if (!(*registered)[0] || !(*registered)[1])
+    return 0;
+
+  const bool use_per_image =
+      intrinsics_per_image && intrinsics_per_image->size() == static_cast<size_t>(n_images);
+
+  std::vector<bool> skipped(static_cast<size_t>(n_images), false);
+  int added = 0;
+  for (;;) {
+    const int im = choose_next_resection_image(*store, *registered, &skipped);
+    if (im < 0)
+      break;
+    std::vector<int> track_ids;
+    store->get_image_track_observations(im, &track_ids, nullptr);
+    int n_corr = 0;
+    for (int tid : track_ids)
+      if (store->track_has_triangulated_xyz(tid))
+        ++n_corr;
+    if (n_corr < min_correspondences) {
+      skipped[static_cast<size_t>(im)] = true;
+      continue;
+    }
+    Eigen::Matrix3d R_im;
+    Eigen::Vector3d t_im;
+    if (use_per_image) {
+      if (!resection_single_image((*intrinsics_per_image)[static_cast<size_t>(im)], *store, im,
+                                  &R_im, &t_im, min_correspondences, 8.0, nullptr)) {
+        skipped[static_cast<size_t>(im)] = true;
+        continue;
+      }
+    } else {
+      if (!resection_single_image(*store, im, fx, fy, cx, cy, &R_im, &t_im, min_correspondences,
+                                 8.0, nullptr)) {
+        skipped[static_cast<size_t>(im)] = true;
+        continue;
+      }
+    }
+    (*poses_R)[static_cast<size_t>(im)] = R_im;
+    (*poses_t)[static_cast<size_t>(im)] = t_im;
+    (*registered)[static_cast<size_t>(im)] = true;
+    ++added;
+    if (use_per_image)
+      triangulate_tracks_for_new_image(store, im, *poses_R, *poses_t, *registered,
+                                       *intrinsics_per_image);
+    else
+      triangulate_tracks_for_new_image(store, im, *poses_R, *poses_t, *registered, fx, fy, cx, cy);
   }
   return added;
 }

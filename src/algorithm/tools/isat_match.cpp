@@ -92,8 +92,8 @@ std::vector<PairTask> loadPairsJSON(const std::string& json_path,
 
   for (const auto& pair : j["pairs"]) {
     PairTask task;
-    task.image1_id = insight::tools::getImageIdFromPair(pair, "image1_id");
-    task.image2_id = insight::tools::getImageIdFromPair(pair, "image2_id");
+    task.image1_id = insight::tools::get_image_id_from_pair(pair, "image1_id");
+    task.image2_id = insight::tools::get_image_id_from_pair(pair, "image2_id");
     task.priority = pair.value("priority", 1.0f);
     task.index = index++;
 
@@ -123,20 +123,20 @@ std::vector<PairTask> loadPairsJSON(const std::string& json_path,
 FeatureData loadFeaturesIDC(const std::string& idc_path) {
   IDCReader reader(idc_path);
 
-  if (!reader.isValid()) {
+  if (!reader.is_valid()) {
     LOG(ERROR) << "Invalid IDC file: " << idc_path;
     return FeatureData();
   }
 
   // Read keypoints blob
-  auto keypoints_raw = reader.readBlob<float>("keypoints");
+  auto keypoints_raw = reader.read_blob<float>("keypoints");
   if (keypoints_raw.empty()) {
     LOG(ERROR) << "Failed to read keypoints from " << idc_path;
     return FeatureData();
   }
 
   // Read descriptors blob - auto-detect dtype
-  auto desc_blob = reader.getBlobDescriptor("descriptors");
+  auto desc_blob = reader.get_blob_descriptor("descriptors");
   std::string dtype = desc_blob["dtype"];
 
   size_t num_features = keypoints_raw.size() / 4;
@@ -162,13 +162,13 @@ FeatureData loadFeaturesIDC(const std::string& idc_path) {
 
   // Read descriptors based on type
   if (descriptor_type == DescriptorType::kUInt8) {
-    features.descriptors_uint8 = reader.readBlob<uint8_t>("descriptors");
+    features.descriptors_uint8 = reader.read_blob<uint8_t>("descriptors");
     if (features.descriptors_uint8.empty()) {
       LOG(ERROR) << "Failed to read uint8 descriptors from " << idc_path;
       return FeatureData();
     }
   } else {
-    features.descriptors_float = reader.readBlob<float>("descriptors");
+    features.descriptors_float = reader.read_blob<float>("descriptors");
     if (features.descriptors_float.empty()) {
       LOG(ERROR) << "Failed to read float32 descriptors from " << idc_path;
       return FeatureData();
@@ -242,18 +242,18 @@ bool writeMatchIDC(const MatchResult& matches, const PairTask& pair,
 
   // Write IDC file
   IDCWriter writer(output_file);
-  writer.setMetadata(metadata);
+  writer.set_metadata(metadata);
 
-  writer.addBlob("indices", indices_flat.data(), indices_flat.size() * sizeof(uint16_t), "uint16",
+  writer.add_blob("indices", indices_flat.data(), indices_flat.size() * sizeof(uint16_t), "uint16",
                  {static_cast<int>(matches.num_matches), 2});
 
-  writer.addBlob("coords_pixel", coords_flat.data(), coords_flat.size() * sizeof(float), "float32",
+  writer.add_blob("coords_pixel", coords_flat.data(), coords_flat.size() * sizeof(float), "float32",
                  {static_cast<int>(matches.num_matches), 4});
 
-  writer.addBlob("scales", scales_flat.data(), scales_flat.size() * sizeof(float), "float32",
+  writer.add_blob("scales", scales_flat.data(), scales_flat.size() * sizeof(float), "float32",
                  {static_cast<int>(matches.num_matches), 2});
 
-  writer.addBlob("distances", matches.distances.data(), matches.distances.size() * sizeof(float),
+  writer.add_blob("distances", matches.distances.data(), matches.distances.size() * sizeof(float),
                  "float32", {static_cast<int>(matches.num_matches)});
 
   if (!writer.write()) {
@@ -335,7 +335,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Set logging level
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   // Log configuration
   LOG(INFO) << "Feature matching configuration:";

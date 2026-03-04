@@ -38,14 +38,14 @@ public:
    *
    * @return 完整的 CoordinateSystem 对象（仅在 OK 点击后有效）
    */
-  database::CoordinateSystem GetCoordinateSystem() const;
+  database::CoordinateSystem get_coordinate_system() const;
 
   /**
    * 加载已有坐标系配置到对话框
    *
-   * @param[in] coordSys 要加载的坐标系
+   * @param[in] coord_sys 要加载的坐标系
    */
-  void SetCoordinateSystem(const database::CoordinateSystem& coordSys);
+  void set_coordinate_system(const database::CoordinateSystem& coord_sys);
 
 private slots:
   /**
@@ -54,10 +54,10 @@ private slots:
    *
    * @param[in] valid 表单是否有效
    */
-  void onValidationChanged(bool valid);
+  void on_validation_changed(bool valid);
 
 private:
-  void initializeUI();
+  void initialize_ui();
 
   CoordinateSystemConfigWidget* m_configWidget = nullptr;
 };

@@ -41,9 +41,9 @@ NewATTaskDialog::NewATTaskDialog(ProjectDocument* document, const QString& defau
 
 NewATTaskDialog::~NewATTaskDialog() = default;
 
-std::string NewATTaskDialog::getTaskName() const { return m_taskNameEdit->text().toStdString(); }
+std::string NewATTaskDialog::get_task_name() const { return m_taskNameEdit->text().toStdString(); }
 
-uint32_t NewATTaskDialog::getParentTaskIndex() const {
+uint32_t NewATTaskDialog::get_parent_task_index() const {
   int index = m_parentTaskCombo->currentIndex();
   if (index <= 0) { // index 0 is "None"
     return static_cast<uint32_t>(-1);

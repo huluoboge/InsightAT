@@ -12,7 +12,7 @@ namespace tools {
 /// \param verbose  True if -v/--verbose was used
 /// \param quiet    True if -q/--quiet was used
 /// \param log_level  Value of --log-level (error|warn|info|debug), or empty
-void ApplyLogLevel(bool verbose, bool quiet, const std::string& log_level);
+void apply_log_level(bool verbose, bool quiet, const std::string& log_level);
 
 } // namespace tools
 } // namespace insight

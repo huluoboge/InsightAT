@@ -21,21 +21,21 @@ public:
   ~SpatialReferenceDialog();
 
 public:
-  Coordinate SelectCoordinate() const;
+  Coordinate select_coordinate() const;
 
 private slots:
-  void onItemClicked(const QModelIndex& index);
-  void onAddFavorite();
-  void onFilter();
-  void onClearFilter();
-  void onClearFavorite();
+  void on_item_clicked(const QModelIndex& index);
+  void on_add_favorite();
+  void on_filter();
+  void on_clear_filter();
+  void on_clear_favorite();
 
 private:
   Ui::SpatialReferenceTool ui;
   void init();
-  void showTrees();
-  void showAll();
-  void showSome(const QString& name);
+  void show_trees();
+  void show_all();
+  void show_some(const QString& name);
 
   QTreeWidgetItem* _favorite;
   QTreeWidgetItem* _geo;

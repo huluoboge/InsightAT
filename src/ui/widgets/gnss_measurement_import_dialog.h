@@ -51,48 +51,48 @@ public:
    * 返回的数据已按向导匹配策略（按名称或按序列）排序，
    * 可直接应用到对应的 Image 对象
    */
-  std::vector<database::Measurement::GNSSMeasurement> getGNSSMeasurements();
+  std::vector<database::Measurement::GNSSMeasurement> get_gnss_measurements();
 
   /**
    * @brief 设置坐标类型
    * @param useGeographic true 表示使用经纬度，false 表示使用 XYZ 投影坐标
    */
-  void setCoordinateType(bool useGeographic);
+  void set_coordinate_type(bool useGeographic);
 
   /**
    * @brief 设置是否导入旋转数据
    * @param importRotation true 表示导入旋转角度
    */
-  void setImportRotation(bool importRotation);
+  void set_import_rotation(bool importRotation);
 
   /**
    * @brief 设置是否使用统一协方差
    * @param useUniform true 表示使用统一协方差值
    */
-  void setUseUniformCovariance(bool useUniform);
+  void set_use_uniform_covariance(bool useUniform);
 
   /**
    * @brief 设置统一协方差值
    * @param sigma_xy XY方向标准差（米）
    * @param sigma_z Z方向标准差（米）
    */
-  void setUniformCovariance(double sigma_xy, double sigma_z);
+  void set_uniform_covariance(double sigma_xy, double sigma_z);
 
 protected:
   /**
    * @brief 重写字段配置 - GNSS 特定的字段列表
    */
-  FieldConfiguration getFieldConfiguration() const override;
+  FieldConfiguration get_field_configuration() const override;
 
   /**
    * @brief 验证字段数据
    */
-  bool checkFieldData(int rowFrom, const std::vector<int>& fieldIndex) override;
+  bool check_field_data(int rowFrom, const std::vector<int>& fieldIndex) override;
 
   /**
    * @brief 获取字段名称
    */
-  QList<QString> fieldNames() const override;
+  QList<QString> field_names() const override;
 
 private:
   /**

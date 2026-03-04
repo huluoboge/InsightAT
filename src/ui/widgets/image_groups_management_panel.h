@@ -38,43 +38,28 @@ public:
   explicit ImageGroupsManagementPanel(QWidget* parent = nullptr);
   ~ImageGroupsManagementPanel();
 
-  /**
-   * @brief 设置项目文档指针，用于访问 Project 数据
-   */
-  void SetProjectDocument(ProjectDocument* doc);
+  void set_project_document(ProjectDocument* doc);
 
-  /**
-   * @brief 从 Project 重新加载分组列表
-   */
-  void RefreshGroupList();
+  void refresh_group_list();
 
 signals:
-  /**
-   * @brief 用户点击 [编辑] 按钮时发出
-   */
-  void editGroupRequested(database::ImageGroup* group);
+  void edit_group_requested(database::ImageGroup* group);
 
 private slots:
-  // ─── UI 事件槽 ───
-  void onNewGroup();
-  void onImportImages();
-  void onEditGroup();
-  void onDeleteGroup();
-
-  // ─── 数据变化槽 ───
-  void onProjectChanged();
-  void onImageGroupAdded(uint32_t group_id);
-  void onImageGroupRemoved(uint32_t group_id);
-  void onImageGroupChanged(uint32_t group_id);
+  void on_new_group();
+  void on_import_images();
+  void on_edit_group();
+  void on_delete_group();
+  void on_project_changed();
+  void on_image_group_added(uint32_t group_id);
+  void on_image_group_removed(uint32_t group_id);
+  void on_image_group_changed(uint32_t group_id);
 
 private:
-  // ─── 初始化 ───
-  void InitializeUI();
-  void ConnectSignals();
-
-  // ─── 工具方法 ───
-  void UpdateTableRow(const database::ImageGroup* group, int row);
-  std::string GetNextGroupName();
+  void initialize_ui();
+  void connect_signals();
+  void update_table_row(const database::ImageGroup* group, int row);
+  std::string get_next_group_name();
 
   // ─── UI 组件 ───
   QLabel* m_titleLabel;

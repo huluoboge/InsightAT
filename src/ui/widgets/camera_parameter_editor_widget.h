@@ -22,12 +22,12 @@ namespace insight::ui::widgets {
 /**
  * @brief 相机参数编辑器 Widget - 可复用于多个界面（ImageGroup、AT Task等）
  *
- * 支持 Brown-Conrady 畸变模型的完整参数编辑：
+ * 支持与 Bentley ContextCapture 一致的 5 参数畸变模型：
  * - 9 个内参：焦距(px)、主点(px)、图像宽高(px)、传感器宽高(mm)、焦距(mm)、35mm等效焦距
- * - 7 个畸变参数：k1, k2, k3, p1, p2, b1, b2（默认0）
+ * - 5 个畸变参数：k1, k2, k3, p1, p2（与 Bentley K₁,K₂,K₃,P₁,P₂ 对应）
  * - 3 种相机模式：GroupLevel / ImageLevel / RigBased
  *
- * 失焦时自动保存数据（通过 fieldModified() 信号）
+ * 失焦时自动保存数据（通过 field_modified() 信号）
  */
 class CameraParameterEditorWidget : public QWidget {
   Q_OBJECT
@@ -36,92 +36,41 @@ public:
   explicit CameraParameterEditorWidget(QWidget* parent = nullptr);
   ~CameraParameterEditorWidget();
 
-  // ─── 数据操作 ───
-  /**
-   * @brief 加载相机参数到 UI 中
-   */
-  void LoadCamera(const database::CameraModel& camera);
+  void load_camera(const database::CameraModel& camera);
+  database::CameraModel get_camera() const;
+  void set_group_name(const std::string& name);
+  std::string get_group_name() const;
 
-  /**
-   * @brief 获取当前编辑的相机参数
-   */
-  database::CameraModel GetCamera() const;
-
-  /**
-   * @brief 设置分组名称（仅当 ShowGroupNameField(true) 时显示）
-   */
-  void SetGroupName(const std::string& name);
-
-  /**
-   * @brief 获取分组名称
-   */
-  std::string GetGroupName() const;
-
-  // ─── UI 控制 ───
-  /**
-   * @brief 控制分组名称字段的可见性
-   */
-  void ShowGroupNameField(bool show);
-
-  /**
-   * @brief 设置所有字段的编辑状态
-   */
-  void SetEditable(bool editable);
-
-  /**
-   * @brief 设置相机模式（动态显示/隐藏相关字段）
-   */
-  void SetMode(database::ImageGroup::CameraMode mode);
-
-  /**
-   * @brief 获取当前相机模式
-   */
-  database::ImageGroup::CameraMode GetMode() const;
+  void show_group_name_field(bool show);
+  void set_editable(bool editable);
+  void set_mode(database::ImageGroup::CameraMode mode);
+  database::ImageGroup::CameraMode get_mode() const;
 
 signals:
-  /**
-   * @brief 任何字段失焦时发出此信号
-   */
-  void fieldModified();
-
-  /**
-   * @brief 相机模式改变时发出此信号
-   */
-  void modeChanged(database::ImageGroup::CameraMode mode);
-
-  /**
-   * @brief 请求自动估计参数时发出此信号
-   */
-  void autoEstimateRequested();
+  void field_modified();
+  void mode_changed(database::ImageGroup::CameraMode mode);
+  void auto_estimate_requested();
 
 private slots:
-  // ─── 内参字段信号槽 ───
-  void onFocalLengthPxEdited();
-  void onPrincipalPointXEdited();
-  void onPrincipalPointYEdited();
-  void onImageWidthEdited();
-  void onImageHeightEdited();
-  void onSensorWidthMmEdited();
-  void onSensorHeightMmEdited();
-  void onFocalLengthMmEdited();
-  void onFocalLength35mmEdited();
-
-  // ─── 畸变参数信号槽 ───
-  void onDistortionParameterEdited();
-
-  // ─── 相机模式信号槽 ───
-  void onCameraModeChanged(int index);
+  void on_focal_length_px_edited();
+  void on_principal_point_x_edited();
+  void on_principal_point_y_edited();
+  void on_image_width_edited();
+  void on_image_height_edited();
+  void on_sensor_width_mm_edited();
+  void on_sensor_height_mm_edited();
+  void on_focal_length_mm_edited();
+  void on_focal_length_35mm_edited();
+  void on_distortion_parameter_edited();
+  void on_camera_mode_changed(int index);
 
 private:
-  // ─── 初始化 ───
-  void InitializeUI();
-  void ConnectSignals();
-
-  // ─── UI 更新 ───
-  void UpdateUIByMode(database::ImageGroup::CameraMode mode);
-  void UpdateGroupLevelUI();
-  void UpdateImageLevelUI();
-  void UpdateRigBasedUI();
+  void initialize_ui();
+  void connect_signals();
+  void update_ui_by_mode(database::ImageGroup::CameraMode mode);
+  void update_group_level_ui();
+  void update_image_level_ui();
+  void update_rig_based_ui();
 
   // ─── UI 组件 ───
 
@@ -188,16 +137,10 @@ private:
   QDoubleSpinBox* m_k3SpinBox;
 
   QLabel* m_p1Label;
-  QDoubleSpinBox* m_p1SpinBox;
+  QDoubleSpinBox* m_p1SpinBox; ///< p1 = Bentley P₁
 
   QLabel* m_p2Label;
-  QDoubleSpinBox* m_p2SpinBox;
-
-  QLabel* m_b1Label;
-  QDoubleSpinBox* m_b1SpinBox;
-
-  QLabel* m_b2Label;
-  QDoubleSpinBox* m_b2SpinBox;
+  QDoubleSpinBox* m_p2SpinBox; ///< p2 = Bentley P₂
 
   // ─── 按钮组 (暂灰显) ───
   QPushButton* m_autoEstimateButton;

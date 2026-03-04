@@ -52,20 +52,20 @@ std::vector<cv::Mat> sampleDescriptorsMultiFile(const std::vector<std::string>& 
 
   for (const auto& file : feature_files) {
     IDCReader reader(file);
-    if (!reader.isValid()) {
+    if (!reader.is_valid()) {
       LOG(WARNING) << "Skipping invalid file: " << file;
       continue;
     }
 
     // Read descriptors
-    auto desc_blob = reader.getBlobDescriptor("descriptors");
+    auto desc_blob = reader.get_blob_descriptor("descriptors");
     std::string dtype = desc_blob["dtype"];
 
     std::vector<float> descriptors;
     if (dtype == "float32") {
-      descriptors = reader.readBlob<float>("descriptors");
+      descriptors = reader.read_blob<float>("descriptors");
     } else if (dtype == "uint8") {
-      auto desc_uint8 = reader.readBlob<uint8_t>("descriptors");
+      auto desc_uint8 = reader.read_blob<uint8_t>("descriptors");
       descriptors.resize(desc_uint8.size());
       for (size_t i = 0; i < desc_uint8.size(); ++i) {
         descriptors[i] = static_cast<float>(desc_uint8[i]);
@@ -159,7 +159,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Set logging level
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   LOG(INFO) << "=== Vocabulary Tree Training (DBoW3) ===";
   LOG(INFO) << "Feature directory: " << feature_dir;

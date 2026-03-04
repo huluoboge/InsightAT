@@ -77,7 +77,8 @@ struct GlobalObservation {
 };
 
 /// Global BA input: N cameras (world-to-camera), M points, intrinsics per camera or shared.
-/// Camera 0 is fixed at identity. Intrinsics: if empty, use shared fx,fy,cx,cy for all.
+/// Camera 0 is fixed at identity.
+/// Intrinsics: if fx_per_camera empty, use shared fx,fy,cx,cy for all; else use per-camera.
 struct GlobalBAInput {
   std::vector<Eigen::Matrix3d> poses_R;
   std::vector<Eigen::Vector3d> poses_t;
@@ -87,6 +88,11 @@ struct GlobalBAInput {
   double fy = 0.0;
   double cx = 0.0;
   double cy = 0.0;
+  /// Per-camera intrinsics (size = poses_R.size()). When non-empty, override fx,fy,cx,cy per image.
+  std::vector<double> fx_per_camera;
+  std::vector<double> fy_per_camera;
+  std::vector<double> cx_per_camera;
+  std::vector<double> cy_per_camera;
 };
 
 struct GlobalBAResult {

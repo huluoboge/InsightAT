@@ -27,26 +27,19 @@ public:
   static UISystemConfig& instance();
   static void exit();
 
-  // 设置配置路径
-  void setConfigPath(const std::string& configPath);
-  std::string configPath() const;
+  void set_config_path(const std::string& config_path);
+  std::string config_path() const;
 
-  // 加载坐标系数据库
-  bool loadCoordinateDatabases();
+  bool load_coordinate_databases();
 
-  // 获取加载的坐标系
-  const std::vector<Coordinate>& getGeoCoordinates() const;
-  const std::vector<Coordinate>& getProjCoordinates() const;
+  const std::vector<Coordinate>& get_geo_coordinates() const;
+  const std::vector<Coordinate>& get_proj_coordinates() const;
+  const std::vector<Coordinate>& get_all_coordinates() const;
 
-  // 合并的坐标系列表
-  const std::vector<Coordinate>& getAllCoordinates() const;
+  Coordinate find_by_epsg(int epsg) const;
+  std::vector<Coordinate> search_by_keyword(const std::string& keyword) const;
 
-  // 查询功能
-  Coordinate findByEPSG(int epsg) const;
-  std::vector<Coordinate> searchByKeyword(const std::string& keyword) const;
-
-  // 检查是否已加载
-  bool isLoaded() const { return m_loaded; }
+  bool is_loaded() const { return m_loaded; }
 
 private:
   UISystemConfig();

@@ -18,12 +18,17 @@
  *     }
  *     → Each camera stored under its integer key (== group_id from isat_project).
  *
+ * Distortion parameters (optional, Bentley-compatible 5-parameter model):
+ *   "k1", "k2", "k3", "p1", "p2" can appear in any camera entry.
+ *
  * camera_id values come from the image list JSON (isat_project extract):
  *     image["camera_id"]  ==  group_id of the ImageGroup the image belongs to.
-// isat_geo and isat_twoview read this mapping via buildImageCameraMap()  and
- * resolve per-pair K1/K2 using  lookupCamera()  at runtime.
+// isat_geo and isat_twoview read this mapping via build_image_camera_map() and
+ * resolve per-pair K1/K2 using lookup_camera() at runtime.
  */
 #pragma once
+
+#include "../modules/camera/camera_types.h"
 
 #include <cstdint>
 #include <fstream>
@@ -34,7 +39,8 @@
 #include <nlohmann/json.hpp>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pinhole intrinsics (principal point at (cx, cy), no distortion assumed)
+// Pinhole + optional Brown-Conrady distortion intrinsics for CLI tools
+// (5-parameter model, identical to Bentley ContextCapture)
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct CameraIntrinsics {
@@ -43,7 +49,29 @@ struct CameraIntrinsics {
   uint32_t width = 0;        ///< Image width  (pixels, 0 = unknown)
   uint32_t height = 0;       ///< Image height (pixels, 0 = unknown)
 
+  // Bentley-compatible 5-parameter distortion (all default to 0 = no distortion)
+  double k1 = 0.0; ///< Radial K₁
+  double k2 = 0.0; ///< Radial K₂
+  double k3 = 0.0; ///< Radial K₃
+  double p1 = 0.0; ///< Tangential P₁
+  double p2 = 0.0; ///< Tangential P₂
+
   bool valid() const { return fx > 0.0 && fy > 0.0; }
+
+  /// Convert to algorithm intrinsics (for resection, undistortion, etc.). No database dependency.
+  insight::camera::Intrinsics to_algorithm_intrinsics() const {
+    insight::camera::Intrinsics K;
+    K.fx = fx;
+    K.fy = fy;
+    K.cx = cx;
+    K.cy = cy;
+    K.k1 = k1;
+    K.k2 = k2;
+    K.k3 = k3;
+    K.p1 = p1;
+    K.p2 = p2;
+    return K;
+  }
 };
 
 /// Map: camera_id → CameraIntrinsics
@@ -61,7 +89,7 @@ using CameraIntrinsicsMap = std::unordered_map<uint32_t, CameraIntrinsics>;
  * @param path  File path. Returns empty map if path is empty.
  * @return      Populated map on success; empty on failure.
  */
-inline CameraIntrinsicsMap loadIntrinsicsMap(const std::string& path) {
+inline CameraIntrinsicsMap load_intrinsics_map(const std::string& path) {
   CameraIntrinsicsMap result;
   if (path.empty())
     return result;
@@ -102,6 +130,11 @@ inline CameraIntrinsicsMap loadIntrinsicsMap(const std::string& path) {
       K.cy = val.value("cy", 0.0);
       K.width = val.value("width", static_cast<uint32_t>(0));
       K.height = val.value("height", static_cast<uint32_t>(0));
+      K.k1 = val.value("k1", 0.0);
+      K.k2 = val.value("k2", 0.0);
+      K.k3 = val.value("k3", 0.0);
+      K.p1 = val.value("p1", 0.0);
+      K.p2 = val.value("p2", 0.0);
 
       if (!K.valid()) {
         LOG(WARNING)
@@ -121,6 +154,11 @@ inline CameraIntrinsicsMap loadIntrinsicsMap(const std::string& path) {
     K.cy = j.value("cy", 0.0);
     K.width = j.value("width", static_cast<uint32_t>(0));
     K.height = j.value("height", static_cast<uint32_t>(0));
+    K.k1 = j.value("k1", 0.0);
+    K.k2 = j.value("k2", 0.0);
+    K.k3 = j.value("k3", 0.0);
+    K.p1 = j.value("p1", 0.0);
+    K.p2 = j.value("p2", 0.0);
 
     if (!K.valid()) {
       LOG(ERROR) << "Intrinsics JSON must contain fx, fy > 0: " << path;
@@ -144,8 +182,8 @@ inline CameraIntrinsicsMap loadIntrinsicsMap(const std::string& path) {
  *
  * @return Pointer into the map (stable until map is modified), or nullptr.
  */
-inline const CameraIntrinsics* lookupCamera(const CameraIntrinsicsMap& cam_map,
-                                            uint32_t camera_id) {
+inline const CameraIntrinsics* lookup_camera(const CameraIntrinsicsMap& cam_map,
+                                             uint32_t camera_id) {
   auto it = cam_map.find(camera_id);
   if (it != cam_map.end())
     return &it->second;
@@ -171,7 +209,7 @@ inline const CameraIntrinsics* lookupCamera(const CameraIntrinsicsMap& cam_map,
  * @param path  Path to image list JSON. Returns empty map if path is empty.
  *              Calls LOG(FATAL) on parse failure.
  */
-inline std::unordered_map<uint32_t, uint32_t> buildImageCameraMap(const std::string& path) {
+inline std::unordered_map<uint32_t, uint32_t> build_image_camera_map(const std::string& path) {
   std::unordered_map<uint32_t, uint32_t> map;
   if (path.empty())
     return map;

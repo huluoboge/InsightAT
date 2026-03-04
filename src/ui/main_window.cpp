@@ -45,11 +45,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   UISystemConfig& config = UISystemConfig::instance();
 
   // 设置配置路径（优先尝试 build/config，备选 ../data/config）
-  // config.setConfigPath("./config");
-  // if (!config.loadCoordinateDatabases()) {
+  // config.set_config_path("./config");
+  // if (!config.load_coordinate_databases()) {
   //     LOG(WARNING) << "Failed to load from ./config, trying ../data/config";
-  //     config.setConfigPath("../data/config");
-  //     if (!config.loadCoordinateDatabases()) {
+  //     config.set_config_path("../data/config");
+  //     if (!config.load_coordinate_databases()) {
   //         LOG(ERROR) << "Failed to load coordinate databases from both paths";
   //     }
   // }
@@ -68,23 +68,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   m_workspaceModel = std::make_unique<WorkspaceTreeModel>();
 
   // 创建 UI 组件
-  createMenuBar();
-  createToolBar();
-  createWorkspace();
-  createStatusBar();
-
-  // 连接信号槽
-  connectSignalsSlots();
-
-  // 加载应用设置
-  loadSettings();
+  create_menu_bar();
+  create_tool_bar();
+  create_workspace();
+  create_status_bar();
+  connect_signals_slots();
+  load_settings();
 
   LOG(INFO) << "MainWindow initialized";
 }
 
-MainWindow::~MainWindow() { saveSettings(); }
+MainWindow::~MainWindow() { save_settings(); }
 
-void MainWindow::createMenuBar() {
+void MainWindow::create_menu_bar() {
   // ─────────────────────────────────────────────────────
   // 文件菜单 (File Menu)
   // ─────────────────────────────────────────────────────
@@ -92,29 +88,29 @@ void MainWindow::createMenuBar() {
 
   m_actionNewProject = m_fileMenu->addAction(tr("&New Project"));
   m_actionNewProject->setShortcut(QKeySequence::New);
-  connect(m_actionNewProject, &QAction::triggered, this, &MainWindow::onNewProject);
+  connect(m_actionNewProject, &QAction::triggered, this, &MainWindow::on_new_project);
 
   m_actionOpenProject = m_fileMenu->addAction(tr("&Open Project..."));
   m_actionOpenProject->setShortcut(QKeySequence::Open);
-  connect(m_actionOpenProject, &QAction::triggered, this, &MainWindow::onOpenProject);
+  connect(m_actionOpenProject, &QAction::triggered, this, &MainWindow::on_open_project);
 
   m_fileMenu->addSeparator();
 
   m_actionSaveProject = m_fileMenu->addAction(tr("&Save Project"));
   m_actionSaveProject->setShortcut(QKeySequence::Save);
   m_actionSaveProject->setEnabled(false);
-  connect(m_actionSaveProject, &QAction::triggered, this, &MainWindow::onSaveProject);
+  connect(m_actionSaveProject, &QAction::triggered, this, &MainWindow::on_save_project);
 
   m_actionSaveProjectAs = m_fileMenu->addAction(tr("Save Project &As..."));
   m_actionSaveProjectAs->setShortcut(QKeySequence::SaveAs);
   m_actionSaveProjectAs->setEnabled(false);
-  connect(m_actionSaveProjectAs, &QAction::triggered, this, &MainWindow::onSaveProjectAs);
+  connect(m_actionSaveProjectAs, &QAction::triggered, this, &MainWindow::on_save_project_as);
 
   m_fileMenu->addSeparator();
 
   m_actionExit = m_fileMenu->addAction(tr("E&xit"));
   m_actionExit->setShortcut(QKeySequence::Quit);
-  connect(m_actionExit, &QAction::triggered, this, &MainWindow::onExit);
+  connect(m_actionExit, &QAction::triggered, this, &MainWindow::on_exit);
 
   // ─────────────────────────────────────────────────────
   // 编辑菜单 (Edit Menu)
@@ -123,38 +119,38 @@ void MainWindow::createMenuBar() {
 
   m_actionProjectInfo = m_editMenu->addAction(tr("Project &Info..."));
   m_actionProjectInfo->setEnabled(false);
-  connect(m_actionProjectInfo, &QAction::triggered, this, &MainWindow::onProjectInfo);
+  connect(m_actionProjectInfo, &QAction::triggered, this, &MainWindow::on_project_info);
 
   m_editMenu->addSeparator();
 
   m_actionSetCoordinateSystem = m_editMenu->addAction(tr("Set &Coordinate System..."));
   m_actionSetCoordinateSystem->setEnabled(false);
   connect(m_actionSetCoordinateSystem, &QAction::triggered, this,
-          &MainWindow::onSetCoordinateSystem);
+          &MainWindow::on_set_coordinate_system);
 
   m_editMenu->addSeparator();
 
   m_actionAddImageGroup = m_editMenu->addAction(tr("Add Image &Group"));
   m_actionAddImageGroup->setShortcut(Qt::CTRL | Qt::Key_G);
   m_actionAddImageGroup->setEnabled(false);
-  connect(m_actionAddImageGroup, &QAction::triggered, this, &MainWindow::onAddImageGroup);
+  connect(m_actionAddImageGroup, &QAction::triggered, this, &MainWindow::on_add_image_group);
 
   m_actionAddCameraRig = m_editMenu->addAction(tr("Add Camera &Rig"));
   m_actionAddCameraRig->setShortcut(Qt::CTRL | Qt::Key_R);
   m_actionAddCameraRig->setEnabled(false);
-  connect(m_actionAddCameraRig, &QAction::triggered, this, &MainWindow::onAddCameraRig);
+  connect(m_actionAddCameraRig, &QAction::triggered, this, &MainWindow::on_add_camera_rig);
 
   m_actionImportGCPs = m_editMenu->addAction(tr("&Import GCPs..."));
   m_actionImportGCPs->setShortcut(Qt::CTRL | Qt::Key_I);
   m_actionImportGCPs->setEnabled(false);
-  connect(m_actionImportGCPs, &QAction::triggered, this, &MainWindow::onImportGCPs);
+  connect(m_actionImportGCPs, &QAction::triggered, this, &MainWindow::on_import_gcps);
 
   m_editMenu->addSeparator();
 
   m_actionCreateATTask = m_editMenu->addAction(tr("Create &AT Task"));
   m_actionCreateATTask->setShortcut(Qt::CTRL | Qt::Key_T);
   m_actionCreateATTask->setEnabled(false);
-  connect(m_actionCreateATTask, &QAction::triggered, this, &MainWindow::onCreateATTask);
+  connect(m_actionCreateATTask, &QAction::triggered, this, &MainWindow::on_create_at_task);
 
   // ─────────────────────────────────────────────────────
   // 视图菜单 (View Menu)
@@ -165,14 +161,14 @@ void MainWindow::createMenuBar() {
   m_actionToggleWorkspacePanel->setCheckable(true);
   m_actionToggleWorkspacePanel->setChecked(true);
   connect(m_actionToggleWorkspacePanel, &QAction::triggered, this,
-          &MainWindow::onToggleWorkspacePanel);
+          &MainWindow::on_toggle_workspace_panel);
 
   m_actionTogglePropertyPanel = m_viewMenu->addAction(tr("Toggle &Property Panel"));
   m_actionTogglePropertyPanel->setCheckable(true);
   m_actionTogglePropertyPanel->setChecked(true);
-  m_actionTogglePropertyPanel->setEnabled(false); // TODO: 后续实现
+  m_actionTogglePropertyPanel->setEnabled(false);
   connect(m_actionTogglePropertyPanel, &QAction::triggered, this,
-          &MainWindow::onTogglePropertyPanel);
+          &MainWindow::on_toggle_property_panel);
 
   // ─────────────────────────────────────────────────────
   // 帮助菜单 (Help Menu)
@@ -180,13 +176,13 @@ void MainWindow::createMenuBar() {
   m_helpMenu = menuBar()->addMenu(tr("&Help"));
 
   m_actionAbout = m_helpMenu->addAction(tr("&About InsightAT"));
-  connect(m_actionAbout, &QAction::triggered, this, &MainWindow::onAbout);
+  connect(m_actionAbout, &QAction::triggered, this, &MainWindow::on_about);
 
   m_actionAboutQt = m_helpMenu->addAction(tr("About &Qt"));
-  connect(m_actionAboutQt, &QAction::triggered, this, &MainWindow::onAboutQt);
+  connect(m_actionAboutQt, &QAction::triggered, this, &MainWindow::on_about_qt);
 }
 
-void MainWindow::createToolBar() {
+void MainWindow::create_tool_bar() {
   // 创建主工具栏
   QToolBar* toolbar = addToolBar(tr("Main Toolbar"));
   toolbar->setObjectName("MainToolbar");
@@ -205,7 +201,7 @@ void MainWindow::createToolBar() {
   toolbar->addAction(m_actionCreateATTask);
 }
 
-void MainWindow::createWorkspace() {
+void MainWindow::create_workspace() {
   // 创建中央部件
   QWidget* centralWidget = new QWidget(this);
   QHBoxLayout* layout = new QHBoxLayout(centralWidget);
@@ -271,7 +267,7 @@ void MainWindow::createWorkspace() {
   setCentralWidget(centralWidget);
 }
 
-void MainWindow::createStatusBar() {
+void MainWindow::create_status_bar() {
   // 项目名称标签
   m_projectNameLabel = new QLabel(tr("No project loaded"));
   m_projectNameLabel->setMinimumWidth(150);
@@ -287,40 +283,37 @@ void MainWindow::createStatusBar() {
   statusBar()->addPermanentWidget(m_statusLabel, 1);
 }
 
-void MainWindow::connectSignalsSlots() {
+void MainWindow::connect_signals_slots() {
   // ProjectDocument 信号
   connect(m_projectDocument.get(), &ProjectDocument::projectCreated, this,
-          &MainWindow::onProjectCreated);
+          &MainWindow::on_project_created);
   connect(m_projectDocument.get(), &ProjectDocument::projectOpened, this,
-          &MainWindow::onProjectOpened);
+          &MainWindow::on_project_opened);
   connect(m_projectDocument.get(), &ProjectDocument::projectSaved, this,
-          &MainWindow::onProjectSaved);
+          &MainWindow::on_project_saved);
   connect(m_projectDocument.get(), &ProjectDocument::modificationChanged, this,
-          &MainWindow::onModificationChanged);
+          &MainWindow::on_modification_changed);
 
-  // 工作区树视图双击信号
   connect(m_workspaceTreeView, &QTreeView::doubleClicked, this,
-          &MainWindow::onWorkspaceTreeDoubleClicked);
+          &MainWindow::on_workspace_tree_double_clicked);
 
-  // 工作区树视图单击选中信号
   connect(m_workspaceTreeView->selectionModel(), &QItemSelectionModel::currentChanged, this,
-          &MainWindow::onWorkspaceTreeSelectionChanged);
+          &MainWindow::on_workspace_tree_selection_changed);
 
-  // 将 ProjectDocument 连接到 WorkspaceTreeModel
-  m_workspaceModel->setProjectDocument(m_projectDocument.get());
+  m_workspaceModel->set_project_document(m_projectDocument.get());
 
   // ─── 新增：图像分组 UI 初始化 ───
   // 创建分组管理面板
   m_imageGroupsPanel = new widgets::ImageGroupsManagementPanel();
-  m_imageGroupsPanel->SetProjectDocument(m_projectDocument.get());
+  m_imageGroupsPanel->set_project_document(m_projectDocument.get());
 
   // 创建分组编辑对话框（单例）
   m_imageGroupDetailDialog = new dialogs::ImageGroupDetailPanel(this);
-  m_imageGroupDetailDialog->SetProjectDocument(m_projectDocument.get());
+  m_imageGroupDetailDialog->set_project_document(m_projectDocument.get());
 
   // 连接分组管理面板信号
-  connect(m_imageGroupsPanel, &widgets::ImageGroupsManagementPanel::editGroupRequested, this,
-          &MainWindow::onEditImageGroup);
+    connect(m_imageGroupsPanel, &widgets::ImageGroupsManagementPanel::edit_group_requested, this,
+          &MainWindow::on_edit_image_group);
 
   // 连接编辑对话框信号
   // ImageGroupDetailPanel 内部会调用 m_projectDocument->notifyImageGroupChanged()
@@ -336,7 +329,7 @@ void MainWindow::connectSignalsSlots() {
   m_atTaskPanel = new ATTaskPanel(m_projectDocument.get());
 }
 
-void MainWindow::updateWindowTitle() {
+void MainWindow::update_window_title() {
   QString title = "InsightAT";
 
   if (m_projectDocument->isProjectLoaded()) {
@@ -354,9 +347,8 @@ void MainWindow::updateWindowTitle() {
 // 文件菜单槽函数
 // ─────────────────────────────────────────────────────
 
-void MainWindow::onNewProject() {
-  // 先保存当前项目（如果有修改）
-  if (!maybeSave()) {
+void MainWindow::on_new_project() {
+  if (!maybe_save()) {
     return; // 用户取消了保存操作
   }
 
@@ -398,7 +390,7 @@ void MainWindow::onNewProject() {
     }
 
     // 项目已创建并保存，现在显示坐标系设置对话框
-    onSetCoordinateSystem();
+    on_set_coordinate_system();
 
     // 启用编辑菜单项
     m_actionProjectInfo->setEnabled(true);
@@ -415,9 +407,8 @@ void MainWindow::onNewProject() {
   }
 }
 
-void MainWindow::onOpenProject() {
-  // 先保存当前项目（如果有修改）
-  if (!maybeSave()) {
+void MainWindow::on_open_project() {
+  if (!maybe_save()) {
     return; // 用户取消了保存操作
   }
 
@@ -449,9 +440,9 @@ void MainWindow::onOpenProject() {
   }
 }
 
-void MainWindow::onSaveProject() {
+void MainWindow::on_save_project() {
   if (m_currentFilePath.isEmpty()) {
-    onSaveProjectAs();
+    on_save_project_as();
     return;
   }
 
@@ -464,7 +455,7 @@ void MainWindow::onSaveProject() {
   }
 }
 
-void MainWindow::onSaveProjectAs() {
+void MainWindow::on_save_project_as() {
   QString filePath = QFileDialog::getSaveFileName(this, tr("Save InsightAT Project As"), "",
                                                   tr("InsightAT Projects (*.iat);;All Files (*)"));
 
@@ -487,13 +478,13 @@ void MainWindow::onSaveProjectAs() {
   }
 }
 
-void MainWindow::onExit() { close(); }
+void MainWindow::on_exit() { close(); }
 
 // ─────────────────────────────────────────────────────
 // 编辑菜单槽函数
 // ─────────────────────────────────────────────────────
 
-void MainWindow::onProjectInfo() {
+void MainWindow::on_project_info() {
   if (!m_projectDocument || !m_projectDocument->isProjectLoaded()) {
     return;
   }
@@ -502,7 +493,7 @@ void MainWindow::onProjectInfo() {
   dialog.exec();
 }
 
-void MainWindow::onSetCoordinateSystem() {
+void MainWindow::on_set_coordinate_system() {
   if (!m_projectDocument->isProjectLoaded()) {
     QMessageBox::warning(this, tr("Warning"), tr("Please create or open a project first"));
     return;
@@ -512,10 +503,10 @@ void MainWindow::onSetCoordinateSystem() {
   CoordinateSystemConfigDialog dialog(this);
 
   // 加载现有的坐标系配置（如果有）
-  dialog.SetCoordinateSystem(m_projectDocument->project().input_coordinate_system);
+  dialog.set_coordinate_system(m_projectDocument->project().input_coordinate_system);
 
   if (dialog.exec() == QDialog::Accepted) {
-    auto coordSys = dialog.GetCoordinateSystem();
+    auto coordSys = dialog.get_coordinate_system();
     // 更新项目中的坐标系
     m_projectDocument->updateCoordinateSystem(coordSys);
 
@@ -525,27 +516,25 @@ void MainWindow::onSetCoordinateSystem() {
   }
 }
 
-void MainWindow::onAddImageGroup() {
+void MainWindow::on_add_image_group() {
   if (!m_projectDocument->isProjectLoaded()) {
     QMessageBox::warning(this, tr("Warning"), tr("Please create or open a project first"));
     return;
   }
-
-  // 显示 Image Groups 管理面板
-  onImageGroupsNodeSelected();
+  on_image_groups_node_selected();
 }
 
-void MainWindow::onAddCameraRig() {
+void MainWindow::on_add_camera_rig() {
   // TODO: 显示添加相机Rig对话框
   QMessageBox::information(this, tr("TODO"), tr("Camera Rig configuration - not yet implemented"));
 }
 
-void MainWindow::onImportGCPs() {
+void MainWindow::on_import_gcps() {
   // TODO: 显示GCP导入对话框和文件选择
   QMessageBox::information(this, tr("TODO"), tr("GCP import - not yet implemented"));
 }
 
-void MainWindow::onCreateATTask() {
+void MainWindow::on_create_at_task() {
   if (!m_projectDocument->isProjectLoaded()) {
     QMessageBox::warning(this, tr("Warning"), tr("Please create or open a project first"));
     return;
@@ -556,8 +545,8 @@ void MainWindow::onCreateATTask() {
   NewATTaskDialog dialog(m_projectDocument.get(), QString::fromStdString(nextTaskName), this);
 
   if (dialog.exec() == QDialog::Accepted) {
-    std::string taskName = dialog.getTaskName();
-    uint32_t parentTaskIndex = dialog.getParentTaskIndex();
+    std::string taskName = dialog.get_task_name();
+    uint32_t parentTaskIndex = dialog.get_parent_task_index();
 
     // 创建新任务
     std::string taskId = m_projectDocument->createATTask(QString::fromStdString(taskName));
@@ -575,7 +564,7 @@ void MainWindow::onCreateATTask() {
 
       // 刷新树形视图
       if (m_workspaceModel) {
-        m_workspaceModel->refreshTree();
+        m_workspaceModel->refresh_tree();
       }
 
       m_statusLabel->setText(tr("AT Task created: %1").arg(QString::fromStdString(taskName)));
@@ -587,11 +576,11 @@ void MainWindow::onCreateATTask() {
   }
 }
 
-void MainWindow::onToggleWorkspacePanel() {
+void MainWindow::on_toggle_workspace_panel() {
   m_workspaceTreeView->setVisible(m_actionToggleWorkspacePanel->isChecked());
 }
 
-void MainWindow::onTogglePropertyPanel() {
+void MainWindow::on_toggle_property_panel() {
   // TODO: 实现属性面板的切换
 }
 
@@ -599,7 +588,7 @@ void MainWindow::onTogglePropertyPanel() {
 // 帮助菜单槽函数
 // ─────────────────────────────────────────────────────
 
-void MainWindow::onAbout() {
+void MainWindow::on_about() {
   QMessageBox::about(this, tr("About InsightAT"),
                      tr("InsightAT - Photogrammetry Suite\n"
                         "Version 1.0.0\n\n"
@@ -607,32 +596,32 @@ void MainWindow::onAbout() {
                         "© 2026 InsightAT Contributors"));
 }
 
-void MainWindow::onAboutQt() { QApplication::aboutQt(); }
+void MainWindow::on_about_qt() { QApplication::aboutQt(); }
 
 // ─────────────────────────────────────────────────────
 // ProjectDocument 信号槽
 // ─────────────────────────────────────────────────────
 
-void MainWindow::onProjectCreated() {
-  updateWindowTitle();
+void MainWindow::on_project_created() {
+  update_window_title();
   m_projectNameLabel->setText(QString::fromStdString(m_projectDocument->project().name));
   m_statusLabel->setText(tr("Project created"));
 }
 
-void MainWindow::onProjectOpened() {
-  updateWindowTitle();
+void MainWindow::on_project_opened() {
+  update_window_title();
   m_projectNameLabel->setText(QString::fromStdString(m_projectDocument->project().name));
   m_statusLabel->setText(tr("Project opened"));
 }
 
-void MainWindow::onProjectSaved() {
-  updateWindowTitle();
+void MainWindow::on_project_saved() {
+  update_window_title();
   m_statusLabel->setText(tr("Project saved"));
 }
 
-void MainWindow::onModificationChanged(bool modified) {
+void MainWindow::on_modification_changed(bool modified) {
   m_isModified = modified;
-  updateWindowTitle();
+  update_window_title();
 
   if (modified) {
     m_modifiedIndicator->setText("*");
@@ -668,7 +657,7 @@ void MainWindow::showEvent(QShowEvent* event) {
   }
 }
 
-bool MainWindow::maybeSave() {
+bool MainWindow::maybe_save() {
   if (!m_projectDocument->isModified()) {
     return true; // 没有修改，继续
   }
@@ -691,7 +680,7 @@ bool MainWindow::maybeSave() {
       QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
 
   if (reply == QMessageBox::Save) {
-    onSaveProjectAs();
+    on_save_project_as();
     return !m_projectDocument->isModified(); // 保存成功才继续
   } else if (reply == QMessageBox::Discard) {
     return true; // 放弃修改，继续
@@ -701,7 +690,7 @@ bool MainWindow::maybeSave() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-  if (maybeSave()) {
+  if (maybe_save()) {
     event->accept();
   } else {
     event->ignore();
@@ -712,7 +701,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 // 设置管理
 // ─────────────────────────────────────────────────────
 
-void MainWindow::loadSettings() {
+void MainWindow::load_settings() {
   QSettings settings("InsightAT", "InsightAT");
 
   // 恢复窗口大小和位置
@@ -725,7 +714,7 @@ void MainWindow::loadSettings() {
   }
 }
 
-void MainWindow::onWorkspaceTreeDoubleClicked(const QModelIndex& index) {
+void MainWindow::on_workspace_tree_double_clicked(const QModelIndex& index) {
   if (!m_workspaceModel || !m_projectDocument || !m_projectDocument->isProjectLoaded()) {
     return;
   }
@@ -736,21 +725,20 @@ void MainWindow::onWorkspaceTreeDoubleClicked(const QModelIndex& index) {
 
   // 检查是否双击了 "Project Info" 节点
   if (nodeName == "Project Info") {
-    onProjectInfo();
+    on_project_info();
   }
-  // 检查是否双击了 "Image Groups" 节点
   else if (nodeName == "Image Groups") {
-    onImageGroupsNodeSelected();
+    on_image_groups_node_selected();
   }
 }
 
-void MainWindow::onWorkspaceTreeSelectionChanged(const QModelIndex& index) {
+void MainWindow::on_workspace_tree_selection_changed(const QModelIndex& index) {
   if (!m_workspaceModel || !m_projectDocument || !m_projectDocument->isProjectLoaded()) {
     return;
   }
 
   // 获取树节点信息
-  WorkspaceTreeModel::TreeNode* node = m_workspaceModel->getNode(index);
+  WorkspaceTreeModel::TreeNode* node = m_workspaceModel->get_node(index);
   if (!node) {
     return;
   }
@@ -766,7 +754,7 @@ void MainWindow::onWorkspaceTreeSelectionChanged(const QModelIndex& index) {
     // 显示 ATTaskPanel
     if (m_atTaskPanel) {
       // 加载选中的任务
-      m_atTaskPanel->loadTask(node->taskId);
+      m_atTaskPanel->load_task(node->taskId);
 
       // 将右侧内容面板替换为 ATTaskPanel
       int panelIndex = m_splitter->indexOf(m_centerWidget);
@@ -782,7 +770,7 @@ void MainWindow::onWorkspaceTreeSelectionChanged(const QModelIndex& index) {
   }
   // 单击 ImageGroupNode 时显示 ImageGroupsManagementPanel
   else if (node->type == WorkspaceTreeModel::ImageGroupNode) {
-    onImageGroupsNodeSelected();
+    on_image_groups_node_selected();
   }
   // 其他节点类型可在此后续扩展
 }
@@ -791,7 +779,7 @@ void MainWindow::onWorkspaceTreeSelectionChanged(const QModelIndex& index) {
 // 新增：图像分组 UI 槽函数
 // ─────────────────────────────────────────────────────
 
-void MainWindow::onImageGroupsNodeSelected() {
+void MainWindow::on_image_groups_node_selected() {
   // 隐藏其他面板
   if (m_atTaskPanel) {
     m_atTaskPanel->hide();
@@ -808,19 +796,19 @@ void MainWindow::onImageGroupsNodeSelected() {
       m_splitter->addWidget(m_imageGroupsPanel);
     }
     m_imageGroupsPanel->show();
-    m_imageGroupsPanel->RefreshGroupList();
+    m_imageGroupsPanel->refresh_group_list();
 
     m_statusLabel->setText(tr("Image Groups Management"));
   }
 }
 
-void MainWindow::onEditImageGroup(database::ImageGroup* group) {
+void MainWindow::on_edit_image_group(database::ImageGroup* group) {
   if (m_imageGroupDetailDialog && group) {
-    m_imageGroupDetailDialog->LoadGroup(group);
+    m_imageGroupDetailDialog->load_group(group);
   }
 }
 
-void MainWindow::saveSettings() {
+void MainWindow::save_settings() {
   QSettings settings("InsightAT", "InsightAT");
 
   // 保存窗口大小和位置

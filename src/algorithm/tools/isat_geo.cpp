@@ -69,7 +69,7 @@ using namespace insight::sfm;
 
 static constexpr const char* kEventPrefix = "ISAT_EVENT ";
 
-static void printEvent(const json& j) {
+static void print_event(const json& j) {
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
 }
@@ -123,7 +123,7 @@ static constexpr int kMinInliersForTrack = 4;
 // Pairs loading (reuses same JSON schema as isat_match / isat_retrieve)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::vector<GeoTask> loadPairs(const std::string& json_path, const std::string& match_dir,
+static std::vector<GeoTask> load_pairs(const std::string& json_path, const std::string& match_dir,
                                       const std::unordered_map<uint32_t, uint32_t>& img_cam_map) {
   std::ifstream file(json_path);
   if (!file.is_open()) {
@@ -136,8 +136,8 @@ static std::vector<GeoTask> loadPairs(const std::string& json_path, const std::s
   int idx = 0;
   for (const auto& pair : j["pairs"]) {
     GeoTask t;
-    t.image1_id = insight::tools::getImageIdFromPair(pair, "image1_id");
-    t.image2_id = insight::tools::getImageIdFromPair(pair, "image2_id");
+    t.image1_id = insight::tools::get_image_id_from_pair(pair, "image1_id");
+    t.image2_id = insight::tools::get_image_id_from_pair(pair, "image2_id");
     t.match_file = match_dir + "/" + std::to_string(t.image1_id) + "_" +
                    std::to_string(t.image2_id) + ".isat_match";
     t.index = idx++;
@@ -163,15 +163,15 @@ static std::vector<GeoTask> loadPairs(const std::string& json_path, const std::s
 // Stage 1 helper – read coords_pixel from .isat_match
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void readMatchCoords(GeoTask& task) {
+static void read_match_coords(GeoTask& task) {
   IDCReader reader(task.match_file);
-  if (!reader.isValid()) {
+  if (!reader.is_valid()) {
     LOG(WARNING) << "Invalid .isat_match file: " << task.match_file;
     return;
   }
 
   // coords_pixel blob: float32[N, 4]  →  [x1, y1, x2, y2] per row
-  task.coords = reader.readBlob<float>("coords_pixel");
+  task.coords = reader.read_blob<float>("coords_pixel");
   if (task.coords.empty()) {
     LOG(WARNING) << "Empty coords_pixel in: " << task.match_file;
     return;
@@ -185,7 +185,7 @@ static void readMatchCoords(GeoTask& task) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Squared Sampson distance for F/E:  x2ᵀ F x1 = 0
-static float sampsonSq(const float F[9], float x1, float y1, float x2, float y2) {
+static float sampson_sq(const float F[9], float x1, float y1, float x2, float y2) {
   // Fx1
   float fx = F[0] * x1 + F[1] * y1 + F[2];
   float fy = F[3] * x1 + F[4] * y1 + F[5];
@@ -204,7 +204,7 @@ static float sampsonSq(const float F[9], float x1, float y1, float x2, float y2)
 }
 
 // Squared forward-transfer error for H:  H·x1 ≈ x2
-static float transferSq(const float H[9], float x1, float y1, float x2, float y2) {
+static float transfer_sq(const float H[9], float x1, float y1, float x2, float y2) {
   float hz = H[6] * x1 + H[7] * y1 + H[8];
   if (fabsf(hz) < 1e-9f)
     return 1e9f;
@@ -214,30 +214,30 @@ static float transferSq(const float H[9], float x1, float y1, float x2, float y2
   return dx * dx + dy * dy;
 }
 
-static std::vector<uint8_t> computeFMask(const float F[9], const std::vector<float>& coords, int n,
+static std::vector<uint8_t> compute_f_mask(const float F[9], const std::vector<float>& coords, int n,
                                          float thresh_sq) {
   std::vector<uint8_t> mask(n, 0);
   for (int i = 0; i < n; i++) {
     float x1 = coords[i * 4 + 0], y1 = coords[i * 4 + 1];
     float x2 = coords[i * 4 + 2], y2 = coords[i * 4 + 3];
-    mask[i] = (sampsonSq(F, x1, y1, x2, y2) < thresh_sq) ? 1 : 0;
+    mask[i] = (sampson_sq(F, x1, y1, x2, y2) < thresh_sq) ? 1 : 0;
   }
   return mask;
 }
 
-static std::vector<uint8_t> computeHMask(const float H[9], const std::vector<float>& coords, int n,
+static std::vector<uint8_t> compute_h_mask(const float H[9], const std::vector<float>& coords, int n,
                                          float thresh_sq) {
   std::vector<uint8_t> mask(n, 0);
   for (int i = 0; i < n; i++) {
     float x1 = coords[i * 4 + 0], y1 = coords[i * 4 + 1];
     float x2 = coords[i * 4 + 2], y2 = coords[i * 4 + 3];
-    mask[i] = (transferSq(H, x1, y1, x2, y2) < thresh_sq) ? 1 : 0;
+    mask[i] = (transfer_sq(H, x1, y1, x2, y2) < thresh_sq) ? 1 : 0;
   }
   return mask;
 }
 
 // For E: Sampson on K-normalised coordinates (K1 for image1, K2 for image2)
-static std::vector<uint8_t> computeEMask(const float E[9], const std::vector<float>& coords, int n,
+static std::vector<uint8_t> compute_e_mask(const float E[9], const std::vector<float>& coords, int n,
                                          const CameraIntrinsics& K1, const CameraIntrinsics& K2,
                                          float thresh_sq_norm) {
   std::vector<uint8_t> mask(n, 0);
@@ -246,7 +246,7 @@ static std::vector<uint8_t> computeEMask(const float E[9], const std::vector<flo
     float y1 = static_cast<float>((coords[i * 4 + 1] - K1.cy) / K1.fy);
     float x2 = static_cast<float>((coords[i * 4 + 2] - K2.cx) / K2.fx);
     float y2 = static_cast<float>((coords[i * 4 + 3] - K2.cy) / K2.fy);
-    mask[i] = (sampsonSq(E, x1, y1, x2, y2) < thresh_sq_norm) ? 1 : 0;
+    mask[i] = (sampson_sq(E, x1, y1, x2, y2) < thresh_sq_norm) ? 1 : 0;
   }
   return mask;
 }
@@ -255,7 +255,7 @@ static std::vector<uint8_t> computeEMask(const float E[9], const std::vector<flo
 // Stage 3 helper – write .isat_geo
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void writeGeo(const GeoTask& task, const std::string& output_dir, int ransac_iter) {
+static void write_geo(const GeoTask& task, const std::string& output_dir, int ransac_iter) {
   std::string out = output_dir + "/" + std::to_string(task.image1_id) + "_" +
                     std::to_string(task.image2_id) + ".isat_geo";
 
@@ -301,24 +301,24 @@ static void writeGeo(const GeoTask& task, const std::string& output_dir, int ran
   }
 
   IDCWriter writer(out);
-  writer.setMetadata(meta);
+  writer.set_metadata(meta);
 
   if (task.F_ok)
-    writer.addBlob("F_matrix", task.F, 9 * sizeof(float), "float32", {3, 3});
+    writer.add_blob("F_matrix", task.F, 9 * sizeof(float), "float32", {3, 3});
   if (static_cast<int>(task.F_mask.size()) == task.num_matches)
-    writer.addBlob("F_inliers", task.F_mask.data(), task.num_matches, "uint8", {task.num_matches});
+    writer.add_blob("F_inliers", task.F_mask.data(), task.num_matches, "uint8", {task.num_matches});
   if (task.E_ok)
-    writer.addBlob("E_matrix", task.E, 9 * sizeof(float), "float32", {3, 3});
+    writer.add_blob("E_matrix", task.E, 9 * sizeof(float), "float32", {3, 3});
   if (static_cast<int>(task.E_mask.size()) == task.num_matches)
-    writer.addBlob("E_inliers", task.E_mask.data(), task.num_matches, "uint8", {task.num_matches});
+    writer.add_blob("E_inliers", task.E_mask.data(), task.num_matches, "uint8", {task.num_matches});
   if (task.H_ok)
-    writer.addBlob("H_matrix", task.H, 9 * sizeof(float), "float32", {3, 3});
+    writer.add_blob("H_matrix", task.H, 9 * sizeof(float), "float32", {3, 3});
   if (static_cast<int>(task.H_mask.size()) == task.num_matches)
-    writer.addBlob("H_inliers", task.H_mask.data(), task.num_matches, "uint8", {task.num_matches});
+    writer.add_blob("H_inliers", task.H_mask.data(), task.num_matches, "uint8", {task.num_matches});
   if (task.twoview_ok) {
-    writer.addBlob("R_matrix", task.R, 9 * sizeof(float), "float32", {3, 3});
-    writer.addBlob("t_vector", task.t, 3 * sizeof(float), "float32", {3});
-    writer.addBlob("points3d", task.points3d.data(), task.points3d.size() * sizeof(float),
+    writer.add_blob("R_matrix", task.R, 9 * sizeof(float), "float32", {3, 3});
+    writer.add_blob("t_vector", task.t, 3 * sizeof(float), "float32", {3});
+    writer.add_blob("points3d", task.points3d.data(), task.points3d.size() * sizeof(float),
                    "float32", {task.num_valid_points, 3});
   }
 
@@ -336,7 +336,7 @@ static void writeGeo(const GeoTask& task, const std::string& output_dir, int ran
 // inlier_fn(task) → {ok, inlier_count}
 using InlierFn = std::function<std::pair<bool, int>(const GeoTask&)>;
 
-static void writeMatchMatrix(const std::vector<GeoTask>& tasks, const std::string& output_path,
+static void write_match_matrix(const std::vector<GeoTask>& tasks, const std::string& output_path,
                              const std::string& model_label, InlierFn inlier_fn) {
   // Collect all unique image IDs
   std::set<uint32_t> id_set;
@@ -426,7 +426,7 @@ static void writeMatchMatrix(const std::vector<GeoTask>& tasks, const std::strin
 }
 
 // Derive output path: replace/append model suffix before extension
-static std::string makeVisPath(const std::string& base_path, const std::string& suffix) {
+static std::string make_vis_path(const std::string& base_path, const std::string& suffix) {
   fs::path p(base_path);
   std::string stem = p.stem().string();     // e.g. "match_graph"
   std::string ext = p.extension().string(); // e.g. ".png"
@@ -547,16 +547,16 @@ int main(int argc, char* argv[]) {
   }
 
   // ── Logging level ────────────────────────────────────────────────────────
-  insight::tools::ApplyLogLevel(cmd.used('v'), cmd.used('q'), log_level);
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   // ── Load intrinsics map (optional) ───────────────────────────────────────
-  CameraIntrinsicsMap cam_intrinsics = loadIntrinsicsMap(intrinsics_json);
+  CameraIntrinsicsMap cam_intrinsics = load_intrinsics_map(intrinsics_json);
   const bool estimate_E = !cam_intrinsics.empty();
 
   // ── Load image→camera map (required when -k provided) ────────────────────
   std::unordered_map<uint32_t, uint32_t> img_cam_map;
   if (estimate_E) {
-    img_cam_map = buildImageCameraMap(image_list_json);
+    img_cam_map = build_image_camera_map(image_list_json);
   }
 
   // ── Print configuration ──────────────────────────────────────────────────
@@ -586,7 +586,7 @@ int main(int argc, char* argv[]) {
   fs::create_directories(output_dir);
 
   // ── Load pair list ───────────────────────────────────────────────────────
-  std::vector<GeoTask> tasks = loadPairs(pairs_json, match_dir, img_cam_map);
+  std::vector<GeoTask> tasks = load_pairs(pairs_json, match_dir, img_cam_map);
   const int total = static_cast<int>(tasks.size());
   if (total == 0) {
     LOG(ERROR) << "No pairs to process";
@@ -613,7 +613,7 @@ int main(int argc, char* argv[]) {
 
   Stage loadStage("LoadMatches", num_threads, IO_Q, [&tasks](int i) {
     auto t0 = std::chrono::high_resolution_clock::now();
-    readMatchCoords(tasks[i]);
+    read_match_coords(tasks[i]);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::high_resolution_clock::now() - t0)
                   .count();
@@ -646,12 +646,12 @@ int main(int argc, char* argv[]) {
     task.F_inliers = gpu_ransac_F(pts.data(), task.num_matches, task.F, thresh_f_sq);
     task.F_ok = (task.F_inliers >= min_inliers);
     if (task.F_ok || task.F_inliers >= kMinInliersForTrack)
-      task.F_mask = computeFMask(task.F, task.coords, task.num_matches, thresh_f_sq);
+      task.F_mask = compute_f_mask(task.F, task.coords, task.num_matches, thresh_f_sq);
 
     // ── Estimate E (if intrinsics provided) ──────────────────────────
     if (estimate_E) {
-      const CameraIntrinsics* pK1 = lookupCamera(cam_intrinsics, task.camera1_id);
-      const CameraIntrinsics* pK2 = lookupCamera(cam_intrinsics, task.camera2_id);
+      const CameraIntrinsics* pK1 = lookup_camera(cam_intrinsics, task.camera1_id);
+      const CameraIntrinsics* pK2 = lookup_camera(cam_intrinsics, task.camera2_id);
 
       if (!pK1 || !pK2) {
         LOG(WARNING) << "Pair [" << i << "] " << task.image1_id << "–" << task.image2_id
@@ -683,7 +683,7 @@ int main(int argc, char* argv[]) {
         task.E_inliers = gpu_ransac_E(pts_norm.data(), task.num_matches, task.E, thresh_e_sq);
         task.E_ok = (task.E_inliers >= min_inliers);
         if (task.E_ok || task.E_inliers >= kMinInliersForTrack)
-          task.E_mask = computeEMask(task.E, task.coords, task.num_matches, K1, K2, thresh_e_sq);
+          task.E_mask = compute_e_mask(task.E, task.coords, task.num_matches, K1, K2, thresh_e_sq);
       }
     }
 
@@ -692,12 +692,12 @@ int main(int argc, char* argv[]) {
       task.H_inliers = gpu_ransac_H(pts.data(), task.num_matches, task.H, thresh_h_sq);
       task.H_ok = (task.H_inliers >= min_inliers);
       if (task.H_ok || task.H_inliers >= kMinInliersForTrack)
-        task.H_mask = computeHMask(task.H, task.coords, task.num_matches, thresh_h_sq);
+        task.H_mask = compute_h_mask(task.H, task.coords, task.num_matches, thresh_h_sq);
     }
 
     // ── Degeneracy detection (F vs H) ──────────────────────────────────
     task.degeneracy =
-        DetectDegeneracy(task.F_inliers, task.H_ok ? task.H_inliers : 0, task.num_matches);
+        insight::sfm::detect_degeneracy(task.F_inliers, task.H_ok ? task.H_inliers : 0, task.num_matches);
 
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::high_resolution_clock::now() - t0)
@@ -726,7 +726,7 @@ int main(int argc, char* argv[]) {
     }
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    writeGeo(task, output_dir, ransac_iter);
+    write_geo(task, output_dir, ransac_iter);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::high_resolution_clock::now() - t0)
                   .count();
@@ -770,8 +770,8 @@ int main(int argc, char* argv[]) {
         if (!task.F_ok || task.degeneracy.is_degenerate || task.num_matches < 8)
           continue;
 
-        const CameraIntrinsics* pK1 = lookupCamera(cam_intrinsics, task.camera1_id);
-        const CameraIntrinsics* pK2 = lookupCamera(cam_intrinsics, task.camera2_id);
+        const CameraIntrinsics* pK1 = lookup_camera(cam_intrinsics, task.camera1_id);
+        const CameraIntrinsics* pK2 = lookup_camera(cam_intrinsics, task.camera2_id);
         if (!pK1 || !pK2)
           continue;
 
@@ -782,11 +782,11 @@ int main(int argc, char* argv[]) {
         // When intrinsics are inaccurate, direct RANSAC E bakes K into inlier selection
         // and is worse; F is estimated without K, then we apply K only for E decomposition.
         Eigen::Matrix3d K1m, K2m, F_mat;
-        F_mat = FloatArrayToMatrix3d(task.F);
+        F_mat = insight::sfm::float_array_to_matrix3d(task.F);
         K1m << K1.fx, 0, K1.cx, 0, K1.fy, K1.cy, 0, 0, 1;
         K2m << K2.fx, 0, K2.cx, 0, K2.fy, K2.cy, 0, 0, 1;
         Eigen::Matrix3d E_mat = K2m.transpose() * F_mat * K1m;
-        E_mat = EnforceEssential(E_mat);
+        E_mat = insight::sfm::enforce_essential(E_mat);
 
         // Use F inliers for triangulation (consistent with F-derived E)
         const std::vector<uint8_t>& inl_mask = task.F_mask;
@@ -804,7 +804,7 @@ int main(int argc, char* argv[]) {
 
         Eigen::Matrix3d R_mat;
         Eigen::Vector3d t_vec;
-        int cheir = DecomposeEssential(E_mat, pts1_n, pts2_n, R_mat, t_vec);
+        int cheir = insight::sfm::decompose_essential(E_mat, pts1_n, pts2_n, R_mat, t_vec);
         if (cheir < 8)
           continue;
 
@@ -843,12 +843,12 @@ int main(int argc, char* argv[]) {
           continue;
 
         task.stability =
-            ComputeStabilityMetrics(points3d_eigen, pts1_valid, pts2_valid, R_mat, t_vec);
+            insight::sfm::compute_stability_metrics(points3d_eigen, pts1_valid, pts2_valid, R_mat, t_vec);
 
         if (task.stability.is_stable && n_valid >= min_points_twoview) {
           task.twoview_ok = true;
           task.num_valid_points = n_valid;
-          Matrix3dToFloatArray(R_mat, task.R);
+          insight::sfm::matrix3d_to_float_array(R_mat, task.R);
           task.t[0] = static_cast<float>(t_vec.x());
           task.t[1] = static_cast<float>(t_vec.y());
           task.t[2] = static_cast<float>(t_vec.z());
@@ -945,7 +945,7 @@ int main(int argc, char* argv[]) {
     data["pairs_twoview_ok"] = pairs_tv;
   data["adjacency_json"] = adjacency_path;
   data["pairs_json"] = pairs_path;
-  printEvent({{"type", "geo.complete"}, {"ok", true}, {"data", data}});
+  print_event({{"type", "geo.complete"}, {"ok", true}, {"data", data}});
 
   // ── Optional: match-graph matrix visualization ───────────────────────────
   if (cmd.used("vis")) {
@@ -953,14 +953,14 @@ int main(int argc, char* argv[]) {
         vis_output.empty() ? (output_dir + "/match_graph.png") : vis_output;
 
     // F – always estimated
-    writeMatchMatrix(tasks, makeVisPath(vis_base, "F"), "F",
+    write_match_matrix(tasks, make_vis_path(vis_base, "F"), "F",
                      [](const GeoTask& t) -> std::pair<bool, int> {
                        return {t.F_ok, t.F_inliers};
                      });
 
     // E – only when intrinsics were provided
     if (estimate_E) {
-      writeMatchMatrix(tasks, makeVisPath(vis_base, "E"), "E",
+      write_match_matrix(tasks, make_vis_path(vis_base, "E"), "E",
                        [](const GeoTask& t) -> std::pair<bool, int> {
                          return {t.E_ok, t.E_inliers};
                        });
@@ -968,7 +968,7 @@ int main(int argc, char* argv[]) {
 
     // H – only when --estimate-h was set
     if (estimate_H) {
-      writeMatchMatrix(tasks, makeVisPath(vis_base, "H"), "H",
+      write_match_matrix(tasks, make_vis_path(vis_base, "H"), "H",
                        [](const GeoTask& t) -> std::pair<bool, int> {
                          return {t.H_ok, t.H_inliers};
                        });

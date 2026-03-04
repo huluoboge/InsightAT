@@ -39,10 +39,10 @@ void GNSSMeasurementImportDialog::setFile(const QString& fileFullPath) {
   }
 
   // Trigger preview to populate the table
-  checkEnablePreview();
+  check_enable_preview();
 }
 
-FieldConfiguration GNSSMeasurementImportDialog::getFieldConfiguration() const {
+FieldConfiguration GNSSMeasurementImportDialog::get_field_configuration() const {
   FieldConfiguration config;
 
   // 必需字段：位置信息
@@ -86,13 +86,12 @@ FieldConfiguration GNSSMeasurementImportDialog::getFieldConfiguration() const {
   return config;
 }
 
-QList<QString> GNSSMeasurementImportDialog::fieldNames() const {
-  return getFieldConfiguration().getAllFields();
+QList<QString> GNSSMeasurementImportDialog::field_names() const {
+  return get_field_configuration().getAllFields();
 }
 
-bool GNSSMeasurementImportDialog::checkFieldData(int rowFrom, const std::vector<int>& fieldIndex) {
-  // 验证必需字段是否存在
-  FieldConfiguration config = getFieldConfiguration();
+bool GNSSMeasurementImportDialog::check_field_data(int rowFrom, const std::vector<int>& fieldIndex) {
+  FieldConfiguration config = get_field_configuration();
 
   for (int i = 0; i < config.requiredFields.size(); ++i) {
     if (fieldIndex[i] == -1) {
@@ -102,7 +101,7 @@ bool GNSSMeasurementImportDialog::checkFieldData(int rowFrom, const std::vector<
   }
 
   // 验证数据有效性
-  GPSPointsDocument* doc = getDoc();
+  GPSPointsDocument* doc = get_doc();
   if (!doc || rowFrom >= doc->m_tableData.count()) {
     return false;
   }
@@ -128,11 +127,11 @@ bool GNSSMeasurementImportDialog::checkFieldData(int rowFrom, const std::vector<
 }
 
 std::vector<database::Measurement::GNSSMeasurement>
-GNSSMeasurementImportDialog::getGNSSMeasurements() {
+GNSSMeasurementImportDialog::get_gnss_measurements() {
   std::vector<database::Measurement::GNSSMeasurement> measurements;
 
   // 获取向导中的数据
-  GPSPointsDocument* doc = getDoc();
+  GPSPointsDocument* doc = get_doc();
   if (!doc || doc->m_tableData.isEmpty()) {
     return measurements;
   }
@@ -140,9 +139,9 @@ GNSSMeasurementImportDialog::getGNSSMeasurements() {
   // 获取字段索引
   std::vector<int> fieldIndex;
   int rowFrom = 0;
-  getFieldIndex(rowFrom, fieldIndex);
+  get_field_index(rowFrom, fieldIndex);
 
-  FieldConfiguration config = getFieldConfiguration();
+  FieldConfiguration config = get_field_configuration();
   int requiredFieldCount = config.requiredFields.size();
 
   // 检查是否至少有一个必需字段被找到
@@ -179,19 +178,19 @@ GNSSMeasurementImportDialog::getGNSSMeasurements() {
   return measurements;
 }
 
-void GNSSMeasurementImportDialog::setCoordinateType(bool useGeographic) {
+void GNSSMeasurementImportDialog::set_coordinate_type(bool useGeographic) {
   m_useGeographic = useGeographic;
 }
 
-void GNSSMeasurementImportDialog::setImportRotation(bool importRotation) {
+void GNSSMeasurementImportDialog::set_import_rotation(bool importRotation) {
   m_importRotation = importRotation;
 }
 
-void GNSSMeasurementImportDialog::setUseUniformCovariance(bool useUniform) {
+void GNSSMeasurementImportDialog::set_use_uniform_covariance(bool useUniform) {
   m_useUniformCovariance = useUniform;
 }
 
-void GNSSMeasurementImportDialog::setUniformCovariance(double sigma_xy, double sigma_z) {
+void GNSSMeasurementImportDialog::set_uniform_covariance(double sigma_xy, double sigma_z) {
   m_uniformSigmaXY = sigma_xy;
   m_uniformSigmaZ = sigma_z;
 }
@@ -201,7 +200,7 @@ GNSSMeasurementImportDialog::parseLine(const QStringList& fields,
                                        const std::vector<int>& fieldIndex) {
   database::Measurement::GNSSMeasurement gnss;
 
-  FieldConfiguration config = getFieldConfiguration();
+  FieldConfiguration config = get_field_configuration();
 
   // 解析位置信息
   if (m_useGeographic) {

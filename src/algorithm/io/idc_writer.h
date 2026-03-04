@@ -24,7 +24,7 @@ struct DescriptorSchema {
   std::string schema_version = "1.1"; // Schema version
 
   // Convert to JSON
-  nlohmann::json toJson() const {
+  nlohmann::json to_json() const {
     nlohmann::json j;
     j["feature_type"] = feature_type;
     j["descriptor_dim"] = descriptor_dim;
@@ -35,7 +35,7 @@ struct DescriptorSchema {
   }
 
   // Create from JSON
-  static std::optional<DescriptorSchema> fromJson(const nlohmann::json& j) {
+  static std::optional<DescriptorSchema> from_json(const nlohmann::json& j) {
     if (!j.contains("descriptor_dim") || !j.contains("descriptor_dtype")) {
       return std::nullopt;
     }
@@ -69,14 +69,9 @@ public:
   IDCWriter(const std::string& filepath);
   ~IDCWriter();
 
-  // Set JSON metadata descriptor
-  void setMetadata(const nlohmann::json& metadata);
-
-  // Add binary blob
-  void addBlob(const std::string& name, const void* data, size_t size, const std::string& dtype,
-               const std::vector<int>& shape);
-
-  // Finalize and write to disk
+  void set_metadata(const nlohmann::json& metadata);
+  void add_blob(const std::string& name, const void* data, size_t size, const std::string& dtype,
+                const std::vector<int>& shape);
   bool write();
 
 private:
@@ -97,7 +92,7 @@ private:
 
 // Helper function to create feature extraction metadata (v1.1 with descriptor_schema)
 inline nlohmann::json
-createFeatureMetadata(const std::string& image_path, const std::string& algorithm_name,
+create_feature_metadata(const std::string& image_path, const std::string& algorithm_name,
                       const std::string& algorithm_version, const nlohmann::json& parameters,
                       const std::optional<DescriptorSchema>& descriptor_schema = std::nullopt,
                       int execution_time_ms = 0) {
@@ -106,7 +101,7 @@ createFeatureMetadata(const std::string& image_path, const std::string& algorith
   // Use schema_version 1.1 if descriptor_schema provided, otherwise 1.0 for backward compatibility
   if (descriptor_schema.has_value()) {
     meta["schema_version"] = "1.1";
-    meta["descriptor_schema"] = descriptor_schema->toJson();
+    meta["descriptor_schema"] = descriptor_schema->to_json();
   } else {
     meta["schema_version"] = "1.0";
   }

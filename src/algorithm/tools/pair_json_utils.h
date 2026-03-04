@@ -14,7 +14,7 @@ namespace tools {
 
 /** Read image1_id/image2_id from pair JSON as uint32_t. Accepts both number and string (backward
  * compat). */
-inline uint32_t getImageIdFromPair(const nlohmann::json& pair, const char* key) {
+inline uint32_t get_image_id_from_pair(const nlohmann::json& pair, const char* key) {
   const auto& v = pair[key];
   if (v.is_number_unsigned())
     return v.get<uint32_t>();

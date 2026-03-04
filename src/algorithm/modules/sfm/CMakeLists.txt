@@ -62,6 +62,7 @@ target_link_libraries(sfm_module
         Eigen3::Eigen
         EGL::EGL
         Ceres::ceres
+        algorithm_camera
         ${OPENGL_LIBRARIES}
         ${GLEW_LIBRARIES}
     PRIVATE

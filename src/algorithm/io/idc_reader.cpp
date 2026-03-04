@@ -7,14 +7,14 @@ namespace insight {
 namespace io {
 
 IDCReader::IDCReader(const std::string& filepath) : filepath_(filepath) {
-  is_valid_ = parseHeader();
+  is_valid_ = parse_header();
 
   if (!is_valid_) {
     LOG(ERROR) << "Failed to parse IDC file: " << filepath;
   }
 }
 
-bool IDCReader::parseHeader() {
+bool IDCReader::parse_header() {
   std::ifstream file(filepath_, std::ios::binary);
   if (!file.is_open()) {
     LOG(ERROR) << "Cannot open file: " << filepath_;
@@ -71,7 +71,7 @@ bool IDCReader::parseHeader() {
   return true;
 }
 
-nlohmann::json IDCReader::getBlobDescriptor(const std::string& blob_name) const {
+nlohmann::json IDCReader::get_blob_descriptor(const std::string& blob_name) const {
   if (!metadata_.contains("blobs")) {
     return nlohmann::json();
   }
@@ -85,21 +85,21 @@ nlohmann::json IDCReader::getBlobDescriptor(const std::string& blob_name) const 
   return nlohmann::json();
 }
 
-std::vector<uint8_t> IDCReader::readBlobRaw(const std::string& blob_name) {
-  return readBlob<uint8_t>(blob_name);
+std::vector<uint8_t> IDCReader::read_blob_raw(const std::string& blob_name) {
+  return read_blob<uint8_t>(blob_name);
 }
 
-std::optional<DescriptorSchema> IDCReader::getDescriptorSchema() const {
+std::optional<DescriptorSchema> IDCReader::get_descriptor_schema() const {
   // Primary: Try to read from descriptor_schema field (v1.1)
   if (metadata_.contains("descriptor_schema")) {
-    auto schema = DescriptorSchema::fromJson(metadata_["descriptor_schema"]);
+    auto schema = DescriptorSchema::from_json(metadata_["descriptor_schema"]);
     if (schema.has_value()) {
       return schema;
     }
   }
 
   // Fallback: Infer from blobs and algorithm parameters (v1.0 compatibility)
-  auto desc_blob = getBlobDescriptor("descriptors");
+  auto desc_blob = get_blob_descriptor("descriptors");
   if (desc_blob.is_null() || !desc_blob.contains("shape") || !desc_blob.contains("dtype")) {
     LOG(WARNING) << "Cannot infer descriptor schema: missing 'descriptors' blob or metadata";
     return std::nullopt;

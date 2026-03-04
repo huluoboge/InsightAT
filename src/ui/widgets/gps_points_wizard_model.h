@@ -36,7 +36,7 @@ struct GPSPointsDocument {
   // tab
 
   int m_columns;
-  void updateColumnCount() {
+  void update_column_count() {
     int maxCol = 0;
     for (int i = 0; i < m_tableData.count(); ++i) {
       if (m_tableData[i].count() > maxCol) {
@@ -96,7 +96,7 @@ struct GPSPointsDocument {
         m_tableData.append(aLine);
       }
     }
-    updateColumnCount();
+    update_column_count();
   }
   GPSPointsDocument() : m_columns(0) {}
 };
@@ -121,13 +121,13 @@ public:
   // virtual void sort(int column, Qt::SortOrder order  = Qt::AscendingOrder );
 
   GPSPointsWizardModelFilter filter() const { return m_filter; }
-  void setFilter(const GPSPointsWizardModelFilter& filter) { m_filter = filter; }
+  void set_filter(const GPSPointsWizardModelFilter& filter) { m_filter = filter; }
 
-  void filterInit() { m_filter.init(); }
+  void filter_init() { m_filter.init(); }
 
-  void setDataSource(GPSPointsDocument* data) { m_data = data; }
+  void set_data_source(GPSPointsDocument* data) { m_data = data; }
 
-  void updateDatas() {
+  void update_datas() {
     beginResetModel();
     endResetModel();
   }

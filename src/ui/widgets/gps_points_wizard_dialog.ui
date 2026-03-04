@@ -296,7 +296,7 @@
    <sender>checkBox_tab</sender>
    <signal>clicked()</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>51</x>
@@ -312,7 +312,7 @@
    <sender>checkBox_semicolon</sender>
    <signal>clicked()</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>129</x>
@@ -328,7 +328,7 @@
    <sender>checkBox_comma</sender>
    <signal>clicked()</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>189</x>
@@ -344,7 +344,7 @@
    <sender>checkBox_space</sender>
    <signal>clicked()</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>243</x>
@@ -360,7 +360,7 @@
    <sender>checkBox_other</sender>
    <signal>clicked()</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>309</x>
@@ -376,7 +376,7 @@
    <sender>buttonBox</sender>
    <signal>accepted()</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>validImport()</slot>
+   <slot>valid_import()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>634</x>
@@ -408,7 +408,7 @@
    <sender>spinBox_rowFrom</sender>
    <signal>valueChanged(int)</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>106</x>
@@ -424,7 +424,7 @@
    <sender>checkBox_multiAsSingle</sender>
    <signal>stateChanged(int)</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>342</x>
@@ -440,7 +440,7 @@
    <sender>lineEdit_other</sender>
    <signal>editingFinished()</signal>
    <receiver>GPSPointsWizardDialog</receiver>
-   <slot>checkEnablePreview()</slot>
+   <slot>check_enable_preview()</slot>
    <hints>
     <hint type="sourcelabel">
      <x>419</x>
@@ -455,8 +455,8 @@
  </connections>
  <slots>
   <slot>preview()</slot>
-  <slot>checkEnablePreview()</slot>
-  <slot>validImport()</slot>
+  <slot>check_enable_preview()</slot>
+  <slot>valid_import()</slot>
   <slot>onSelectCoordinate()</slot>
  </slots>
 </ui>
