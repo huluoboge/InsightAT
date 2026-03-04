@@ -22,6 +22,7 @@
 #include "../io/idc_reader.h"
 #include "../io/idc_writer.h"
 #include "../modules/sfm/incremental_sfm.h"
+#include "../modules/sfm/incremental_sfm_engine.h"
 #include "../modules/sfm/track_store.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
@@ -140,20 +141,24 @@ int main(int argc, char* argv[]) {
   FLAGS_logtostderr = 1;
   FLAGS_colorlogtostderr = 1;
 
-  CmdLine cmd("InsightAT Incremental SfM – initial pair + two-view BA");
+  CmdLine cmd("InsightAT Incremental SfM – multi-camera incremental reconstruction");
   std::string pairs_json, geo_dir, match_dir, intrinsics_path, output_dir, image_list;
   int min_tracks = 20;
+  bool opt_intrinsics = false;
 
   cmd.add(make_option('i', pairs_json, "input").doc("Pairs JSON path"));
   cmd.add(make_option('g', geo_dir, "geo-dir")
               .doc("Directory of .isat_geo (must have been run with --twoview)"));
   cmd.add(make_option('m', match_dir, "match-dir").doc("Directory of .isat_match files"));
   cmd.add(make_option('k', intrinsics_path, "intrinsics")
-              .doc("Camera intrinsics JSON (e.g. from isat_calibrate or isat_project intrinsics "
-                   "--all)"));
+              .doc("Camera intrinsics JSON (multi-camera, from isat_project intrinsics --all)"));
   cmd.add(make_option('o', output_dir, "output")
               .doc("Output directory for initial_poses.json and initial_tracks.isat_tracks"));
-  cmd.add(make_option('l', image_list, "image-list").doc("Image list JSON (optional)"));
+  cmd.add(make_option('l', image_list, "image-list")
+              .doc("Image list JSON (InsightAT Image List Format v2.0, e.g. images_all.json). "
+                   "Required: provides image_id → camera_id for per-camera intrinsics."));
+  cmd.add(make_switch(0, "optimize-intrinsics")
+              .doc("Optimize intrinsics and distortion in Global BA (default: fixed)"));
   cmd.add(make_option(0, min_tracks, "min-tracks")
               .doc("Minimum valid tracks after filtering. Default: 20"));
   std::string log_level;
@@ -173,33 +178,69 @@ int main(int argc, char* argv[]) {
     return 0;
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
-  if (pairs_json.empty() || geo_dir.empty() || match_dir.empty() || intrinsics_path.empty()) {
-    std::cerr << "Error: -i, -g, -m, -k are required\n\n";
+  opt_intrinsics = cmd.used("optimize-intrinsics");
+
+  if (pairs_json.empty() || geo_dir.empty() || match_dir.empty() ||
+      intrinsics_path.empty() || image_list.empty()) {
+    std::cerr << "Error: -i, -g, -m, -k, -l are all required\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
+
+  // ── Load image list (v2.0): image_id → camera_id ─────────────────────────
+  auto image_camera_map = build_image_camera_map(image_list);
+  if (image_camera_map.empty()) {
+    LOG(ERROR) << "No images loaded from image list: " << image_list;
+    return 1;
+  }
+
+  // ── Load intrinsics: camera_id → intrinsics ───────────────────────────────
   auto cam_map = load_intrinsics_map(intrinsics_path);
   if (cam_map.empty()) {
     LOG(ERROR) << "No intrinsics loaded from " << intrinsics_path;
     return 1;
   }
-  const auto* cam = lookup_camera(cam_map, 1);
-  if (!cam || !cam->valid()) {
-    LOG(ERROR) << "Invalid or missing camera (use camera_id 1 or provide valid K)";
+  // Build camera_id → camera::Intrinsics (algorithm type)
+  std::unordered_map<uint32_t, insight::camera::Intrinsics> camera_intrinsics_map;
+  for (const auto& [cam_id, cam_intr] : cam_map) {
+    if (cam_intr.valid())
+      camera_intrinsics_map[cam_id] = cam_intr.to_algorithm_intrinsics();
+  }
+  if (camera_intrinsics_map.empty()) {
+    LOG(ERROR) << "No valid cameras in intrinsics file: " << intrinsics_path;
     return 1;
   }
-  const insight::camera::Intrinsics K = cam->to_algorithm_intrinsics();
-
   if (output_dir.empty())
     output_dir = ".";
+
+  // ── Build camera setup (data) ─────────────────────────────────────────────
+  insight::sfm::MultiCameraSetup cam_setup;
+  cam_setup.image_camera_map = std::move(image_camera_map);
+  cam_setup.cameras = std::move(camera_intrinsics_map);
+
+  // ── Algorithm parameters (config) ────────────────────────────────────────
+  insight::sfm::IncrementalSfmConfig config;
+  config.pairs_json_path = pairs_json;
+  config.geo_dir = geo_dir;
+  config.match_dir = match_dir;
+  config.optimize_intrinsics = opt_intrinsics;
+  config.min_tracks_after_initial = min_tracks;
+  config.run_global_ba = true;
+
+  insight::sfm::IncrementalSfmResult result;
+  const bool ok = insight::sfm::run_incremental_reconstruction(cam_setup, config, &result);
 
   insight::sfm::TrackStore store;
   Eigen::Matrix3d R1;
   Eigen::Vector3d t1;
   uint32_t image1_id = 0, image2_id = 0;
-  const bool ok = insight::sfm::run_initial_pair_loop(pairs_json, geo_dir, match_dir, K, &store,
-                                                      &R1, &t1, min_tracks, &image1_id,
-                                                      &image2_id);
+  if (ok) {
+    store = std::move(result.store);
+    image1_id = result.image1_id;
+    image2_id = result.image2_id;
+    R1 = result.poses_R.size() > 1 ? result.poses_R[1] : Eigen::Matrix3d::Identity();
+    t1 = result.poses_t.size() > 1 ? result.poses_t[1] : Eigen::Vector3d::Zero();
+  }
 
   if (!ok) {
     LOG(ERROR) << "Initial pair loop failed (no suitable pair or too few tracks)";

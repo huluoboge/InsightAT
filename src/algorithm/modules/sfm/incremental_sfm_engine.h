@@ -19,13 +19,18 @@
  *
  * Usage
  * ─────
+ *   MultiCameraSetup cameras;
+ *   cameras.image_camera_map = ...;   // image_id → camera_id
+ *   cameras.cameras[1] = K1;          // camera_id → intrinsics+distortion
+ *
  *   IncrementalSfmConfig config;
  *   config.pairs_json_path = "pairs.json";
  *   config.geo_dir = "geo/";
  *   config.match_dir = "match/";
+ *
  *   IncrementalSfmResult result;
- *   if (run_incremental_reconstruction(config, &result))
- *     // result.store, result.poses_R, result.poses_t
+ *   if (run_incremental_reconstruction(cameras, config, &result))
+ *     // result.store, result.poses_R, result.poses_t, result.cameras
  */
 
 #pragma once
@@ -33,6 +38,7 @@
 #include "../camera/camera_types.h"
 #include "track_store.h"
 #include <Eigen/Core>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,24 +47,60 @@ namespace insight {
 namespace sfm {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Configuration
+// Multi-camera setup data
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Multiple independent cameras, each with its own model (intrinsics + distortion
+ * as one unit). Every image is assigned to one camera via its camera_id.
+ *
+ * Images sharing the same camera_id share one parameter block in Global BA,
+ * so their intrinsics and distortion are optimized jointly (or fixed jointly).
+ *
+ * Populated from:
+ *   - image_camera_map : Image List Format v2.0  (image_id → camera_id)
+ *   - cameras          : intrinsics JSON          (camera_id → model)
+ */
+struct MultiCameraSetup {
+  /// image_id → camera_id  (from images_all.json / Image List Format v2.0)
+  std::unordered_map<uint32_t, uint32_t> image_camera_map;
+
+  /// camera_id → camera model (intrinsics + distortion together, one per physical camera)
+  std::unordered_map<uint32_t, camera::Intrinsics> cameras;
+
+  bool empty() const { return cameras.empty(); }
+
+  /// Camera model for a given image_id. Falls back to camera_id=1, then any camera.
+  const camera::Intrinsics* for_image(uint32_t image_id) const {
+    auto it = image_camera_map.find(image_id);
+    if (it != image_camera_map.end()) {
+      auto it2 = cameras.find(it->second);
+      if (it2 != cameras.end())
+        return &it2->second;
+    }
+    auto it2 = cameras.find(1);
+    if (it2 != cameras.end())
+      return &it2->second;
+    return cameras.empty() ? nullptr : &cameras.begin()->second;
+  }
+
+  /// Reference camera for initial pair (camera_id=1, or first available).
+  const camera::Intrinsics* reference() const {
+    auto it = cameras.find(1);
+    if (it != cameras.end())
+      return &it->second;
+    return cameras.empty() ? nullptr : &cameras.begin()->second;
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Algorithm configuration  (parameters only, no data)
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct IncrementalSfmConfig {
   std::string pairs_json_path; ///< Path to pairs.json
   std::string geo_dir;         ///< Directory of .isat_geo files
-  std::string match_dir;      ///< Directory of .isat_match files
-
-  /// Shared intrinsics (single camera). Used when intrinsics_by_image_id is null or lookup fails.
-  double fx = 0.0;
-  double fy = 0.0;
-  double cx = 0.0;
-  double cy = 0.0;
-  const camera::Intrinsics* intrinsics = nullptr;
-
-  /// Per-image intrinsics: image_id → K. One camera per group; lookup by result.image_ids[i].
-  /// When non-null, used for resection, reject_outliers, filter_tracks, and Global BA.
-  const std::unordered_map<uint32_t, camera::Intrinsics>* intrinsics_by_image_id = nullptr;
+  std::string match_dir;       ///< Directory of .isat_match files
 
   int min_tracks_after_initial = 20; ///< Min valid tracks after initial pair
   int min_correspondences_resection = 6;
@@ -70,7 +112,11 @@ struct IncrementalSfmConfig {
   bool run_global_ba = true;
   int global_ba_max_iterations = 50;
 
-  /// Run Local BA after each new image (optional, for stability).
+  /// Optimize intrinsics+distortion in Global BA. When false (default), camera
+  /// models are fixed constraints; poses and 3D points are optimized.
+  bool optimize_intrinsics = false;
+
+  /// Run local BA after each new image (optional, for incremental stability).
   bool run_local_ba_per_image = false;
   int local_ba_max_iterations = 20;
 };
@@ -86,7 +132,7 @@ struct IncrementalSfmResult {
   std::vector<Eigen::Vector3d> poses_t;
   std::vector<bool> registered; ///< Which images were successfully registered
 
-  /// image_ids[i] = image id for store index i. Used for per-camera intrinsics lookup.
+  /// image_ids[i] = image id for store index i.
   std::vector<uint32_t> image_ids;
 
   uint32_t image1_id = 0; ///< Initial pair first image
@@ -94,6 +140,13 @@ struct IncrementalSfmResult {
 
   int n_registered = 0;
   double final_rmse_px = 0.0; ///< From last BA (if run)
+
+  /// camera_index_for_image[i] = index into cameras for store image i.
+  std::vector<int> camera_index_for_image;
+
+  /// Distinct cameras with (possibly BA-optimized) intrinsics+distortion.
+  /// Parallel to the unique cameras in the MultiCameraSetup seen across all registered images.
+  std::vector<camera::Intrinsics> cameras;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,19 +156,13 @@ struct IncrementalSfmResult {
 /**
  * Run full incremental SfM pipeline.
  *
- * 1. Build view graph, choose initial pair.
- * 2. Load pair geo/match, build 2-image TrackStore, triangulate, two-view BA,
- *    reject outliers, filter tracks.
- * 3. Expand store to all images in view graph (TODO: merge tracks from other
- *    pairs); run resection loop.
- * 4. Optionally run Global BA.
- * 5. Optionally run multiview outlier rejection and track filtering.
- *
- * @param config  Input paths and parameters.
- * @param result  Output store, poses, and metadata.
- * @return true if at least 2 images registered and min_tracks_after_initial met.
+ * @param cameras  Camera setup: image_id→camera_id and camera_id→model (intrinsics+distortion).
+ * @param config   Algorithm parameters (paths, thresholds, BA flags).
+ * @param result   Output: store, poses, per-image camera index, (optionally optimized) cameras.
+ * @return true if at least 2 images registered.
  */
-bool run_incremental_reconstruction(const IncrementalSfmConfig& config,
+bool run_incremental_reconstruction(const MultiCameraSetup& cameras,
+                                    const IncrementalSfmConfig& config,
                                     IncrementalSfmResult* result);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,91 +170,66 @@ bool run_incremental_reconstruction(const IncrementalSfmConfig& config,
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Stage 1: Initial pair loop. Chooses pair, loads geo/match, builds 2-image
- * store, triangulates, runs two-view BA, rejects outliers, filters tracks.
+ * Stage 1: Choose initial pair, build 2-image TrackStore, triangulate,
+ * two-view BA, reject outliers, filter tracks.
  */
-bool run_stage_initial_pair(const IncrementalSfmConfig& config, TrackStore* store_out,
-                            Eigen::Matrix3d* R1_out, Eigen::Vector3d* t1_out,
+bool run_stage_initial_pair(const MultiCameraSetup& cameras,
+                            const IncrementalSfmConfig& config,
+                            TrackStore* store_out, Eigen::Matrix3d* R1_out,
+                            Eigen::Vector3d* t1_out,
                             uint32_t* image1_id_out, uint32_t* image2_id_out);
 
 /**
- * Stage 2: Resection loop. Repeatedly chooses unregistered image with most
- * 3D–2D correspondences, runs resection, triangulates new tracks.
- * When image_ids non-null and config.intrinsics_by_image_id set, uses per-image intrinsics.
+ * Stage 2: Resection loop. Repeatedly registers the unregistered image with
+ * the most 3D–2D correspondences. Per-image camera models are resolved from
+ * cameras + image_ids.
  */
-int run_stage_resection_loop(const IncrementalSfmConfig& config, TrackStore* store,
+int run_stage_resection_loop(const MultiCameraSetup& cameras,
+                             const IncrementalSfmConfig& config,
+                             TrackStore* store,
                              std::vector<Eigen::Matrix3d>* poses_R,
                              std::vector<Eigen::Vector3d>* poses_t,
                              std::vector<bool>* registered,
-                             const std::vector<uint32_t>* image_ids = nullptr);
+                             const std::vector<uint32_t>& image_ids);
 
 /**
  * Stage 3: Reject observations with reprojection error > threshold.
- * Multiview version: uses poses_R, poses_t for all registered images.
- */
-int run_stage_reject_outliers(TrackStore* store,
-                              const std::vector<Eigen::Matrix3d>& poses_R,
-                              const std::vector<Eigen::Vector3d>& poses_t,
-                              const std::vector<bool>& registered, double fx, double fy,
-                              double cx, double cy, double threshold_px);
-
-/**
- * Overload: use camera::Intrinsics for distortion-aware reprojection.
+ * intrinsics_per_image[i] = camera model for store image index i.
  */
 int run_stage_reject_outliers(TrackStore* store,
                               const std::vector<Eigen::Matrix3d>& poses_R,
                               const std::vector<Eigen::Vector3d>& poses_t,
                               const std::vector<bool>& registered,
-                              const camera::Intrinsics& K, double threshold_px);
-
-/**
- * Overload: per-image intrinsics. intrinsics_per_image[image_index] = K for that image.
- * Size must match poses_R. When null or empty, fallback to shared fx,fy,cx,cy.
- */
-int run_stage_reject_outliers(TrackStore* store,
-                              const std::vector<Eigen::Matrix3d>& poses_R,
-                              const std::vector<Eigen::Vector3d>& poses_t,
-                              const std::vector<bool>& registered,
-                              const std::vector<camera::Intrinsics>* intrinsics_per_image,
-                              double fx, double fy, double cx, double cy,
+                              const std::vector<camera::Intrinsics>& intrinsics_per_image,
                               double threshold_px);
 
 /**
- * Stage 4: Filter tracks (too few observations, bad geometry).
- * Multiview version.
+ * Stage 4: Filter tracks (too few observations, bad triangulation angle).
  */
 int run_stage_filter_tracks(TrackStore* store,
                             const std::vector<Eigen::Matrix3d>& poses_R,
                             const std::vector<Eigen::Vector3d>& poses_t,
-                            const std::vector<bool>& registered, int min_observations,
-                            double min_angle_deg);
+                            const std::vector<bool>& registered,
+                            int min_observations, double min_angle_deg);
 
 /**
- * Stage 5: Global BA. Optimizes all poses (except cam0) and all points.
- * Uses Ceres when INSIGHTAT_USE_CERES; otherwise no-op (returns false).
- * On success, updates store_out with optimized 3D points (if non-null).
- * When fx_per_camera non-empty, use per-camera intrinsics; else use shared fx,fy,cx,cy.
+ * Stage 5: Global BA. Optimizes poses and 3D points; camera models shared per
+ * camera_id. When optimize_intrinsics=true, intrinsics+distortion are also
+ * optimized (all images of the same camera contribute to the same parameter block).
+ * Returns optimized cameras in cameras_out (parallel to MultiCameraSetup::cameras).
  */
-bool run_stage_global_ba(const TrackStore& store,
-                         const std::vector<Eigen::Matrix3d>& poses_R,
-                         const std::vector<Eigen::Vector3d>& poses_t, double fx,
-                         double fy, double cx, double cy, int max_iterations,
-                         std::vector<Eigen::Matrix3d>* poses_R_out,
-                         std::vector<Eigen::Vector3d>* poses_t_out,
-                         TrackStore* store_out, double* rmse_px_out);
-
-/**
- * Overload: per-camera intrinsics. intrinsics_per_image[i] = K for image index i.
- * Size must match poses_R. When null or empty, fallback to shared fx,fy,cx,cy.
- */
-bool run_stage_global_ba(const TrackStore& store,
+bool run_stage_global_ba(const MultiCameraSetup& cameras,
+                         const std::vector<uint32_t>& image_ids,
+                         bool optimize_intrinsics, int max_iterations,
+                         const TrackStore& store,
                          const std::vector<Eigen::Matrix3d>& poses_R,
                          const std::vector<Eigen::Vector3d>& poses_t,
-                         const std::vector<camera::Intrinsics>* intrinsics_per_image,
-                         double fx, double fy, double cx, double cy, int max_iterations,
                          std::vector<Eigen::Matrix3d>* poses_R_out,
                          std::vector<Eigen::Vector3d>* poses_t_out,
-                         TrackStore* store_out, double* rmse_px_out);
+                         TrackStore* store_out,
+                         std::vector<int>* camera_index_for_image_out,
+                         std::vector<camera::Intrinsics>* cameras_out,
+                         double* rmse_px_out);
 
 } // namespace sfm
 } // namespace insight

@@ -197,14 +197,16 @@ inline const CameraIntrinsics* lookup_camera(const CameraIntrinsicsMap& cam_map,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Image-list camera map  (image_id uint32_t → camera_id == group_id)
-// Populated from the JSON produced by  isat_project extract.
+// Populated from the JSON produced by  isat_project extract (InsightAT Image List
+// Format v2.0). Exported files (e.g. images_all.json) for CLI tools contain id and
+// camera_id per image so intrinsics can be resolved per camera.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Build a map of image_id → camera_id (both uint32_t) from an image-list JSON.
  *
- * Expected format (from isat_project extract):
- *   { "images": [ { "id": 1, "camera_id": 2, "path": "..." }, ... ] }
+ * Expected format (InsightAT Image List Format v2.0, e.g. isat_project extract):
+ *   { "$schema": "InsightAT Image List Format v2.0", "images": [ { "id": 1, "camera_id": 2, "path": "..." }, ... ] }
  *
  * @param path  Path to image list JSON. Returns empty map if path is empty.
  *              Calls LOG(FATAL) on parse failure.

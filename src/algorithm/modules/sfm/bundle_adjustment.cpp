@@ -60,7 +60,7 @@ struct CostCam2 {
   }
 };
 
-// Global BA: reprojection for any camera (angle-axis + t + point).
+// Global BA: reprojection for any camera (angle-axis + t + point). Legacy, no distortion.
 struct CostGlobal {
   double u, v, fx, fy, cx, cy;
   template <typename T>
@@ -80,6 +80,39 @@ struct CostGlobal {
     T v_pred = T(fy) * p[1] / p[2] + T(cy);
     residuals[0] = u_pred - T(u);
     residuals[1] = v_pred - T(v);
+    return true;
+  }
+};
+
+// Multi-camera global BA: shared intrinsics+distortion block per camera.
+// intr[9] = [fx, fy, cx, cy, k1, k2, k3, p1, p2]  (Brown-Conrady)
+// Images with the same camera share the same intr pointer → shared Ceres parameter block.
+struct CostGlobalMultiCam {
+  double u, v;
+  template <typename T>
+  bool operator()(const T* const cam_aa, const T* const cam_t, const T* const intr,
+                  const T* const point, T* residuals) const {
+    T p[3];
+    ceres::AngleAxisRotatePoint(cam_aa, point, p);
+    p[0] += cam_t[0];
+    p[1] += cam_t[1];
+    p[2] += cam_t[2];
+    if (p[2] <= T(1e-12)) {
+      residuals[0] = T(1e6);
+      residuals[1] = T(1e6);
+      return true;
+    }
+    T xn = p[0] / p[2];
+    T yn = p[1] / p[2];
+    T r2 = xn * xn + yn * yn;
+    T r4 = r2 * r2;
+    T r6 = r4 * r2;
+    // Brown-Conrady: radial + tangential
+    T radial = T(1) + intr[4] * r2 + intr[5] * r4 + intr[6] * r6;
+    T xd = xn * radial + T(2) * intr[7] * xn * yn + intr[8] * (r2 + T(2) * xn * xn);
+    T yd = yn * radial + intr[7] * (r2 + T(2) * yn * yn) + T(2) * intr[8] * xn * yn;
+    residuals[0] = intr[0] * xd + intr[2] - T(u);
+    residuals[1] = intr[1] * yd + intr[3] - T(v);
     return true;
   }
 };
@@ -220,19 +253,23 @@ bool pose_only_bundle(const std::vector<Eigen::Vector3d>& pts3d,
 
 bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_iterations) {
   if (!result || input.points3d.empty() || input.observations.empty() ||
-      input.poses_R.size() != input.poses_t.size() || !input.fx || !input.fy)
+      input.poses_R.size() != input.poses_t.size() || input.poses_R.empty())
     return false;
+
   const int n_cams = static_cast<int>(input.poses_R.size());
   const size_t n_points = input.points3d.size();
-  if (n_cams == 0)
-    return false;
-  const bool use_per_camera =
-      input.fx_per_camera.size() == static_cast<size_t>(n_cams) &&
-      input.fy_per_camera.size() == static_cast<size_t>(n_cams) &&
-      input.cx_per_camera.size() == static_cast<size_t>(n_cams) &&
-      input.cy_per_camera.size() == static_cast<size_t>(n_cams);
 
-  std::vector<double> cam_aa(n_cams * 3), cam_t(n_cams * 3);
+  const bool use_multicam =
+      !input.image_camera_index.empty() && !input.cameras.empty() &&
+      input.image_camera_index.size() == static_cast<size_t>(n_cams);
+
+  // Legacy mode requires at least valid shared intrinsics
+  if (!use_multicam && !input.fx && !input.fy)
+    return false;
+
+  // ── Camera pose arrays (angle-axis + t) ───────────────────────────────────
+  std::vector<double> cam_aa(static_cast<size_t>(n_cams) * 3);
+  std::vector<double> cam_t(static_cast<size_t>(n_cams) * 3);
   for (int i = 0; i < n_cams; ++i) {
     rotationMatrixToAngleAxis(input.poses_R[static_cast<size_t>(i)],
                               &cam_aa[static_cast<size_t>(i) * 3]);
@@ -240,6 +277,8 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
     cam_t[static_cast<size_t>(i) * 3 + 1] = input.poses_t[static_cast<size_t>(i)](1);
     cam_t[static_cast<size_t>(i) * 3 + 2] = input.poses_t[static_cast<size_t>(i)](2);
   }
+
+  // ── 3D points ─────────────────────────────────────────────────────────────
   std::vector<double> points_flat(n_points * 3);
   for (size_t i = 0; i < n_points; ++i) {
     points_flat[i * 3 + 0] = input.points3d[i](0);
@@ -249,6 +288,92 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
 
   ceres::Problem problem;
   ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
+
+  if (use_multicam) {
+    // ── Multi-camera path: each distinct camera has ONE shared intrinsics block ──
+    // Layout: intr[9] = [fx, fy, cx, cy, k1, k2, k3, p1, p2]
+    const int n_distinct = static_cast<int>(input.cameras.size());
+    std::vector<double> intr_params(static_cast<size_t>(n_distinct) * 9);
+    for (int c = 0; c < n_distinct; ++c) {
+      const auto& K = input.cameras[static_cast<size_t>(c)];
+      double* p = intr_params.data() + static_cast<size_t>(c) * 9;
+      p[0] = K.fx; p[1] = K.fy; p[2] = K.cx; p[3] = K.cy;
+      p[4] = K.k1; p[5] = K.k2; p[6] = K.k3; p[7] = K.p1; p[8] = K.p2;
+    }
+
+    for (const auto& obs : input.observations) {
+      if (obs.image_index < 0 || obs.image_index >= n_cams || obs.point_index < 0 ||
+          static_cast<size_t>(obs.point_index) >= n_points)
+        continue;
+      const int cam_idx = input.image_camera_index[static_cast<size_t>(obs.image_index)];
+      if (cam_idx < 0 || cam_idx >= n_distinct)
+        continue;
+      double* aa_ptr = cam_aa.data() + static_cast<size_t>(obs.image_index) * 3;
+      double* t_ptr  = cam_t.data()  + static_cast<size_t>(obs.image_index) * 3;
+      double* intr_ptr = intr_params.data() + static_cast<size_t>(cam_idx) * 9;
+      double* pt_ptr = points_flat.data() + static_cast<size_t>(obs.point_index) * 3;
+      ceres::CostFunction* cost =
+          new ceres::AutoDiffCostFunction<CostGlobalMultiCam, 2, 3, 3, 9, 3>(
+              new CostGlobalMultiCam{obs.u, obs.v});
+      problem.AddResidualBlock(cost, loss, aa_ptr, t_ptr, intr_ptr, pt_ptr);
+    }
+
+    // Fix cam0 (world origin)
+    problem.SetParameterBlockConstant(cam_aa.data());
+    problem.SetParameterBlockConstant(cam_t.data());
+
+    // Fix intrinsics when not optimizing them
+    if (!input.optimize_intrinsics) {
+      for (int c = 0; c < n_distinct; ++c)
+        problem.SetParameterBlockConstant(intr_params.data() + static_cast<size_t>(c) * 9);
+    }
+
+    ceres::Solver::Options options;
+    options.max_num_iterations = max_iterations;
+    options.linear_solver_type = ceres::DENSE_SCHUR;
+    options.minimizer_progress_to_stdout = false;
+    ceres::Solver::Summary summary;
+    ceres::Solve(options, &problem, &summary);
+    if (!summary.IsSolutionUsable())
+      return false;
+
+    result->poses_R.resize(static_cast<size_t>(n_cams));
+    result->poses_t.resize(static_cast<size_t>(n_cams));
+    for (int i = 0; i < n_cams; ++i) {
+      angleAxisToRotationMatrix(&cam_aa[static_cast<size_t>(i) * 3],
+                                &result->poses_R[static_cast<size_t>(i)]);
+      result->poses_t[static_cast<size_t>(i)] = Eigen::Vector3d(
+          cam_t[static_cast<size_t>(i) * 3 + 0], cam_t[static_cast<size_t>(i) * 3 + 1],
+          cam_t[static_cast<size_t>(i) * 3 + 2]);
+    }
+    result->points3d.resize(n_points);
+    for (size_t i = 0; i < n_points; ++i)
+      result->points3d[i] = Eigen::Vector3d(points_flat[i * 3 + 0], points_flat[i * 3 + 1],
+                                            points_flat[i * 3 + 2]);
+
+    // Read back (possibly optimized) camera intrinsics
+    result->cameras.resize(static_cast<size_t>(n_distinct));
+    for (int c = 0; c < n_distinct; ++c) {
+      const double* p = intr_params.data() + static_cast<size_t>(c) * 9;
+      auto& K = result->cameras[static_cast<size_t>(c)];
+      K.fx = p[0]; K.fy = p[1]; K.cx = p[2]; K.cy = p[3];
+      K.k1 = p[4]; K.k2 = p[5]; K.k3 = p[6]; K.p1 = p[7]; K.p2 = p[8];
+    }
+
+    result->success = true;
+    result->num_residuals = static_cast<int>(summary.num_residuals);
+    result->rmse_px = (summary.num_residuals > 0)
+                          ? std::sqrt(summary.final_cost * 2.0 / summary.num_residuals)
+                          : 0.0;
+    return true;
+  }
+
+  // ── Legacy path: shared or per-image scalar intrinsics, no distortion ─────
+  const bool use_per_camera =
+      input.fx_per_camera.size() == static_cast<size_t>(n_cams) &&
+      input.fy_per_camera.size() == static_cast<size_t>(n_cams) &&
+      input.cx_per_camera.size() == static_cast<size_t>(n_cams) &&
+      input.cy_per_camera.size() == static_cast<size_t>(n_cams);
 
   for (const auto& obs : input.observations) {
     if (obs.image_index < 0 || obs.image_index >= n_cams || obs.point_index < 0 ||
@@ -263,8 +388,8 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
       cy = input.cy_per_camera[c];
     }
     double* cam_aa_ptr = cam_aa.data() + static_cast<size_t>(obs.image_index) * 3;
-    double* cam_t_ptr = cam_t.data() + static_cast<size_t>(obs.image_index) * 3;
-    double* point_ptr = points_flat.data() + static_cast<size_t>(obs.point_index) * 3;
+    double* cam_t_ptr  = cam_t.data()  + static_cast<size_t>(obs.image_index) * 3;
+    double* point_ptr  = points_flat.data() + static_cast<size_t>(obs.point_index) * 3;
     ceres::CostFunction* cost = new ceres::AutoDiffCostFunction<CostGlobal, 2, 3, 3, 3>(
         new CostGlobal{obs.u, obs.v, fx, fy, cx, cy});
     problem.AddResidualBlock(cost, loss, cam_aa_ptr, cam_t_ptr, point_ptr);

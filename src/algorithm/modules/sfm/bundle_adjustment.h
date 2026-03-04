@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "../camera/camera_types.h"
 #include <Eigen/Core>
 #include <vector>
 
@@ -76,20 +77,37 @@ struct GlobalObservation {
   double v = 0.0;
 };
 
-/// Global BA input: N cameras (world-to-camera), M points, intrinsics per camera or shared.
-/// Camera 0 is fixed at identity.
-/// Intrinsics: if fx_per_camera empty, use shared fx,fy,cx,cy for all; else use per-camera.
+/// Global BA input: N cameras (world-to-camera), M points, multi-camera intrinsics.
+/// Camera 0 is fixed (identity).
+///
+/// Multi-camera mode (preferred):
+///   Set image_camera_index[i] = index into cameras[] for image i.
+///   Images sharing the same index share ONE Ceres intrinsics+distortion parameter block —
+///   so cameras with the same camera_id share their fx/fy/cx/cy/k1..p2 in the BA.
+///   Set optimize_intrinsics=true to refine them during BA; false to keep them fixed.
+///
+/// Fallback (legacy, single shared camera, no distortion):
+///   Leave image_camera_index and cameras empty; set fx,fy,cx,cy scalars.
 struct GlobalBAInput {
   std::vector<Eigen::Matrix3d> poses_R;
   std::vector<Eigen::Vector3d> poses_t;
   std::vector<Eigen::Vector3d> points3d;
   std::vector<GlobalObservation> observations;
+
+  // ── Multi-camera mode ─────────────────────────────────────────────────────
+  /// image_camera_index[i] = index into cameras[] for image i. size = poses_R.size().
+  std::vector<int> image_camera_index;
+  /// One entry per distinct camera. Images with same index share one Ceres parameter block.
+  std::vector<camera::Intrinsics> cameras;
+  /// If true, intrinsics (fx,fy,cx,cy) and distortion (k1..p2) are variable in BA.
+  bool optimize_intrinsics = false;
+
+  // ── Legacy fallback (single shared camera, no distortion) ─────────────────
   double fx = 0.0;
   double fy = 0.0;
   double cx = 0.0;
   double cy = 0.0;
-  /// Per-camera intrinsics (size = poses_R.size()). When non-empty, override fx,fy,cx,cy per image.
-  std::vector<double> fx_per_camera;
+  std::vector<double> fx_per_camera; ///< Deprecated; ignored when image_camera_index is set.
   std::vector<double> fy_per_camera;
   std::vector<double> cx_per_camera;
   std::vector<double> cy_per_camera;
@@ -100,6 +118,9 @@ struct GlobalBAResult {
   std::vector<Eigen::Matrix3d> poses_R;
   std::vector<Eigen::Vector3d> poses_t;
   std::vector<Eigen::Vector3d> points3d;
+  /// Cameras with (possibly optimized) intrinsics+distortion.
+  /// Populated only in multi-camera mode; parallel to GlobalBAInput::cameras.
+  std::vector<camera::Intrinsics> cameras;
   double rmse_px = 0.0;
   int num_residuals = 0;
 };
