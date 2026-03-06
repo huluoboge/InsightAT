@@ -2,7 +2,10 @@
  * @file  incremental_sfm_helpers.h
  * @brief Helpers for incremental SfM: outlier rejection, track filtering.
  *
- * Two-view convention: cam0 = identity, cam1 = (R, t). Points in cam0 frame.
+ * Pose convention: poses_R[i] is world-to-camera rotation;
+ * poses_C[i] is the camera centre in world coordinates (C = -Rᵀ·t).
+ *
+ * Two-view convention: cam0 = identity at origin (C0 = 0), cam1 = (R, C).
  */
 
 #pragma once
@@ -17,10 +20,10 @@ namespace sfm {
 /**
  * Mark observations as deleted when reprojection error exceeds threshold.
  * Only considers observations with image_index 0 or 1 (two-view).
- * Cam0 = identity, cam1 = (R, t); points in cam0 frame.
- * Observations are compared against pinhole-projected 3D points.
+ * Cam0 = identity at origin; cam1 = (R, C). Points in world (cam0) frame.
  */
-int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                             const Eigen::Vector3d& C,
                              double fx, double fy, double cx, double cy, double threshold_px);
 
 /**
@@ -29,36 +32,54 @@ int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R, const 
  * When K.has_distortion() the raw pixel observations are undistorted
  * before comparing with the pinhole-projected 3D points.
  */
-int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                             const Eigen::Vector3d& C,
                              const camera::Intrinsics& K, double threshold_px);
+
+/**
+ * Per-camera intrinsics for two-view: K0 for image 0, K1 for image 1.
+ * Uses full model (fx,fy,cx,cy,k1..p2) and undistortion when needed.
+ */
+int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                             const Eigen::Vector3d& C,
+                             const camera::Intrinsics& K0, const camera::Intrinsics& K1,
+                             double threshold_px);
 
 /**
  * Mark tracks deleted if valid observation count < min_observations, or
  * (for two-view) if the angle between the two rays is below min_angle_deg.
- * Uses cam0 = identity, cam1 = (R, t); ray angle computed in cam0 frame.
+ * Cam0 = identity at origin; cam1 = (R, C).
  */
-int filter_tracks_two_view(TrackStore* store, const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+int filter_tracks_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                           const Eigen::Vector3d& C,
                            int min_observations, double min_angle_deg);
 
 /**
  * Re-triangulate all tracks that have exactly 2 observations (image 0 and 1)
- * using DLT with (R, t). Updates track xyz; invalid points are set to (0,0,0).
+ * using DLT with (R, C). Updates track xyz; invalid points are set to (0,0,0).
  */
 int retriangulate_two_view_tracks(TrackStore* store, const Eigen::Matrix3d& R,
-                                  const Eigen::Vector3d& t, double fx, double fy, double cx,
-                                  double cy);
+                                  const Eigen::Vector3d& C,
+                                  double fx, double fy, double cx, double cy);
+
+/**
+ * Overload: per-camera intrinsics K0 (image 0), K1 (image 1). Uses undistortion when needed.
+ */
+int retriangulate_two_view_tracks(TrackStore* store, const Eigen::Matrix3d& R,
+                                  const Eigen::Vector3d& C,
+                                  const camera::Intrinsics& K0, const camera::Intrinsics& K1);
 
 /**
  * Triangulate tracks that have an observation in new_image_index and at least
  * one in another registered image, but no triangulated xyz yet. Uses multi-view
- * DLT (world frame = cam0). poses_R[i], poses_t[i] = world-to-camera for image i.
+ * DLT (world frame = cam0). poses_R[i], poses_C[i] = world-to-camera for image i.
  *
  * @param registered_indices  true for each image that has a valid pose.
  * @return Number of tracks newly triangulated.
  */
 int triangulate_tracks_for_new_image(TrackStore* store, int new_image_index,
                                      const std::vector<Eigen::Matrix3d>& poses_R,
-                                     const std::vector<Eigen::Vector3d>& poses_t,
+                                     const std::vector<Eigen::Vector3d>& poses_C,
                                      const std::vector<bool>& registered_indices, double fx,
                                      double fy, double cx, double cy);
 
@@ -68,7 +89,7 @@ int triangulate_tracks_for_new_image(TrackStore* store, int new_image_index,
  */
 int triangulate_tracks_for_new_image(TrackStore* store, int new_image_index,
                                      const std::vector<Eigen::Matrix3d>& poses_R,
-                                     const std::vector<Eigen::Vector3d>& poses_t,
+                                     const std::vector<Eigen::Vector3d>& poses_C,
                                      const std::vector<bool>& registered_indices,
                                      const std::vector<camera::Intrinsics>& intrinsics_per_image);
 
@@ -78,12 +99,12 @@ int triangulate_tracks_for_new_image(TrackStore* store, int new_image_index,
 
 /**
  * Mark observations as deleted when reprojection error exceeds threshold.
- * Multiview: uses poses_R[i], poses_t[i] for each registered image i.
- * World frame = cam0; poses are world-to-camera.
+ * Multiview: uses poses_R[i], poses_C[i] for each registered image i.
+ * World frame = cam0; poses_R is world-to-camera; poses_C is camera centre.
  */
 int reject_outliers_multiview(TrackStore* store,
                              const std::vector<Eigen::Matrix3d>& poses_R,
-                             const std::vector<Eigen::Vector3d>& poses_t,
+                             const std::vector<Eigen::Vector3d>& poses_C,
                              const std::vector<bool>& registered, double fx, double fy,
                              double cx, double cy, double threshold_px);
 
@@ -92,7 +113,7 @@ int reject_outliers_multiview(TrackStore* store,
  */
 int reject_outliers_multiview(TrackStore* store,
                              const std::vector<Eigen::Matrix3d>& poses_R,
-                             const std::vector<Eigen::Vector3d>& poses_t,
+                             const std::vector<Eigen::Vector3d>& poses_C,
                              const std::vector<bool>& registered,
                              const camera::Intrinsics& K, double threshold_px);
 
@@ -102,18 +123,17 @@ int reject_outliers_multiview(TrackStore* store,
  */
 int filter_tracks_multiview(TrackStore* store,
                             const std::vector<Eigen::Matrix3d>& poses_R,
-                            const std::vector<Eigen::Vector3d>& poses_t,
+                            const std::vector<Eigen::Vector3d>& poses_C,
                             const std::vector<bool>& registered, int min_observations,
                             double min_angle_deg);
 
 /**
  * Multiview outlier rejection with per-image intrinsics.
  * intrinsics_per_image[image_index] = K for that image; size must match poses_R.
- * When null or size mismatch, behaviour is undefined (caller must ensure consistency).
  */
 int reject_outliers_multiview(TrackStore* store,
                               const std::vector<Eigen::Matrix3d>& poses_R,
-                              const std::vector<Eigen::Vector3d>& poses_t,
+                              const std::vector<Eigen::Vector3d>& poses_C,
                               const std::vector<bool>& registered,
                               const std::vector<camera::Intrinsics>& intrinsics_per_image,
                               double threshold_px);

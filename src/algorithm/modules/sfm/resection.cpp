@@ -118,7 +118,6 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
                                            static_cast<double>(pts_pnp[static_cast<size_t>(i)].v)));
   }
 
-#if defined(INSIGHTAT_USE_CERES) && INSIGHTAT_USE_CERES
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
@@ -132,10 +131,6 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   }
   *R_out = R_refined;
   *t_out = t_refined;
-#else
-  *R_out = R_eig;
-  *t_out = t_eig;
-#endif
   if (inliers_out)
     *inliers_out = n_inliers;
   return true;
@@ -223,7 +218,6 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
                         static_cast<double>(pts_pnp[static_cast<size_t>(i)].v)));
   }
 
-#if defined(INSIGHTAT_USE_CERES) && INSIGHTAT_USE_CERES
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
@@ -237,10 +231,6 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
   }
   *R_out = R_refined;
   *t_out = t_refined;
-#else
-  *R_out = R_eig;
-  *t_out = t_eig;
-#endif
   if (inliers_out)
     *inliers_out = n_inliers;
   return true;

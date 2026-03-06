@@ -52,6 +52,10 @@ def _isat_calibrate() -> str:
     return find_binary("isat_calibrate")
 
 
+def _isat_incremental_sfm() -> str:
+    return find_binary("isat_incremental_sfm")
+
+
 def get_default_sensor_db_path() -> Path | None:
     """
     Path to camera_sensor_database.txt under build/data/config (CMake copies data/config at build).
@@ -474,6 +478,42 @@ def calibrate(
         "-t", str(twoview_dir),
         "-o", str(output_k_json),
     ]
+    if extra_args:
+        cmd += extra_args
+    return run_tool(cmd)
+
+
+def run_incremental_sfm(
+    pairs_json: str | Path,
+    geo_dir: str | Path,
+    match_dir: str | Path,
+    intrinsics_json: str | Path,
+    image_list: str | Path,
+    output_dir: str | Path,
+    *,
+    min_tracks: int = 20,
+    optimize_intrinsics: bool = False,
+    extra_args: list[str] | None = None,
+) -> list[dict]:
+    """
+    isat_incremental_sfm -i pairs -g geo_dir -m match_dir -k intrinsics -l image_list -o output_dir.
+
+    Uses geometry-filtered pairs (e.g. geo_dir/pairs.json). Image/camera identity is by
+    index inside the algorithm; the tool builds IdMapping from image_list and writes
+    original image_ids at export (initial_poses.json, events).
+    """
+    cmd = [
+        _isat_incremental_sfm(),
+        "-i", str(pairs_json),
+        "-g", str(geo_dir),
+        "-m", str(match_dir),
+        "-k", str(intrinsics_json),
+        "-l", str(image_list),
+        "-o", str(output_dir),
+        "--min-tracks", str(min_tracks),
+    ]
+    if optimize_intrinsics:
+        cmd.append("--optimize-intrinsics")
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)

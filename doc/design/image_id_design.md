@@ -297,6 +297,9 @@ A: 不需要，任何正整数都可以，只要保证唯一性
 **Q: 相同文件路径可以有不同ID吗？**  
 A: 可以！这正是新设计的优势：支持重复成像、多次处理等场景
 
+**Q: SfM 内部也用 image_id 做数组下标吗？**  
+A: 不。SfM 算法内部对原始稀疏 ID 进行重编码，转为密集索引 [0, N)，见下节"SfM 内部重编码"。
+
 **Q: GNSS/IMU数据是必需的吗？**  
 A: 不是，只有`id`和`path`是必需的。GNSS/IMU仅在使用GPS检索或IMU约束时需要
 
@@ -318,6 +321,44 @@ A: 不是，只有`id`和`path`是必需的。GNSS/IMU仅在使用GPS检索或IM
 
 ---
 
+## SfM 内部重编码（ID Re-encoding）
+
+### 问题
+
+image_id / camera_id 是项目数据库分配的稀疏整数（如 1001, 1005, 2008…）。若直接用作数组下标，会有大量空洞，浪费内存，且无法被 GPU 连续内存访问。
+
+### 设计
+
+在 **AT 任务开始导出参数时**，由 `build_id_mapping_from_image_list()` 按 image list 顺序构建 **`IdMapping`**，将原始稀疏 ID 映射为密集内部索引 `[0, N)`。
+
+```
+图像 id_mapping（按 image list 数组顺序构建）
+  image_id 1001 → 内部 index 0
+  image_id 1005 → 内部 index 1
+  image_id 2008 → 内部 index 2
+  ...
+
+相机 id_mapping（首次出现顺序）
+  camera_id 1 → 内部 index 0
+  camera_id 3 → 内部 index 1
+```
+
+**SfM 算法全程使用内部索引**：ViewGraph 的节点、TrackStore 的 image_index、BA 的参数块——均为 `[0, N)` 的密集整数。
+
+**输出时**：`original_image_id(internal_idx)` 还原为原始 image_id，写入 JSON/IDC 供后续工具与 AT 任务读取。
+
+**文件路径约定**：`.isat_geo`、`.isat_match` 等中间文件名仍用**原始 image_id** 拼接（`{orig_id1}_{orig_id2}.isat_geo`），加载时通过 IdMapping 转换路径。
+
+### 相关实现
+
+- `IdMapping`：`src/algorithm/modules/sfm/id_mapping.h`
+- 构建函数：`build_id_mapping_from_image_list(path)` in `isat_intrinsics.h`
+- 向量化 `MultiCameraSetup`（`image_to_camera` + `cameras`）：`incremental_sfm_engine.h`
+
+详细设计见 [12_implementation_details.md § 2.4](12_implementation_details.md)。
+
+---
+
 ## 总结
 
 **核心改进**：
@@ -325,6 +366,7 @@ A: 不是，只有`id`和`path`是必需的。GNSS/IMU仅在使用GPS检索或IM
 - 增强数据完整性和可追溯性
 - 支持更复杂的检索策略（GPS、IMU、视觉）
 - 为数据库集成奠定基础
+- SfM 内部使用密集重编码索引，内存连续、GPU 友好
 
 **示例文件位置**：
 - 格式示例：`data/image_list_format_v2.json`

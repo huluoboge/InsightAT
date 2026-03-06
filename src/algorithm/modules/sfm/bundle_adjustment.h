@@ -2,7 +2,8 @@
  * @file  bundle_adjustment.h
  * @brief Ceres-based bundle adjustment for two-view and resection (pose-only).
  *
- * When INSIGHTAT_USE_CERES is defined, uses Ceres to optimize; otherwise stubs return false.
+ * Pose convention throughout: poses_R[i] is world-to-camera rotation;
+ * poses_C[i] is the camera centre in world coordinates (C = -Rᵀ·t).
  * Pinhole model only (no distortion in this first layer).
  */
 
@@ -78,45 +79,31 @@ struct GlobalObservation {
 };
 
 /// Global BA input: N cameras (world-to-camera), M points, multi-camera intrinsics.
-/// Camera 0 is fixed (identity).
+/// Camera 0 is fixed (world origin). Single-camera = one entry in cameras[].
 ///
-/// Multi-camera mode (preferred):
-///   Set image_camera_index[i] = index into cameras[] for image i.
-///   Images sharing the same index share ONE Ceres intrinsics+distortion parameter block —
-///   so cameras with the same camera_id share their fx/fy/cx/cy/k1..p2 in the BA.
-///   Set optimize_intrinsics=true to refine them during BA; false to keep them fixed.
+/// Pose convention: poses_R[i] = world-to-camera rotation; poses_C[i] = camera centre
+/// in world coordinates (C = -Rᵀ·t).
 ///
-/// Fallback (legacy, single shared camera, no distortion):
-///   Leave image_camera_index and cameras empty; set fx,fy,cx,cy scalars.
+/// Required: image_camera_index.size() == poses_R.size(), cameras non-empty.
+/// image_camera_index[i] = index into cameras[] for image i; same physical camera
+/// shares one parameter block (fx,fy,cx,cy,k1..p2). optimize_intrinsics to refine them.
 struct GlobalBAInput {
   std::vector<Eigen::Matrix3d> poses_R;
-  std::vector<Eigen::Vector3d> poses_t;
+  std::vector<Eigen::Vector3d> poses_C; ///< Camera centres in world coords (C = -Rᵀ·t)
   std::vector<Eigen::Vector3d> points3d;
   std::vector<GlobalObservation> observations;
 
-  // ── Multi-camera mode ─────────────────────────────────────────────────────
   /// image_camera_index[i] = index into cameras[] for image i. size = poses_R.size().
   std::vector<int> image_camera_index;
-  /// One entry per distinct camera. Images with same index share one Ceres parameter block.
+  /// One entry per distinct camera (single camera = size 1). Full intrinsics + distortion.
   std::vector<camera::Intrinsics> cameras;
-  /// If true, intrinsics (fx,fy,cx,cy) and distortion (k1..p2) are variable in BA.
   bool optimize_intrinsics = false;
-
-  // ── Legacy fallback (single shared camera, no distortion) ─────────────────
-  double fx = 0.0;
-  double fy = 0.0;
-  double cx = 0.0;
-  double cy = 0.0;
-  std::vector<double> fx_per_camera; ///< Deprecated; ignored when image_camera_index is set.
-  std::vector<double> fy_per_camera;
-  std::vector<double> cx_per_camera;
-  std::vector<double> cy_per_camera;
 };
 
 struct GlobalBAResult {
   bool success = false;
   std::vector<Eigen::Matrix3d> poses_R;
-  std::vector<Eigen::Vector3d> poses_t;
+  std::vector<Eigen::Vector3d> poses_C; ///< Camera centres in world coords (C = -Rᵀ·t)
   std::vector<Eigen::Vector3d> points3d;
   /// Cameras with (possibly optimized) intrinsics+distortion.
   /// Populated only in multi-camera mode; parallel to GlobalBAInput::cameras.
@@ -137,7 +124,7 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
  * Intrinsics fx,fy,cx,cy shared; k1, k2 passed in/out per image.
  */
 bool distortion_only_bundle(const std::vector<Eigen::Matrix3d>& poses_R,
-                            const std::vector<Eigen::Vector3d>& poses_t,
+                            const std::vector<Eigen::Vector3d>& poses_C,
                             const std::vector<Eigen::Vector3d>& points3d,
                             const std::vector<GlobalObservation>& observations, double fx,
                             double fy, double cx, double cy, std::vector<double>* k1_per_camera,

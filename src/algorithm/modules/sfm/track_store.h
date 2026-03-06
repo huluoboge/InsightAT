@@ -5,19 +5,21 @@
  *
  * Design
  * ──────
+ * - Image identity is index only: 0..num_images()-1. No "image id" in the algorithm;
+ *   export/write-back uses a mapping (index → original id) at the boundary.
  * - Tracks: xyz[3*cap], flags[cap]; observations in flat SoA with obs_track_id.
  * - Delete: set flag bits only (no array shift). track bit0=alive, bit1=needs_retriangulation;
  *           obs bit0=alive.
- * - Reverse index: per-image list of observation indices for resection / next-image selection.
+ * - Reverse index: image_index → list of observation indices (image_index is 0..n-1).
  *
  * Usage
  * ─────
  *   TrackStore store;
- *   store.set_num_images(n_images);
+ *   store.set_num_images(n_images);  // image order = index 0..n_images-1
  *   store.reserve_tracks(1000);
  *   store.reserve_observations(10000);
  *   int t = store.add_track(x, y, z);
- *   store.add_observation(t, image_index, feat_id, u, v, scale);
+ *   store.add_observation(t, image_index, feat_id, u, v, scale);  // image_index in [0, n_images)
  *   store.get_image_track_observations(image_index, ...);
  */
 
@@ -53,7 +55,7 @@ constexpr uint8_t kAlive = 1u << 0;
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct Observation {
-  uint32_t image_index = 0;
+  uint32_t image_index = 0; ///< Image index 0..num_images()-1 (array position; no external id here)
   uint32_t feature_id = 0;
   float u = 0.f;
   float v = 0.f;
@@ -68,8 +70,7 @@ class TrackStore {
 public:
   TrackStore() = default;
 
-  /// Number of images (for reverse index). Must be set before add_observation with that
-  /// image_index.
+  /// Number of images. Indices 0..n-1; set before add_observation. Order = export image list order.
   void set_num_images(int n);
   int num_images() const { return num_images_; }
 

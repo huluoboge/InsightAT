@@ -29,11 +29,13 @@
 #pragma once
 
 #include "../modules/camera/camera_types.h"
+#include "../modules/sfm/id_mapping.h"
 
 #include <cstdint>
 #include <fstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <glog/logging.h>
 #include <nlohmann/json.hpp>
@@ -239,4 +241,55 @@ inline std::unordered_map<uint32_t, uint32_t> build_image_camera_map(const std::
   }
   LOG(INFO) << "Loaded camera map for " << map.size() << " images from " << path;
   return map;
+}
+
+/**
+ * Build IdMapping from image-list JSON (same format as build_image_camera_map).
+ * Preserves image order from the "images" array; camera order = first appearance.
+ * Used for SfM ID re-encoding: internal indices 0..n_images-1, 0..n_cameras-1.
+ *
+ * @param path  Path to image list JSON. Returns empty IdMapping if path is empty.
+ */
+inline insight::sfm::IdMapping build_id_mapping_from_image_list(const std::string& path) {
+  insight::sfm::IdMapping out;
+  if (path.empty())
+    return out;
+
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    LOG(FATAL) << "Cannot open image list: " << path;
+  }
+  nlohmann::json j;
+  try {
+    f >> j;
+  } catch (const std::exception& e) {
+    LOG(FATAL) << "Failed to parse image list JSON '" << path << "': " << e.what();
+  }
+
+  if (!j.contains("images") || !j["images"].is_array()) {
+    LOG(FATAL) << "Image list JSON missing 'images' array: " << path;
+  }
+
+  std::unordered_set<uint32_t> seen_camera;
+  for (const auto& img : j["images"]) {
+    if (!img.contains("id"))
+      continue;
+    uint32_t img_id = img["id"].get<uint32_t>();
+    uint32_t cam_id = img.value("camera_id", uint32_t(1));
+    int img_idx = static_cast<int>(out.original_image_ids.size());
+    out.original_image_ids.push_back(img_id);
+    out.original_to_internal_image[img_id] = img_idx;
+    int cam_idx = 0;
+    if (seen_camera.insert(cam_id).second) {
+      cam_idx = static_cast<int>(out.original_camera_ids.size());
+      out.original_camera_ids.push_back(cam_id);
+      out.original_to_internal_camera[cam_id] = cam_idx;
+    } else {
+      cam_idx = out.original_to_internal_camera[cam_id];
+    }
+    out.image_to_camera.push_back(cam_idx);
+  }
+  LOG(INFO) << "IdMapping: " << out.num_images() << " images, " << out.num_cameras()
+            << " cameras from " << path;
+  return out;
 }

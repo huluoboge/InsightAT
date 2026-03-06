@@ -1,17 +1,18 @@
 """
 sfm.py
-InsightAT SfM Pipeline – create / extract / match (convenient for testing).
+InsightAT SfM Pipeline – create / extract / match / incremental_sfm.
 
 Usage:
     python -m src.pipeline.pipelines.sfm --input /data/flight --project out.iat --work-dir out_work
-    python -m src.pipeline.pipelines.sfm -i /data/flight -p out.iat -w out_work --steps extract,match
+    python -m src.pipeline.pipelines.sfm -i /data/flight -p out.iat -w out_work --steps extract,match,incremental_sfm
 
 Steps (controlled by --steps):
   1. create   – Create project, add groups/images, estimate camera (default sensor_db), create AT task
   2. extract  – Export all-group image list, dual feature extraction (retrieval + matching), default CUDA
   3. match    – Train VLAD + PCA, retrieve pairs, match, geo (--twoview, --vis); geo outputs pairs.json + adjacency.json
+  4. incremental_sfm – Run isat_incremental_sfm: initial pair + two-view BA; writes initial_poses.json and initial_tracks.isat_tracks to work_dir/incremental_sfm/
 
-Downstream SfM (isat_twoview, isat_calibrate) should use geo_dir/pairs.json (geometry-filtered pairs).
+Uses geo_dir/pairs.json (geometry-filtered pairs) for incremental_sfm. Image/camera identity is by index in the algorithm; the tool exports original image_ids at the boundary.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from .. import project_utils as pu
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STEPS = ["create", "extract", "match"]
+DEFAULT_STEPS = ["create", "extract", "match", "incremental_sfm"]
 
 
 def _scan_subdirs(root: Path, ext: str) -> list[tuple[str, Path]]:
@@ -279,6 +280,49 @@ def run_step_match(
     })
 
 
+def run_step_incremental_sfm(
+    cfg: "SfmConfig",
+    task_id: int | None = None,
+) -> None:
+    """Run isat_incremental_sfm: initial pair + two-view BA, write initial_poses.json and initial_tracks.isat_tracks."""
+    if task_id is None:
+        task_id = _get_task_id(cfg, "incremental_sfm")
+    images_all = cfg.work_dir / "images_all.json"
+    match_dir = cfg.work_dir / "match"
+    geo_dir = cfg.work_dir / "geo"
+    intrinsics_json = cfg.work_dir / "intrinsics.json"
+    pairs_json = geo_dir / "pairs.json"
+    sfm_out = cfg.work_dir / "incremental_sfm"
+
+    if not cfg.dry_run:
+        sfm_out.mkdir(parents=True, exist_ok=True)
+        events = pu.run_incremental_sfm(
+            pairs_json,
+            geo_dir,
+            match_dir,
+            intrinsics_json,
+            images_all,
+            sfm_out,
+            min_tracks=cfg.min_tracks_incremental_sfm,
+            optimize_intrinsics=cfg.optimize_intrinsics,
+            extra_args=cfg.extra_incremental_sfm or None,
+        )
+        evt = (events[0] if events else {}).get("data") or {}
+    else:
+        evt = {}
+
+    emit_pipeline_event({
+        "step": "incremental_sfm",
+        "ok": True,
+        "data": {
+            "output_dir": str(sfm_out),
+            "initial_poses": str(sfm_out / "initial_poses.json"),
+            "initial_tracks": str(sfm_out / "initial_tracks.isat_tracks"),
+            **evt,
+        },
+    })
+
+
 def run_pipeline(cfg: "SfmConfig") -> int:
     """Run selected steps. Returns 0 on success, 1 on error."""
     steps_set = set(cfg.steps)
@@ -316,6 +360,10 @@ def run_pipeline(cfg: "SfmConfig") -> int:
         log.info("=== Step: match ===")
         run_step_match(cfg, task_id if "create" in steps_set else None)
 
+    if "incremental_sfm" in steps_set:
+        log.info("=== Step: incremental_sfm ===")
+        run_step_incremental_sfm(cfg, task_id if "create" in steps_set else None)
+
     emit_pipeline_event({
         "step": "pipeline_complete",
         "ok": True,
@@ -343,6 +391,9 @@ class SfmConfig:
         extra_train_vlad: list[str] | None = None,
         extra_match: list[str] | None = None,
         extra_geo: list[str] | None = None,
+        extra_incremental_sfm: list[str] | None = None,
+        min_tracks_incremental_sfm: int = 20,
+        optimize_intrinsics: bool = False,
     ) -> None:
         self.input_dir = input_dir
         self.project_path = project_path
@@ -360,14 +411,17 @@ class SfmConfig:
         self.extra_train_vlad = list(extra_train_vlad) if extra_train_vlad else []
         self.extra_match = list(extra_match) if extra_match else []
         self.extra_geo = list(extra_geo) if extra_geo else []
+        self.extra_incremental_sfm = list(extra_incremental_sfm) if extra_incremental_sfm else []
+        self.min_tracks_incremental_sfm = min_tracks_incremental_sfm
+        self.optimize_intrinsics = optimize_intrinsics
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="sfm",
         description=(
-            "InsightAT SfM pipeline (create / extract / match). "
-            "Convenient for testing. Use --steps to run only selected steps."
+            "InsightAT SfM pipeline (create / extract / match / incremental_sfm). "
+            "Use --steps to run only selected steps."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -377,20 +431,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--steps",
         metavar="LIST",
-        default="create,extract,match",
-        help="Comma-separated steps: create, extract, match (default: create,extract,match).",
+        default="create,extract,match,incremental_sfm",
+        help="Comma-separated steps: create, extract, match, incremental_sfm (default: create,extract,match,incremental_sfm).",
     )
     p.add_argument("--ext", default=".jpg,.tif,.png", help="Image extensions (default: .jpg,.tif,.png).")
     p.add_argument("--min-images", type=int, default=5, help="Minimum images per group (default: 5).")
     p.add_argument("--max-sample", type=int, default=5, help="Max images sampled for focal estimation (default: 5).")
     p.add_argument("--extract-backend", choices=("cuda", "glsl"), default="cuda", help="isat_extract backend (default: cuda).")
-    p.add_argument("--match-backend", choices=("cuda", "glsl"), default="cuda", help="isat_match backend (default: cuda).")
+    p.add_argument("--match-backend", choices=("cuda", "glsl"), default="cuda", help="isat_match backend (default: cuda; use glsl if headless without EGL).")
     p.add_argument("--dry-run", action="store_true", help="Print what would be done without running tools.")
     p.add_argument("--log-level", choices=("error", "warn", "info", "debug"), help="Log level (default: warn).")
     p.add_argument("-v", "--verbose", action="store_true", help="Same as --log-level=info.")
     p.add_argument("-q", "--quiet", action="store_true", help="Same as --log-level=error.")
     p.add_argument("--log-file", metavar="FILE", help="Append logs to file.")
     p.add_argument("--progress", action="store_true", help="Show only progress lines from tools.")
+    p.add_argument("--min-tracks-incremental-sfm", type=int, default=20,
+                   help="Minimum valid tracks after initial pair (default: 20).")
+    p.add_argument("--optimize-intrinsics", action="store_true",
+                   help="Optimize intrinsics in incremental SfM global BA (default: fixed).")
     return p
 
 
@@ -411,8 +469,8 @@ def main(argv: list[str] | None = None) -> int:
 
     steps = [s.strip() for s in args.steps.split(",") if s.strip()]
     for s in steps:
-        if s not in ("create", "extract", "match"):
-            log.error("Unknown step: %s (allowed: create, extract, match)", s)
+        if s not in ("create", "extract", "match", "incremental_sfm"):
+            log.error("Unknown step: %s (allowed: create, extract, match, incremental_sfm)", s)
             return 2
 
     input_dir = Path(args.input).resolve()
@@ -432,6 +490,8 @@ def main(argv: list[str] | None = None) -> int:
         log_level=log_level,
         extract_backend=args.extract_backend,
         match_backend=args.match_backend,
+        min_tracks_incremental_sfm=args.min_tracks_incremental_sfm,
+        optimize_intrinsics=args.optimize_intrinsics,
     )
 
     try:

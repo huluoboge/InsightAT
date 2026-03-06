@@ -187,42 +187,45 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // ── Load image list (v2.0): image_id → camera_id ─────────────────────────
-  auto image_camera_map = build_image_camera_map(image_list);
-  if (image_camera_map.empty()) {
+  // ── Build ID mapping and ordered camera setup (re-encoded for efficiency) ─
+  insight::sfm::IdMapping id_mapping = build_id_mapping_from_image_list(image_list);
+  if (id_mapping.empty()) {
     LOG(ERROR) << "No images loaded from image list: " << image_list;
     return 1;
   }
 
-  // ── Load intrinsics: camera_id → intrinsics ───────────────────────────────
   auto cam_map = load_intrinsics_map(intrinsics_path);
   if (cam_map.empty()) {
     LOG(ERROR) << "No intrinsics loaded from " << intrinsics_path;
     return 1;
   }
-  // Build camera_id → camera::Intrinsics (algorithm type)
-  std::unordered_map<uint32_t, insight::camera::Intrinsics> camera_intrinsics_map;
-  for (const auto& [cam_id, cam_intr] : cam_map) {
-    if (cam_intr.valid())
-      camera_intrinsics_map[cam_id] = cam_intr.to_algorithm_intrinsics();
+  insight::sfm::MultiCameraSetup cam_setup;
+  cam_setup.image_to_camera = id_mapping.image_to_camera;
+  cam_setup.cameras.resize(id_mapping.num_cameras());
+  for (size_t j = 0; j < id_mapping.num_cameras(); ++j) {
+    uint32_t orig_cam_id = id_mapping.original_camera_id(static_cast<int>(j));
+    auto it = cam_map.find(orig_cam_id);
+    if (it != cam_map.end() && it->second.valid())
+      cam_setup.cameras[j] = it->second.to_algorithm_intrinsics();
+    else {
+      LOG(WARNING) << "No intrinsics for camera id " << orig_cam_id << ", using fallback";
+      if (!cam_setup.cameras.empty())
+        cam_setup.cameras[j] = cam_setup.cameras[0];
+    }
   }
-  if (camera_intrinsics_map.empty()) {
+  if (cam_setup.cameras.empty()) {
     LOG(ERROR) << "No valid cameras in intrinsics file: " << intrinsics_path;
     return 1;
   }
   if (output_dir.empty())
     output_dir = ".";
 
-  // ── Build camera setup (data) ─────────────────────────────────────────────
-  insight::sfm::MultiCameraSetup cam_setup;
-  cam_setup.image_camera_map = std::move(image_camera_map);
-  cam_setup.cameras = std::move(camera_intrinsics_map);
-
   // ── Algorithm parameters (config) ────────────────────────────────────────
   insight::sfm::IncrementalSfmConfig config;
   config.pairs_json_path = pairs_json;
   config.geo_dir = geo_dir;
   config.match_dir = match_dir;
+  config.id_mapping = &id_mapping;
   config.optimize_intrinsics = opt_intrinsics;
   config.min_tracks_after_initial = min_tracks;
   config.run_global_ba = true;
@@ -233,13 +236,14 @@ int main(int argc, char* argv[]) {
   insight::sfm::TrackStore store;
   Eigen::Matrix3d R1;
   Eigen::Vector3d t1;
-  uint32_t image1_id = 0, image2_id = 0;
+  uint32_t image1_id = 0, image2_id = 0; // original ids for export (boundary: index → id)
   if (ok) {
     store = std::move(result.store);
-    image1_id = result.image1_id;
-    image2_id = result.image2_id;
+    image1_id = id_mapping.original_image_id(static_cast<int>(result.image1_index));
+    image2_id = id_mapping.original_image_id(static_cast<int>(result.image2_index));
     R1 = result.poses_R.size() > 1 ? result.poses_R[1] : Eigen::Matrix3d::Identity();
-    t1 = result.poses_t.size() > 1 ? result.poses_t[1] : Eigen::Vector3d::Zero();
+    const Eigen::Vector3d C1 = result.poses_C.size() > 1 ? result.poses_C[1] : Eigen::Vector3d::Zero();
+    t1 = -R1 * C1; // world-to-camera translation for export
   }
 
   if (!ok) {
@@ -268,3 +272,4 @@ int main(int argc, char* argv[]) {
                 {"output_dir", output_dir}}}});
   return 0;
 }
+

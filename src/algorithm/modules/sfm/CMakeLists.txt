@@ -44,9 +44,23 @@ add_library(sfm_module STATIC
     view_graph.h
     bundle_adjustment.cpp
     bundle_adjustment.h
+    bundle_adjustment_analytic.cpp
+    bundle_adjustment_analytic.h
     incremental_sfm_helpers.cpp
     incremental_sfm_helpers.h
 )
+
+# ── Unit test: analytic BA ─────────────────────────────────────────────────
+add_executable(test_ba_analytic bundle_adjustment_analytic_test.cpp)
+target_link_libraries(test_ba_analytic
+    PRIVATE
+        sfm_module
+        algorithm_camera
+        Eigen3::Eigen
+        Ceres::ceres
+        glog::glog
+)
+set_property(TARGET test_ba_analytic PROPERTY FOLDER InsightAT/Tests)
 
 target_include_directories(sfm_module
     PUBLIC
@@ -68,8 +82,6 @@ target_link_libraries(sfm_module
     PRIVATE
         glog::glog
 )
-
-target_compile_definitions(sfm_module PUBLIC INSIGHTAT_USE_CERES)
 
 target_compile_features(sfm_module PUBLIC cxx_std_17)
 set_property(TARGET sfm_module PROPERTY FOLDER "InsightAT/Modules")

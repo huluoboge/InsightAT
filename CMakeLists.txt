@@ -105,7 +105,6 @@ message(STATUS "Eigen3 version is ${EIGEN3_VERSION}")
 
 # Ceres (required: for bundle adjustment in incremental SfM)
 find_package(Ceres REQUIRED)
-set(INSIGHTAT_USE_CERES TRUE)
 message(STATUS "Ceres: ${Ceres_VERSION}, BA module enabled")
 
 

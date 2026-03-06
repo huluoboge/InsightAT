@@ -71,7 +71,7 @@
 |------|------|------|
 | 10 | **[10_introduction.md](10_introduction.md)** | 软件目标与核心概念（综述） |
 | 11 | **[11_architecture_overview.md](11_architecture_overview.md)** | 三层架构与数据流向（与 03 目录组织互补） |
-| 12 | **[12_implementation_details.md](12_implementation_details.md)** | 业务实现细节（若存在） |
+| 12 | **[12_implementation_details.md](12_implementation_details.md)** | 核心实现方案：坐标解析、畸变模型、任务快照、**SfM ID 重编码与向量化相机表示（§2.4）** |
 
 ---
 

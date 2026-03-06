@@ -19,39 +19,33 @@ namespace matching {
 
 SiftMatcher::SiftMatcher(int max_features, bool use_cuda) : max_features_(max_features) {
 
-  // Create SiftMatchGPU instance
   matcher_ = std::make_unique<SiftMatchGPU>(max_features);
 
-  // Request CUDA backend when available (before CreateContextGL so the matcher picks the right
-  // backend)
   if (use_cuda) {
+    // CUDA backend: no GL context needed. SetLanguage(CUDA) then VerifyContextGL() only;
+    // SiftMatchGPU creates SiftMatchCU and sets _GoodOpenGL in InitSiftMatch (no CreateContextGL).
     matcher_->SetLanguage(SiftMatchGPU::SIFTMATCH_CUDA);
+    if (matcher_->VerifyContextGL() == 0) {
+      LOG(ERROR) << "SiftMatchGPU CUDA backend failed (VerifyContextGL)";
+      matcher_.reset();
+    } else {
+      LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features << " (CUDA backend)";
+    }
+    return;
   }
 
-  // Create context (OpenGL for GLSL, or minimal for CUDA backend)
+  // GLSL backend: create GL/EGL context then verify
   int support = matcher_->CreateContextGL();
-  if (use_cuda) {
-    // CUDA backend may return PARTIAL (1) because it does not need full OpenGL
-    if (support == SiftGPU::SIFTGPU_NOT_SUPPORTED) {
-      LOG(ERROR) << "SiftMatchGPU CUDA context failed. Support level: " << support;
-      matcher_.reset();
-      return;
-    }
-  } else {
-    if (support != SiftGPU::SIFTGPU_FULL_SUPPORTED) {
-      LOG(ERROR) << "SiftGPU not fully supported. Support level: " << support;
-      matcher_.reset();
-      return;
-    }
+  if (support != SiftGPU::SIFTGPU_FULL_SUPPORTED) {
+    LOG(ERROR) << "SiftGPU not fully supported. Support level: " << support;
+    matcher_.reset();
+    return;
   }
-
-  // Verify context
   if (matcher_->VerifyContextGL() == 0) {
     LOG(ERROR) << "Failed to create/verify context for SiftMatchGPU";
     matcher_.reset();
   } else {
-    LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features
-              << (use_cuda ? " (CUDA backend)" : " (GLSL backend)");
+    LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features << " (GLSL backend)";
   }
 }
 

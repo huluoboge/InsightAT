@@ -52,6 +52,76 @@
    - **CSV 模式**：支持通过 `--csv-file` 传入简单的图像路径列表（每行一个路径）。
 3. **静默标准**：计算结果输出到 `stdout` (JSON 格式)，所有日志、进度信息及错误提示必须输出到 `stderr`。
 
+### 2.4 SfM 内部 ID 重编码与向量化相机表示
+
+#### 背景
+
+图像 ID（`image_id`）和相机 ID（`camera_id`）由项目数据库分配，是稀疏的正整数（例如 1001, 1005, 2008…）。若直接将这些 ID 用作数组下标，会导致大量空洞（`image_degree_` 等 vector 按 max_id 分配），内存浪费，且无法被 GPU 直接消费。
+
+#### 设计方案
+
+在 **AT 任务开始、导出参数时建立 `IdMapping`，算法结束后用映射还原原始 ID**，中间全程使用密集的内部索引 `[0, N)`。
+
+```
+原始 image_id: 1001, 1005, 2008, 2012   (稀疏)
+内部 index  :    0,    1,    2,    3   (密集)
+
+原始 camera_id: 1, 3           (稀疏)
+内部 index  :   0, 1           (密集)
+```
+
+**`IdMapping`**（`src/algorithm/modules/sfm/id_mapping.h`）：
+- `original_image_ids[i]`：内部下标 i → 原始 image_id
+- `original_camera_ids[j]`：内部下标 j → 原始 camera_id
+- `image_to_camera[i]`：内部图像下标 → 内部相机下标
+- `original_to_internal_image`/`original_to_internal_camera`：反查表（仅在"边界加载"时使用）
+
+在 `isat_intrinsics.h` 中提供 `build_id_mapping_from_image_list(path)` 一次性构建映射，顺序即 image list JSON 数组顺序。
+
+#### MultiCameraSetup 向量化
+
+`incremental_sfm_engine.h` 中的 `MultiCameraSetup` 以密集向量存储（去掉 `unordered_map`）：
+
+```cpp
+struct MultiCameraSetup {
+  std::vector<int>              image_to_camera; // 内部图像索引 -> 内部相机索引
+  std::vector<camera::Intrinsics> cameras;       // 内部相机索引 -> 内参+畸变
+};
+```
+
+好处：
+- 内存连续，CPU cache 友好，SIMD 可直接访问
+- 后续 GPU BA：直接 `memcpy` 到 device，无需序列化
+
+#### 流程约定
+
+```
+构建 IdMapping（build_id_mapping_from_image_list）
+       ↓
+构建向量化 MultiCameraSetup（image_to_camera + cameras）
+       ↓
+SfM pipeline（ViewGraph、TrackStore、BA —— 全用内部索引）
+       ↓
+输出时用 original_image_id(i) 还原为原始 ID
+```
+
+**重要约定**：同一 AT 任务内所有工具（isat_geo、isat_match、isat_tracks、isat_incremental_sfm）共用同一份 image list，以保证各阶段内部索引对应关系一致。文件名（`.isat_geo`、`.isat_match` 等）仍使用原始 image_id 拼接，读取时通过 `original_image_id(idx)` 还原路径；SfM 内部对图像的所有引用均为密集索引。
+
+#### 与 GPU BA 的关系
+
+向量化后，`cameras` 数组可直接作为 Ceres/GPU BA 的参数块数组（`camera_index_for_image[i]` 给出哪张图用哪个相机参数块），同构于 COLMAP 的 `camera_id → camera params` 表示，便于未来切换 GPU BA 后端（sba、g2o 等）。
+
+#### 相关文件
+
+| 文件 | 职责 |
+|---|---|
+| `src/algorithm/modules/sfm/id_mapping.h` | `IdMapping` 结构定义 |
+| `src/algorithm/tools/isat_intrinsics.h` | `build_id_mapping_from_image_list()` |
+| `src/algorithm/modules/sfm/incremental_sfm_engine.h` | 向量化 `MultiCameraSetup` |
+| `src/algorithm/modules/sfm/view_graph_loader.cpp` | 加载时转换 pair ID 为内部索引 |
+| `src/algorithm/modules/sfm/incremental_sfm.cpp` | `run_initial_pair_loop` 支持 id_mapping |
+| `src/algorithm/tools/isat_incremental_sfm.cpp` | CLI 层构建映射、输出时还原 |
+
 ## 4. 待办与扩展 (Future Outlook)
 - **版本 2.0 计划**：考虑引入 SQLite 作为数据后端的选项，以支持极大规模（百万级）影像匹配。
 - **标准化输出**：实现向 COLMAP、Agisoft XML、以及标准 POS 格式的导出器。

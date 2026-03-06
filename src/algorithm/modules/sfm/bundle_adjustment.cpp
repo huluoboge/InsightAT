@@ -1,20 +1,15 @@
 /**
  * @file  bundle_adjustment.cpp
- * @brief Two-view and pose-only BA via Ceres (when INSIGHTAT_USE_CERES).
+ * @brief Two-view and pose-only BA via Ceres.
  */
 
 #include "bundle_adjustment.h"
 #include <cmath>
-
-#if defined(INSIGHTAT_USE_CERES) && INSIGHTAT_USE_CERES
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
-#endif
 
 namespace insight {
 namespace sfm {
-
-#if defined(INSIGHTAT_USE_CERES) && INSIGHTAT_USE_CERES
 
 namespace {
 
@@ -253,7 +248,7 @@ bool pose_only_bundle(const std::vector<Eigen::Vector3d>& pts3d,
 
 bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_iterations) {
   if (!result || input.points3d.empty() || input.observations.empty() ||
-      input.poses_R.size() != input.poses_t.size() || input.poses_R.empty())
+      input.poses_R.size() != input.poses_C.size() || input.poses_R.empty())
     return false;
 
   const int n_cams = static_cast<int>(input.poses_R.size());
@@ -262,20 +257,19 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
   const bool use_multicam =
       !input.image_camera_index.empty() && !input.cameras.empty() &&
       input.image_camera_index.size() == static_cast<size_t>(n_cams);
-
-  // Legacy mode requires at least valid shared intrinsics
-  if (!use_multicam && !input.fx && !input.fy)
+  if (!use_multicam)
     return false;
 
-  // ── Camera pose arrays (angle-axis + t) ───────────────────────────────────
+  // ── Camera pose arrays (angle-axis + t), t = -R·C ─────────────────────────
   std::vector<double> cam_aa(static_cast<size_t>(n_cams) * 3);
   std::vector<double> cam_t(static_cast<size_t>(n_cams) * 3);
   for (int i = 0; i < n_cams; ++i) {
-    rotationMatrixToAngleAxis(input.poses_R[static_cast<size_t>(i)],
-                              &cam_aa[static_cast<size_t>(i) * 3]);
-    cam_t[static_cast<size_t>(i) * 3 + 0] = input.poses_t[static_cast<size_t>(i)](0);
-    cam_t[static_cast<size_t>(i) * 3 + 1] = input.poses_t[static_cast<size_t>(i)](1);
-    cam_t[static_cast<size_t>(i) * 3 + 2] = input.poses_t[static_cast<size_t>(i)](2);
+    const Eigen::Matrix3d& Ri = input.poses_R[static_cast<size_t>(i)];
+    const Eigen::Vector3d  ti = -Ri * input.poses_C[static_cast<size_t>(i)];
+    rotationMatrixToAngleAxis(Ri, &cam_aa[static_cast<size_t>(i) * 3]);
+    cam_t[static_cast<size_t>(i) * 3 + 0] = ti(0);
+    cam_t[static_cast<size_t>(i) * 3 + 1] = ti(1);
+    cam_t[static_cast<size_t>(i) * 3 + 2] = ti(2);
   }
 
   // ── 3D points ─────────────────────────────────────────────────────────────
@@ -338,13 +332,14 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
       return false;
 
     result->poses_R.resize(static_cast<size_t>(n_cams));
-    result->poses_t.resize(static_cast<size_t>(n_cams));
+    result->poses_C.resize(static_cast<size_t>(n_cams));
     for (int i = 0; i < n_cams; ++i) {
-      angleAxisToRotationMatrix(&cam_aa[static_cast<size_t>(i) * 3],
-                                &result->poses_R[static_cast<size_t>(i)]);
-      result->poses_t[static_cast<size_t>(i)] = Eigen::Vector3d(
-          cam_t[static_cast<size_t>(i) * 3 + 0], cam_t[static_cast<size_t>(i) * 3 + 1],
-          cam_t[static_cast<size_t>(i) * 3 + 2]);
+      Eigen::Matrix3d& Ri = result->poses_R[static_cast<size_t>(i)];
+      angleAxisToRotationMatrix(&cam_aa[static_cast<size_t>(i) * 3], &Ri);
+      const Eigen::Vector3d ti(cam_t[static_cast<size_t>(i) * 3 + 0],
+                               cam_t[static_cast<size_t>(i) * 3 + 1],
+                               cam_t[static_cast<size_t>(i) * 3 + 2]);
+      result->poses_C[static_cast<size_t>(i)] = -Ri.transpose() * ti;
     }
     result->points3d.resize(n_points);
     for (size_t i = 0; i < n_points; ++i)
@@ -367,74 +362,17 @@ bool global_bundle(const GlobalBAInput& input, GlobalBAResult* result, int max_i
                           : 0.0;
     return true;
   }
-
-  // ── Legacy path: shared or per-image scalar intrinsics, no distortion ─────
-  const bool use_per_camera =
-      input.fx_per_camera.size() == static_cast<size_t>(n_cams) &&
-      input.fy_per_camera.size() == static_cast<size_t>(n_cams) &&
-      input.cx_per_camera.size() == static_cast<size_t>(n_cams) &&
-      input.cy_per_camera.size() == static_cast<size_t>(n_cams);
-
-  for (const auto& obs : input.observations) {
-    if (obs.image_index < 0 || obs.image_index >= n_cams || obs.point_index < 0 ||
-        static_cast<size_t>(obs.point_index) >= n_points)
-      continue;
-    double fx = input.fx, fy = input.fy, cx = input.cx, cy = input.cy;
-    if (use_per_camera) {
-      const size_t c = static_cast<size_t>(obs.image_index);
-      fx = input.fx_per_camera[c];
-      fy = input.fy_per_camera[c];
-      cx = input.cx_per_camera[c];
-      cy = input.cy_per_camera[c];
-    }
-    double* cam_aa_ptr = cam_aa.data() + static_cast<size_t>(obs.image_index) * 3;
-    double* cam_t_ptr  = cam_t.data()  + static_cast<size_t>(obs.image_index) * 3;
-    double* point_ptr  = points_flat.data() + static_cast<size_t>(obs.point_index) * 3;
-    ceres::CostFunction* cost = new ceres::AutoDiffCostFunction<CostGlobal, 2, 3, 3, 3>(
-        new CostGlobal{obs.u, obs.v, fx, fy, cx, cy});
-    problem.AddResidualBlock(cost, loss, cam_aa_ptr, cam_t_ptr, point_ptr);
-  }
-  problem.SetParameterBlockConstant(cam_aa.data());
-  problem.SetParameterBlockConstant(cam_t.data());
-
-  ceres::Solver::Options options;
-  options.max_num_iterations = max_iterations;
-  options.linear_solver_type = ceres::DENSE_SCHUR;
-  options.minimizer_progress_to_stdout = false;
-  ceres::Solver::Summary summary;
-  ceres::Solve(options, &problem, &summary);
-  if (!summary.IsSolutionUsable())
-    return false;
-
-  result->poses_R.resize(static_cast<size_t>(n_cams));
-  result->poses_t.resize(static_cast<size_t>(n_cams));
-  for (int i = 0; i < n_cams; ++i) {
-    angleAxisToRotationMatrix(&cam_aa[static_cast<size_t>(i) * 3],
-                              &result->poses_R[static_cast<size_t>(i)]);
-    result->poses_t[static_cast<size_t>(i)] = Eigen::Vector3d(
-        cam_t[static_cast<size_t>(i) * 3 + 0], cam_t[static_cast<size_t>(i) * 3 + 1],
-        cam_t[static_cast<size_t>(i) * 3 + 2]);
-  }
-  result->points3d.resize(n_points);
-  for (size_t i = 0; i < n_points; ++i)
-    result->points3d[i] =
-        Eigen::Vector3d(points_flat[i * 3 + 0], points_flat[i * 3 + 1], points_flat[i * 3 + 2]);
-  result->success = true;
-  result->num_residuals = static_cast<int>(summary.num_residuals);
-  result->rmse_px = (summary.num_residuals > 0)
-                        ? std::sqrt(summary.final_cost * 2.0 / summary.num_residuals)
-                        : 0.0;
-  return true;
+  return false;
 }
 
 bool distortion_only_bundle(const std::vector<Eigen::Matrix3d>& poses_R,
-                            const std::vector<Eigen::Vector3d>& poses_t,
+                            const std::vector<Eigen::Vector3d>& poses_C,
                             const std::vector<Eigen::Vector3d>& points3d,
                             const std::vector<GlobalObservation>& observations, double fx,
                             double fy, double cx, double cy, std::vector<double>* k1_per_camera,
                             std::vector<double>* k2_per_camera, double* rmse_px,
                             int max_iterations) {
-  if (!k1_per_camera || !k2_per_camera || poses_R.size() != poses_t.size() ||
+  if (!k1_per_camera || !k2_per_camera || poses_R.size() != poses_C.size() ||
       observations.empty() || points3d.empty())
     return false;
   const size_t n_cams = poses_R.size();
@@ -449,8 +387,8 @@ bool distortion_only_bundle(const std::vector<Eigen::Matrix3d>& poses_R,
         static_cast<size_t>(o.point_index) >= points3d.size())
       continue;
     const Eigen::Vector3d P =
-        poses_R[static_cast<size_t>(o.image_index)] * points3d[static_cast<size_t>(o.point_index)] +
-        poses_t[static_cast<size_t>(o.image_index)];
+        poses_R[static_cast<size_t>(o.image_index)] *
+        (points3d[static_cast<size_t>(o.point_index)] - poses_C[static_cast<size_t>(o.image_index)]);
     p_cam_x[i] = P(0);
     p_cam_y[i] = P(1);
     p_cam_z[i] = P(2);
@@ -482,28 +420,6 @@ bool distortion_only_bundle(const std::vector<Eigen::Matrix3d>& poses_R,
     *rmse_px = std::sqrt(summary.final_cost * 2.0 / summary.num_residuals);
   return true;
 }
-
-#else
-
-bool two_view_bundle(const TwoViewBAInput&, TwoViewBAResult*, int) { return false; }
-
-bool pose_only_bundle(const std::vector<Eigen::Vector3d>&, const std::vector<Eigen::Vector2d>&,
-                      double, double, double, double, const Eigen::Matrix3d&,
-                      const Eigen::Vector3d&, Eigen::Matrix3d*, Eigen::Vector3d*, double*, int) {
-  return false;
-}
-
-bool global_bundle(const GlobalBAInput&, GlobalBAResult*, int) { return false; }
-
-bool distortion_only_bundle(const std::vector<Eigen::Matrix3d>&,
-                            const std::vector<Eigen::Vector3d>&,
-                            const std::vector<Eigen::Vector3d>&,
-                            const std::vector<GlobalObservation>&, double, double, double, double,
-                            std::vector<double>*, std::vector<double>*, double*, int) {
-  return false;
-}
-
-#endif
 
 } // namespace sfm
 } // namespace insight
