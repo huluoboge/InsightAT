@@ -7,6 +7,7 @@
 #include "../../io/idc_reader.h"
 #include "../../tools/pair_json_utils.h"
 #include <fstream>
+#include <glog/logging.h>
 #include <nlohmann/json.hpp>
 
 namespace insight {
@@ -28,9 +29,11 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
   }
   if (!j.contains("pairs") || !j["pairs"].is_array())
     return false;
+  const size_t num_pairs_json = j["pairs"].size();
   std::string dir = geo_dir;
   if (!dir.empty() && dir.back() != '/')
     dir += '/';
+  size_t num_loaded = 0;
   for (const auto& p : j["pairs"]) {
     uint32_t orig1 = insight::tools::get_image_id_from_pair(p, "image1_id");
     uint32_t orig2 = insight::tools::get_image_id_from_pair(p, "image2_id");
@@ -64,7 +67,10 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
         info.num_valid_points = tv["num_valid_points"].get<int>();
     }
     out->add_pair(info);
+    ++num_loaded;
   }
+  LOG(INFO) << "build_view_graph_from_geo: " << num_loaded << " pairs loaded from " << num_pairs_json
+            << " (geo_dir=" << geo_dir << ")";
   return true;
 }
 

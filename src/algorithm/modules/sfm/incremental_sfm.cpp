@@ -6,10 +6,12 @@
 #include "incremental_sfm.h"
 #include "../../io/idc_reader.h"
 #include "bundle_adjustment.h"
+#include "incremental_sfm_engine.h"
 #include "incremental_sfm_helpers.h"
 #include "resection.h"
 #include "track_builder.h"
 #include "view_graph_loader.h"
+#include <glog/logging.h>
 
 namespace insight {
 namespace sfm {
@@ -117,10 +119,11 @@ bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string
   TwoViewBAInput ba_in;
   ba_in.R = R;
   ba_in.t = t;
-  ba_in.fx = use_per_camera ? K1_ptr->fx : fx;
-  ba_in.fy = use_per_camera ? K1_ptr->fy : fy;
-  ba_in.cx = use_per_camera ? K1_ptr->cx : cx;
-  ba_in.cy = use_per_camera ? K1_ptr->cy : cy;
+  // Use reference frame (cam0) intrinsics for two-view BA; TwoViewBAInput has single K.
+  ba_in.fx = use_per_camera ? K0_ptr->fx : fx;
+  ba_in.fy = use_per_camera ? K0_ptr->fy : fy;
+  ba_in.cx = use_per_camera ? K0_ptr->cx : cx;
+  ba_in.cy = use_per_camera ? K0_ptr->cy : cy;
   const size_t n_tracks = store_out->num_tracks();
   std::vector<int> valid_track_ids;
   std::vector<Observation> obs_buf;
@@ -171,6 +174,149 @@ bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string
   return true;
 }
 
+bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string& geo_dir,
+                           const std::string& match_dir, const MultiCameraSetup* cameras,
+                           const IdMapping* id_mapping, TrackStore* store_in_out,
+                           Eigen::Matrix3d* R1_out, Eigen::Vector3d* C1_out,
+                           int min_tracks_after, uint32_t* image1_index_out,
+                           uint32_t* image2_index_out) {
+  (void)match_dir;  // unused when using pre-built full store
+  if (!store_in_out || !R1_out || !C1_out || !cameras || cameras->empty())
+    return false;
+  ViewGraph vg;
+  if (!build_view_graph_from_geo(pairs_json_path, geo_dir, &vg, id_mapping)) {
+    LOG(WARNING) << "run_initial_pair_loop: failed to build view graph";
+    return false;
+  }
+  const auto pair = vg.choose_initial_pair({});
+  if (!pair) {
+    LOG(WARNING) << "run_initial_pair_loop: no suitable initial pair";
+    return false;
+  }
+  const uint32_t idx1 = pair->first, idx2 = pair->second;
+  const camera::Intrinsics* K0 = cameras->for_image_index(static_cast<int>(idx1));
+  const camera::Intrinsics* K1 = cameras->for_image_index(static_cast<int>(idx2));
+  if (!K0 || !K1 || K0->fx <= 0 || K1->fx <= 0) {
+    LOG(ERROR) << "run_initial_pair_loop: missing or invalid intrinsics for chosen pair ("
+               << idx1 << ", " << idx2 << ")";
+    return false;
+  }
+  if (image1_index_out)
+    *image1_index_out = idx1;
+  if (image2_index_out)
+    *image2_index_out = idx2;
+
+  std::string dir_g = geo_dir;
+  if (!dir_g.empty() && dir_g.back() != '/')
+    dir_g += '/';
+  const uint32_t path_id1 = id_mapping ? id_mapping->original_image_id(static_cast<int>(idx1)) : idx1;
+  const uint32_t path_id2 = id_mapping ? id_mapping->original_image_id(static_cast<int>(idx2)) : idx2;
+  const std::string geo_path =
+      dir_g + std::to_string(path_id1) + "_" + std::to_string(path_id2) + ".isat_geo";
+
+  Eigen::Matrix3d R;
+  Eigen::Vector3d t;
+  std::vector<uint8_t> inlier_mask;
+  if (!load_pair_geo(geo_path, &R, &t, &inlier_mask)) {
+    LOG(WARNING) << "run_initial_pair_loop: failed to load geo " << geo_path;
+    return false;
+  }
+  Eigen::Vector3d C2 = -R.transpose() * t;
+  LOG(INFO) << "run_initial_pair_loop: chosen pair (" << idx1 << ", " << idx2 << "), loaded geo";
+
+  retriangulate_two_view_tracks(store_in_out, static_cast<int>(idx1), static_cast<int>(idx2),
+                                R, C2, *K0, *K1);
+  const size_t n_tracks = store_in_out->num_tracks();
+  std::vector<int> valid_track_ids;
+  std::vector<Observation> obs_buf;
+  for (size_t ti = 0; ti < n_tracks; ++ti) {
+    const int tid = static_cast<int>(ti);
+    if (!store_in_out->is_track_valid(tid) || !store_in_out->track_has_triangulated_xyz(tid))
+      continue;
+    obs_buf.clear();
+    store_in_out->get_track_observations(tid, &obs_buf);
+    bool has_idx1 = false, has_idx2 = false;
+    for (const auto& o : obs_buf) {
+      if (o.image_index == idx1) has_idx1 = true;
+      else if (o.image_index == idx2) has_idx2 = true;
+    }
+    if (!has_idx1 || !has_idx2)
+      continue;
+    valid_track_ids.push_back(tid);
+  }
+
+  //这里错误， 应该使用各自的内参，且支持畸变
+  TwoViewBAInput ba_in;
+  ba_in.R = R;
+  ba_in.t = t;
+  ba_in.fx = K0->fx;
+  ba_in.fy = K0->fy;
+  ba_in.cx = K0->cx;
+  ba_in.cy = K0->cy;
+  for (size_t i = 0; i < valid_track_ids.size(); ++i) {
+    const int tid = valid_track_ids[i];
+    float tx, ty, tz;
+    store_in_out->get_track_xyz(tid, &tx, &ty, &tz);
+    ba_in.points3d.emplace_back(static_cast<double>(tx), static_cast<double>(ty),
+                                static_cast<double>(tz));
+    obs_buf.clear();
+    store_in_out->get_track_observations(tid, &obs_buf);
+    const int pt_idx = static_cast<int>(ba_in.points3d.size()) - 1;
+    for (const auto& o : obs_buf) {
+      if (o.image_index == idx1)
+        ba_in.observations.push_back(
+            {pt_idx, 0, static_cast<double>(o.u), static_cast<double>(o.v)});
+      else if (o.image_index == idx2)
+        ba_in.observations.push_back(
+            {pt_idx, 1, static_cast<double>(o.u), static_cast<double>(o.v)});
+    }
+  }
+
+  if (ba_in.points3d.size() >= 8 && !ba_in.observations.empty()) {
+    TwoViewBAResult ba_out;
+    if (two_view_bundle(ba_in, &ba_out, 50)) {
+      R = ba_out.R;
+      t = ba_out.t;
+      C2 = -R.transpose() * t;
+      for (size_t i = 0; i < ba_out.points3d.size() && i < valid_track_ids.size(); ++i)
+        store_in_out->set_track_xyz(
+            valid_track_ids[i], static_cast<float>(ba_out.points3d[i](0)),
+            static_cast<float>(ba_out.points3d[i](1)), static_cast<float>(ba_out.points3d[i](2)));
+      LOG(INFO) << "run_initial_pair_loop: two-view BA done, RMSE=" << ba_out.rmse_px << " px";
+    }
+  }
+
+  reject_outliers_two_view(store_in_out, R, C2, static_cast<int>(idx1), static_cast<int>(idx2),
+                           *K0, *K1, 4.0);
+  filter_tracks_two_view(store_in_out, R, C2, static_cast<int>(idx1), static_cast<int>(idx2),
+                         2, 2.0);
+
+  int n_valid = 0;
+  for (size_t ti = 0; ti < store_in_out->num_tracks(); ++ti) {
+    const int tid = static_cast<int>(ti);
+    if (!store_in_out->is_track_valid(tid))
+      continue;
+    obs_buf.clear();
+    store_in_out->get_track_observations(tid, &obs_buf);
+    bool has1 = false, has2 = false;
+    for (const auto& o : obs_buf) {
+      if (o.image_index == idx1) has1 = true;
+      if (o.image_index == idx2) has2 = true;
+    }
+    if (has1 && has2)
+      ++n_valid;
+  }
+  if (n_valid < min_tracks_after) {
+    LOG(WARNING) << "run_initial_pair_loop: too few tracks after filter: " << n_valid
+                 << " < " << min_tracks_after;
+    return false;
+  }
+  LOG(INFO) << "run_initial_pair_loop: " << n_valid << " valid tracks after filter";
+  *R1_out = R;
+  *C1_out = C2;
+  return true;
+}
+
 int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                        std::vector<Eigen::Vector3d>* poses_C, std::vector<bool>* registered,
                        double fx, double fy, double cx, double cy, int min_correspondences) {
@@ -182,7 +328,10 @@ int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   poses_R->resize(static_cast<size_t>(n_images));
   poses_C->resize(static_cast<size_t>(n_images));
   registered->resize(static_cast<size_t>(n_images), false);
-  if (!(*registered)[0] || !(*registered)[1])
+  int n_reg = 0;
+  for (bool r : *registered)
+    if (r) ++n_reg;
+  if (n_reg < 2)
     return 0;
 
   std::vector<bool> skipped(static_cast<size_t>(n_images), false);
@@ -243,7 +392,10 @@ int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   poses_R->resize(static_cast<size_t>(n_images));
   poses_C->resize(static_cast<size_t>(n_images));
   registered->resize(static_cast<size_t>(n_images), false);
-  if (!(*registered)[0] || !(*registered)[1])
+  int n_reg = 0;
+  for (bool r : *registered)
+    if (r) ++n_reg;
+  if (n_reg < 2)
     return 0;
 
   std::vector<bool> skipped(static_cast<size_t>(n_images), false);
@@ -290,7 +442,10 @@ int run_resection_loop(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   poses_R->resize(static_cast<size_t>(n_images));
   poses_C->resize(static_cast<size_t>(n_images));
   registered->resize(static_cast<size_t>(n_images), false);
-  if (!(*registered)[0] || !(*registered)[1])
+  int n_reg = 0;
+  for (bool r : *registered)
+    if (r) ++n_reg;
+  if (n_reg < 2)
     return 0;
 
   const bool use_per_image =

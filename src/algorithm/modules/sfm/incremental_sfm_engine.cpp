@@ -6,6 +6,7 @@
 #include "incremental_sfm_engine.h"
 #include "bundle_adjustment.h"
 #include "bundle_adjustment_analytic.h"
+#include "full_track_builder.h"
 #include "incremental_sfm.h"
 #include "incremental_sfm_helpers.h"
 #include "track_store.h"
@@ -51,22 +52,15 @@ void build_camera_assignment(const MultiCameraSetup& cam_setup, int n_images,
 
 bool run_stage_initial_pair(const MultiCameraSetup& cameras,
                              const IncrementalSfmConfig& config,
-                             TrackStore* store_out, Eigen::Matrix3d* R1_out,
+                             TrackStore* store_in_out, Eigen::Matrix3d* R1_out,
                              Eigen::Vector3d* C1_out,
                              uint32_t* image1_index_out, uint32_t* image2_index_out) {
-  if (!store_out || !R1_out || !C1_out)
+  if (!store_in_out || !R1_out || !C1_out || !config.id_mapping)
     return false;
-  const camera::Intrinsics* K0 = cameras.for_image_index(0);
-  const camera::Intrinsics* K1 = cameras.for_image_index(1);
-  if (!K0 || !K1 || K0->fx <= 0 || K1->fx <= 0) {
-    LOG(ERROR) << "run_stage_initial_pair: need valid intrinsics for image index 0 and 1";
-    return false;
-  }
-  std::vector<camera::Intrinsics> k01 = {*K0, *K1};
   return run_initial_pair_loop(config.pairs_json_path, config.geo_dir, config.match_dir,
-                               K0->fx, K0->fy, K0->cx, K0->cy,
-                               store_out, R1_out, C1_out, config.min_tracks_after_initial,
-                               image1_index_out, image2_index_out, config.id_mapping, &k01);
+                               &cameras, config.id_mapping, store_in_out,
+                               R1_out, C1_out, config.min_tracks_after_initial,
+                               image1_index_out, image2_index_out);
 }
 
 int run_stage_resection_loop(const MultiCameraSetup& cameras,
@@ -222,8 +216,23 @@ bool run_incremental_reconstruction(const MultiCameraSetup& cameras,
   result->n_registered = 0;
   result->final_rmse_px = 0.0;
 
-  // ── Stage 1: Initial pair ─────────────────────────────────────────────────
+  if (!config.id_mapping || config.id_mapping->empty()) {
+    LOG(ERROR) << "Incremental SfM: id_mapping required for full track build";
+    return false;
+  }
+
+  // ── Stage 0: Build full TrackStore from all pairs (union-find) ─────────────
   TrackStore store;
+  if (!build_full_track_store_from_pairs(config.pairs_json_path, config.geo_dir,
+                                         config.match_dir, config.id_mapping, &store)) {
+    LOG(ERROR) << "Incremental SfM: failed to build full track store from pairs";
+    return false;
+  }
+  const int n_images = store.num_images();
+  LOG(INFO) << "Incremental SfM: Stage 0 done, " << n_images << " images, "
+            << store.num_tracks() << " tracks";
+
+  // ── Stage 1: Initial pair (choose pair, triangulate, BA, reject, filter) ───
   Eigen::Matrix3d R1;
   Eigen::Vector3d C1;
   uint32_t image1_index = 0, image2_index = 0;
@@ -234,18 +243,16 @@ bool run_incremental_reconstruction(const MultiCameraSetup& cameras,
 
   result->image1_index = image1_index;
   result->image2_index = image2_index;
-
-  const int n_images = store.num_images();
   result->store = std::move(store);
   result->poses_R.resize(static_cast<size_t>(n_images));
   result->poses_C.resize(static_cast<size_t>(n_images));
   result->registered.resize(static_cast<size_t>(n_images), false);
-  result->poses_R[0] = Eigen::Matrix3d::Identity();
-  result->poses_C[0] = Eigen::Vector3d::Zero(); // cam0 at world origin
-  result->poses_R[1] = R1;
-  result->poses_C[1] = C1;
-  result->registered[0] = true;
-  result->registered[1] = true;
+  result->poses_R[static_cast<size_t>(image1_index)] = Eigen::Matrix3d::Identity();
+  result->poses_C[static_cast<size_t>(image1_index)] = Eigen::Vector3d::Zero();
+  result->poses_R[static_cast<size_t>(image2_index)] = R1;
+  result->poses_C[static_cast<size_t>(image2_index)] = C1;
+  result->registered[static_cast<size_t>(image1_index)] = true;
+  result->registered[static_cast<size_t>(image2_index)] = true;
   result->n_registered = 2;
 
   // ── Stage 2: Resection loop ───────────────────────────────────────────────
@@ -262,14 +269,18 @@ bool run_incremental_reconstruction(const MultiCameraSetup& cameras,
   // ── Stage 3: Reject outliers ──────────────────────────────────────────────
   std::vector<camera::Intrinsics> intrinsics_per_image =
       build_intrinsics_per_image(cameras, result->store.num_images());
-  run_stage_reject_outliers(&result->store, result->poses_R, result->poses_C,
-                            result->registered, intrinsics_per_image,
-                            config.outlier_threshold_px);
+  const int rejected =
+      run_stage_reject_outliers(&result->store, result->poses_R, result->poses_C,
+                                result->registered, intrinsics_per_image,
+                                config.outlier_threshold_px);
+  LOG(INFO) << "Incremental SfM: Stage 3 reject outliers, marked " << rejected << " observations";
 
   // ── Stage 4: Filter tracks ────────────────────────────────────────────────
-  run_stage_filter_tracks(&result->store, result->poses_R, result->poses_C,
-                          result->registered, config.min_observations_per_track,
-                          config.min_track_angle_deg);
+  const int filtered =
+      run_stage_filter_tracks(&result->store, result->poses_R, result->poses_C,
+                              result->registered, config.min_observations_per_track,
+                              config.min_track_angle_deg);
+  LOG(INFO) << "Incremental SfM: Stage 4 filter tracks, marked " << filtered << " tracks deleted";
 
   // ── Stage 5: Global BA (analytic Jacobians, quaternion + centre parameterization) ──
   if (config.run_global_ba && result->n_registered >= 2) {

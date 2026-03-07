@@ -17,6 +17,8 @@
 namespace insight {
 namespace sfm {
 
+struct MultiCameraSetup;
+
 struct InitialPairResult {
   bool success = false;
   uint32_t image1_index = 0; ///< First image index (0..n-1)
@@ -46,6 +48,24 @@ bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string
                            uint32_t* image2_index_out = nullptr,
                            const IdMapping* id_mapping = nullptr,
                            const std::vector<camera::Intrinsics>* intrinsics_initial_pair = nullptr);
+
+/**
+ * Run initial pair on an already-built full TrackStore (n_images). Chooses best pair from
+ * ViewGraph, loads geo for that pair, triangulates tracks visible in both images, runs
+ * two-view BA, rejects outliers, filters tracks. Uses cameras->for_image_index(idx) for
+ * correct intrinsics. Store is modified in-place; poses for the chosen pair are output
+ * (cam1 = identity, cam2 = R1_out, C1_out).
+ *
+ * @param cameras  Multi-camera setup; for_image_index(idx1), for_image_index(idx2) must be valid.
+ * @param store_in_out  Full track store (from build_full_track_store_from_pairs); modified in-place.
+ * @return true if at least min_tracks_after valid tracks remain in the two-view subset.
+ */
+bool run_initial_pair_loop(const std::string& pairs_json_path, const std::string& geo_dir,
+                           const std::string& match_dir, const MultiCameraSetup* cameras,
+                           const IdMapping* id_mapping, TrackStore* store_in_out,
+                           Eigen::Matrix3d* R1_out, Eigen::Vector3d* C1_out,
+                           int min_tracks_after = 20, uint32_t* image1_index_out = nullptr,
+                           uint32_t* image2_index_out = nullptr);
 
 /**
  * Resection loop on an existing TrackStore with n_images. Expects the first two

@@ -307,6 +307,166 @@ int retriangulate_two_view_tracks(TrackStore* store, const Eigen::Matrix3d& R,
   return updated;
 }
 
+int retriangulate_two_view_tracks(TrackStore* store, int image0_index, int image1_index,
+                                  const Eigen::Matrix3d& R, const Eigen::Vector3d& C,
+                                  const camera::Intrinsics& K0, const camera::Intrinsics& K1) {
+  if (!store || image0_index == image1_index)
+    return 0;
+  const uint32_t im0 = static_cast<uint32_t>(image0_index);
+  const uint32_t im1 = static_cast<uint32_t>(image1_index);
+  std::vector<Observation> obs_buf;
+  const size_t n_tracks = store->num_tracks();
+  int updated = 0;
+  for (size_t ti = 0; ti < n_tracks; ++ti) {
+    const int track_id = static_cast<int>(ti);
+    if (!store->is_track_valid(track_id))
+      continue;
+    obs_buf.clear();
+    store->get_track_observations(track_id, &obs_buf);
+    double u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+    bool has0 = false, has1 = false;
+    for (const auto& o : obs_buf) {
+      if (o.image_index == im0) {
+        u0 = static_cast<double>(o.u);
+        v0 = static_cast<double>(o.v);
+        has0 = true;
+        break;
+      }
+    }
+    for (const auto& o : obs_buf) {
+      if (o.image_index == im1) {
+        u1 = static_cast<double>(o.u);
+        v1 = static_cast<double>(o.v);
+        has1 = true;
+        break;
+      }
+    }
+    if (!has0 || !has1)
+      continue;
+    if (K0.has_distortion())
+      camera::undistort_point(K0, u0, v0, &u0, &v0);
+    if (K1.has_distortion())
+      camera::undistort_point(K1, u1, v1, &u1, &v1);
+    Eigen::Vector2d cam0_n((u0 - K0.cx) / K0.fx, (v0 - K0.cy) / K0.fy);
+    Eigen::Vector2d cam1_n((u1 - K1.cx) / K1.fx, (v1 - K1.cy) / K1.fy);
+    const Eigen::Vector3d t_cam = -R * C;
+    Eigen::Vector3d X = insight::sfm::triangulate_point(cam0_n, cam1_n, R, t_cam);
+    if (X(2) <= 1e-9)
+      continue;
+    store->set_track_xyz(track_id, static_cast<float>(X(0)), static_cast<float>(X(1)),
+                        static_cast<float>(X(2)));
+    ++updated;
+  }
+  return updated;
+}
+
+int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                             const Eigen::Vector3d& C, int image0_index, int image1_index,
+                             const camera::Intrinsics& K0, const camera::Intrinsics& K1,
+                             double threshold_px) {
+  if (!store)
+    return 0;
+  const uint32_t im0 = static_cast<uint32_t>(image0_index);
+  const uint32_t im1 = static_cast<uint32_t>(image1_index);
+  const double thresh_sq = threshold_px * threshold_px;
+  int marked = 0;
+  const size_t n_obs = store->num_observations();
+  for (size_t i = 0; i < n_obs; ++i) {
+    const int obs_id = static_cast<int>(i);
+    if (!store->is_obs_valid(obs_id))
+      continue;
+    Observation obs;
+    store->get_obs(obs_id, &obs);
+    if (obs.image_index != im0 && obs.image_index != im1)
+      continue;
+    const camera::Intrinsics& K = (obs.image_index == im0) ? K0 : K1;
+    const int tid = store->obs_track_id(obs_id);
+    float tx, ty, tz;
+    store->get_track_xyz(tid, &tx, &ty, &tz);
+    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                            static_cast<double>(tz));
+    double u_pred, v_pred;
+    if (obs.image_index == im0) {
+      if (X(2) <= 1e-12) {
+        store->mark_observation_deleted(obs_id);
+        ++marked;
+        continue;
+      }
+      u_pred = K.fx * X(0) / X(2) + K.cx;
+      v_pred = K.fy * X(1) / X(2) + K.cy;
+    } else {
+      Eigen::Vector3d p = R * (X - C);
+      if (p(2) <= 1e-12) {
+        store->mark_observation_deleted(obs_id);
+        ++marked;
+        continue;
+      }
+      u_pred = K.fx * p(0) / p(2) + K.cx;
+      v_pred = K.fy * p(1) / p(2) + K.cy;
+    }
+    double u_obs = static_cast<double>(obs.u);
+    double v_obs = static_cast<double>(obs.v);
+    if (K.has_distortion())
+      camera::undistort_point(K, u_obs, v_obs, &u_obs, &v_obs);
+    const double du = u_obs - u_pred;
+    const double dv = v_obs - v_pred;
+    if (du * du + dv * dv > thresh_sq) {
+      store->mark_observation_deleted(obs_id);
+      ++marked;
+    }
+  }
+  return marked;
+}
+
+int filter_tracks_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                           const Eigen::Vector3d& C, int image0_index, int image1_index,
+                           int min_observations, double min_angle_deg) {
+  if (!store || image0_index == image1_index)
+    return 0;
+  const uint32_t im0 = static_cast<uint32_t>(image0_index);
+  const uint32_t im1 = static_cast<uint32_t>(image1_index);
+  const double min_angle_rad = min_angle_deg * (3.141592653589793 / 180.0);
+  const size_t n_tracks = store->num_tracks();
+  int marked = 0;
+  std::vector<Observation> obs_buf;
+  const Eigen::Vector3d& c1 = C;
+  for (size_t ti = 0; ti < n_tracks; ++ti) {
+    const int track_id = static_cast<int>(ti);
+    if (!store->is_track_valid(track_id))
+      continue;
+    obs_buf.clear();
+    store->get_track_observations(track_id, &obs_buf);
+    int n_in_pair = 0;
+    for (const auto& o : obs_buf) {
+      if (o.image_index == im0 || o.image_index == im1)
+        ++n_in_pair;
+    }
+    if (n_in_pair < min_observations) {
+      store->mark_track_deleted(track_id);
+      ++marked;
+      continue;
+    }
+    if (n_in_pair >= 2 && min_angle_deg > 0 && store->track_has_triangulated_xyz(track_id)) {
+      float tx, ty, tz;
+      store->get_track_xyz(track_id, &tx, &ty, &tz);
+      Eigen::Vector3d X(tx, ty, tz);
+      Eigen::Vector3d r0 = X.normalized();
+      Eigen::Vector3d r1 = (X - c1).normalized();
+      double cos_a = r0.dot(r1);
+      if (cos_a > 1.0)
+        cos_a = 1.0;
+      if (cos_a < -1.0)
+        cos_a = -1.0;
+      double angle = std::acos(cos_a);
+      if (angle < min_angle_rad) {
+        store->mark_track_deleted(track_id);
+        ++marked;
+      }
+    }
+  }
+  return marked;
+}
+
 namespace {
 
 // Multi-view DLT: one 3D point from N views. Pose: R_i (world-to-camera), C_i (camera centre).

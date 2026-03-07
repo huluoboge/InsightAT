@@ -80,6 +80,8 @@ set(ALGORITHM_SOURCES
     modules/retrieval/pca_whitening.cpp
     modules/retrieval/vocab_tree_retrieval.h
     modules/retrieval/vocab_tree_retrieval.cpp
+    modules/sfm/full_track_builder.h
+    modules/sfm/full_track_builder.cpp
     modules/sfm/view_graph_loader.h
     modules/sfm/view_graph_loader.cpp
     modules/sfm/resection.h

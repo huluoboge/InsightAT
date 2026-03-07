@@ -284,7 +284,7 @@ def run_step_incremental_sfm(
     cfg: "SfmConfig",
     task_id: int | None = None,
 ) -> None:
-    """Run isat_incremental_sfm: initial pair + two-view BA, write initial_poses.json and initial_tracks.isat_tracks."""
+    """Run isat_incremental_sfm: initial pair + two-view BA; writes poses, tracks, and Bundler (bundle.out, list.txt)."""
     if task_id is None:
         task_id = _get_task_id(cfg, "incremental_sfm")
     images_all = cfg.work_dir / "images_all.json"
@@ -293,6 +293,8 @@ def run_step_incremental_sfm(
     intrinsics_json = cfg.work_dir / "intrinsics.json"
     pairs_json = geo_dir / "pairs.json"
     sfm_out = cfg.work_dir / "incremental_sfm"
+    bundler_out = sfm_out / "bundle.out"
+    list_txt = sfm_out / "list.txt"
 
     if not cfg.dry_run:
         sfm_out.mkdir(parents=True, exist_ok=True)
@@ -308,6 +310,20 @@ def run_step_incremental_sfm(
             extra_args=cfg.extra_incremental_sfm or None,
         )
         evt = (events[0] if events else {}).get("data") or {}
+        log.info(
+            "incremental_sfm output: %s | poses=%s | tracks=%s | Bundler=%s %s",
+            sfm_out,
+            sfm_out / "initial_poses.json",
+            sfm_out / "initial_tracks.isat_tracks",
+            bundler_out,
+            list_txt,
+        )
+        # Always print paths so they are visible even with log level > INFO
+        print(
+            f"SfM output: {sfm_out}\n  Bundler: {bundler_out}\n  list.txt: {list_txt}\n  poses: {sfm_out / 'initial_poses.json'}\n  tracks: {sfm_out / 'initial_tracks.isat_tracks'}",
+            file=sys.stderr,
+            flush=True,
+        )
     else:
         evt = {}
 
@@ -318,6 +334,8 @@ def run_step_incremental_sfm(
             "output_dir": str(sfm_out),
             "initial_poses": str(sfm_out / "initial_poses.json"),
             "initial_tracks": str(sfm_out / "initial_tracks.isat_tracks"),
+            "bundler_out": str(bundler_out),
+            "list_txt": str(list_txt),
             **evt,
         },
     })
@@ -456,13 +474,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    # Resolve log level (aligned with 05_cli_io_conventions: --log-level > -q > -v > default warn)
     log_level = args.log_level or ("error" if args.quiet else "info" if args.verbose else "warn")
     level_map = {"error": logging.ERROR, "warn": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG}
-    logging.basicConfig(level=level_map[log_level], format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stderr)
+    numeric_level = level_map[log_level]
+    log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    # Pipeline logger: explicit stderr handler so -v/--verbose always shows output (see 05_cli_io_conventions)
+    log.setLevel(numeric_level)
+    has_stderr = any(getattr(h, "stream", None) is sys.stderr for h in log.handlers)
+    if not has_stderr:
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setLevel(numeric_level)
+        stderr_handler.setFormatter(logging.Formatter(log_fmt))
+        log.addHandler(stderr_handler)
+        log.propagate = False  # only our handler, no duplicate from root
+    logging.basicConfig(level=numeric_level, format=log_fmt, stream=sys.stderr, force=True)
+
     if args.log_file:
         fh = logging.FileHandler(args.log_file, encoding="utf-8")
-        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-        logging.getLogger().addHandler(fh)
+        fh.setFormatter(logging.Formatter(log_fmt))
+        log.addHandler(fh)
     set_cli_log_level(log_level)
     set_log_tool_stderr_at_info(log_level in ("info", "debug") or args.progress or bool(args.log_file))
     set_log_tool_stderr_progress_only(args.progress and log_level not in ("info", "debug"))

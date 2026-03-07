@@ -37,12 +37,161 @@ static void printEvent(const json& j) {
   std::cout.flush();
 }
 
-// Save 2-image track store and poses to output dir (same IDC layout as isat_tracks)
+/// Write Bundler format (bundle.out + list.txt) for viewing in Meshlab/Bundler tools.
+static bool save_bundler_output(const insight::sfm::IncrementalSfmResult& result,
+                                const insight::sfm::IdMapping& id_mapping,
+                                const std::string& image_list_path,
+                                const std::string& output_dir) {
+  const int n_cams = 2;
+  uint32_t id0 = id_mapping.original_image_id(static_cast<int>(result.image1_index));
+  uint32_t id1 = id_mapping.original_image_id(static_cast<int>(result.image2_index));
+  std::ifstream f(image_list_path);
+  if (!f.is_open()) {
+    LOG(WARNING) << "Cannot open image list for Bundler list.txt: " << image_list_path;
+    return false;
+  }
+  json j;
+  try {
+    f >> j;
+  } catch (...) {
+    return false;
+  }
+  std::vector<std::string> paths(2);
+  if (!j.contains("images") || !j["images"].is_array()) {
+    LOG(WARNING) << "Image list has no 'images' array";
+    return false;
+  }
+  for (const auto& img : j["images"]) {
+    if (!img.contains("id") || !img.contains("path"))
+      continue;
+    uint32_t id = img["id"].get<uint32_t>();
+    std::string path = img["path"].get<std::string>();
+    if (id == id0)
+      paths[0] = path;
+    else if (id == id1)
+      paths[1] = path;
+  }
+  if (paths[0].empty() || paths[1].empty()) {
+    LOG(WARNING) << "Could not resolve image paths for Bundler (id0=" << id0 << " id1=" << id1 << ")";
+    return false;
+  }
+
+  const std::string list_path = output_dir + "/list.txt";
+  std::ofstream list_out(list_path);
+  if (!list_out) {
+    LOG(WARNING) << "Cannot write " << list_path;
+    return false;
+  }
+  for (const auto& p : paths)
+    list_out << p << "\n";
+  list_out.close();
+  LOG(INFO) << "Wrote " << list_path << " (" << n_cams << " images)";
+
+  const insight::sfm::TrackStore& store = result.store;
+  std::vector<int> valid_track_ids;
+  for (size_t t = 0; t < store.num_tracks(); ++t) {
+    if (store.is_track_valid(static_cast<int>(t)))
+      valid_track_ids.push_back(static_cast<int>(t));
+  }
+  const int n_points = static_cast<int>(valid_track_ids.size());
+
+  const std::string bundle_path = output_dir + "/bundle.out";
+  std::ofstream out(bundle_path);
+  if (!out) {
+    LOG(WARNING) << "Cannot write " << bundle_path;
+    return false;
+  }
+  out << "# Bundle file v0.3\n";
+  out << n_cams << " " << n_points << "\n";
+
+  const uint32_t im0 = result.image1_index;
+  const uint32_t im1 = result.image2_index;
+  for (int c = 0; c < n_cams; ++c) {
+    const size_t im = (c == 0) ? static_cast<size_t>(im0) : static_cast<size_t>(im1);
+    const int cam_idx = result.camera_index_for_image.empty()
+                           ? 0
+                           : (im < result.camera_index_for_image.size()
+                                  ? result.camera_index_for_image[im]
+                                  : 0);
+    const insight::camera::Intrinsics& K =
+        (static_cast<size_t>(cam_idx) < result.cameras.size())
+            ? result.cameras[static_cast<size_t>(cam_idx)]
+            : insight::camera::Intrinsics{};
+    double f = (K.fx + K.fy) * 0.5;
+    if (f <= 0.0)
+      f = 1000.0;
+    out << f << " " << K.k1 << " " << K.k2 << "\n";
+    const Eigen::Matrix3d& R = result.poses_R[im];
+    const Eigen::Vector3d& C = result.poses_C[im];
+    Eigen::Vector3d t = -R * C;
+    for (int row = 0; row < 3; ++row) {
+      for (int col = 0; col < 3; ++col)
+        out << (col ? " " : "") << R(row, col);
+      out << "\n";
+    }
+    out << t(0) << " " << t(1) << " " << t(2) << "\n";
+  }
+
+  for (int pt_idx = 0; pt_idx < n_points; ++pt_idx) {
+    int t = valid_track_ids[static_cast<size_t>(pt_idx)];
+    float x, y, z;
+    store.get_track_xyz(t, &x, &y, &z);
+    out << x << " " << y << " " << z << "\n";
+    out << "128 128 128\n";  // no per-point color
+    std::vector<insight::sfm::Observation> obs_list;
+    store.get_track_observations(t, &obs_list);
+    out << static_cast<int>(obs_list.size()) << "\n";
+    for (const auto& o : obs_list) {
+      int cam = (o.image_index == im0) ? 0 : (o.image_index == im1) ? 1 : -1;
+      if (cam < 0)
+        continue;
+      const size_t oim = static_cast<size_t>(o.image_index);
+      const int cam_idx = result.camera_index_for_image.empty()
+                             ? 0
+                             : (oim < result.camera_index_for_image.size()
+                                    ? result.camera_index_for_image[oim]
+                                    : 0);
+      const insight::camera::Intrinsics& K =
+          (static_cast<size_t>(cam_idx) < result.cameras.size())
+              ? result.cameras[static_cast<size_t>(cam_idx)]
+              : insight::camera::Intrinsics{};
+      double u = static_cast<double>(o.u), v = static_cast<double>(o.v);
+      double bx = u - K.cx;
+      double by = (K.cy - v);
+      out << cam << " " << static_cast<int>(o.feature_id) << " " << bx << " " << by << "\n";
+    }
+  }
+  out.close();
+  LOG(INFO) << "Wrote " << bundle_path << " (" << n_cams << " cameras, " << n_points << " points)";
+  return true;
+}
+
+// Save 2-image subset of track store (only tracks with obs in both image1 and image2) and poses.
+// image1_index/image2_index are the store's image indices; output uses 0 and 1.
 static bool save_initial_result(const insight::sfm::TrackStore& store, uint32_t image1_id,
-                                uint32_t image2_id, const Eigen::Matrix3d& R,
-                                const Eigen::Vector3d& t, const std::string& output_dir) {
+                                uint32_t image2_id, uint32_t image1_index, uint32_t image2_index,
+                                const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+                                const std::string& output_dir) {
   std::vector<uint32_t> image_ids = {image1_id, image2_id};
-  const size_t n_tracks = store.num_tracks();
+  const uint32_t im0 = image1_index;
+  const uint32_t im1 = image2_index;
+  std::vector<int> two_view_track_ids;
+  std::vector<insight::sfm::Observation> obs_buf;
+  for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
+    const int tid = static_cast<int>(ti);
+    if (!store.is_track_valid(tid))
+      continue;
+    obs_buf.clear();
+    store.get_track_observations(tid, &obs_buf);
+    bool has0 = false, has1 = false;
+    for (const auto& o : obs_buf) {
+      if (o.image_index == im0) has0 = true;
+      if (o.image_index == im1) has1 = true;
+    }
+    if (has0 && has1)
+      two_view_track_ids.push_back(tid);
+  }
+  const size_t n_tracks = two_view_track_ids.size();
   json meta;
   meta["schema_version"] = "1.0";
   meta["task_type"] = "incremental_sfm_initial";
@@ -60,11 +209,11 @@ static bool save_initial_result(const insight::sfm::TrackStore& store, uint32_t 
   std::vector<uint8_t> track_flags(n_tracks);
   for (size_t i = 0; i < n_tracks; ++i) {
     float x, y, z;
-    store.get_track_xyz(static_cast<int>(i), &x, &y, &z);
+    store.get_track_xyz(two_view_track_ids[i], &x, &y, &z);
     track_xyz[i * 3] = x;
     track_xyz[i * 3 + 1] = y;
     track_xyz[i * 3 + 2] = z;
-    track_flags[i] = store.is_track_valid(static_cast<int>(i)) ? 1 : 0;
+    track_flags[i] = 1;
   }
   std::vector<uint32_t> track_obs_offset(n_tracks + 1);
   std::vector<uint32_t> obs_image_id;
@@ -72,12 +221,14 @@ static bool save_initial_result(const insight::sfm::TrackStore& store, uint32_t 
   std::vector<float> obs_u, obs_v, obs_scale;
   std::vector<uint8_t> obs_flags;
   size_t offset = 0;
-  for (size_t t = 0; t < n_tracks; ++t) {
-    track_obs_offset[t] = static_cast<uint32_t>(offset);
-    std::vector<insight::sfm::Observation> obs_list;
-    store.get_track_observations(static_cast<int>(t), &obs_list);
-    for (const auto& o : obs_list) {
-      obs_image_id.push_back(o.image_index);
+  for (size_t i = 0; i < n_tracks; ++i) {
+    track_obs_offset[i] = static_cast<uint32_t>(offset);
+    obs_buf.clear();
+    store.get_track_observations(two_view_track_ids[i], &obs_buf);
+    for (const auto& o : obs_buf) {
+      if (o.image_index != im0 && o.image_index != im1)
+        continue;
+      obs_image_id.push_back(o.image_index == im0 ? 0u : 1u);
       obs_feature_id.push_back(o.feature_id);
       obs_u.push_back(o.u);
       obs_v.push_back(o.v);
@@ -233,34 +384,32 @@ int main(int argc, char* argv[]) {
   insight::sfm::IncrementalSfmResult result;
   const bool ok = insight::sfm::run_incremental_reconstruction(cam_setup, config, &result);
 
-  insight::sfm::TrackStore store;
-  Eigen::Matrix3d R1;
-  Eigen::Vector3d t1;
-  uint32_t image1_id = 0, image2_id = 0; // original ids for export (boundary: index → id)
-  if (ok) {
-    store = std::move(result.store);
-    image1_id = id_mapping.original_image_id(static_cast<int>(result.image1_index));
-    image2_id = id_mapping.original_image_id(static_cast<int>(result.image2_index));
-    R1 = result.poses_R.size() > 1 ? result.poses_R[1] : Eigen::Matrix3d::Identity();
-    const Eigen::Vector3d C1 = result.poses_C.size() > 1 ? result.poses_C[1] : Eigen::Vector3d::Zero();
-    t1 = -R1 * C1; // world-to-camera translation for export
-  }
-
   if (!ok) {
     LOG(ERROR) << "Initial pair loop failed (no suitable pair or too few tracks)";
     printEvent({{"type", "incremental_sfm.initial"}, {"ok", false}});
     return 1;
   }
 
+  uint32_t image1_id = id_mapping.original_image_id(static_cast<int>(result.image1_index));
+  uint32_t image2_id = id_mapping.original_image_id(static_cast<int>(result.image2_index));
+  const size_t idx2 = static_cast<size_t>(result.image2_index);
+  Eigen::Matrix3d R1 = (idx2 < result.poses_R.size()) ? result.poses_R[idx2] : Eigen::Matrix3d::Identity();
+  const Eigen::Vector3d C1 = (idx2 < result.poses_C.size()) ? result.poses_C[idx2] : Eigen::Vector3d::Zero();
+  Eigen::Vector3d t1 = -R1 * C1;
+
   int n_valid = 0;
-  for (size_t i = 0; i < store.num_tracks(); ++i)
-    if (store.is_track_valid(static_cast<int>(i)))
+  for (size_t i = 0; i < result.store.num_tracks(); ++i)
+    if (result.store.is_track_valid(static_cast<int>(i)))
       ++n_valid;
 
   if (!output_dir.empty()) {
     fs::create_directories(output_dir);
-    if (!save_initial_result(store, image1_id, image2_id, R1, t1, output_dir))
+    if (!save_initial_result(result.store, image1_id, image2_id,
+                            result.image1_index, result.image2_index, R1, t1, output_dir))
       return 1;
+    if (save_bundler_output(result, id_mapping, image_list, output_dir)) {
+      LOG(INFO) << "Bundler export: " << output_dir << "/bundle.out, " << output_dir << "/list.txt";
+    }
   }
 
   printEvent({{"type", "incremental_sfm.initial"},
@@ -269,7 +418,9 @@ int main(int argc, char* argv[]) {
                {{"image1_id", image1_id},
                 {"image2_id", image2_id},
                 {"num_tracks", n_valid},
-                {"output_dir", output_dir}}}});
+                {"output_dir", output_dir},
+                {"bundler_out", output_dir + "/bundle.out"},
+                {"list_txt", output_dir + "/list.txt"}}}});
   return 0;
 }
 

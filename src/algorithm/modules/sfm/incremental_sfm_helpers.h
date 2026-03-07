@@ -70,6 +70,31 @@ int retriangulate_two_view_tracks(TrackStore* store, const Eigen::Matrix3d& R,
                                   const camera::Intrinsics& K0, const camera::Intrinsics& K1);
 
 /**
+ * Same as above but for a full store: only observations with image_index == image0_index or
+ * image1_index are considered. image0 = identity (world), image1 = (R, C). K0/K1 for those images.
+ */
+int retriangulate_two_view_tracks(TrackStore* store, int image0_index, int image1_index,
+                                  const Eigen::Matrix3d& R, const Eigen::Vector3d& C,
+                                  const camera::Intrinsics& K0, const camera::Intrinsics& K1);
+
+/**
+ * Same as reject_outliers_two_view(store, R, C, K0, K1, ...) but only observations with
+ * image_index == image0_index or image1_index. image0 = identity, image1 = (R, C).
+ */
+int reject_outliers_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                             const Eigen::Vector3d& C, int image0_index, int image1_index,
+                             const camera::Intrinsics& K0, const camera::Intrinsics& K1,
+                             double threshold_px);
+
+/**
+ * Same as filter_tracks_two_view but only considers tracks that have observations in both
+ * image0_index and image1_index. Angle check uses (R, C) for image1.
+ */
+int filter_tracks_two_view(TrackStore* store, const Eigen::Matrix3d& R,
+                           const Eigen::Vector3d& C, int image0_index, int image1_index,
+                           int min_observations, double min_angle_deg);
+
+/**
  * Triangulate tracks that have an observation in new_image_index and at least
  * one in another registered image, but no triangulated xyz yet. Uses multi-view
  * DLT (world frame = cam0). poses_R[i], poses_C[i] = world-to-camera for image i.
