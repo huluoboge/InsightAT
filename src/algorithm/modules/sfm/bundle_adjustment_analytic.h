@@ -32,12 +32,69 @@
 
 #pragma once
 
-#include "bundle_adjustment.h" // GlobalBAInput, GlobalBAResult
-
+#include "../camera/camera_types.h"
+#include <Eigen/Core>
 #include <ceres/ceres.h>
+#include <cstdint>
+#include <vector>
 
 namespace insight {
 namespace sfm {
+
+// ─── BA types (compact input/result for analytic BA) ────────────────────────
+
+/// Single observation for BA: image index, point index, 2D pixel, optional scale for weighting.
+/// Residual weight = 1/scale (scale > 0); scale <= 0 or omitted is treated as 1.0 (unit weight).
+struct BAObservation {
+  int image_index = 0;
+  int point_index = 0;
+  double u = 0.0;
+  double v = 0.0;
+  double scale = 1.0;  ///< Observation scale; weight in cost = 1/scale (e.g. SIFT sigma or feature scale).
+};
+
+/// Bitmask for per-parameter fix of intrinsics (matches analytic layout: fx, sigma, cx, cy, k1, k2, k3, p1, p2).
+enum FixIntrinsicsMask : uint32_t {
+  kFixIntrFx    = 1u << 0,
+  kFixIntrSigma = 1u << 1,
+  kFixIntrCx    = 1u << 2,
+  kFixIntrCy    = 1u << 3,
+  kFixIntrK1    = 1u << 4,
+  kFixIntrK2    = 1u << 5,
+  kFixIntrK3    = 1u << 6,
+  kFixIntrP1    = 1u << 7,
+  kFixIntrP2    = 1u << 8,
+  kFixIntrAll   = (1u << 9) - 1u
+};
+
+/// BA input: N images (poses), M points, multi-camera intrinsics. Compact layout.
+/// Camera 0 is fixed (world origin). image_camera_index[i] = camera index for image i.
+struct BAInput {
+  std::vector<Eigen::Matrix3d> poses_R;
+  std::vector<Eigen::Vector3d> poses_C; ///< Camera centres in world coords (C = -Rᵀ·t)
+  std::vector<Eigen::Vector3d> points3d;
+  std::vector<BAObservation> observations;
+
+  std::vector<int> image_camera_index;
+  std::vector<camera::Intrinsics> cameras;
+  bool optimize_intrinsics = false;
+
+  std::vector<bool> fix_pose;
+  std::vector<uint32_t> fix_intrinsics_flags;
+  std::vector<bool> fix_point;
+};
+
+struct BAResult {
+  bool success = false;
+  std::vector<Eigen::Matrix3d> poses_R;
+  std::vector<Eigen::Vector3d> poses_C;
+  std::vector<Eigen::Vector3d> points3d;
+  std::vector<camera::Intrinsics> cameras;
+  double rmse_px = 0.0;
+  int num_residuals = 0;
+};
+
+// ─── Analytic cost and solver ───────────────────────────────────────────────
 
 inline constexpr int kAnalyticIntrCount = 9;
 
@@ -75,23 +132,42 @@ private:
 };
 
 /**
- * Global BA with analytic Jacobians and quaternion rotation parameterization.
+ * Same as ReprojectionCostAnalytic but residuals and Jacobians are scaled by 1/scale
+ * (observation weight). scale must be > 0; typically feature scale or sigma (weight = 1/scale).
+ */
+class ReprojectionCostAnalyticWeighted
+    : public ceres::SizedCostFunction<2, kAnalyticIntrCount, 7, 3> {
+public:
+  ReprojectionCostAnalyticWeighted(double u_obs, double v_obs, double scale)
+      : u_obs_(u_obs), v_obs_(v_obs), weight_(scale > 1e-12 ? 1.0 / scale : 1.0) {}
+
+  bool Evaluate(double const* const* params, double* residuals,
+                double** jacobians) const override;
+
+private:
+  double u_obs_;
+  double v_obs_;
+  double weight_;
+};
+
+/**
+ * BA with analytic Jacobians and quaternion rotation parameterization.
  *
- * Accepts the same GlobalBAInput / GlobalBAResult as global_bundle().
  * Multi-camera path only: requires image_camera_index + cameras to be set.
  *
  * Intrinsics mapping:
  *   camera::Intrinsics{fx, fy, …} → intr[kFx] = fx, intr[kSigma] = fy/fx.
  *   After BA: result.cameras[c].fx = optimised fx, .fy = sigma * fx.
  *
- * @param input          BA inputs (poses, points, observations, cameras).
+ * Per-parameter fix: use input.fix_intrinsics_flags[c] (FixIntrinsicsMask bitmask).
+ * Bit set = that parameter fixed. Empty fix_intrinsics_flags = optimise all when optimize_intrinsics.
+ *
+ * @param input          BA inputs (poses, points, observations, cameras, fix_*).
  * @param result         Output: optimised poses, points, cameras, RMSE.
  * @param max_iterations Ceres solver iteration limit.
- * @param fix_sigma      If true, sigma is held constant (fy/fx ratio fixed).
  * @return true if Ceres reports a usable solution.
  */
-bool global_bundle_analytic(const GlobalBAInput& input, GlobalBAResult* result,
-                            int max_iterations = 50, bool fix_sigma = true);
+bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iterations = 50);
 
 } // namespace sfm
 } // namespace insight

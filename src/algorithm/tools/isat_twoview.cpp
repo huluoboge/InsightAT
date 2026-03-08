@@ -68,14 +68,11 @@ static void printEvent(const json& j) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct TwoViewTask {
-  uint32_t image1_id = 0;
-  uint32_t image2_id = 0;
-  std::string geo_file;   // .isat_geo path
-  std::string match_file; // .isat_match path
+  uint32_t image1_index = 0;
+  uint32_t image2_index = 0;
+  std::string geo_file;
+  std::string match_file;
   int index = 0;
-  uint32_t camera1_id = 1; ///< group_id of image1 (from image list)
-  uint32_t camera2_id = 1; ///< group_id of image2 (from image list)
-
   // Stage 1 output (loaded from disk)
   float F[9] = {};
   float E[9] = {};
@@ -106,8 +103,7 @@ struct TwoViewTask {
 // ─────────────────────────────────────────────────────────────────────────────
 
 static std::vector<TwoViewTask>
-loadPairs(const std::string& json_path, const std::string& geo_dir, const std::string& match_dir,
-          const std::unordered_map<uint32_t, uint32_t>& img_cam_map) {
+loadPairs(const std::string& json_path, const std::string& geo_dir, const std::string& match_dir) {
   std::ifstream file(json_path);
   if (!file.is_open())
     LOG(FATAL) << "Cannot open pairs file: " << json_path;
@@ -118,19 +114,13 @@ loadPairs(const std::string& json_path, const std::string& geo_dir, const std::s
   int idx = 0;
   for (const auto& pair : j["pairs"]) {
     TwoViewTask t;
-    t.image1_id = insight::tools::get_image_id_from_pair(pair, "image1_id");
-    t.image2_id = insight::tools::get_image_id_from_pair(pair, "image2_id");
-    t.geo_file = geo_dir + "/" + std::to_string(t.image1_id) + "_" + std::to_string(t.image2_id) +
+    t.image1_index = insight::tools::get_image_index_from_pair(pair, "image1_index");
+    t.image2_index = insight::tools::get_image_index_from_pair(pair, "image2_index");
+    t.geo_file = geo_dir + "/" + std::to_string(t.image1_index) + "_" + std::to_string(t.image2_index) +
                  ".isat_geo";
-    t.match_file = match_dir + "/" + std::to_string(t.image1_id) + "_" +
-                   std::to_string(t.image2_id) + ".isat_match";
+    t.match_file = match_dir + "/" + std::to_string(t.image1_index) + "_" +
+                   std::to_string(t.image2_index) + ".isat_match";
     t.index = idx++;
-    auto it1 = img_cam_map.find(t.image1_id);
-    if (it1 != img_cam_map.end())
-      t.camera1_id = it1->second;
-    auto it2 = img_cam_map.find(t.image2_id);
-    if (it2 != img_cam_map.end())
-      t.camera2_id = it2->second;
     tasks.push_back(std::move(t));
   }
   LOG(INFO) << "Loaded " << tasks.size() << " pairs from " << json_path;
@@ -156,12 +146,6 @@ static void loadGeoAndMatch(TwoViewTask& task) {
     LOG(WARNING) << "No F in " << task.geo_file << ", skipping pair";
     return;
   }
-
-  // Read camera IDs stored by isat_geo (present when isat_geo had -l)
-  if (meta["image_pair"].contains("camera1_id"))
-    task.camera1_id = meta["image_pair"]["camera1_id"].get<uint32_t>();
-  if (meta["image_pair"].contains("camera2_id"))
-    task.camera2_id = meta["image_pair"]["camera2_id"].get<uint32_t>();
 
   auto F_blob = geo.read_blob<float>("F_matrix");
   if (F_blob.size() == 9)
@@ -224,16 +208,14 @@ static void loadGeoAndMatch(TwoViewTask& task) {
 
 static void writeTwoView(const TwoViewTask& task, const std::string& output_dir) {
   const TwoViewResult& r = task.recon;
-  std::string out = output_dir + "/" + std::to_string(task.image1_id) + "_" +
-                    std::to_string(task.image2_id) + ".isat_twoview";
+  std::string out = output_dir + "/" + std::to_string(task.image1_index) + "_" +
+                    std::to_string(task.image2_index) + ".isat_twoview";
 
   json meta;
   meta["schema_version"] = "1.0";
   meta["task_type"] = "two_view_reconstruction";
-  meta["image_pair"]["image1_id"] = task.image1_id;
-  meta["image_pair"]["image2_id"] = task.image2_id;
-  meta["image_pair"]["camera1_id"] = task.camera1_id;
-  meta["image_pair"]["camera2_id"] = task.camera2_id;
+  meta["image_pair"]["image1_index"] = task.image1_index;
+  meta["image_pair"]["image2_index"] = task.image2_index;
   meta["num_matches_input"] = task.num_matches;
   meta["num_points_3d"] = r.num_valid_points;
   meta["focal_length_px"] = r.focal_refined;
@@ -296,7 +278,7 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
   // When isat_geo estimated H and degeneracy says H preferred (planar scene),
   // F/E are unreliable; do not triangulate.
   if (task.degeneracy.is_degenerate && task.degeneracy.model_preferred == 1) {
-    VLOG(1) << "  Pair " << task.image1_id << "-" << task.image2_id
+    VLOG(1) << "  Pair " << task.image1_index << "-" << task.image2_index
             << ": degenerate (planar, H preferred), skip triangulation";
     return result;
   }
@@ -309,7 +291,7 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
   const int n_inliers_src = task.F_inliers;
 
   if (n_inliers_src < min_points) {
-    VLOG(1) << "  Pair " << task.image1_id << "-" << task.image2_id << ": only " << n_inliers_src
+    VLOG(1) << "  Pair " << task.image1_index << "-" << task.image2_index << ": only " << n_inliers_src
             << " inliers, skip";
     return result;
   }
@@ -325,7 +307,7 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
     inlier_ids.push_back(i);
   }
   if ((int)pts1_px_inl.size() < min_points) {
-    VLOG(1) << "  Pair " << task.image1_id << "-" << task.image2_id << ": collected "
+    VLOG(1) << "  Pair " << task.image1_index << "-" << task.image2_index << ": collected "
             << pts1_px_inl.size() << " inliers (< " << min_points << ")";
     return result;
   }
@@ -343,8 +325,8 @@ reconstructPair(TwoViewTask& task, const CameraIntrinsics& K1, const CameraIntri
     // Auto-estimate from F; use zero pp as fallback
     f = insight::sfm::focal_from_fundamental(F_mat, 0.0, 0.0);
     if (f <= 0.0) {
-      LOG(WARNING) << "  focal_from_fundamental failed for pair " << task.image1_id << "-"
-                   << task.image2_id;
+      LOG(WARNING) << "  focal_from_fundamental failed for pair " << task.image1_index << "-"
+                   << task.image2_index;
       return result;
     }
     VLOG(1) << "  Estimated focal from F: f=" << f << " px";
@@ -488,15 +470,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('o', output_dir, "output").doc("Output directory for .isat_twoview files"));
   cmd.add(
       make_option('k', intrinsics_json, "intrinsics")
-          .doc("Camera intrinsics JSON exported by isat_project.\n"
-               "  Single : {\"fx\":f,\"fy\":f,\"cx\":cx,\"cy\":cy}\n"
-               "  Multi  : {\"schema\":\"multi_camera_v1\",\"cameras\":{\"1\":{...},\"2\":{...}}}\n"
-               "  When provided, GPU triangulation + Huber residuals are used.\n"
-               "  -l/--image-list is required alongside -k."));
+          .doc("(Unused when -l is export JSON with cameras.) Legacy camera JSON."));
   cmd.add(make_option('l', image_list_json, "image-list")
-              .doc("Image list JSON (from isat_project extract).\n"
-                   "  Required when -k is given. Maps image_id to camera_id\n"
-                   "  so that per-pair K1/K2 can be resolved."));
+              .doc("Image list JSON from isat_project extract (must have 'cameras' and images[].camera_index).\n"
+                   "  Used to resolve per-pair K by image index for triangulation."));
   cmd.add(make_option(0, min_points, "min-points")
               .doc("Minimum 3-D point count to accept a reconstruction. Default: 50"));
   cmd.add(make_option(0, ba_loss_k, "ba-loss-k")
@@ -527,30 +504,17 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
-  if (!intrinsics_json.empty() && image_list_json.empty()) {
-    std::cerr << "Error: -l/--image-list is required when -k/--intrinsics is provided\n\n";
-    cmd.printHelp(std::cerr, argv[0]);
-    return 1;
-  }
-
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
-  // ── Load intrinsics map + image→camera map ───────────────────────────────────
-  CameraIntrinsicsMap cam_intrinsics = load_intrinsics_map(intrinsics_json);
-  const bool have_K = !cam_intrinsics.empty();
-
-  std::unordered_map<uint32_t, uint32_t> img_cam_map;
-  if (have_K) {
-    img_cam_map = build_image_camera_map(image_list_json);
-  }
+  // ── Load intrinsics by image index (export JSON has cameras + images[].camera_index) ─
+  std::vector<CameraIntrinsics> image_index_intrinsics =
+      build_image_index_intrinsics_from_list(image_list_json);
+  const bool have_K = !image_index_intrinsics.empty();
 
   if (!have_K)
-    LOG(WARNING) << "No intrinsics provided: focal length will be estimated per "
-                    "pair from F.  For best results supply -k camera.json "
-                    "(-a/--all for multi-camera) + -l image_list.json.";
+    LOG(WARNING) << "No intrinsics: focal will be estimated from F per pair. Supply -l with export JSON (cameras + camera_index) for known K.";
   else
-    LOG(INFO) << "Loaded " << cam_intrinsics.size() << " camera(s), " << img_cam_map.size()
-              << " images mapped.";
+    LOG(INFO) << "Loaded intrinsics for " << image_index_intrinsics.size() << " images (by index).";
 
   // ── Setup ────────────────────────────────────────────────────────────────
   if (!fs::is_directory(geo_dir)) {
@@ -563,7 +527,7 @@ int main(int argc, char* argv[]) {
   }
   fs::create_directories(output_dir);
 
-  auto tasks = loadPairs(pairs_json, geo_dir, match_dir, img_cam_map);
+  auto tasks = loadPairs(pairs_json, geo_dir, match_dir);
   const int total = (int)tasks.size();
   if (total == 0) {
     LOG(ERROR) << "No pairs to process";
@@ -575,7 +539,7 @@ int main(int argc, char* argv[]) {
   LOG(WARNING) << "  Min points: " << min_points;
   LOG(WARNING) << "  Huber k:    " << ba_loss_k;
   LOG(WARNING) << "  Intrinsics: "
-               << (have_K ? (std::to_string(cam_intrinsics.size()) + " camera(s) loaded")
+               << (have_K ? ("by image index (" + std::to_string(image_index_intrinsics.size()) + " images)")
                           : "auto-estimated from F");
 
   // ── Initialise GPU (EGL surfaceless + OpenGL 4.3 compute shaders) ────────
@@ -597,15 +561,15 @@ int main(int argc, char* argv[]) {
     if (!task.F_ok)
       return;
 
-    // Resolve per-pair intrinsics
+    // Resolve per-pair intrinsics by image index
     CameraIntrinsics K1, K2;
     if (have_K) {
-      const CameraIntrinsics* pK1 = lookup_camera(cam_intrinsics, task.camera1_id);
-      const CameraIntrinsics* pK2 = lookup_camera(cam_intrinsics, task.camera2_id);
-      if (pK1)
-        K1 = *pK1;
-      if (pK2)
-        K2 = *pK2;
+      int i1 = static_cast<int>(task.image1_index), i2 = static_cast<int>(task.image2_index);
+      if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() &&
+          i2 >= 0 && i2 < (int)image_index_intrinsics.size()) {
+        K1 = image_index_intrinsics[i1];
+        K2 = image_index_intrinsics[i2];
+      }
     }
 
     const double f_hint = (!have_K) ? 0.0 : K1.fx;
@@ -616,7 +580,7 @@ int main(int argc, char* argv[]) {
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::high_resolution_clock::now() - t0)
                   .count();
-    LOG(INFO) << "Recon [" << i << "/" << total << "] " << task.image1_id << "–" << task.image2_id
+    LOG(INFO) << "Recon [" << i << "/" << total << "] " << task.image1_index << "–" << task.image2_index
               << (task.recon.success ? ("  f=" + std::to_string((int)task.recon.focal_refined) +
                                         "  pts=" + std::to_string(task.recon.num_valid_points) +
                                         "  rmse=" + std::to_string(task.recon.reprojection_rmse) +

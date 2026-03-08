@@ -21,8 +21,8 @@ namespace sfm {
 namespace {
 
 struct PairDesc {
-  uint32_t image1_id = 0;
-  uint32_t image2_id = 0;
+  uint32_t image1_index = 0;
+  uint32_t image2_index = 0;
   std::string match_file;
   std::string geo_file;
 };
@@ -90,10 +90,10 @@ bool load_pairs(const std::string& pairs_json_path, const std::string& geo_dir,
   out->clear();
   for (const auto& p : j["pairs"]) {
     PairDesc d;
-    d.image1_id = insight::tools::get_image_id_from_pair(p, "image1_id");
-    d.image2_id = insight::tools::get_image_id_from_pair(p, "image2_id");
-    d.match_file = dir_match + std::to_string(d.image1_id) + "_" + std::to_string(d.image2_id) + ".isat_match";
-    d.geo_file = dir_geo + std::to_string(d.image1_id) + "_" + std::to_string(d.image2_id) + ".isat_geo";
+    d.image1_index = insight::tools::get_image_index_from_pair(p, "image1_index");
+    d.image2_index = insight::tools::get_image_index_from_pair(p, "image2_index");
+    d.match_file = dir_match + std::to_string(d.image1_index) + "_" + std::to_string(d.image2_index) + ".isat_match";
+    d.geo_file = dir_geo + std::to_string(d.image1_index) + "_" + std::to_string(d.image2_index) + ".isat_geo";
     out->push_back(std::move(d));
   }
   return true;
@@ -111,8 +111,8 @@ std::unordered_map<uint32_t, int> build_image_id_to_index(const IdMapping* id_ma
   }
   std::set<uint32_t> seen;
   for (const auto& p : pairs) {
-    seen.insert(p.image1_id);
-    seen.insert(p.image2_id);
+    seen.insert(p.image1_index);
+    seen.insert(p.image2_index);
   }
   std::vector<uint32_t> ordered(seen.begin(), seen.end());
   std::sort(ordered.begin(), ordered.end());
@@ -133,7 +133,7 @@ void phase1_union_find(UnionFind* uf, const std::vector<PairDesc>& pairs) {
     for (int i = 0; i < n; ++i) {
       uint16_t idx1 = indices[static_cast<size_t>(i) * 2];
       uint16_t idx2 = indices[static_cast<size_t>(i) * 2 + 1];
-      uf->merge_keys(node_key(p.image1_id, idx1), node_key(p.image2_id, idx2));
+      uf->merge_keys(node_key(p.image1_index, idx1), node_key(p.image2_index, idx2));
     }
   }
 }
@@ -161,8 +161,8 @@ void phase2_fill_observations(
       continue;
     const int num_matches = static_cast<int>(inlier_mask.size());
     const bool have_scales = (scales.size() >= static_cast<size_t>(num_matches) * 2u);
-    auto it1 = image_id_to_index.find(p.image1_id);
-    auto it2 = image_id_to_index.find(p.image2_id);
+    auto it1 = image_id_to_index.find(p.image1_index);
+    auto it2 = image_id_to_index.find(p.image2_index);
     if (it1 == image_id_to_index.end() || it2 == image_id_to_index.end())
       continue;
     const int img1_idx = it1->second;
@@ -182,7 +182,7 @@ void phase2_fill_observations(
       const size_t mi = static_cast<size_t>(m);
       uint16_t idx1 = indices[mi * 2];
       uint16_t idx2 = indices[mi * 2 + 1];
-      uint64_t k1 = node_key(p.image1_id, idx1);
+      uint64_t k1 = node_key(p.image1_index, idx1);
       int root = uf.find_key(k1);
       auto rit = root_to_track_id.find(root);
       if (rit == root_to_track_id.end())

@@ -1,13 +1,13 @@
 /**
  * @file  resection.cpp
- * @brief Resection via GPU PnP RANSAC (gpu_ransac_pnp) + pose_only_bundle.
+ * @brief Resection via GPU PnP RANSAC (gpu_ransac_pnp) + pose refinement via global_bundle_analytic.
  */
 
 #include "resection.h"
 
 #include "../camera/camera_utils.h"
 #include "../geometry/gpu_geo_ransac.h"
-#include "bundle_adjustment.h"
+#include "bundle_adjustment_analytic.h"
 
 #include <cmath>
 #include <vector>
@@ -34,6 +34,48 @@ void float_rt_to_eigen(const float R[9], const float t[3], Eigen::Matrix3d* R_ou
   (*t_out)(0) = static_cast<double>(t[0]);
   (*t_out)(1) = static_cast<double>(t[1]);
   (*t_out)(2) = static_cast<double>(t[2]);
+}
+
+/// Pose-only refinement: 1 image, points fixed. Builds BAInput and calls global_bundle_analytic.
+static bool pose_refine_via_ba(const std::vector<Eigen::Vector3d>& pts3d,
+                               const std::vector<Eigen::Vector2d>& pts2d, double fx, double fy,
+                               double cx, double cy, const Eigen::Matrix3d& R_in,
+                               const Eigen::Vector3d& t_in, Eigen::Matrix3d* R_out,
+                               Eigen::Vector3d* t_out, double* rmse_px, int max_iterations) {
+  if (!R_out || !t_out || pts3d.size() != pts2d.size() || pts3d.empty())
+    return false;
+  BAInput ba_in;
+  ba_in.poses_R.resize(1);
+  ba_in.poses_C.resize(1);
+  ba_in.poses_R[0] = R_in;
+  ba_in.poses_C[0] = -R_in.transpose() * t_in;
+  ba_in.points3d = pts3d;
+  camera::Intrinsics K;
+  K.fx = fx;
+  K.fy = fy;
+  K.cx = cx;
+  K.cy = cy;
+  ba_in.cameras = {K};
+  ba_in.image_camera_index = {0};
+  ba_in.optimize_intrinsics = false;
+  ba_in.fix_point.resize(pts3d.size(), true);
+  for (size_t i = 0; i < pts2d.size(); ++i) {
+    BAObservation obs;
+    obs.image_index = 0;
+    obs.point_index = static_cast<int>(i);
+    obs.u = pts2d[i](0);
+    obs.v = pts2d[i](1);
+    obs.scale = 1.0;
+    ba_in.observations.push_back(obs);
+  }
+  BAResult ba_out;
+  if (!global_bundle_analytic(ba_in, &ba_out, max_iterations) || !ba_out.success)
+    return false;
+  *R_out = ba_out.poses_R[0];
+  *t_out = -ba_out.poses_R[0] * ba_out.poses_C[0];
+  if (rmse_px)
+    *rmse_px = ba_out.rmse_px;
+  return true;
 }
 
 } // namespace
@@ -121,8 +163,8 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
-  if (!pose_only_bundle(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_eig, t_eig, &R_refined,
-                        &t_refined, &rmse, 30)) {
+  if (!pose_refine_via_ba(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_eig, t_eig, &R_refined,
+                         &t_refined, &rmse, 30)) {
     if (inliers_out)
       *inliers_out = n_inliers;
     *R_out = R_eig;
@@ -221,8 +263,8 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
-  if (!pose_only_bundle(inlier_pts3d, inlier_pts2d, K.fx, K.fy, K.cx, K.cy, R_eig, t_eig, &R_refined,
-                        &t_refined, &rmse, 30)) {
+  if (!pose_refine_via_ba(inlier_pts3d, inlier_pts2d, K.fx, K.fy, K.cx, K.cy, R_eig, t_eig, &R_refined,
+                          &t_refined, &rmse, 30)) {
     if (inliers_out)
       *inliers_out = n_inliers;
     *R_out = R_eig;

@@ -29,7 +29,7 @@ namespace sfm {
  * - Fills store with observations (image_index = internal 0..n-1); optionally sets track xyz
  *   from geo points3d when twoview data is present.
  *
- * @param pairs_json_path  Path to pairs JSON (must have "pairs" array with image1_id, image2_id).
+ * @param pairs_json_path  Path to pairs JSON (must have "pairs" array with image1_index, image2_index).
  * @param geo_dir          Directory of .isat_geo files (path: geo_dir/orig1_orig2.isat_geo).
  * @param match_dir       Directory of .isat_match files (path: match_dir/orig1_orig2.isat_match).
  * @param id_mapping      When non-null: image count and order from id_mapping; observations use

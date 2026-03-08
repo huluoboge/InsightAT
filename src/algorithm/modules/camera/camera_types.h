@@ -12,6 +12,8 @@
 #ifndef INSIGHT_CAMERA_TYPES_H
 #define INSIGHT_CAMERA_TYPES_H
 
+#include <Eigen/Core>
+
 namespace insight {
 namespace camera {
 
@@ -32,9 +34,22 @@ struct Intrinsics {
   bool has_distortion() const {
     return k1 != 0.0 || k2 != 0.0 || k3 != 0.0 || p1 != 0.0 || p2 != 0.0;
   }
+
+  /// Build camera matrix K
+  Eigen::Matrix3d K() const {
+    Eigen::Matrix3d m;
+    m << fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0;
+    return m;
+  }
+  /// Build K⁻¹ exactly
+  Eigen::Matrix3d Kinv() const {
+    Eigen::Matrix3d m;
+    m << 1.0 / fx, 0.0, -cx / fx, 0.0, 1.0 / fy, -cy / fy, 0.0, 0.0, 1.0;
+    return m;
+  }
 };
 
-}  // namespace camera
-}  // namespace insight
+} // namespace camera
+} // namespace insight
 
-#endif  // INSIGHT_CAMERA_TYPES_H
+#endif // INSIGHT_CAMERA_TYPES_H

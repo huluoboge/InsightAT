@@ -4,7 +4,7 @@
  */
 
 #include "incremental_sfm_engine.h"
-#include "bundle_adjustment.h"
+#include "bundle_adjustment_analytic.h"
 #include "bundle_adjustment_analytic.h"
 #include "full_track_builder.h"
 #include "incremental_sfm.h"
@@ -134,7 +134,7 @@ bool run_stage_global_ba(const MultiCameraSetup& cameras,
     *cameras_out = cam_models;
 
   // Collect valid triangulated tracks
-  GlobalBAInput ba_in;
+  BAInput ba_in;
   ba_in.poses_R = poses_R;
   ba_in.poses_C = poses_C;
   ba_in.image_camera_index = cam_index;
@@ -174,7 +174,7 @@ bool run_stage_global_ba(const MultiCameraSetup& cameras,
     return false;
   }
 
-  GlobalBAResult ba_out;
+  BAResult ba_out;
   if (!global_bundle_analytic(ba_in, &ba_out, max_iterations) || !ba_out.success) {
     *poses_R_out = poses_R;
     *poses_C_out = poses_C;

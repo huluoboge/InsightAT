@@ -1,5 +1,5 @@
 {
-    "editor.fontSize": 22,
+    "editor.fontSize": 16,
     "chat.agent.maxRequests": 50,
     
     // GitHub Copilot 聊天历史设置
@@ -88,6 +88,7 @@
         "typeinfo": "cpp",
         "valarray": "cpp",
         "variant": "cpp",
-        "__nullptr": "cpp"
+        "__nullptr": "cpp",
+        "ios": "cpp"
     }
 }

@@ -419,7 +419,8 @@ def geo_verify(
     vis: bool = False,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
-    """isat_geo -i <pairs> -m <match_dir> -o <geo_dir> [--estimate-h] [--twoview] [--vis] [-k -l]"""
+    """isat_geo -i <pairs> -m <match_dir> -o <geo_dir> [--estimate-h] [--twoview] [--vis] [-k -l].
+    When image_list has embedded 'cameras' (index-only export), -l alone is enough; -k optional."""
     cmd = [
         _isat_geo(),
         "-i", str(pairs_json),
@@ -434,8 +435,8 @@ def geo_verify(
         cmd.append("--vis")
     if k_json:
         cmd += ["-k", str(k_json)]
-        if image_list:
-            cmd += ["-l", str(image_list)]
+    if image_list:
+        cmd += ["-l", str(image_list)]
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)
@@ -450,7 +451,8 @@ def twoview_reconstruct(
     image_list: str | Path | None = None,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
-    """isat_twoview -i <pairs> -g <geo_dir> -m <match_dir> -o <tv_dir> [-k K.json -l image_list]"""
+    """isat_twoview -i <pairs> -g <geo_dir> -m <match_dir> -o <tv_dir> [-k -l].
+    When image_list has embedded 'cameras' (index-only export), -l alone is enough."""
     cmd = [
         _isat_twoview(),
         "-i", str(pairs_json),
@@ -460,8 +462,8 @@ def twoview_reconstruct(
     ]
     if k_json:
         cmd += ["-k", str(k_json)]
-        if image_list:
-            cmd += ["-l", str(image_list)]
+    if image_list:
+        cmd += ["-l", str(image_list)]
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)

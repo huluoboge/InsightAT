@@ -42,12 +42,11 @@ add_library(sfm_module STATIC
     track_builder.h
     view_graph.cpp
     view_graph.h
-    bundle_adjustment.cpp
-    bundle_adjustment.h
     bundle_adjustment_analytic.cpp
     bundle_adjustment_analytic.h
-    incremental_sfm_helpers.cpp
-    incremental_sfm_helpers.h
+    # Incremental SfM helpers excluded (used only by incremental_sfm; files kept)
+    # incremental_sfm_helpers.cpp
+    # incremental_sfm_helpers.h
 )
 
 # ── Unit test: analytic BA ─────────────────────────────────────────────────

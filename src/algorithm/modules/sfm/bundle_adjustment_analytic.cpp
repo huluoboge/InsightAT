@@ -229,11 +229,144 @@ bool ReprojectionCostAnalytic::Evaluate(double const* const* params,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ReprojectionCostAnalyticWeighted::Evaluate (same as above, then scale by 1/scale)
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool ReprojectionCostAnalyticWeighted::Evaluate(double const* const* params,
+                                                double* residuals,
+                                                double** jacobians) const {
+  const double* intr = params[0];
+  const double* pose = params[1];
+  const double* pt   = params[2];
+
+  const double fx    = intr[kFx];
+  const double sigma = intr[kSigma];
+  const double cx    = intr[kCx];
+  const double cy    = intr[kCy];
+  const double k1    = intr[kK1];
+  const double k2    = intr[kK2];
+  const double k3    = intr[kK3];
+  const double p1    = intr[kP1];
+  const double p2    = intr[kP2];
+  const double fy    = sigma * fx;
+
+  const double qx = pose[0], qy = pose[1], qz = pose[2], qw = pose[3];
+  const double xx = qx*qx, yy = qy*qy, zz = qz*qz, ww = qw*qw;
+  const double xy = qx*qy, xz = qx*qz, xw = qx*qw;
+  const double yz = qy*qz, yw = qy*qw, zw = qz*qw;
+
+  const double R00 = ww+xx-yy-zz, R01 = 2.0*(xy-zw),   R02 = 2.0*(xz+yw);
+  const double R10 = 2.0*(xy+zw),  R11 = ww-xx+yy-zz,  R12 = 2.0*(yz-xw);
+  const double R20 = 2.0*(xz-yw),  R21 = 2.0*(yz+xw),  R22 = ww-xx-yy+zz;
+
+  const double Xwx = pt[0] - pose[4];
+  const double Xwy = pt[1] - pose[5];
+  const double Xwz = pt[2] - pose[6];
+
+  const double xc = R00*Xwx + R01*Xwy + R02*Xwz;
+  const double yc = R10*Xwx + R11*Xwy + R12*Xwz;
+  const double zc = R20*Xwx + R21*Xwy + R22*Xwz;
+
+  if (zc < 1e-12) {
+    residuals[0] = residuals[1] = 1e6 * weight_;
+    if (jacobians) {
+      if (jacobians[0]) std::fill_n(jacobians[0], 2 * kAnalyticIntrCount, 0.0);
+      if (jacobians[1]) std::fill_n(jacobians[1], 14, 0.0);
+      if (jacobians[2]) std::fill_n(jacobians[2], 6, 0.0);
+    }
+    return true;
+  }
+
+  const double inv_z  = 1.0 / zc;
+  const double inv_z2 = inv_z * inv_z;
+  const double xu  = xc * inv_z;
+  const double yu  = yc * inv_z;
+  const double xu2 = xu * xu;
+  const double yu2 = yu * yu;
+  const double r2  = xu2 + yu2;
+  const double r4  = r2 * r2;
+  const double r6  = r4 * r2;
+  const double rad = 1.0 + k1*r2 + k2*r4 + k3*r6;
+  const double tx  = 2.0*p2*xu*yu + p1*(r2 + 2.0*xu2);
+  const double ty  = 2.0*p1*xu*yu + p2*(r2 + 2.0*yu2);
+  const double dx  = xu * rad + tx;
+  const double dy  = yu * rad + ty;
+
+  residuals[0] = (fx * dx + cx - u_obs_) * weight_;
+  residuals[1] = (fy * dy + cy - v_obs_) * weight_;
+
+  if (!jacobians) return true;
+
+  const double drad_c   = 2.0 * (k1 + 2.0*k2*r2 + 3.0*k3*r4);
+  const double drad_dxu = drad_c * xu;
+  const double drad_dyu = drad_c * yu;
+  const double dtx_dxu = 2.0*p2*yu + 6.0*p1*xu;
+  const double dtx_dyu = 2.0*p2*xu + 2.0*p1*yu;
+  const double dty_dxu = 2.0*p1*yu + 2.0*p2*xu;
+  const double dty_dyu = 2.0*p1*xu + 6.0*p2*yu;
+  const double ddx_dxu = rad + xu*drad_dxu + dtx_dxu;
+  const double ddx_dyu =       xu*drad_dyu + dtx_dyu;
+  const double ddy_dxu =       yu*drad_dxu + dty_dxu;
+  const double ddy_dyu = rad + yu*drad_dyu + dty_dyu;
+  const double dr0_dxc = fx * ddx_dxu * inv_z;
+  const double dr0_dyc = fx * ddx_dyu * inv_z;
+  const double dr0_dzc = -fx * (ddx_dxu * xu + ddx_dyu * yu) * inv_z;
+  const double dr1_dxc = fy * ddy_dxu * inv_z;
+  const double dr1_dyc = fy * ddy_dyu * inv_z;
+  const double dr1_dzc = -fy * (ddy_dxu * xu + ddy_dyu * yu) * inv_z;
+  const double jp00 = dr0_dxc*R00 + dr0_dyc*R10 + dr0_dzc*R20;
+  const double jp01 = dr0_dxc*R01 + dr0_dyc*R11 + dr0_dzc*R21;
+  const double jp02 = dr0_dxc*R02 + dr0_dyc*R12 + dr0_dzc*R22;
+  const double jp10 = dr1_dxc*R00 + dr1_dyc*R10 + dr1_dzc*R20;
+  const double jp11 = dr1_dxc*R01 + dr1_dyc*R11 + dr1_dzc*R21;
+  const double jp12 = dr1_dxc*R02 + dr1_dyc*R12 + dr1_dzc*R22;
+
+  if (jacobians[0]) {
+    double* J = jacobians[0];
+    J[kFx]    = dx * weight_;
+    J[kSigma] = 0.0;
+    J[kCx]    = weight_;
+    J[kCy]    = 0.0;
+    J[kK1]    = fx * xu * r2 * weight_;
+    J[kK2]    = fx * xu * r4 * weight_;
+    J[kK3]    = fx * xu * r6 * weight_;
+    J[kP1]    = fx * (r2 + 2.0*xu2) * weight_;
+    J[kP2]    = fx * 2.0*xu*yu * weight_;
+    J += kAnalyticIntrCount;
+    J[kFx]    = sigma * dy * weight_;
+    J[kSigma] = fx * dy * weight_;
+    J[kCx]    = 0.0;
+    J[kCy]    = weight_;
+    J[kK1]    = fy * yu * r2 * weight_;
+    J[kK2]    = fy * yu * r4 * weight_;
+    J[kK3]    = fy * yu * r6 * weight_;
+    J[kP1]    = fy * 2.0*xu*yu * weight_;
+    J[kP2]    = fy * (r2 + 2.0*yu2) * weight_;
+  }
+  if (jacobians[1]) {
+    double* J = jacobians[1];
+    double dXc_dq[3][4];
+    sola_dRp_dq(Xwx, Xwy, Xwz, qx, qy, qz, qw, dXc_dq);
+    for (int i = 0; i < 4; ++i) {
+      J[    i] = (dr0_dxc*dXc_dq[0][i] + dr0_dyc*dXc_dq[1][i] + dr0_dzc*dXc_dq[2][i]) * weight_;
+      J[7 + i] = (dr1_dxc*dXc_dq[0][i] + dr1_dyc*dXc_dq[1][i] + dr1_dzc*dXc_dq[2][i]) * weight_;
+    }
+    J[4] = -jp00*weight_;  J[5] = -jp01*weight_;  J[6] = -jp02*weight_;
+    J[11] = -jp10*weight_; J[12] = -jp11*weight_; J[13] = -jp12*weight_;
+  }
+  if (jacobians[2]) {
+    double* J = jacobians[2];
+    J[0] = jp00*weight_;  J[1] = jp01*weight_;  J[2] = jp02*weight_;
+    J[3] = jp10*weight_;  J[4] = jp11*weight_;  J[5] = jp12*weight_;
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // global_bundle_analytic
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool global_bundle_analytic(const GlobalBAInput& input, GlobalBAResult* result,
-                            int max_iterations, bool fix_sigma) {
+bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iterations) {
   if (!result) return false;
   if (input.poses_R.size() != input.poses_C.size() || input.poses_R.empty() ||
       input.points3d.empty() || input.observations.empty())
@@ -284,7 +417,7 @@ bool global_bundle_analytic(const GlobalBAInput& input, GlobalBAResult* result,
 
   // ── Build Ceres problem ───────────────────────────────────────────────────
   ceres::Problem problem;
-  ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
+  ceres::LossFunction* loss = new ceres::HuberLoss(10.0);
 
   for (const auto& obs : input.observations) {
     if (obs.image_index < 0 || obs.image_index >= n_cams ||
@@ -297,8 +430,11 @@ bool global_bundle_analytic(const GlobalBAInput& input, GlobalBAResult* result,
     double* pp = poses_data.data()  + static_cast<size_t>(obs.image_index) * 7;
     double* xp = result->points3d[static_cast<size_t>(obs.point_index)].data();
 
-    problem.AddResidualBlock(new ReprojectionCostAnalytic(obs.u, obs.v),
-                             loss, ip, pp, xp);
+    const double scale = (obs.scale > 1e-12) ? obs.scale : 1.0;
+    ceres::CostFunction* cost = (scale == 1.0)
+        ? static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v))
+        : static_cast<ceres::CostFunction*>(new ReprojectionCostAnalyticWeighted(obs.u, obs.v, scale));
+    problem.AddResidualBlock(cost, loss, ip, pp, xp);
   }
 
   // ── Parameterisation for quaternion+centre (only blocks in the problem) ───
@@ -312,21 +448,42 @@ bool global_bundle_analytic(const GlobalBAInput& input, GlobalBAResult* result,
             new ceres::IdentityParameterization(3)));
   }
 
-  // Fix cam-0 (world origin)
-  if (problem.HasParameterBlock(poses_data.data()))
-    problem.SetParameterBlockConstant(poses_data.data());
+  // Fix poses: image 0 (world origin) always fixed; optional fix_pose[i] for i > 0
+  for (int i = 0; i < n_cams; ++i) {
+    double* pp = poses_data.data() + static_cast<size_t>(i) * 7;
+    if (!problem.HasParameterBlock(pp)) continue;
+    const bool fix = (i == 0) ||
+        (input.fix_pose.size() > static_cast<size_t>(i) && input.fix_pose[static_cast<size_t>(i)]);
+    if (fix)
+      problem.SetParameterBlockConstant(pp);
+  }
 
-  // Intrinsics: constant vs optimise (with optional sigma fix)
+  // Intrinsics: constant vs optimise (fix_intrinsics_flags per camera, bitmask per parameter)
   for (int c = 0; c < n_distinct; ++c) {
     double* ip = intr_params.data() + static_cast<size_t>(c) * kAnalyticIntrCount;
     if (!problem.HasParameterBlock(ip)) continue;
     if (!input.optimize_intrinsics) {
       problem.SetParameterBlockConstant(ip);
-    } else if (fix_sigma) {
-      std::vector<int> fixed = {kSigma};
-      problem.SetParameterization(
-          ip, new ceres::SubsetParameterization(kAnalyticIntrCount, fixed));
+      continue;
     }
+    uint32_t flags = (input.fix_intrinsics_flags.size() > static_cast<size_t>(c))
+                         ? static_cast<uint32_t>(input.fix_intrinsics_flags[static_cast<size_t>(c)])
+                         : 0u;
+    std::vector<int> fixed;
+    for (int i = 0; i < kAnalyticIntrCount; ++i)
+      if ((flags >> i) & 1u) fixed.push_back(i);
+    if (fixed.size() >= static_cast<size_t>(kAnalyticIntrCount))
+      problem.SetParameterBlockConstant(ip);
+    else if (!fixed.empty())
+      problem.SetParameterization(ip, new ceres::SubsetParameterization(kAnalyticIntrCount, fixed));
+  }
+
+  // Fix 3D points: optional fix_point[p]
+  for (int p = 0; p < n_pts; ++p) {
+    double* xp = result->points3d[static_cast<size_t>(p)].data();
+    if (!problem.HasParameterBlock(xp)) continue;
+    if (input.fix_point.size() > static_cast<size_t>(p) && input.fix_point[static_cast<size_t>(p)])
+      problem.SetParameterBlockConstant(xp);
   }
 
   // ── Solve ─────────────────────────────────────────────────────────────────

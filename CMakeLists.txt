@@ -101,8 +101,9 @@ endif()
 # ==============================================================================
 
 find_package(Eigen3 REQUIRED)
-message(STATUS "Eigen3 version is ${EIGEN3_VERSION}")
+message(STATUS "Eigen3 version is ${EIGEN3_VERSION},dir is ${EIGEN3_INCLUDE_DIRS}")
 
+include_directories(${EIGEN3_INCLUDE_DIRS}) 
 # Ceres (required: for bundle adjustment in incremental SfM)
 find_package(Ceres REQUIRED)
 message(STATUS "Ceres: ${Ceres_VERSION}, BA module enabled")

@@ -3,7 +3,7 @@
  * @brief Resection (PnP) for incremental SfM: RANSAC PnP + pose-only BA.
  *
  * Uses GPU RANSAC PnP (gpu_ransac_pnp) when gpu_geo_init() has been called;
- * pose refinement via pose_only_bundle (Ceres).
+ * pose refinement via global_bundle_analytic (1 image, points fixed).
  * World frame = cam0 frame; poses are world-to-camera.
  *
  * When intrinsics have distortion (camera::Intrinsics), 2D observations are
@@ -25,7 +25,7 @@ namespace sfm {
  *
  * @param inlier_count    Number of inliers.
  * @param total_correspondences  Total 3D–2D pairs used.
- * @param rmse_px        Reprojection RMSE in pixels (e.g. from pose_only_bundle).
+ * @param rmse_px        Reprojection RMSE in pixels (e.g. from pose refinement).
  * @param min_inlier_ratio  Minimum inlier ratio (default 0.4).
  * @param max_rmse_px    Maximum acceptable RMSE in pixels (default 10.0).
  * @return true if resection is considered stable.

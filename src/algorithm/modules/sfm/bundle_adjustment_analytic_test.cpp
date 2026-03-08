@@ -1,19 +1,24 @@
 /**
  * @file  bundle_adjustment_analytic_test.cpp
- * @brief Unit tests for ReprojectionCostAnalytic and global_bundle_analytic.
+ * @brief Unit tests for ReprojectionCostAnalytic, ReprojectionCostAnalyticWeighted, global_bundle_analytic.
  *
  * Tests
  * ──────
  *  1. Zero-noise residual check (distorted camera, exact observations → residual ≈ 0).
  *  2. Jacobian gradient check (analytic vs. numeric-diff via ceres::GradientChecker).
  *  3. Convergence on noisy single-camera data (4 views, 100 points).
- *  4. Multi-camera convergence + timing comparison against AutoDiff global_bundle.
+ *  4. Multi-camera convergence (2 cameras, 6 views, 200 pts).
+ *  5. Zero-noise residual with scale (weighted cost 1/scale).
+ *  6. Jacobian gradient check for weighted cost.
+ *  7. Two-view one camera (2 images, same intrinsics via image_to_camera).
+ *  8. Two-view two cameras (different intrinsics).
+ *  9. Fix pose and fix point (constant parameter blocks).
  *
  * Build: test_ba_analytic (see sfm/CMakeLists.txt).
  */
 
 #include "bundle_adjustment_analytic.h"
-#include "bundle_adjustment.h"
+#include "bundle_adjustment_analytic.h"
 #include "../camera/camera_types.h"
 
 #include <Eigen/Core>
@@ -187,7 +192,7 @@ static int test_convergence_single_camera() {
   std::vector<Eigen::Vector3d> pts_gt(n_pts);
   for (auto& p : pts_gt) p = {dxy(rng), dxy(rng), dz(rng)};
 
-  GlobalBAInput input;
+  BAInput input;
   input.poses_R = R_gt;
   // Convert t → C: C_i = -R_iᵀ · t_i
   input.poses_C.resize(t_gt.size());
@@ -195,6 +200,8 @@ static int test_convergence_single_camera() {
     input.poses_C[i] = -R_gt[i].transpose() * t_gt[i];
   input.points3d = pts_gt;
   input.optimize_intrinsics = true;
+  input.fix_intrinsics_flags.resize(1);
+  input.fix_intrinsics_flags[0] = kFixIntrSigma;
 
   Intrinsics K;
   K.fx = f_gt; K.fy = sigma_gt * f_gt; K.cx = cx_gt; K.cy = cy_gt;
@@ -209,15 +216,15 @@ static int test_convergence_single_camera() {
       double uv[2], pt[3] = {pts_gt[j].x(), pts_gt[j].y(), pts_gt[j].z()};
       if (!project(intr_gt, pose_d, pt, uv)) continue;
       uv[0] += noise(rng); uv[1] += noise(rng);
-      GlobalObservation obs;
+      BAObservation obs;
       obs.image_index = i; obs.point_index = j; obs.u = uv[0]; obs.v = uv[1];
       input.observations.push_back(obs);
     }
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
-  GlobalBAResult result;
-  const bool ok = global_bundle_analytic(input, &result, 100, /*fix_sigma=*/true);
+  BAResult result;
+  const bool ok = global_bundle_analytic(input, &result, 100);
   auto t1 = std::chrono::high_resolution_clock::now();
   const double elapsed = std::chrono::duration<double>(t1 - t0).count();
 
@@ -235,7 +242,7 @@ static int test_convergence_single_camera() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 4 – Multi-camera convergence + timing vs. AutoDiff
+// Test 4 – Multi-camera convergence
 // ─────────────────────────────────────────────────────────────────────────────
 
 static int test_convergence_multi_camera_timing() {
@@ -273,7 +280,7 @@ static int test_convergence_multi_camera_timing() {
   std::vector<int> cam_assign(n_cams);
   for (int i = 0; i < n_cams; ++i) cam_assign[i] = (i % 2 == 0) ? 0 : 1;
 
-  GlobalBAInput input;
+  BAInput input;
   input.poses_R = R_gt;
   // Convert t → C: C_i = -R_iᵀ · t_i
   input.poses_C.resize(t_gt.size());
@@ -293,29 +300,20 @@ static int test_convergence_multi_camera_timing() {
       double uv[2], pt[3] = {pts_gt[j].x(), pts_gt[j].y(), pts_gt[j].z()};
       if (!project(intr, pose_d, pt, uv)) continue;
       uv[0] += noise(rng); uv[1] += noise(rng);
-      GlobalObservation obs;
+      BAObservation obs;
       obs.image_index = i; obs.point_index = j; obs.u = uv[0]; obs.v = uv[1];
       input.observations.push_back(obs);
     }
   }
 
   auto ta0 = std::chrono::high_resolution_clock::now();
-  GlobalBAResult res_a;
+  BAResult res_a;
   const bool ok_a = global_bundle_analytic(input, &res_a, 100);
   auto ta1 = std::chrono::high_resolution_clock::now();
-
-  auto tb0 = std::chrono::high_resolution_clock::now();
-  GlobalBAResult res_b;
-  const bool ok_b = global_bundle(input, &res_b, 100);
-  auto tb1 = std::chrono::high_resolution_clock::now();
-
   const double time_a = std::chrono::duration<double>(ta1 - ta0).count();
-  const double time_b = std::chrono::duration<double>(tb1 - tb0).count();
 
   std::cout << "  Analytic BA: ok=" << ok_a << "  RMSE=" << res_a.rmse_px
             << " px  time=" << time_a << " s\n";
-  std::cout << "  AutoDiff BA: ok=" << ok_b << "  RMSE=" << res_b.rmse_px
-            << " px  time=" << time_b << " s\n";
 
   if (!ok_a || !res_a.success) {
     std::cerr << "  FAIL: analytic BA failed\n";
@@ -326,6 +324,298 @@ static int test_convergence_multi_camera_timing() {
     return 1;
   }
   std::cout << "  PASS\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 5 – Zero-noise residual with scale (weighted cost)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_zero_noise_residual_with_scale() {
+  std::cout << "[Test 5] Zero-noise residual with scale (weighted cost)\n";
+
+  double intr[kAnalyticIntrCount] = {800.0, 1.0, 320.0, 240.0,
+                                      0.01, -0.002, 0.0005, 0.001, 0.001};
+  double pose[7] = {0, 0, 0, 1,  0, 0, 0};
+  double pt[3]  = {0.5, -0.3, 5.0};
+
+  double uv[2];
+  if (!project(intr, pose, pt, uv)) { std::cerr << "  projection failed\n"; return 1; }
+
+  const double scale = 2.0;
+  double res[2];
+  const double* params[3] = {intr, pose, pt};
+  ReprojectionCostAnalyticWeighted cost(uv[0], uv[1], scale);
+  cost.Evaluate(params, res, nullptr);
+
+  if (std::abs(res[0]) > 1e-8 || std::abs(res[1]) > 1e-8) {
+    std::cerr << "  FAIL: weighted residuals = (" << res[0] << ", " << res[1] << ")\n";
+    return 1;
+  }
+  std::cout << "  PASS\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 6 – Jacobian gradient check (weighted cost)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_jacobian_weighted() {
+  std::cout << "[Test 6] Jacobian gradient check (weighted cost)\n";
+
+  double intr[kAnalyticIntrCount] = {600.0, 1.02, 400.0, 300.0,
+                                      0.05, -0.01, 0.001, 0.002, -0.001};
+  const Eigen::AngleAxisd aa(0.26, Eigen::Vector3d(0.3, 1.0, 0.1).normalized());
+  const Eigen::Quaterniond q_gt(aa);
+  const Eigen::Vector3d    C_gt(1.0, -0.5, 0.2);
+  double pose[7] = {q_gt.x(), q_gt.y(), q_gt.z(), q_gt.w(),
+                    C_gt.x(), C_gt.y(), C_gt.z()};
+  double pt[3] = {0.8, 0.4, 6.0};
+
+  double uv[2];
+  if (!project(intr, pose, pt, uv)) { std::cerr << "  projection failed\n"; return 1; }
+
+  const double scale = 1.5;
+  ceres::CostFunction* cost = new ReprojectionCostAnalyticWeighted(uv[0], uv[1], scale);
+  ceres::NumericDiffOptions ndiff;
+  ceres::GradientChecker checker(cost, nullptr, ndiff);
+  std::vector<double*> params_vec = {intr, pose, pt};
+
+  ceres::GradientChecker::ProbeResults probe;
+  if (!checker.Probe(params_vec.data(), 1e-4, &probe)) {
+    std::cerr << "  FAIL: max relative error = " << probe.maximum_relative_error << "\n";
+    std::cerr << "  " << probe.error_log << "\n";
+    return 1;
+  }
+  std::cout << "  PASS: max relative error = " << probe.maximum_relative_error << "\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 7 – Two-view, one camera (2 images, same intrinsics via image_to_camera)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_two_view_one_camera() {
+  std::cout << "[Test 7] Two-view one camera (2 images, N points)\n";
+
+  const double f = 700.0, cx = 320.0, cy = 240.0;
+  Intrinsics K;
+  K.fx = f; K.fy = f; K.cx = cx; K.cy = cy;
+  K.k1 = 0.02; K.k2 = -0.005; K.k3 = 0.0; K.p1 = 0.001; K.p2 = -0.001;
+
+  Eigen::Matrix3d R0, R1;
+  Eigen::Vector3d t0, t1;
+  look_at_origin(Eigen::Vector3d(0, 0, -8), &R0, &t0);
+  look_at_origin(Eigen::Vector3d(1.5, 0, -8), &R1, &t1);
+
+  const int n_pts = 50;
+  std::mt19937 rng(7);
+  std::uniform_real_distribution<double> dxy(-2.0, 2.0);
+  std::uniform_real_distribution<double> dz(3.0, 6.0);
+  std::normal_distribution<double> noise(0.0, 0.4);
+
+  std::vector<Eigen::Vector3d> pts(n_pts);
+  for (auto& p : pts) p = {dxy(rng), dxy(rng), dz(rng)};
+
+  BAInput input;
+  input.poses_R = {R0, R1};
+  input.poses_C.resize(2);
+  input.poses_C[0] = -R0.transpose() * t0;
+  input.poses_C[1] = -R1.transpose() * t1;
+  input.points3d = pts;
+  input.cameras = {K};
+  input.image_camera_index = {0, 0};
+  input.optimize_intrinsics = false;
+
+  double intr[9] = {K.fx, 1.0, K.cx, K.cy, K.k1, K.k2, K.k3, K.p1, K.p2};
+  double pose0[7], pose1[7];
+  Rt_to_pose(R0, t0, pose0);
+  Rt_to_pose(R1, t1, pose1);
+  for (int j = 0; j < n_pts; ++j) {
+    double uv[2], pt[3] = {pts[j].x(), pts[j].y(), pts[j].z()};
+    if (!project(intr, pose0, pt, uv)) continue;
+    uv[0] += noise(rng); uv[1] += noise(rng);
+    BAObservation o;
+    o.image_index = 0; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.2;
+    input.observations.push_back(o);
+    if (!project(intr, pose1, pt, uv)) continue;
+    uv[0] += noise(rng); uv[1] += noise(rng);
+    o.image_index = 1; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.0;
+    input.observations.push_back(o);
+  }
+
+  BAResult result;
+  if (!global_bundle_analytic(input, &result, 80)) {
+    std::cerr << "  FAIL: solver failed\n";
+    return 1;
+  }
+  if (!result.success || result.rmse_px > 0.55) {
+    std::cerr << "  FAIL: RMSE = " << result.rmse_px << "\n";
+    return 1;
+  }
+  std::cout << "  PASS: RMSE = " << result.rmse_px << " px\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 8 – Two-view, two cameras (different intrinsics)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_two_view_two_cameras() {
+  std::cout << "[Test 8] Two-view two cameras (different intrinsics)\n";
+
+  Intrinsics K0, K1;
+  K0.fx = 800.0; K0.fy = 800.0; K0.cx = 400.0; K0.cy = 300.0;
+  K0.k1 = 0.02;  K0.k2 = -0.005; K0.k3 = 0.0; K0.p1 = 0.0; K0.p2 = 0.0;
+  K1.fx = 500.0; K1.fy = 500.0; K1.cx = 250.0; K1.cy = 200.0;
+  K1.k1 = 0.01;  K1.k2 = 0.0;    K1.k3 = 0.0; K1.p1 = 0.001; K1.p2 = -0.001;
+
+  Eigen::Matrix3d R0, R1;
+  Eigen::Vector3d t0, t1;
+  look_at_origin(Eigen::Vector3d(0, 0, -10), &R0, &t0);
+  look_at_origin(Eigen::Vector3d(2, 0, -10), &R1, &t1);
+
+  const int n_pts = 40;
+  std::mt19937 rng(8);
+  std::uniform_real_distribution<double> dxy(-2.0, 2.0);
+  std::uniform_real_distribution<double> dz(4.0, 8.0);
+  std::normal_distribution<double> noise(0.0, 0.35);
+
+  std::vector<Eigen::Vector3d> pts(n_pts);
+  for (auto& p : pts) p = {dxy(rng), dxy(rng), dz(rng)};
+
+  BAInput input;
+  input.poses_R = {R0, R1};
+  input.poses_C.resize(2);
+  input.poses_C[0] = -R0.transpose() * t0;
+  input.poses_C[1] = -R1.transpose() * t1;
+  input.points3d = pts;
+  input.cameras = {K0, K1};
+  input.image_camera_index = {0, 1};
+  input.optimize_intrinsics = false;
+
+  double intr0[9] = {K0.fx, 1.0, K0.cx, K0.cy, K0.k1, K0.k2, K0.k3, K0.p1, K0.p2};
+  double intr1[9] = {K1.fx, 1.0, K1.cx, K1.cy, K1.k1, K1.k2, K1.k3, K1.p1, K1.p2};
+  double pose0[7], pose1[7];
+  Rt_to_pose(R0, t0, pose0);
+  Rt_to_pose(R1, t1, pose1);
+  for (int j = 0; j < n_pts; ++j) {
+    double uv[2], pt[3] = {pts[j].x(), pts[j].y(), pts[j].z()};
+    if (!project(intr0, pose0, pt, uv)) continue;
+    uv[0] += noise(rng); uv[1] += noise(rng);
+    BAObservation o;
+    o.image_index = 0; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.0;
+    input.observations.push_back(o);
+    if (!project(intr1, pose1, pt, uv)) continue;
+    uv[0] += noise(rng); uv[1] += noise(rng);
+    o.image_index = 1; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.5;
+    input.observations.push_back(o);
+  }
+
+  BAResult result;
+  if (!global_bundle_analytic(input, &result, 80)) {
+    std::cerr << "  FAIL: solver failed\n";
+    return 1;
+  }
+  if (!result.success || result.rmse_px > 0.5) {
+    std::cerr << "  FAIL: RMSE = " << result.rmse_px << "\n";
+    return 1;
+  }
+  std::cout << "  PASS: RMSE = " << result.rmse_px << " px\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 9 – Fix pose and fix point (constant blocks)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_fix_pose_and_point() {
+  std::cout << "[Test 9] Fix pose and fix point\n";
+
+  const double f = 750.0, cx = 320.0, cy = 240.0;
+  Intrinsics K;
+  K.fx = f; K.fy = f; K.cx = cx; K.cy = cy;
+  K.k1 = 0.015; K.k2 = -0.003; K.k3 = 0.0; K.p1 = 0.0; K.p2 = 0.0;
+
+  Eigen::Matrix3d R0, R1, R2;
+  Eigen::Vector3d t0, t1, t2;
+  look_at_origin(Eigen::Vector3d(0, 0, -9), &R0, &t0);
+  look_at_origin(Eigen::Vector3d(1.2, 0, -9), &R1, &t1);
+  look_at_origin(Eigen::Vector3d(-0.8, 1.0, -9), &R2, &t2);
+
+  const int n_pts = 30;
+  std::mt19937 rng(9);
+  std::uniform_real_distribution<double> dxy(-1.5, 1.5);
+  std::uniform_real_distribution<double> dz(2.0, 5.0);
+  std::normal_distribution<double> noise(0.0, 0.3);
+
+  std::vector<Eigen::Vector3d> pts(n_pts);
+  for (auto& p : pts) p = {dxy(rng), dxy(rng), dz(rng)};
+
+  BAInput input;
+  input.poses_R = {R0, R1, R2};
+  input.poses_C.resize(3);
+  input.poses_C[0] = -R0.transpose() * t0;
+  input.poses_C[1] = -R1.transpose() * t1;
+  input.poses_C[2] = -R2.transpose() * t2;
+  input.points3d = pts;
+  input.cameras = {K};
+  input.image_camera_index = {0, 0, 0};
+  input.optimize_intrinsics = false;
+
+  input.fix_pose.resize(3);
+  input.fix_pose[0] = true;
+  input.fix_pose[1] = true;
+  input.fix_pose[2] = false;
+
+  input.fix_point.resize(static_cast<size_t>(n_pts));
+  for (int p = 0; p < n_pts; ++p)
+    input.fix_point[static_cast<size_t>(p)] = (p < n_pts / 2);
+
+  double intr[9] = {K.fx, 1.0, K.cx, K.cy, K.k1, K.k2, K.k3, K.p1, K.p2};
+  double pose_buf[3][7];
+  Rt_to_pose(R0, t0, pose_buf[0]);
+  Rt_to_pose(R1, t1, pose_buf[1]);
+  Rt_to_pose(R2, t2, pose_buf[2]);
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < n_pts; ++j) {
+      double uv[2], pt[3] = {pts[j].x(), pts[j].y(), pts[j].z()};
+      if (!project(intr, pose_buf[i], pt, uv)) continue;
+      uv[0] += noise(rng); uv[1] += noise(rng);
+      BAObservation o;
+      o.image_index = i; o.point_index = j; o.u = uv[0]; o.v = uv[1];
+      input.observations.push_back(o);
+    }
+  }
+
+  BAResult result;
+  if (!global_bundle_analytic(input, &result, 60)) {
+    std::cerr << "  FAIL: solver failed\n";
+    return 1;
+  }
+  if (!result.success) {
+    std::cerr << "  FAIL: no success\n";
+    return 1;
+  }
+
+  const Eigen::Matrix3d& R1_in = input.poses_R[1];
+  const Eigen::Matrix3d& R1_out = result.poses_R[1];
+  const Eigen::Vector3d& C1_in = input.poses_C[1];
+  const Eigen::Vector3d& C1_out = result.poses_C[1];
+  double pose_err = (R1_out - R1_in).norm() + (C1_out - C1_in).norm();
+  if (pose_err > 1e-10) {
+    std::cerr << "  FAIL: fixed pose[1] changed, diff = " << pose_err << "\n";
+    return 1;
+  }
+  for (int p = 0; p < n_pts / 2; ++p) {
+    const auto& pin = input.points3d[static_cast<size_t>(p)];
+    const auto& pout = result.points3d[static_cast<size_t>(p)];
+    if ((pout - pin).norm() > 1e-10) {
+      std::cerr << "  FAIL: fixed point " << p << " changed\n";
+      return 1;
+    }
+  }
+  std::cout << "  PASS: fixed pose and points unchanged, RMSE = " << result.rmse_px << " px\n";
   return 0;
 }
 
@@ -343,6 +633,11 @@ int main() {
   failures += test_jacobian_gradient_check();
   failures += test_convergence_single_camera();
   failures += test_convergence_multi_camera_timing();
+  failures += test_zero_noise_residual_with_scale();
+  failures += test_jacobian_weighted();
+  failures += test_two_view_one_camera();
+  failures += test_two_view_two_cameras();
+  failures += test_fix_pose_and_point();
 
   if (failures == 0) {
     std::cout << "\nAll tests PASSED.\n";

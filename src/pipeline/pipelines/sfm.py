@@ -191,7 +191,9 @@ def run_step_match(
     cfg: "SfmConfig",
     task_id: int | None = None,
 ) -> None:
-    """Train VLAD + PCA, retrieve, match, geo (--twoview, --vis). Geo writes pairs.json + adjacency.json."""
+    """Train VLAD + PCA, retrieve, match, geo (--twoview, --vis). Geo writes pairs.json + adjacency.json.
+    Uses index-only export: images_all.json already has 'images' (image_index, camera_index) and 'cameras';
+    geo needs only -l images_all (no separate intrinsics file)."""
     if task_id is None:
         task_id = _get_task_id(cfg, "match")
     images_all = cfg.work_dir / "images_all.json"
@@ -203,7 +205,6 @@ def run_step_match(
     pairs_retrieve = cfg.work_dir / "pairs_retrieve.json"
     codebook_path = vlad_dir / "codebook.vcbt"
     pca_path = vlad_dir / "pca.pca"
-    intrinsics_json = cfg.work_dir / "intrinsics.json"
 
     if not cfg.dry_run:
         vlad_dir.mkdir(parents=True, exist_ok=True)
@@ -211,11 +212,6 @@ def run_step_match(
         geo_dir.mkdir(parents=True, exist_ok=True)
         vlad_cache = vlad_dir / "cache"
         vlad_cache.mkdir(parents=True, exist_ok=True)
-
-    # Export intrinsics for geo -k -l (multi-camera)
-    if not cfg.dry_run:
-        pu.export_intrinsics_all_groups(cfg.project_path, task_id, intrinsics_json)
-        log.info("Exported intrinsics: %s", intrinsics_json)
 
     # Train VLAD + PCA
     if not cfg.dry_run:
@@ -257,12 +253,13 @@ def run_step_match(
     emit_pipeline_event({"step": "match_features", "ok": True, "data": {"match_dir": str(match_dir)}})
 
     # Geo (--twoview, --vis); writes geo_dir/pairs.json + geo_dir/adjacency.json
+    # image_list=images_all (index-only export with embedded cameras); no separate -k
     if not cfg.dry_run:
         pu.geo_verify(
             pairs_retrieve,
             match_dir,
             geo_dir,
-            k_json=intrinsics_json,
+            k_json=None,
             image_list=images_all,
             estimate_h=True,
             twoview=True,

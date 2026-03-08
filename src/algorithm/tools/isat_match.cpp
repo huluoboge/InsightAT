@@ -54,8 +54,8 @@ using namespace insight::io;
  * Image pair task
  */
 struct PairTask {
-  uint32_t image1_id = 0;
-  uint32_t image2_id = 0;
+  uint32_t image1_index = 0;
+  uint32_t image2_index = 0;
   std::string feature1_file;
   std::string feature2_file;
   float priority = 1.0f;
@@ -92,15 +92,14 @@ std::vector<PairTask> loadPairsJSON(const std::string& json_path,
 
   for (const auto& pair : j["pairs"]) {
     PairTask task;
-    task.image1_id = insight::tools::get_image_id_from_pair(pair, "image1_id");
-    task.image2_id = insight::tools::get_image_id_from_pair(pair, "image2_id");
+    task.image1_index = insight::tools::get_image_index_from_pair(pair, "image1_index");
+    task.image2_index = insight::tools::get_image_index_from_pair(pair, "image2_index");
     task.priority = pair.value("priority", 1.0f);
     task.index = index++;
 
     if (!feature_dir.empty()) {
-      // Rebuild paths from image IDs to point at matching features directory
-      task.feature1_file = feature_dir + "/" + std::to_string(task.image1_id) + ".isat_feat";
-      task.feature2_file = feature_dir + "/" + std::to_string(task.image2_id) + ".isat_feat";
+      task.feature1_file = feature_dir + "/" + std::to_string(task.image1_index) + ".isat_feat";
+      task.feature2_file = feature_dir + "/" + std::to_string(task.image2_index) + ".isat_feat";
     } else {
       // Fall back to paths recorded in the pairs JSON (retrieval feature paths)
       task.feature1_file = pair["feature1_file"];
@@ -187,23 +186,21 @@ bool writeMatchIDC(const MatchResult& matches, const PairTask& pair,
                    const std::string& output_dir) {
 
   if (matches.num_matches == 0) {
-    LOG(WARNING) << "No matches for pair " << pair.image1_id << " - " << pair.image2_id;
+    LOG(WARNING) << "No matches for pair " << pair.image1_index << " - " << pair.image2_index;
     return false;
   }
 
-  // Create output filename
-  std::string output_file = output_dir + "/" + std::to_string(pair.image1_id) + "_" +
-                            std::to_string(pair.image2_id) + ".isat_match";
+  std::string output_file = output_dir + "/" + std::to_string(pair.image1_index) + "_" +
+                            std::to_string(pair.image2_index) + ".isat_match";
 
-  // Prepare metadata
   json metadata;
   metadata["schema_version"] = "1.0";
   metadata["task_type"] = "feature_matching";
   metadata["algorithm"]["name"] = "SiftGPU";
   metadata["algorithm"]["version"] = "1.1";
 
-  metadata["image_pair"]["image1_id"] = pair.image1_id;
-  metadata["image_pair"]["image2_id"] = pair.image2_id;
+  metadata["image_pair"]["image1_index"] = pair.image1_index;
+  metadata["image_pair"]["image2_index"] = pair.image2_index;
 
   metadata["metadata"]["num_matches"] = matches.num_matches;
 
@@ -390,8 +387,8 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::high_resolution_clock::now();
     int load_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-    LOG(INFO) << "Loaded pair [" << index << "/" << pair_tasks.size() << "]: " << task.image1_id
-              << " (" << task.features1.num_features << ") vs " << task.image2_id << " ("
+    LOG(INFO) << "Loaded pair [" << index << "/" << pair_tasks.size() << "]: " << task.image1_index
+              << " (" << task.features1.num_features << ") vs " << task.image2_index << " ("
               << task.features2.num_features << ") "
               << "in " << load_time << "ms";
   });

@@ -86,21 +86,31 @@ set(ALGORITHM_SOURCES
     modules/sfm/view_graph_loader.cpp
     modules/sfm/resection.h
     modules/sfm/resection.cpp
-    modules/sfm/incremental_sfm.h
-    modules/sfm/incremental_sfm.cpp
-    modules/sfm/incremental_sfm_engine.h
-    modules/sfm/incremental_sfm_engine.cpp
+    # Incremental SfM excluded from build (files kept); to be re-integrated after stepwise implementation
+    # modules/sfm/incremental_sfm.h
+    # modules/sfm/incremental_sfm.cpp
+    # modules/sfm/incremental_sfm_engine.h
+    # modules/sfm/incremental_sfm_engine.cpp
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Camera module (intrinsics + distortion) – shared by sfm_module and InsightATAlgorithm
 # ─────────────────────────────────────────────────────────────────────────────
+if(NOT TARGET Eigen3::Eigen)
+  find_package(Eigen3 REQUIRED)
+endif()
 add_library(algorithm_camera STATIC
     modules/camera/camera_types.h
     modules/camera/camera_utils.h
     modules/camera/camera_utils.cpp
 )
-target_include_directories(algorithm_camera PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_include_directories(algorithm_camera
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${EIGEN3_INCLUDE_DIRS}
+        ${EIGEN3_INCLUDE_DIR}
+)
+target_link_libraries(algorithm_camera PUBLIC Eigen3::Eigen)
 set_property(TARGET algorithm_camera PROPERTY FOLDER InsightAT/Modules)
 
 # Add SuperPoint sources if available
@@ -190,6 +200,7 @@ set_property(TARGET insightat_tools_logging PROPERTY FOLDER InsightAT/Tools)
 # CLI executables
 # ─────────────────────────────────────────────────────────────
 
+# SfM pipeline tools – temporarily excluded from build (files kept); re-enable after stepwise re-implementation
 # isat_extract - Feature extraction tool
 add_executable(isat_extract tools/isat_extract.cpp)
 
@@ -373,43 +384,28 @@ target_include_directories(isat_tracks
 set_property(TARGET isat_tracks PROPERTY FOLDER InsightAT/Tools)
 
 # isat_calibrate - Global focal-length refinement across image pairs
-add_executable(isat_calibrate tools/isat_calibrate.cpp)
+# add_executable(isat_calibrate tools/isat_calibrate.cpp)
 
-target_link_libraries(isat_calibrate
-    PRIVATE
-        insightat_tools_logging
-        InsightATAlgorithm
-        sfm_module
-        glog::glog
-)
+# target_link_libraries(isat_calibrate
+#     PRIVATE
+#         insightat_tools_logging
+#         InsightATAlgorithm
+#         sfm_module
+#         glog::glog
+# )
 
-target_include_directories(isat_calibrate
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/..  
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
-)
+# target_include_directories(isat_calibrate
+#     PRIVATE
+#         ${CMAKE_CURRENT_SOURCE_DIR}/..  
+#         ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+# )
 
-set_property(TARGET isat_calibrate PROPERTY FOLDER InsightAT/Tools)
+# set_property(TARGET isat_calibrate PROPERTY FOLDER InsightAT/Tools)
 
-# isat_incremental_sfm - Initial pair bootstrap + two-view BA
-add_executable(isat_incremental_sfm tools/isat_incremental_sfm.cpp)
-
-target_link_libraries(isat_incremental_sfm
-    PRIVATE
-        insightat_tools_logging
-        InsightATAlgorithm
-        sfm_module
-        algorithm_camera
-        glog::glog
-)
-
-target_include_directories(isat_incremental_sfm
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/..
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
-)
-
-set_property(TARGET isat_incremental_sfm PROPERTY FOLDER InsightAT/Tools)
+# isat_incremental_sfm - Excluded from build until Incremental SfM is re-implemented stepwise (files kept)
+# add_executable(isat_incremental_sfm tools/isat_incremental_sfm.cpp)
+# target_link_libraries(isat_incremental_sfm ...)
+# set_property(TARGET isat_incremental_sfm PROPERTY FOLDER InsightAT/Tools)
 
 # isat_camera_estimator - Per-group EXIF-based camera intrinsics estimator
 add_executable(isat_camera_estimator tools/isat_camera_estimator.cpp)

@@ -21,10 +21,9 @@
  * Distortion parameters (optional, Bentley-compatible 5-parameter model):
  *   "k1", "k2", "k3", "p1", "p2" can appear in any camera entry.
  *
- * camera_id values come from the image list JSON (isat_project extract):
- *     image["camera_id"]  ==  group_id of the ImageGroup the image belongs to.
-// isat_geo and isat_twoview read this mapping via build_image_camera_map() and
- * resolve per-pair K1/K2 using lookup_camera() at runtime.
+ * Export JSON has "cameras" and images[].camera_index. isat_geo and isat_twoview
+ * use build_image_index_intrinsics_from_list(-l) and index by task.image1_index /
+ * task.image2_index for per-pair K.
  */
 #pragma once
 
@@ -36,6 +35,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <glog/logging.h>
 #include <nlohmann/json.hpp>
@@ -241,6 +241,75 @@ inline std::unordered_map<uint32_t, uint32_t> build_image_camera_map(const std::
   }
   LOG(INFO) << "Loaded camera map for " << map.size() << " images from " << path;
   return map;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Index-based intrinsics (image list with "cameras" array and images[].camera_index)
+// Used when export is index-only; no camera_id / IdMapping needed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build image_index → CameraIntrinsics from an image-list JSON that contains a "cameras" array
+ * and each image has "camera_index" (and optionally "image_index").
+ *
+ * Expected format (isat_project extract with index-only export):
+ *   { "images": [ { "image_index": 0, "camera_index": 0, "path": "..." }, ... ],
+ *     "cameras": [ { "fx", "fy", "cx", "cy", "width", "height" }, ... ] }
+ *
+ * @param path  Path to image list JSON. Returns empty vector if path empty or format not matched.
+ */
+inline std::vector<CameraIntrinsics> build_image_index_intrinsics_from_list(const std::string& path) {
+  std::vector<CameraIntrinsics> by_index;
+  if (path.empty())
+    return by_index;
+
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    LOG(ERROR) << "Cannot open image list: " << path;
+    return by_index;
+  }
+  nlohmann::json j;
+  try {
+    f >> j;
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Failed to parse image list JSON '" << path << "': " << e.what();
+    return by_index;
+  }
+
+  if (!j.contains("images") || !j["images"].is_array())
+    return by_index;
+  if (!j.contains("cameras") || !j["cameras"].is_array())
+    return by_index;
+
+  const auto& cameras_arr = j["cameras"];
+  for (const auto& cam : cameras_arr) {
+    CameraIntrinsics K;
+    K.fx = cam.value("fx", 0.0);
+    K.fy = cam.value("fy", 0.0);
+    K.cx = cam.value("cx", 0.0);
+    K.cy = cam.value("cy", 0.0);
+    K.width = cam.value("width", static_cast<uint32_t>(0));
+    K.height = cam.value("height", static_cast<uint32_t>(0));
+    K.k1 = cam.value("k1", 0.0);
+    K.k2 = cam.value("k2", 0.0);
+    K.k3 = cam.value("k3", 0.0);
+    K.p1 = cam.value("p1", 0.0);
+    K.p2 = cam.value("p2", 0.0);
+    by_index.push_back(K);
+  }
+
+  std::vector<CameraIntrinsics> result;
+  for (size_t i = 0; i < j["images"].size(); ++i) {
+    const auto& img = j["images"][i];
+    int cidx = img.value("camera_index", 0);
+    if (cidx < 0 || static_cast<size_t>(cidx) >= by_index.size())
+      result.push_back(CameraIntrinsics{});
+    else
+      result.push_back(by_index[static_cast<size_t>(cidx)]);
+  }
+  if (!result.empty())
+    LOG(INFO) << "Loaded intrinsics for " << result.size() << " images (index-based) from " << path;
+  return result;
 }
 
 /**

@@ -1,6 +1,6 @@
 /**
  * pair_json_utils.h
- * Helpers for reading pair JSON with image_id as uint32_t (accepts number or string).
+ * Helpers for reading pair JSON. Index-only: pairs use image1_index / image2_index only.
  */
 #pragma once
 
@@ -12,9 +12,8 @@
 namespace insight {
 namespace tools {
 
-/** Read image1_id/image2_id from pair JSON as uint32_t. Accepts both number and string (backward
- * compat). */
-inline uint32_t get_image_id_from_pair(const nlohmann::json& pair, const char* key) {
+/** Read a numeric field from pair JSON (number or string). */
+inline uint32_t get_image_index_from_pair(const nlohmann::json& pair, const char* key) {
   const auto& v = pair[key];
   if (v.is_number_unsigned())
     return v.get<uint32_t>();

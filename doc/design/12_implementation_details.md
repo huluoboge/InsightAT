@@ -107,6 +107,10 @@ SfM pipeline（ViewGraph、TrackStore、BA —— 全用内部索引）
 
 **重要约定**：同一 AT 任务内所有工具（isat_geo、isat_match、isat_tracks、isat_incremental_sfm）共用同一份 image list，以保证各阶段内部索引对应关系一致。文件名（`.isat_geo`、`.isat_match` 等）仍使用原始 image_id 拼接，读取时通过 `original_image_id(idx)` 还原路径；SfM 内部对图像的所有引用均为密集索引。
 
+#### isat_tracks 两阶段与 geo inlier 一致
+
+`isat_tracks` 采用两遍 I/O：Phase 1 用 Union-Find 得到 track 等价类，Phase 2 向 TrackStore 填入观测。**两阶段均只使用 geo 的 F/E inlier**（先读 `F_inliers`，若无则读 `E_inliers`），保证 track 内点率与下游 SfM 可用性。Phase 1 仅对 inlier 做 `merge_keys`，Phase 2 仅对 inlier 做 `add_observation`；不使用 two-view 的 points3d 填 track xyz（各对局部坐标系不一致），track 3D 由 incremental SfM 在全局系下三角化。
+
 #### 与 GPU BA 的关系
 
 向量化后，`cameras` 数组可直接作为 Ceres/GPU BA 的参数块数组（`camera_index_for_image[i]` 给出哪张图用哪个相机参数块），同构于 COLMAP 的 `camera_id → camera params` 表示，便于未来切换 GPU BA 后端（sba、g2o 等）。

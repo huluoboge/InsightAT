@@ -52,7 +52,8 @@ static void printEvent(const json& j) {
 }
 
 struct ImageTask {
-  uint32_t image_id = 0; // Unique image ID (for output filename: {image_id}.isat_feat)
+  uint32_t image_index = 0; ///< Dense index 0..n-1 (output filename: {image_index}.isat_feat)
+  uint32_t image_id = 0;    ///< Original id from project (for metadata/check only)
   std::string image_path;
   cv::Mat image;           // Original image
   cv::Mat image_retrieval; // Resized image for retrieval features
@@ -95,21 +96,15 @@ std::vector<ImageTask> loadImageList(const std::string& json_path) {
   int index = 0;
   for (const auto& img : j["images"]) {
     ImageTask task;
+    task.image_index = img.value("image_index", static_cast<uint32_t>(index));
+    task.image_id = img.value("id", static_cast<uint32_t>(index));
 
-    // Read image ID (required, unique identifier)
-    if (!img.contains("id")) {
-      LOG(ERROR) << "Image entry missing required 'id' field, skipping";
-      continue;
-    }
-    task.image_id = img["id"].get<uint32_t>();
-
-    // Read image path (required)
     if (!img.contains("path")) {
-      LOG(ERROR) << "Image entry missing 'path' field for ID " << task.image_id;
+      LOG(ERROR) << "Image entry missing 'path' field for index " << task.image_index;
       continue;
     }
     task.image_path = img["path"];
-    task.camera_id = img.value("camera_id", 1);
+    task.camera_id = img.value("camera_index", img.value("camera_id", 1));
     task.index = index++;
     tasks.push_back(task);
   }
@@ -562,8 +557,8 @@ int main(int argc, char* argv[]) {
          process_retrieval](int index) {
           auto& task = image_tasks[index];
 
-          // Use image_id for output filename: {image_id}.isat_feat
-          std::string base_filename = std::to_string(task.image_id) + ".isat_feat";
+          // Use image_index for output filename: {image_index}.isat_feat
+          std::string base_filename = std::to_string(task.image_index) + ".isat_feat";
 
           // Helper lambda to write features to file
           auto write_features = [&](const std::string& output_path,

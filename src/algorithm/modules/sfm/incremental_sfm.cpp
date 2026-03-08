@@ -5,7 +5,7 @@
 
 #include "incremental_sfm.h"
 #include "../../io/idc_reader.h"
-#include "bundle_adjustment.h"
+#include "bundle_adjustment_analytic.h"
 #include "incremental_sfm_engine.h"
 #include "incremental_sfm_helpers.h"
 #include "resection.h"

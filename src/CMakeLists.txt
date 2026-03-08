@@ -1,5 +1,5 @@
 
-
+include_directories(${EIGEN3_INCLUDE_DIR}) 
 add_subdirectory(database)
 add_subdirectory(util)
 add_subdirectory(ui)

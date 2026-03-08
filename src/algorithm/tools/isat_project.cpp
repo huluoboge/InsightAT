@@ -26,6 +26,7 @@
 #include <fstream>
 #include <glog/logging.h>
 #include <iostream>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <regex>
@@ -985,146 +986,6 @@ static int runDeleteATTask(int argc, char* argv[]) {
   return 0;
 }
 
-static int runExtract(int argc, char* argv[]) {
-  CmdLine cmd("Export image list for isat_extract from ATTask input snapshot");
-
-  std::string project_file;
-  std::string output_file;
-  std::string image_root;
-  uint32_t task_id = static_cast<uint32_t>(-1);
-  int target_group_id = -1;
-  bool all_groups = false;
-  bool export_gnss = true;
-  bool export_imu = true;
-
-  cmd.add(make_option('p', project_file, "project").doc("Input project file (.iat)"));
-  cmd.add(make_option('o', output_file, "output").doc("Output JSON for isat_extract input"));
-  cmd.add(make_option('t', task_id, "task-id").doc("AT task_id (required)"));
-  cmd.add(make_option('r', image_root, "root")
-              .doc("Optional root path: rewrite image path as <root>/<filename>"));
-  cmd.add(make_option('g', target_group_id, "group-id")
-              .doc("Export specific group ID (default: first group)"));
-  cmd.add(make_switch('a', "all-groups").doc("Export all groups"));
-  cmd.add(make_switch(0, "no-gnss").doc("Exclude GNSS fields"));
-  cmd.add(make_switch(0, "no-imu").doc("Exclude IMU fields"));
-  std::string log_level;
-  cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
-  cmd.add(make_switch('v', "verbose").doc("Verbose logging (INFO level)"));
-  cmd.add(make_switch('q', "quiet").doc("Quiet mode (ERROR level only)"));
-  cmd.add(make_switch('h', "help").doc("Show this help message"));
-
-  try {
-    cmd.process(argc, argv);
-  } catch (const std::string& s) {
-    std::cerr << "Error: " << s << "\n\n";
-    cmd.printHelp(std::cerr, argv[0]);
-    return 1;
-  }
-
-  if (cmd.checkHelp(argv[0]))
-    return 0;
-  if (project_file.empty() || output_file.empty() || task_id == static_cast<uint32_t>(-1)) {
-    std::cerr << "Error: -p/--project, -o/--output and -t/--task-id are required\n\n";
-    cmd.printHelp(std::cerr, argv[0]);
-    return 1;
-  }
-
-  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
-
-  all_groups = cmd.used('a');
-  export_gnss = !cmd.used("no-gnss");
-  export_imu = !cmd.used("no-imu");
-
-  Project project;
-  if (!loadProjectFromFile(project_file, project))
-    return 1;
-
-  const ATTask* task = findTaskById(project, task_id);
-  if (!task) {
-    LOG(ERROR) << "ATTask not found, task_id=" << task_id;
-    return 1;
-  }
-
-  const std::vector<ImageGroup>& groups = task->input_snapshot.image_groups;
-  std::vector<const ImageGroup*> selected = selectGroups(groups, all_groups, target_group_id);
-  if (selected.empty()) {
-    LOG(ERROR) << "No image groups selected from task input snapshot";
-    return 1;
-  }
-
-  json output;
-  output["$schema"] = "InsightAT Image List Format v2.0";
-  output["images"] = json::array();
-
-  int gnss_count = 0;
-  int imu_count = 0;
-
-  for (const auto* group : selected) {
-    for (const auto& image : group->images) {
-      json img;
-      img["id"] = image.image_id;
-
-      std::string image_path = image.filename;
-      if (!image_root.empty()) {
-        fs::path full_path = fs::path(image_root) / fs::path(image.filename).filename();
-        image_path = full_path.string();
-      }
-      img["path"] = image_path;
-      img["camera_id"] = group->group_id;
-
-      if (export_gnss && image.gnss_data.has_value()) {
-        const auto& gnss = image.gnss_data.value();
-        img["gnss"] = {{"x", gnss.x},           {"y", gnss.y},
-                       {"z", gnss.z},           {"cov_xx", gnss.cov_xx},
-                       {"cov_yy", gnss.cov_yy}, {"cov_zz", gnss.cov_zz},
-                       {"cov_xy", gnss.cov_xy}, {"cov_xz", gnss.cov_xz},
-                       {"cov_yz", gnss.cov_yz}, {"num_satellites", gnss.num_satellites},
-                       {"hdop", gnss.hdop},     {"vdop", gnss.vdop}};
-        gnss_count++;
-      }
-
-      if (export_imu && image.input_pose.has_rotation) {
-        double omega = image.input_pose.omega;
-        double phi = image.input_pose.phi;
-        double kappa = image.input_pose.kappa;
-        if (image.input_pose.angle_unit == InputPose::AngleUnit::kRadians) {
-          omega *= 180.0 / M_PI;
-          phi *= 180.0 / M_PI;
-          kappa *= 180.0 / M_PI;
-        }
-
-        img["imu"] = {{"roll", omega},     {"pitch", phi},      {"yaw", kappa},
-                      {"cov_att_xx", 0.1}, {"cov_att_yy", 0.1}, {"cov_att_zz", 0.1}};
-        imu_count++;
-      }
-
-      output["images"].push_back(std::move(img));
-    }
-  }
-
-  output["metadata"] = {
-      {"format_version", "2.0"},
-      {"exported_from", task->task_name},
-      {"task_id", task->task_id},
-      {"task_uuid", task->id},
-      {"exported_at", std::chrono::system_clock::now().time_since_epoch().count()},
-      {"coordinate_system", task->input_snapshot.input_coordinate_system.definition.empty()
-                                ? "Unknown"
-                                : task->input_snapshot.input_coordinate_system.definition},
-      {"num_groups_exported", selected.size()}};
-
-  std::ofstream out_file(output_file);
-  if (!out_file.is_open()) {
-    LOG(ERROR) << "Failed to open output file: " << output_file;
-    return 1;
-  }
-  out_file << output.dump(2);
-
-  LOG(INFO) << "Exported " << output["images"].size() << " images to " << output_file;
-  LOG(INFO) << "  GNSS: " << gnss_count << "  IMU: " << imu_count;
-  return 0;
-}
-
 static const CameraModel* pickCameraFromTask(const ATTask& task, int group_id, int image_id,
                                              const ImageGroup** picked_group,
                                              const Image** picked_image) {
@@ -1208,6 +1069,183 @@ static const CameraModel* pickCameraFromTask(const ATTask& task, int group_id, i
   return nullptr;
 }
 
+static int runExtract(int argc, char* argv[]) {
+  CmdLine cmd("Export image list for isat_extract from ATTask input snapshot");
+
+  std::string project_file;
+  std::string output_file;
+  std::string image_root;
+  uint32_t task_id = static_cast<uint32_t>(-1);
+  int target_group_id = -1;
+  bool all_groups = false;
+  bool export_gnss = true;
+  bool export_imu = true;
+
+  cmd.add(make_option('p', project_file, "project").doc("Input project file (.iat)"));
+  cmd.add(make_option('o', output_file, "output").doc("Output JSON for isat_extract input"));
+  cmd.add(make_option('t', task_id, "task-id").doc("AT task_id (required)"));
+  cmd.add(make_option('r', image_root, "root")
+              .doc("Optional root path: rewrite image path as <root>/<filename>"));
+  cmd.add(make_option('g', target_group_id, "group-id")
+              .doc("Export specific group ID (default: first group)"));
+  cmd.add(make_switch('a', "all-groups").doc("Export all groups"));
+  cmd.add(make_switch(0, "no-gnss").doc("Exclude GNSS fields"));
+  cmd.add(make_switch(0, "no-imu").doc("Exclude IMU fields"));
+  std::string log_level;
+  cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
+  cmd.add(make_switch('v', "verbose").doc("Verbose logging (INFO level)"));
+  cmd.add(make_switch('q', "quiet").doc("Quiet mode (ERROR level only)"));
+  cmd.add(make_switch('h', "help").doc("Show this help message"));
+
+  try {
+    cmd.process(argc, argv);
+  } catch (const std::string& s) {
+    std::cerr << "Error: " << s << "\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+
+  if (cmd.checkHelp(argv[0]))
+    return 0;
+  if (project_file.empty() || output_file.empty() || task_id == static_cast<uint32_t>(-1)) {
+    std::cerr << "Error: -p/--project, -o/--output and -t/--task-id are required\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+
+  insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
+
+  all_groups = cmd.used('a');
+  export_gnss = !cmd.used("no-gnss");
+  export_imu = !cmd.used("no-imu");
+
+  Project project;
+  if (!loadProjectFromFile(project_file, project))
+    return 1;
+
+  const ATTask* task = findTaskById(project, task_id);
+  if (!task) {
+    LOG(ERROR) << "ATTask not found, task_id=" << task_id;
+    return 1;
+  }
+
+  const std::vector<ImageGroup>& groups = task->input_snapshot.image_groups;
+  std::vector<const ImageGroup*> selected = selectGroups(groups, all_groups, target_group_id);
+  if (selected.empty()) {
+    LOG(ERROR) << "No image groups selected from task input snapshot";
+    return 1;
+  }
+
+  // Build cameras[] (camera_index 0..m-1) and group_id -> camera_index
+  std::map<uint32_t, int> group_to_camera_index;
+  json cameras_arr = json::array();
+  for (const auto* group : selected) {
+    const CameraModel* cam =
+        pickCameraFromTask(*task, static_cast<int>(group->group_id), -1, nullptr, nullptr);
+    if (!cam || cam->focal_length <= 0.0)
+      continue;
+    const double fx = cam->focal_length;
+    const double fy = cam->focal_length * cam->aspect_ratio;
+    json cam_obj;
+    cam_obj["fx"] = fx;
+    cam_obj["fy"] = fy;
+    cam_obj["cx"] = cam->principal_point_x;
+    cam_obj["cy"] = cam->principal_point_y;
+    cam_obj["width"] = cam->width;
+    cam_obj["height"] = cam->height;
+    if (!cam->camera_name.empty())
+      cam_obj["camera_name"] = cam->camera_name;
+    if (!cam->make.empty())
+      cam_obj["make"] = cam->make;
+    if (!cam->model.empty())
+      cam_obj["model"] = cam->model;
+    int cidx = static_cast<int>(cameras_arr.size());
+    cameras_arr.push_back(std::move(cam_obj));
+    group_to_camera_index[group->group_id] = cidx;
+  }
+
+  json output;
+  output["$schema"] = "InsightAT Image List Format v2.0";
+  output["images"] = json::array();
+  output["cameras"] = std::move(cameras_arr);
+
+  int gnss_count = 0;
+  int imu_count = 0;
+  int image_index = 0;
+
+  for (const auto* group : selected) {
+    auto it = group_to_camera_index.find(group->group_id);
+    int camera_index = (it != group_to_camera_index.end()) ? it->second : 0;
+
+    for (const auto& image : group->images) {
+      json img;
+      img["image_index"] = image_index;
+      img["id"] = image.image_id;
+
+      std::string image_path = image.filename;
+      if (!image_root.empty()) {
+        fs::path full_path = fs::path(image_root) / fs::path(image.filename).filename();
+        image_path = full_path.string();
+      }
+      img["path"] = image_path;
+      img["camera_index"] = camera_index;
+      img["camera_id"] = group->group_id;
+
+      if (export_gnss && image.gnss_data.has_value()) {
+        const auto& gnss = image.gnss_data.value();
+        img["gnss"] = {{"x", gnss.x},           {"y", gnss.y},
+                       {"z", gnss.z},           {"cov_xx", gnss.cov_xx},
+                       {"cov_yy", gnss.cov_yy}, {"cov_zz", gnss.cov_zz},
+                       {"cov_xy", gnss.cov_xy}, {"cov_xz", gnss.cov_xz},
+                       {"cov_yz", gnss.cov_yz}, {"num_satellites", gnss.num_satellites},
+                       {"hdop", gnss.hdop},     {"vdop", gnss.vdop}};
+        gnss_count++;
+      }
+
+      if (export_imu && image.input_pose.has_rotation) {
+        double omega = image.input_pose.omega;
+        double phi = image.input_pose.phi;
+        double kappa = image.input_pose.kappa;
+        if (image.input_pose.angle_unit == InputPose::AngleUnit::kRadians) {
+          omega *= 180.0 / M_PI;
+          phi *= 180.0 / M_PI;
+          kappa *= 180.0 / M_PI;
+        }
+
+        img["imu"] = {{"roll", omega},     {"pitch", phi},      {"yaw", kappa},
+                      {"cov_att_xx", 0.1}, {"cov_att_yy", 0.1}, {"cov_att_zz", 0.1}};
+        imu_count++;
+      }
+
+      output["images"].push_back(std::move(img));
+      ++image_index;
+    }
+  }
+
+  output["metadata"] = {
+      {"format_version", "2.0"},
+      {"exported_from", task->task_name},
+      {"task_id", task->task_id},
+      {"task_uuid", task->id},
+      {"exported_at", std::chrono::system_clock::now().time_since_epoch().count()},
+      {"coordinate_system", task->input_snapshot.input_coordinate_system.definition.empty()
+                                ? "Unknown"
+                                : task->input_snapshot.input_coordinate_system.definition},
+      {"num_groups_exported", selected.size()}};
+
+  std::ofstream out_file(output_file);
+  if (!out_file.is_open()) {
+    LOG(ERROR) << "Failed to open output file: " << output_file;
+    return 1;
+  }
+  out_file << output.dump(2);
+
+  LOG(INFO) << "Exported " << output["images"].size() << " images to " << output_file;
+  LOG(INFO) << "  GNSS: " << gnss_count << "  IMU: " << imu_count;
+  return 0;
+}
+
+#if 0
 static int runIntrinsics(int argc, char* argv[]) {
   CmdLine cmd(
       "Export intrinsics JSON for isat_geo / isat_twoview from ATTask input snapshot.\n"
@@ -1401,6 +1439,8 @@ static int runIntrinsics(int argc, char* argv[]) {
             << " cx=" << cx << " cy=" << cy;
   return 0;
 }
+#endif//0
+
 
 int main(int argc, char* argv[]) {
   google::InitGoogleLogging(argv[0]);
@@ -1448,9 +1488,9 @@ int main(int argc, char* argv[]) {
     return runExtract(argc - 1, argv + 1);
   }
 
-  if (command == "intrinsics") {
-    return runIntrinsics(argc - 1, argv + 1);
-  }
+  // if (command == "intrinsics") {
+  //   return runIntrinsics(argc - 1, argv + 1);
+  // }
 
   std::cerr << "Error: unknown command: " << command << "\n\n";
   printTopLevelHelp(argv[0]);

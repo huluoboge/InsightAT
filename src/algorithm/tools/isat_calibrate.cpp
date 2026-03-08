@@ -65,7 +65,7 @@ static void print_event(const json& j) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct CalibEntry {
-  uint32_t image1_id = 0, image2_id = 0;
+  uint32_t image1_index = 0, image2_index = 0;
   std::string twoview_path;
   std::string match_path;
 
@@ -99,8 +99,8 @@ static bool load_tv_header(CalibEntry& e) {
   e.reprojection_rmse = meta.value("reprojection_rmse_px", 1e9);
   e.n_points = meta.value("num_points_3d", 0);
   e.quality = meta.value("quality", "poor");
-  e.image1_id = insight::tools::get_image_id_from_pair(meta["image_pair"], "image1_id");
-  e.image2_id = insight::tools::get_image_id_from_pair(meta["image_pair"], "image2_id");
+  e.image1_index = insight::tools::get_image_index_from_pair(meta["image_pair"], "image1_index");
+  e.image2_index = insight::tools::get_image_index_from_pair(meta["image_pair"], "image2_index");
 
   const auto& pose = meta["pose"];
   const auto& Rv = pose["R"];
@@ -312,8 +312,8 @@ int main(int argc, char* argv[]) {
     if (e.reprojection_rmse > rmse_thresh)
       continue;
     if (!match_dir.empty()) {
-      e.match_path = match_dir + "/" + std::to_string(e.image1_id) + "_" +
-                     std::to_string(e.image2_id) + ".isat_match";
+      e.match_path = match_dir + "/" + std::to_string(e.image1_index) + "_" +
+                     std::to_string(e.image2_index) + ".isat_match";
     }
     entries.push_back(std::move(e));
   }

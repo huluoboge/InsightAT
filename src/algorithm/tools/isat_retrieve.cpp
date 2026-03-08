@@ -203,29 +203,22 @@ std::vector<ImageInfo> loadImagesFromJSON(const std::string& json_path,
   file >> j;
 
   std::vector<ImageInfo> images;
-
+  size_t idx = 0;
   for (const auto& img : j["images"]) {
     ImageInfo info;
+    uint32_t image_index = img.value("image_index", static_cast<uint32_t>(idx));
+    info.image_id = img.value("id", static_cast<uint32_t>(idx));
 
-    // Read image ID (required, unique identifier)
-    if (!img.contains("id")) {
-      LOG(ERROR) << "Image entry missing required 'id' field, skipping";
-      continue;
-    }
-    info.image_id = img["id"].get<uint32_t>();
-
-    // Read image path (required)
     if (!img.contains("path")) {
-      LOG(ERROR) << "Image entry missing required 'path' field for ID " << info.image_id;
+      LOG(ERROR) << "Image entry missing required 'path' field for index " << image_index;
       continue;
     }
     info.image_path = img["path"];
+    info.camera_id = img.value("camera_index", img.value("camera_id", 1));
 
-    // Camera ID (optional, default: 1)
-    info.camera_id = img.value("camera_id", 1);
-
-    // Feature filename: {image_id}.isat_feat
-    info.feature_file = feature_dir + "/" + std::to_string(info.image_id) + ".isat_feat";
+    // Feature filename: {image_index}.isat_feat (index-only convention)
+    info.feature_file = feature_dir + "/" + std::to_string(image_index) + ".isat_feat";
+    ++idx;
 
     // Check if feature file exists
     if (!fs::exists(info.feature_file)) {
@@ -373,8 +366,8 @@ bool writePairsJSON(const std::vector<ImageInfo>& images, const std::vector<Imag
     }
 
     json pair_obj;
-    pair_obj["image1_id"] = images[p.image1_idx].image_id;
-    pair_obj["image2_id"] = images[p.image2_idx].image_id;
+    pair_obj["image1_index"] = p.image1_idx;
+    pair_obj["image2_index"] = p.image2_idx;
     pair_obj["feature1_file"] = images[p.image1_idx].feature_file;
     pair_obj["feature2_file"] = images[p.image2_idx].feature_file;
     pair_obj["score"] = p.score;

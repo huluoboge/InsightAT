@@ -79,12 +79,10 @@ static void print_event(const json& j) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct GeoTask {
-  uint32_t image1_id = 0;
-  uint32_t image2_id = 0;
+  uint32_t image1_index = 0;
+  uint32_t image2_index = 0;
   std::string match_file;
   int index = 0;
-  uint32_t camera1_id = 1; ///< group_id of image1 (from image list)
-  uint32_t camera2_id = 1; ///< group_id of image2 (from image list)
 
   // Stage 1 output ─────────────────────────────────────────────────────────
   // Flat [x1,y1,x2,y2] per match (coords_pixel blob)
@@ -123,8 +121,7 @@ static constexpr int kMinInliersForTrack = 4;
 // Pairs loading (reuses same JSON schema as isat_match / isat_retrieve)
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::vector<GeoTask> load_pairs(const std::string& json_path, const std::string& match_dir,
-                                      const std::unordered_map<uint32_t, uint32_t>& img_cam_map) {
+static std::vector<GeoTask> load_pairs(const std::string& json_path, const std::string& match_dir) {
   std::ifstream file(json_path);
   if (!file.is_open()) {
     LOG(FATAL) << "Cannot open pairs file: " << json_path;
@@ -136,23 +133,11 @@ static std::vector<GeoTask> load_pairs(const std::string& json_path, const std::
   int idx = 0;
   for (const auto& pair : j["pairs"]) {
     GeoTask t;
-    t.image1_id = insight::tools::get_image_id_from_pair(pair, "image1_id");
-    t.image2_id = insight::tools::get_image_id_from_pair(pair, "image2_id");
-    t.match_file = match_dir + "/" + std::to_string(t.image1_id) + "_" +
-                   std::to_string(t.image2_id) + ".isat_match";
+    t.image1_index = insight::tools::get_image_index_from_pair(pair, "image1_index");
+    t.image2_index = insight::tools::get_image_index_from_pair(pair, "image2_index");
+    t.match_file = match_dir + "/" + std::to_string(t.image1_index) + "_" +
+                   std::to_string(t.image2_index) + ".isat_match";
     t.index = idx++;
-
-    // Per-pair camera IDs from image list (image_id is numeric string)
-    try {
-      auto it1 = img_cam_map.find(t.image1_id);
-      if (it1 != img_cam_map.end())
-        t.camera1_id = it1->second;
-      auto it2 = img_cam_map.find(t.image2_id);
-      if (it2 != img_cam_map.end())
-        t.camera2_id = it2->second;
-    } catch (...) { /* non-numeric IDs keep default camera_id=1 */
-    }
-
     tasks.push_back(std::move(t));
   }
   LOG(INFO) << "Loaded " << tasks.size() << " pairs from " << json_path;
@@ -256,8 +241,8 @@ static std::vector<uint8_t> compute_e_mask(const float E[9], const std::vector<f
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void write_geo(const GeoTask& task, const std::string& output_dir, int ransac_iter) {
-  std::string out = output_dir + "/" + std::to_string(task.image1_id) + "_" +
-                    std::to_string(task.image2_id) + ".isat_geo";
+  std::string out = output_dir + "/" + std::to_string(task.image1_index) + "_" +
+                    std::to_string(task.image2_index) + ".isat_geo";
 
   // ── JSON metadata ──────────────────────────────────────────────────────
   json meta;
@@ -266,10 +251,8 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
   meta["algorithm"]["name"] = "isat_geo";
   meta["algorithm"]["solver"] = "Cholesky_IPI";
   meta["algorithm"]["iterations"] = ransac_iter;
-  meta["image_pair"]["image1_id"] = task.image1_id;
-  meta["image_pair"]["image2_id"] = task.image2_id;
-  meta["image_pair"]["camera1_id"] = task.camera1_id;
-  meta["image_pair"]["camera2_id"] = task.camera2_id;
+  meta["image_pair"]["image1_index"] = task.image1_index;
+  meta["image_pair"]["image2_index"] = task.image2_index;
   meta["num_matches_input"] = task.num_matches;
 
   auto& gm = meta["geometry"];
@@ -341,8 +324,8 @@ static void write_match_matrix(const std::vector<GeoTask>& tasks, const std::str
   // Collect all unique image IDs
   std::set<uint32_t> id_set;
   for (const auto& t : tasks) {
-    id_set.insert(t.image1_id);
-    id_set.insert(t.image2_id);
+    id_set.insert(t.image1_index);
+    id_set.insert(t.image2_index);
   }
   std::vector<uint32_t> ids(id_set.begin(), id_set.end());
   std::sort(ids.begin(), ids.end());
@@ -363,8 +346,8 @@ static void write_match_matrix(const std::vector<GeoTask>& tasks, const std::str
     auto [ok, count] = inlier_fn(t);
     if (!ok)
       continue;
-    int i = id_idx.at(t.image1_id);
-    int j = id_idx.at(t.image2_id);
+    int i = id_idx.at(t.image1_index);
+    int j = id_idx.at(t.image2_index);
     float val = static_cast<float>(count);
     mat.at<float>(i, j) = val;
     mat.at<float>(j, i) = val;
@@ -474,10 +457,8 @@ int main(int argc, char* argv[]) {
                "  When provided (together with -l), E matrix is estimated per pair.\n"
                "  See: isat_project intrinsics [-a] for export."));
   cmd.add(make_option('l', image_list_json, "image-list")
-              .doc("Image list JSON (from isat_project extract).\n"
-                   "  Required when -k is given for multi-camera projects.\n"
-                   "  Maps each image_id to its camera_id (== group_id) so that\n"
-                   "  per-pair K1/K2 can be resolved from the cameras JSON."));
+              .doc("Image list JSON from isat_project extract (must have 'cameras' and images[].camera_index).\n"
+                   "  Used to resolve per-pair K by image index for E estimation."));
   cmd.add(make_option('t', thresh_f, "thresh-f")
               .doc("Inlier threshold for F (squared Sampson, pixels). Default: 2.0"));
   cmd.add(make_option('T', thresh_h, "thresh-h")
@@ -539,8 +520,8 @@ int main(int argc, char* argv[]) {
   const bool run_twoview = cmd.used("twoview");
   if (run_twoview) {
     estimate_H = true; // need H for degeneracy detection
-    if (intrinsics_json.empty() || image_list_json.empty()) {
-      std::cerr << "Error: --twoview requires -k and -l (intrinsics + image list)\n\n";
+    if (image_list_json.empty()) {
+      std::cerr << "Error: --twoview requires -l (image list; list may include cameras or use -k)\n\n";
       cmd.printHelp(std::cerr, argv[0]);
       return 1;
     }
@@ -549,17 +530,11 @@ int main(int argc, char* argv[]) {
   // ── Logging level ────────────────────────────────────────────────────────
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
-  // ── Load intrinsics map (optional) ───────────────────────────────────────
-  CameraIntrinsicsMap cam_intrinsics = load_intrinsics_map(intrinsics_json);
-  const bool estimate_E = !cam_intrinsics.empty();
+  // ── Load intrinsics by image index (export JSON has cameras + images[].camera_index) ─
+  std::vector<CameraIntrinsics> image_index_intrinsics =
+      build_image_index_intrinsics_from_list(image_list_json);
+  const bool estimate_E = !image_index_intrinsics.empty();
 
-  // ── Load image→camera map (required when -k provided) ────────────────────
-  std::unordered_map<uint32_t, uint32_t> img_cam_map;
-  if (estimate_E) {
-    img_cam_map = build_image_camera_map(image_list_json);
-  }
-
-  // ── Print configuration ──────────────────────────────────────────────────
   LOG(INFO) << "=== isat_geo configuration ===";
   LOG(INFO) << "  Pairs JSON   : " << pairs_json;
   LOG(INFO) << "  Match dir    : " << match_dir;
@@ -567,11 +542,9 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  RANSAC iter  : " << ransac_iter;
   LOG(INFO) << "  Threshold F  : " << thresh_f << " px";
   LOG(INFO) << "  Estimate E   : " << (estimate_E ? "yes" : "no")
-            << (estimate_E ? " (" + std::to_string(cam_intrinsics.size()) + " camera(s) loaded)"
-                           : " (-k not provided)");
+            << (estimate_E ? " (" + std::to_string(image_index_intrinsics.size()) + " images by index)" : "; use -l with export JSON (cameras + camera_index)");
   if (estimate_E)
-    LOG(INFO) << "  Image list   : " << image_list_json << "  (" << img_cam_map.size()
-              << " images mapped)";
+    LOG(INFO) << "  Image list   : " << image_list_json;
   LOG(INFO) << "  Estimate H   : " << (estimate_H ? "yes (--estimate-h)" : "no");
   if (estimate_H)
     LOG(INFO) << "    Threshold H: " << thresh_h << " px";
@@ -585,8 +558,7 @@ int main(int argc, char* argv[]) {
   }
   fs::create_directories(output_dir);
 
-  // ── Load pair list ───────────────────────────────────────────────────────
-  std::vector<GeoTask> tasks = load_pairs(pairs_json, match_dir, img_cam_map);
+  std::vector<GeoTask> tasks = load_pairs(pairs_json, match_dir);
   const int total = static_cast<int>(tasks.size());
   if (total == 0) {
     LOG(ERROR) << "No pairs to process";
@@ -625,7 +597,7 @@ int main(int argc, char* argv[]) {
     GeoTask& task = tasks[i];
 
     if (task.num_matches < 8) {
-      LOG(WARNING) << "Pair [" << i << "] " << task.image1_id << "–" << task.image2_id
+      LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "–" << task.image2_index
                    << ": too few matches (" << task.num_matches << " < 8), skip";
       task.coords.clear();
       return;
@@ -648,23 +620,25 @@ int main(int argc, char* argv[]) {
     if (task.F_ok || task.F_inliers >= kMinInliersForTrack)
       task.F_mask = compute_f_mask(task.F, task.coords, task.num_matches, thresh_f_sq);
 
-    // ── Estimate E (if intrinsics provided) ──────────────────────────
+    // ── Estimate E (intrinsics by image index from list) ────────────────────
     if (estimate_E) {
-      const CameraIntrinsics* pK1 = lookup_camera(cam_intrinsics, task.camera1_id);
-      const CameraIntrinsics* pK2 = lookup_camera(cam_intrinsics, task.camera2_id);
+      const int i1 = static_cast<int>(task.image1_index);
+      const int i2 = static_cast<int>(task.image2_index);
+      const CameraIntrinsics* pK1 = nullptr;
+      const CameraIntrinsics* pK2 = nullptr;
+      if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() &&
+          i2 >= 0 && i2 < (int)image_index_intrinsics.size() &&
+          image_index_intrinsics[i1].valid() && image_index_intrinsics[i2].valid()) {
+        pK1 = &image_index_intrinsics[i1];
+        pK2 = &image_index_intrinsics[i2];
+      }
 
       if (!pK1 || !pK2) {
-        LOG(WARNING) << "Pair [" << i << "] " << task.image1_id << "–" << task.image2_id
-                     << ": cannot find K for camera" << (!pK1 ? task.camera1_id : task.camera2_id)
-                     << ", skipping E";
+        LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "–" << task.image2_index
+                     << ": cannot find K, skipping E";
       } else {
         const CameraIntrinsics& K1 = *pK1;
         const CameraIntrinsics& K2 = *pK2;
-
-        if (task.camera1_id != task.camera2_id) {
-          VLOG(1) << "  Pair [" << i << "] cross-camera: " << task.camera1_id << " x "
-                  << task.camera2_id;
-        }
 
         // K-normalise using per-image camera (K1 for img1, K2 for img2)
         std::vector<Match2D> pts_norm(task.num_matches);
@@ -703,7 +677,7 @@ int main(int argc, char* argv[]) {
                   std::chrono::high_resolution_clock::now() - t0)
                   .count();
 
-    LOG(INFO) << "Geo [" << i << "/" << total << "] " << task.image1_id << "–" << task.image2_id
+    LOG(INFO) << "Geo [" << i << "/" << total << "] " << task.image1_index << "–" << task.image2_index
               << "  n=" << task.num_matches << "  F=" << task.F_inliers
               << (estimate_E ? ("  E=" + std::to_string(task.E_inliers)) : "")
               << (estimate_H ? ("  H=" + std::to_string(task.H_inliers)) : "")
@@ -770,8 +744,15 @@ int main(int argc, char* argv[]) {
         if (!task.F_ok || task.degeneracy.is_degenerate || task.num_matches < 8)
           continue;
 
-        const CameraIntrinsics* pK1 = lookup_camera(cam_intrinsics, task.camera1_id);
-        const CameraIntrinsics* pK2 = lookup_camera(cam_intrinsics, task.camera2_id);
+        int i1 = static_cast<int>(task.image1_index), i2 = static_cast<int>(task.image2_index);
+        const CameraIntrinsics* pK1 = nullptr;
+        const CameraIntrinsics* pK2 = nullptr;
+        if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() &&
+            i2 >= 0 && i2 < (int)image_index_intrinsics.size() &&
+            image_index_intrinsics[i1].valid() && image_index_intrinsics[i2].valid()) {
+          pK1 = &image_index_intrinsics[i1];
+          pK2 = &image_index_intrinsics[i2];
+        }
         if (!pK1 || !pK2)
           continue;
 
@@ -858,7 +839,7 @@ int main(int argc, char* argv[]) {
             task.points3d[k * 3 + 1] = static_cast<float>(points3d_eigen[k].y());
             task.points3d[k * 3 + 2] = static_cast<float>(points3d_eigen[k].z());
           }
-          LOG(INFO) << "TwoView [" << i << "] " << task.image1_id << "–" << task.image2_id
+          LOG(INFO) << "TwoView [" << i << "] " << task.image1_index << "–" << task.image2_index
                     << "  pts=" << n_valid << "  parallax=" << task.stability.median_parallax_deg
                     << "°"
                     << "  d/b=" << task.stability.median_depth_baseline;
@@ -906,14 +887,14 @@ int main(int argc, char* argv[]) {
   json summary_pairs = json::array();
   json filtered_pairs = json::array();
   for (const auto& t : tasks) {
-    summary_pairs.push_back({{"image1_id", t.image1_id},
-                             {"image2_id", t.image2_id},
+    summary_pairs.push_back({{"image1_index", t.image1_index},
+                             {"image2_index", t.image2_index},
                              {"F_inliers", t.F_inliers},
                              {"E_inliers", t.E_inliers},
                              {"H_inliers", t.H_inliers},
                              {"degenerate", t.degeneracy.is_degenerate}});
     if (t.F_ok) {
-      filtered_pairs.push_back({{"image1_id", t.image1_id}, {"image2_id", t.image2_id}});
+      filtered_pairs.push_back({{"image1_index", t.image1_index}, {"image2_index", t.image2_index}});
     }
   }
   json summary_json = {{"pairs", summary_pairs}};
