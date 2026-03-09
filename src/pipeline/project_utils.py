@@ -52,6 +52,10 @@ def _isat_calibrate() -> str:
     return find_binary("isat_calibrate")
 
 
+def _isat_tracks() -> str:
+    return find_binary("isat_tracks")
+
+
 def _isat_incremental_sfm() -> str:
     return find_binary("isat_incremental_sfm")
 
@@ -485,37 +489,56 @@ def calibrate(
     return run_tool(cmd)
 
 
-def run_incremental_sfm(
+def run_tracks(
     pairs_json: str | Path,
-    geo_dir: str | Path,
     match_dir: str | Path,
-    intrinsics_json: str | Path,
+    geo_dir: str | Path,
     image_list: str | Path,
-    output_dir: str | Path,
+    output_path: str | Path,
     *,
-    min_tracks: int = 20,
-    optimize_intrinsics: bool = False,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
     """
-    isat_incremental_sfm -i pairs -g geo_dir -m match_dir -k intrinsics -l image_list -o output_dir.
+    isat_tracks -i pairs.json -m match_dir -g geo_dir -l image_list -o tracks.isat_tracks.
 
-    Uses geometry-filtered pairs (e.g. geo_dir/pairs.json). Image/camera identity is by
-    index inside the algorithm; the tool builds IdMapping from image_list and writes
-    original image_ids at export (initial_poses.json, events).
+    Builds tracks from match + geo inliers; output is a single .isat_tracks IDC for incremental SfM.
+    """
+    cmd = [
+        _isat_tracks(),
+        "-i", str(pairs_json),
+        "-m", str(match_dir),
+        "-g", str(geo_dir),
+        "-l", str(image_list),
+        "-o", str(output_path),
+    ]
+    if extra_args:
+        cmd += extra_args
+    return run_tool(cmd)
+
+
+def run_incremental_sfm(
+    tracks_path: str | Path,
+    project_path: str | Path,
+    pairs_path: str | Path,
+    geo_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> list[dict]:
+    """
+    isat_incremental_sfm -t tracks -p project -m pairs -g geo -o output_dir.
+
+    Loads tracks from .isat_tracks IDC and project JSON (images + cameras, camera_index).
+    Uses pairs JSON for view graph and geo_dir for .isat_geo. Writes poses.json to output_dir.
     """
     cmd = [
         _isat_incremental_sfm(),
-        "-i", str(pairs_json),
+        "-t", str(tracks_path),
+        "-p", str(project_path),
+        "-m", str(pairs_path),
         "-g", str(geo_dir),
-        "-m", str(match_dir),
-        "-k", str(intrinsics_json),
-        "-l", str(image_list),
         "-o", str(output_dir),
-        "--min-tracks", str(min_tracks),
     ]
-    if optimize_intrinsics:
-        cmd.append("--optimize-intrinsics")
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)

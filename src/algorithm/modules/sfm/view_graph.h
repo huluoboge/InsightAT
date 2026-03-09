@@ -19,10 +19,10 @@
 namespace insight {
 namespace sfm {
 
-/// Per-pair geometry summary from isat_geo (or equivalent).
+/// Per-pair geometry summary from isat_geo (or equivalent). Index-only (0..n_images-1).
 struct PairGeoInfo {
-  uint32_t image1_id = 0;
-  uint32_t image2_id = 0;
+  uint32_t image1_index = 0;
+  uint32_t image2_index = 0;
   bool E_ok = false;
   bool twoview_ok = false;
   bool stable = false;
@@ -50,9 +50,13 @@ public:
                         double w_connect = 0.3) const;
 
   /// Best initial pair: both images not in \p registered, twoview_ok && stable, max score.
-  /// Returns (image1_id, image2_id) or nullopt if none.
+  /// Returns (image1_index, image2_index) or nullopt if none.
   std::optional<std::pair<uint32_t, uint32_t>>
   choose_initial_pair(const std::set<uint32_t>& registered) const;
+
+  /// Candidate pair indices (twoview_ok && stable, both not in registered), sorted by score descending.
+  /// Use for initial-pair loop: try each in order until one succeeds.
+  std::vector<size_t> get_candidate_pair_indices_sorted(const std::set<uint32_t>& registered) const;
 
 private:
   std::vector<PairGeoInfo> pairs_;

@@ -37,14 +37,17 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
   for (const auto& p : j["pairs"]) {
     uint32_t idx1 = insight::tools::get_image_index_from_pair(p, "image1_index");
     uint32_t idx2 = insight::tools::get_image_index_from_pair(p, "image2_index");
+    // Geo files are always stored as min_max.isat_geo
+    if (idx1 > idx2)
+      std::swap(idx1, idx2);
     std::string geo_path = dir + std::to_string(idx1) + "_" + std::to_string(idx2) + ".isat_geo";
     insight::io::IDCReader reader(geo_path);
     if (!reader.is_valid())
       continue;
     const auto& meta = reader.get_metadata();
     PairGeoInfo info;
-    info.image1_id = idx1;
-    info.image2_id = idx2;
+    info.image1_index = idx1;  // idx1 <= idx2 after canonical swap above
+    info.image2_index = idx2;
     if (meta.contains("geometry")) {
       const auto& gm = meta["geometry"];
       if (gm.contains("E") && gm["E"].contains("estimated"))

@@ -59,4 +59,38 @@
 
 ---
 
+## 7. 实现后的数据流与约定（2026-03-09 实现）
+
+### 7.1 数据流
+
+1. **输入**
+   - **Tracks**：单一 `.isat_tracks` IDC，由 `load_track_store_from_idc()` 加载，得到 `TrackStore`；图像下标为 0..num_images-1。
+   - **Project**：单一 project JSON（`images[]` + `cameras[]`，每张图有 `camera_index`），由 `load_project_data()` 得到 `ProjectData`（`cameras`、`image_to_camera_index`）。校验：`store.num_images() == project.num_images()`。
+   - **View graph**：`pairs.json` + `geo_dir` 下 `.isat_geo`（路径 `geo_dir/im0_im1.isat_geo`），由 `build_view_graph_from_geo()` 得到 `ViewGraph`。
+
+2. **内参与去畸变**
+   - 全用 index，无 IdMapping。内参访问：`cameras[image_to_camera_index[image_index]]`。
+   - Resection、三角化、Re-triangulation、BA 均用**当前时刻**的 cameras（含 BA 更新后）对 2D 做去畸变。
+
+3. **Pipeline 步骤**（`run_incremental_sfm_pipeline`）
+   - 从 IDC 加载 store，校验与 project 的 num_images 一致。
+   - `build_view_graph_from_geo(pairs_json, geo_dir)` → ViewGraph。
+   - `run_initial_pair_loop`：候选对按 score 降序，对每对加载 geo、两视图三角化、两视图 BA、reject_outliers_two_view、filter_tracks_two_view，满足 min_tracks_after 且 RMSE 可接受则写出 poses/registered 并返回。
+   - Resection 循环：`choose_next_resection_batch(store, registered, k)` → `run_batch_resection` → `run_batch_triangulation`；可选每 N 张做一次 `run_local_ba`。
+   - `run_retriangulation`（needs_retriangulation 的 track 多视图 DLT 后写回 xyz 并清除标记）。
+   - 可选 `run_global_ba`，写回 poses、points、以及（若开启）cameras。
+
+4. **输出**
+   - `poses_R` / `poses_C` / `registered` 按 image index；CLI 写出 `poses.json`（仅已注册图像的 R、C）。
+
+### 7.2 关键文件与 API
+
+- **Project 加载**：`src/algorithm/tools/project_loader.h` — `ProjectData`、`load_project_data(path, out)`。
+- **Track 加载**：`src/algorithm/io/track_store_idc.h` — `load_track_store_from_idc(path, store_out, image_indices_out)`。
+- **ViewGraph**：`view_graph.h` / `view_graph_loader.h` — `PairGeoInfo`（image1_index / image2_index）、`get_candidate_pair_indices_sorted(registered)`、`build_view_graph_from_geo(pairs_json, geo_dir, out)`。
+- **Pipeline**：`incremental_sfm_pipeline.h/.cpp` — `run_initial_pair_loop`、`choose_next_resection_batch`、`run_batch_resection`、`run_batch_triangulation`、`run_retriangulation`、`run_global_ba`、`run_local_ba`、`run_incremental_sfm_pipeline`、`IncrementalSfMOptions`。
+- **CLI**：`tools/isat_incremental_sfm.cpp` — 参数 `-t` tracks、`-p` project、`-m` pairs、`-g` geo_dir、`-o` output_dir；调用 pipeline，写出 `poses.json`。
+
+---
+
 *本文档为 2026-03-09 增量 SfM 重构计划，具体以代码实现为准。*

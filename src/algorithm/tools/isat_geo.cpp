@@ -59,8 +59,9 @@
 #include "../modules/geometry/gpu_geo_ransac.h"
 #include "../modules/sfm/gpu_twoview_sfm.h"
 #include "../modules/sfm/two_view_reconstruction.h"
-#include "isat_intrinsics.h"
+#include "../modules/camera/camera_types.h"
 #include "pair_json_utils.h"
+#include "tools/project_loader.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -223,7 +224,8 @@ static std::vector<uint8_t> compute_h_mask(const float H[9], const std::vector<f
 
 // For E: Sampson on K-normalised coordinates (K1 for image1, K2 for image2)
 static std::vector<uint8_t> compute_e_mask(const float E[9], const std::vector<float>& coords, int n,
-                                         const CameraIntrinsics& K1, const CameraIntrinsics& K2,
+                                         const insight::camera::Intrinsics& K1, 
+                                         const insight::camera::Intrinsics& K2,
                                          float thresh_sq_norm) {
   std::vector<uint8_t> mask(n, 0);
   for (int i = 0; i < n; i++) {
@@ -530,9 +532,19 @@ int main(int argc, char* argv[]) {
   // ── Logging level ────────────────────────────────────────────────────────
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
-  // ── Load intrinsics by image index (export JSON has cameras + images[].camera_index) ─
-  std::vector<CameraIntrinsics> image_index_intrinsics =
-      build_image_index_intrinsics_from_list(image_list_json);
+  // ── Load intrinsics by image index (project/image-list JSON: cameras + images[].camera_index) ─
+  std::vector<insight::camera::Intrinsics> image_index_intrinsics;
+  if (!image_list_json.empty()) {
+    insight::tools::ProjectData proj;
+    if (insight::tools::load_project_data(image_list_json, &proj) && proj.num_images() > 0) {
+      image_index_intrinsics.resize(static_cast<size_t>(proj.num_images()));
+      for (int i = 0; i < proj.num_images(); ++i) {
+        int c = proj.image_to_camera_index[static_cast<size_t>(i)];
+        if (c >= 0 && c < proj.num_cameras())
+          image_index_intrinsics[static_cast<size_t>(i)] = proj.cameras[static_cast<size_t>(c)];
+      }
+    }
+  }
   const bool estimate_E = !image_index_intrinsics.empty();
 
   LOG(INFO) << "=== isat_geo configuration ===";
@@ -624,21 +636,23 @@ int main(int argc, char* argv[]) {
     if (estimate_E) {
       const int i1 = static_cast<int>(task.image1_index);
       const int i2 = static_cast<int>(task.image2_index);
-      const CameraIntrinsics* pK1 = nullptr;
-      const CameraIntrinsics* pK2 = nullptr;
+      const insight::camera::Intrinsics* pK1 = nullptr;
+      const insight::camera::Intrinsics* pK2 = nullptr;
+      auto intrinsic_valid = [](const insight::camera::Intrinsics& K) { return K.fx > 1e-6 && K.fy > 1e-6; };
       if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() &&
           i2 >= 0 && i2 < (int)image_index_intrinsics.size() &&
-          image_index_intrinsics[i1].valid() && image_index_intrinsics[i2].valid()) {
-        pK1 = &image_index_intrinsics[i1];
-        pK2 = &image_index_intrinsics[i2];
+          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i1)]) &&
+          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i2)])) {
+        pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
+        pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
       }
 
       if (!pK1 || !pK2) {
         LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "–" << task.image2_index
                      << ": cannot find K, skipping E";
       } else {
-        const CameraIntrinsics& K1 = *pK1;
-        const CameraIntrinsics& K2 = *pK2;
+        const insight::camera::Intrinsics& K1 = *pK1;
+        const insight::camera::Intrinsics& K2 = *pK2;
 
         // K-normalise using per-image camera (K1 for img1, K2 for img2)
         std::vector<Match2D> pts_norm(task.num_matches);
@@ -745,19 +759,21 @@ int main(int argc, char* argv[]) {
           continue;
 
         int i1 = static_cast<int>(task.image1_index), i2 = static_cast<int>(task.image2_index);
-        const CameraIntrinsics* pK1 = nullptr;
-        const CameraIntrinsics* pK2 = nullptr;
+        const insight::camera::Intrinsics* pK1 = nullptr;
+        const insight::camera::Intrinsics* pK2 = nullptr;
+        auto intrinsic_valid = [](const insight::camera::Intrinsics& K) { return K.fx > 1e-6 && K.fy > 1e-6; };
         if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() &&
             i2 >= 0 && i2 < (int)image_index_intrinsics.size() &&
-            image_index_intrinsics[i1].valid() && image_index_intrinsics[i2].valid()) {
-          pK1 = &image_index_intrinsics[i1];
-          pK2 = &image_index_intrinsics[i2];
+            intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i1)]) &&
+            intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i2)])) {
+          pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
+          pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
         }
         if (!pK1 || !pK2)
           continue;
 
-        const CameraIntrinsics& K1 = *pK1;
-        const CameraIntrinsics& K2 = *pK2;
+        const insight::camera::Intrinsics& K1 = *pK1;
+        const insight::camera::Intrinsics& K2 = *pK2;
 
         // Two-view: always use F decomposition (E = K2^T F K1).
         // When intrinsics are inaccurate, direct RANSAC E bakes K into inlier selection

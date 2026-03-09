@@ -38,8 +38,6 @@ add_library(sfm_module STATIC
     gpu_twoview_sfm.h
     track_store.cpp
     track_store.h
-    track_builder.cpp
-    track_builder.h
     view_graph.cpp
     view_graph.h
     bundle_adjustment_analytic.cpp
@@ -60,6 +58,19 @@ target_link_libraries(test_ba_analytic
         glog::glog
 )
 set_property(TARGET test_ba_analytic PROPERTY FOLDER InsightAT/Tests)
+
+# ── Unit test: PnP resection ──────────────────────────────────────────────
+add_executable(test_pnp_resection test_pnp_resection.cpp resection.cpp resection.h)
+target_link_libraries(test_pnp_resection
+    PRIVATE
+        sfm_module
+        geo_ransac
+        algorithm_camera
+        Eigen3::Eigen
+        Ceres::ceres
+        glog::glog
+)
+set_property(TARGET test_pnp_resection PROPERTY FOLDER InsightAT/Tests)
 
 target_include_directories(sfm_module
     PUBLIC

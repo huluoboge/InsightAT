@@ -50,6 +50,8 @@ set(ALGORITHM_SOURCES
     io/idc_writer.cpp
     io/idc_reader.h
     io/idc_reader.cpp
+    io/track_store_idc.h
+    io/track_store_idc.cpp
     io/exif/exif.h
     io/exif/exif.cpp
     io/exif/exif_IO.hpp
@@ -80,12 +82,12 @@ set(ALGORITHM_SOURCES
     modules/retrieval/pca_whitening.cpp
     modules/retrieval/vocab_tree_retrieval.h
     modules/retrieval/vocab_tree_retrieval.cpp
-    modules/sfm/full_track_builder.h
-    modules/sfm/full_track_builder.cpp
     modules/sfm/view_graph_loader.h
     modules/sfm/view_graph_loader.cpp
     modules/sfm/resection.h
     modules/sfm/resection.cpp
+    modules/sfm/incremental_sfm_pipeline.h
+    modules/sfm/incremental_sfm_pipeline.cpp
     # Incremental SfM excluded from build (files kept); to be re-integrated after stepwise implementation
     # modules/sfm/incremental_sfm.h
     # modules/sfm/incremental_sfm.cpp
@@ -345,24 +347,24 @@ target_include_directories(isat_project
 set_property(TARGET isat_project PROPERTY FOLDER InsightAT/Tools)
 
 # isat_twoview - Per-pair two-view reconstruction (focal estimation + triangulation + LM-BA)
-add_executable(isat_twoview tools/isat_twoview.cpp)
+# add_executable(isat_twoview tools/isat_twoview.cpp)
 
-target_link_libraries(isat_twoview
-    PRIVATE
-        insightat_tools_logging
-        InsightATAlgorithm
-        sfm_module
-        glog::glog
-        ${OpenCV_LIBS}
-)
+# target_link_libraries(isat_twoview
+#     PRIVATE
+#         insightat_tools_logging
+#         InsightATAlgorithm
+#         sfm_module
+#         glog::glog
+#         ${OpenCV_LIBS}
+# )
 
-target_include_directories(isat_twoview
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/..  
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
-)
+# target_include_directories(isat_twoview
+#     PRIVATE
+#         ${CMAKE_CURRENT_SOURCE_DIR}/..  
+#         ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+# )
 
-set_property(TARGET isat_twoview PROPERTY FOLDER InsightAT/Tools)
+# set_property(TARGET isat_twoview PROPERTY FOLDER InsightAT/Tools)
 
 # isat_tracks - Build tracks from match + geo, write single IDC for SfM
 add_executable(isat_tracks tools/isat_tracks.cpp)
@@ -402,10 +404,21 @@ set_property(TARGET isat_tracks PROPERTY FOLDER InsightAT/Tools)
 
 # set_property(TARGET isat_calibrate PROPERTY FOLDER InsightAT/Tools)
 
-# isat_incremental_sfm - Excluded from build until Incremental SfM is re-implemented stepwise (files kept)
-# add_executable(isat_incremental_sfm tools/isat_incremental_sfm.cpp)
-# target_link_libraries(isat_incremental_sfm ...)
-# set_property(TARGET isat_incremental_sfm PROPERTY FOLDER InsightAT/Tools)
+# isat_incremental_sfm - Incremental SfM pipeline (tracks IDC + project JSON + pairs + geo)
+add_executable(isat_incremental_sfm tools/isat_incremental_sfm.cpp)
+target_link_libraries(isat_incremental_sfm
+    PRIVATE
+        insightat_tools_logging
+        InsightATAlgorithm
+        sfm_module
+        glog::glog
+)
+target_include_directories(isat_incremental_sfm
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+set_property(TARGET isat_incremental_sfm PROPERTY FOLDER InsightAT/Tools)
 
 # isat_camera_estimator - Per-group EXIF-based camera intrinsics estimator
 add_executable(isat_camera_estimator tools/isat_camera_estimator.cpp)

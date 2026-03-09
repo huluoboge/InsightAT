@@ -1192,29 +1192,90 @@ int gpu_ransac_E(const Match2D* m, int n, float mat[9], float thresh) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 static int pnp_dlt_from_6(const Point3D2D* six, const float K[9], float R[9], float t[3]) {
+  // ── 1. K-normalize 2D observations ────────────────────────────────────────
+  //    x_n = (u - cx) / fx,  y_n = (v - cy) / fy
+  const double ifx = 1.0 / (double)K[0], ify = 1.0 / (double)K[4];
+  const double kcx = (double)K[2], kcy = (double)K[5];
+  double xn[6], yn[6];
+  for (int i = 0; i < 6; i++) {
+    xn[i] = ((double)six[i].u - kcx) * ifx;
+    yn[i] = ((double)six[i].v - kcy) * ify;
+  }
+
+  // ── 2. Normalize 3D points: centroid → origin, RMS distance → √3 ─────────
+  double cx = 0, cy = 0, cz = 0;
+  for (int i = 0; i < 6; i++) {
+    cx += (double)six[i].x;
+    cy += (double)six[i].y;
+    cz += (double)six[i].z;
+  }
+  cx /= 6;
+  cy /= 6;
+  cz /= 6;
+  double rms_sq = 0;
+  for (int i = 0; i < 6; i++) {
+    double dx = (double)six[i].x - cx;
+    double dy = (double)six[i].y - cy;
+    double dz = (double)six[i].z - cz;
+    rms_sq += dx * dx + dy * dy + dz * dz;
+  }
+  rms_sq /= 6.0;
+  if (rms_sq < 1e-20)
+    return -1; // degenerate: all 6 points at the same location
+  const double s3d = std::sqrt(3.0 / rms_sq); // scale so RMS = √3
+
+  // ── 3. Build 12×12 DLT system in normalized coordinates ──────────────────
+  //    λ [x_n, y_n, 1]ᵀ = P_n [s3d·(X−c), 1]ᵀ
   Eigen::Matrix<double, 12, 12> A;
   A.setZero();
   for (int i = 0; i < 6; i++) {
-    double X = (double)six[i].x, Y = (double)six[i].y, Z = (double)six[i].z;
-    double u = (double)six[i].u, v = (double)six[i].v;
+    double X = s3d * ((double)six[i].x - cx);
+    double Y = s3d * ((double)six[i].y - cy);
+    double Z = s3d * ((double)six[i].z - cz);
+    double u = xn[i], v = yn[i];
     A.row(2 * i + 0) << -X, -Y, -Z, -1, 0, 0, 0, 0, u * X, u * Y, u * Z, u;
     A.row(2 * i + 1) << 0, 0, 0, 0, -X, -Y, -Z, -1, v * X, v * Y, v * Z, v;
   }
-  Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
+
+  // ── 4. Null vector of A → 3×4 projection matrix (up to scale) ────────────
+  Eigen::JacobiSVD<Eigen::Matrix<double, 12, 12>> svd(A, Eigen::ComputeFullV);
   const Eigen::VectorXd p_flat = svd.matrixV().col(11);
-  Eigen::Matrix<double, 3, 4> P_block;
-  P_block << p_flat(0), p_flat(1), p_flat(2), p_flat(3), p_flat(4), p_flat(5), p_flat(6), p_flat(7),
-      p_flat(8), p_flat(9), p_flat(10), p_flat(11);
-  Eigen::Matrix3d Kinv;
-  Kinv << 1.0 / (double)K[0], 0, -(double)K[2] / (double)K[0], 0, 1.0 / (double)K[4],
-      -(double)K[5] / (double)K[4], 0, 0, 1;
-  Eigen::Matrix<double, 3, 4> Rt_block = Kinv * P_block;
-  Eigen::Matrix3d R_eig = Rt_block.block<3, 3>(0, 0);
-  Eigen::JacobiSVD<Eigen::Matrix3d> svdR(R_eig, Eigen::ComputeFullU | Eigen::ComputeFullV);
-  R_eig = svdR.matrixU() * svdR.matrixV().transpose();
-  if (R_eig.determinant() < 0)
-    R_eig = -R_eig;
-  Eigen::Vector3d t_eig = Rt_block.block<3, 1>(0, 3);
+  Eigen::Matrix3d M;
+  Eigen::Vector3d p4;
+  M << p_flat(0), p_flat(1), p_flat(2), p_flat(4), p_flat(5), p_flat(6), p_flat(8), p_flat(9),
+      p_flat(10);
+  p4 << p_flat(3), p_flat(7), p_flat(11);
+
+  // ── 5. Resolve sign ambiguity: ensure det(M) > 0 ─────────────────────────
+  if (M.determinant() < 0) {
+    M = -M;
+    p4 = -p4;
+  }
+
+  // ── 6. SVD-enforce rotation: M ∝ R, extract scale ────────────────────────
+  //    In normalized coords: P_n = α·[R/s3d | R·c + t]  (K-normalized world-to-cam)
+  //    After sign fix M ∝ R with positive proportionality β = |α|/s3d.
+  //    SVD(M) = U·Σ·Vᵀ;  σ_mean ≈ β;  R = U·Vᵀ.
+  Eigen::JacobiSVD<Eigen::Matrix3d> svdM(M, Eigen::ComputeFullU | Eigen::ComputeFullV);
+  const double sigma_mean = svdM.singularValues().mean();
+  if (sigma_mean < 1e-15)
+    return -1;
+  Eigen::Matrix3d R_eig = svdM.matrixU() * svdM.matrixV().transpose();
+  if (R_eig.determinant() < 0) {
+    // Should not happen after sign fix, but handle gracefully.
+    Eigen::Matrix3d V_fix = svdM.matrixV();
+    V_fix.col(2) *= -1;
+    R_eig = svdM.matrixU() * V_fix.transpose();
+  }
+
+  // ── 7. Recover translation in original world frame ────────────────────────
+  //    β = σ_mean = |α|/s3d  →  |α| = σ_mean · s3d
+  //    p4 = |α| · (R·c + t)
+  //    t = p4 / (σ_mean · s3d)  −  R · centroid
+  const Eigen::Vector3d centroid(cx, cy, cz);
+  const Eigen::Vector3d t_eig = p4 / (sigma_mean * s3d) - R_eig * centroid;
+
+  // ── 8. Output ─────────────────────────────────────────────────────────────
   for (int i = 0; i < 9; i++)
     R[i] = (float)R_eig(i / 3, i % 3);
   t[0] = (float)t_eig(0);

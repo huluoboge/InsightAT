@@ -24,8 +24,8 @@ void ViewGraph::ensure_degree_computed() const {
     return;
   std::unordered_map<uint32_t, int> deg;
   for (const auto& p : pairs_) {
-    deg[p.image1_id]++;
-    deg[p.image2_id]++;
+    deg[p.image1_index]++;
+    deg[p.image2_index]++;
   }
   if (deg.empty()) {
     image_degree_.clear();
@@ -53,10 +53,10 @@ double ViewGraph::get_pair_score(size_t pair_index, double w_stable, double w_po
     s += w_stable;
   s += w_points * std::log(1.0 + static_cast<double>(std::max(0, p.num_valid_points)));
   int d1 = 0, d2 = 0;
-  if (static_cast<size_t>(p.image1_id) < image_degree_.size())
-    d1 = image_degree_[static_cast<size_t>(p.image1_id)];
-  if (static_cast<size_t>(p.image2_id) < image_degree_.size())
-    d2 = image_degree_[static_cast<size_t>(p.image2_id)];
+  if (static_cast<size_t>(p.image1_index) < image_degree_.size())
+    d1 = image_degree_[static_cast<size_t>(p.image1_index)];
+  if (static_cast<size_t>(p.image2_index) < image_degree_.size())
+    d2 = image_degree_[static_cast<size_t>(p.image2_index)];
   s += w_connect * static_cast<double>(d1 + d2);
   return s;
 }
@@ -72,7 +72,7 @@ ViewGraph::choose_initial_pair(const std::set<uint32_t>& registered) const {
     const auto& p = pairs_[i];
     if (!p.twoview_ok || !p.stable)
       continue;
-    if (registered.count(p.image1_id) || registered.count(p.image2_id))
+    if (registered.count(p.image1_index) || registered.count(p.image2_index))
       continue;
     double sc = get_pair_score(i);
     if (sc > best_score) {
@@ -82,7 +82,23 @@ ViewGraph::choose_initial_pair(const std::set<uint32_t>& registered) const {
   }
   if (best >= pairs_.size())
     return std::nullopt;
-  return std::make_pair(pairs_[best].image1_id, pairs_[best].image2_id);
+  return std::make_pair(pairs_[best].image1_index, pairs_[best].image2_index);
+}
+
+std::vector<size_t> ViewGraph::get_candidate_pair_indices_sorted(const std::set<uint32_t>& registered) const {
+  std::vector<size_t> indices;
+  for (size_t i = 0; i < pairs_.size(); ++i) {
+    const auto& p = pairs_[i];
+    if (!p.twoview_ok || !p.stable)
+      continue;
+    if (registered.count(p.image1_index) || registered.count(p.image2_index))
+      continue;
+    indices.push_back(i);
+  }
+  std::sort(indices.begin(), indices.end(), [this](size_t a, size_t b) {
+    return get_pair_score(a) > get_pair_score(b);
+  });
+  return indices;
 }
 
 } // namespace sfm
