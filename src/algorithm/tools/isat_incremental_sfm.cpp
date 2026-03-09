@@ -14,9 +14,12 @@
  */
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 #include <glog/logging.h>
 #include <nlohmann/json.hpp>
@@ -245,6 +248,9 @@ int main(int argc, char* argv[]) {
   int n_reg = 0;
   for (bool r : registered) if (r) ++n_reg;
   LOG(INFO) << "Registered " << n_reg << " / " << project.num_images() << " images";
+
+  // Ensure output directory exists
+  fs::create_directories(output_dir);
 
   std::string out_path = output_dir;
   if (!out_path.empty() && out_path.back() != '/') out_path += '/';

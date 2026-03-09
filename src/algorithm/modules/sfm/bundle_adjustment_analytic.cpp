@@ -491,24 +491,20 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   options.max_num_iterations           = max_iterations;
   options.minimizer_progress_to_stdout = false;
 
-  // When intrinsics are free, SPARSE_SCHUR (CHOLMOD) requires a positive-definite
-  // Schur complement — intrinsics coupling can violate that.  Use ITERATIVE_SCHUR
-  // instead, which is preconditioner-based and does not have this restriction.
-  if (input.optimize_intrinsics) {
-    options.linear_solver_type  = ceres::SPARSE_NORMAL_CHOLESKY;
-    options.preconditioner_type = ceres::JACOBI;
-  } else {
-    options.linear_solver_type = ceres::SPARSE_SCHUR;
-  }
+  // Solver strategy: SPARSE_SCHUR (CHOLMOD, fast for large scenes) first,
+  // fall back to DENSE_SCHUR (LAPACK) on failure.
+  // DENSE_SCHUR is used as fallback for all cases:
+  //  - near-planar scenes make Schur complement ill-conditioned → CHOLMOD fails
+  //  - free intrinsics coupling can also violate positive-definiteness
+  // LAPACK's pivot threshold is more permissive than CHOLMOD's, and for
+  // typical BA windows (≤70 cams → ≤630×630 Schur) it is sub-second.
+  // Avoids ITERATIVE_SCHUR which is slow for small-scale high-condition problems.
+  options.linear_solver_type = ceres::SPARSE_SCHUR;
 
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
-  // Fallback: if SPARSE_SCHUR failed (e.g. near-degenerate/near-planar scene
-  // makes the Schur complement ill-conditioned), retry with DENSE_SCHUR.
-  // For typical local-BA windows (≤20 cams → 120×120 Schur), DENSE_SCHUR is
-  // fast and LAPACK's pivot threshold is more permissive than CHOLMOD's.
-  if (!summary.IsSolutionUsable() && !input.optimize_intrinsics) {
+  if (!summary.IsSolutionUsable()) {
     LOG(WARNING) << "global_bundle_analytic: SPARSE_SCHUR failed ("
                  << summary.message << "), retrying with DENSE_SCHUR";
     options.linear_solver_type  = ceres::DENSE_SCHUR;
