@@ -1717,7 +1717,6 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     LOG(INFO) << "run_periodic_global_ba: RMSE=" << ba_out.rmse_px << " px";
     write_ba_result_back(ba_out, ba_img_to_global, pt_to_track, store_out, poses_R_out, poses_C_out,
                          nullptr);
-    global_ba_images_since_last = 0;
   };
 
   auto run_ba_and_reject_outliers = [&](double* rmse_out) {
@@ -1866,7 +1865,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       if (opts.global_ba_interval > 0 &&
           global_ba_images_since_last >= opts.global_ba_interval) {
         run_periodic_global_ba();
-        // Also reset local BA counter so we don't immediately do local + global back-to-back
+        // Reset both counters unconditionally (whether BA succeeded or not) so we don't
+        // fire every frame after a failed BA, and so local BA doesn't run back-to-back.
+        global_ba_images_since_last = 0;
         local_ba_images_since_last = 0;
       }
 

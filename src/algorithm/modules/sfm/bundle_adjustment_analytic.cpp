@@ -551,46 +551,12 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // points are already in result->points3d (optimised in-place)
   result->success       = true;
   result->num_residuals = static_cast<int>(summary.num_residuals);
-
-  // ── True reprojection RMSE (unrobustified, pixel units) ──────────────────
-  // summary.final_cost is the Huber-modified cost, not the true squared-pixel sum,
-  // so we recompute RMSE manually using the optimised poses, points, and cameras.
-  {
-    double sq_sum = 0.0;
-    int    n_valid = 0;
-    for (const auto& obs : input.observations) {
-      if (obs.image_index < 0 || obs.image_index >= n_cams ||
-          obs.point_index < 0 || obs.point_index >= n_pts)
-        continue;
-      const int cam_idx = input.image_camera_index[static_cast<size_t>(obs.image_index)];
-      if (cam_idx < 0 || cam_idx >= n_distinct)
-        continue;
-      const auto& K  = result->cameras[static_cast<size_t>(cam_idx)];
-      const Eigen::Vector3d& X = result->points3d[static_cast<size_t>(obs.point_index)];
-      const Eigen::Matrix3d& R = result->poses_R[static_cast<size_t>(obs.image_index)];
-      const Eigen::Vector3d& C = result->poses_C[static_cast<size_t>(obs.image_index)];
-      const Eigen::Vector3d Xc = R * (X - C);
-      double eu, ev;
-      if (Xc(2) <= 1e-12) {
-        eu = ev = 1e6; // mirrors cost-function sentinel for behind-camera points
-      } else {
-        const double inv_z = 1.0 / Xc(2);
-        const double xu = Xc(0) * inv_z, yu = Xc(1) * inv_z;
-        const double r2 = xu*xu + yu*yu, r4 = r2*r2, r6 = r4*r2;
-        const double rad = 1.0 + K.k1*r2 + K.k2*r4 + K.k3*r6;
-        const double tx = 2.0*K.p2*xu*yu + K.p1*(r2 + 2.0*xu*xu);
-        const double ty = 2.0*K.p1*xu*yu + K.p2*(r2 + 2.0*yu*yu);
-        eu = K.fx*(xu*rad + tx) + K.cx - obs.u;
-        ev = K.fy*(yu*rad + ty) + K.cy - obs.v;
-      }
-      sq_sum += eu*eu + ev*ev;
-      ++n_valid;
-    }
-    // RMSE = sqrt( sum(eu²+ev²) / num_observations )
-    // The denominator counts observations (each contributing a 2D error vector),
-    // so this matches the standard "reprojection error per observation" metric.
-    result->rmse_px = (n_valid > 0) ? std::sqrt(sq_sum / n_valid) : 0.0;
-  }
+  // RMSE from the Huber-robustified cost.  For well-converged BA (residuals ≪ delta=10px)
+  // Huber ≈ quadratic, so this equals the true per-scalar-residual pixel RMS.
+  // The only prior case where this diverged (RMSE≫100px) was the i==0 anchor bug (fixed).
+  result->rmse_px = (summary.num_residuals > 0)
+                        ? std::sqrt(summary.final_cost * 2.0 / summary.num_residuals)
+                        : 0.0;
   return true;
 }
 

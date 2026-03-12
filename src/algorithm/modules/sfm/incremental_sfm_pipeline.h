@@ -162,7 +162,7 @@ struct IncrementalSfMOptions {
 
   // ─── BA scheduling & observation compression ─────────────────────────────
   int local_ba_interval = 5; ///< Run local BA every N newly registered images; 1 = every image.
-  int global_ba_interval = 50; ///< Run periodic global BA every N registered images; 0 = disable.
+  int global_ba_interval = 10; ///< Run periodic global BA every N registered images; 0 = disable.
   int max_points_local_ba = 80000; ///< Max 3D points included in local BA; 0 = no limit.
   int max_track_length_ba = 10; ///< Max observations per track in local BA (angular coverage); 0 = no limit.
   bool enable_obs_compression = true; ///< Enable angular coverage observation compression in local BA.
