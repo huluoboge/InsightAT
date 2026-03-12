@@ -104,19 +104,29 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    const std::vector<int>& image_to_camera_index,
                    const std::vector<camera::Intrinsics>& cameras,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
-                   int max_iterations, double* rmse_px_out, int anchor_image = -1);
+                   int max_iterations, double* rmse_px_out, int anchor_image = -1,
+                   double max_rmse_px = -1.0);
 
 /**
  * Run local BA: optimize a subset of images (other poses fixed). Intrinsics not optimized.
  * If indices_to_optimize is non-null, use that set; else optimize the last local_ba_window
  * registered images.
+ *
+ * @param fixed_indices    Additional cameras included as FIXED (pose fixed, constraint-only).
+ *                         Only points seen by ACTIVE cameras are included when this is set.
+ * @param max_points       Max 3D points in BA; 0 or -1 = no limit.
+ * @param max_obs_per_track Max observations per track (angular coverage compression); 0/-1 = no limit.
  */
 bool run_local_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                   std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
                   const std::vector<int>& image_to_camera_index,
                   const std::vector<camera::Intrinsics>& cameras, int local_ba_window,
                   int max_iterations, double* rmse_px_out,
-                  const std::vector<int>* indices_to_optimize = nullptr);
+                  const std::vector<int>* indices_to_optimize = nullptr,
+                  const std::vector<int>* fixed_indices = nullptr,
+                  int max_points = -1,
+                  int max_obs_per_track = -1,
+                  double max_rmse_px = -1.0);
 
 // ─── Full pipeline ───────────────────────────────────────────────────────────
 
@@ -139,7 +149,8 @@ struct IncrementalSfMOptions {
   // ─── Bundle adjustment ───────────────────────────────────────────────────
   int local_ba_after_n_images =
       20; ///< Use local BA only when num_registered >= this; before that run global BA each time.
-  int local_ba_window = 20;
+  int local_ba_window = 20;   ///< Number of ACTIVE (optimized) cameras in local BA.
+  int local_ba_fixed_window = 30; ///< Additional FIXED (constraint-only) cameras beyond active window.
   bool local_ba_by_connectivity = true; ///< If true, local BA optimizes new images + most connected
                                         ///< neighbors; else last N by index.
   bool do_global_ba = true;             ///< Run global BA at end of pipeline.
@@ -148,6 +159,13 @@ struct IncrementalSfMOptions {
   /// num_registered >= this threshold (avoids instability with few cameras).
   int global_ba_optimize_intrinsics_min_images = 10;
   int max_global_ba_iterations = 50;
+
+  // ─── BA scheduling & observation compression ─────────────────────────────
+  int local_ba_interval = 5; ///< Run local BA every N newly registered images; 1 = every image.
+  int global_ba_interval = 50; ///< Run periodic global BA every N registered images; 0 = disable.
+  int max_points_local_ba = 80000; ///< Max 3D points included in local BA; 0 = no limit.
+  int max_track_length_ba = 10; ///< Max observations per track in local BA (angular coverage); 0 = no limit.
+  bool enable_obs_compression = true; ///< Enable angular coverage observation compression in local BA.
 
   // ─── Triangulation ───────────────outlier rejection:────────────────────
   /// Minimum max pairwise ray angle (degrees) for a newly triangulated point to be accepted.
@@ -161,14 +179,22 @@ struct IncrementalSfMOptions {
   /// Prevents aggressive culling when RMSE is temporarily high (e.g. during early intrinsics convergence).
   /// Set to 0 to disable adaptive behavior.
   double outlier_adaptive_factor = 2.0;
-  int max_outlier_iterations = 5; ///< Max BA+reject rounds after each BA until no new outliers.
+  int max_outlier_iterations = 2; ///< Max BA+reject rounds after each BA until no new outliers.
+  int outlier_iter_min_rejections =
+      64; ///< Only continue BA+reject iteration when rejected observations >= this count.
   int reject_min_registered_images =
       10; ///< Do not run pixel/angle reject until num_registered >= this.
   double min_observation_angle_deg =
       2.0; ///< Mark observation deleted if max parallax angle (with other views in track) < this.
+  double angle_reject_max_rmse_px =
+      8.0; ///< Skip angle-based reject if BA RMSE is above this (pose still unstable).
   bool enable_sigma_filter = false; ///< After reject loop, one more pass with threshold = rmse * 3.
   int final_reject_max_rounds =
-      10; ///< After final global BA, iterate BA+reject until no outliers or this many rounds.
+      3; ///< After final global BA, iterate BA+reject until no outliers or this many rounds.
+  double max_reasonable_rmse_px =
+      100.0; ///< If a global BA returns RMSE above this, discard the result (no pose/intrinsics
+             ///< write-back, no outlier rejection). Prevents catastrophic divergence from
+             ///< propagating into the reconstruction.
   bool retry_resection_after_cleanup =
       true; ///< When no resection candidates, run one global BA+reject then try again once.
 };

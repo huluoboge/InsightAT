@@ -448,11 +448,16 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
             new ceres::IdentityParameterization(3)));
   }
 
-  // Fix poses: image 0 (world origin) always fixed; optional fix_pose[i] for i > 0
+  // Fix poses: only honour the explicit fix_pose mask set by the caller.
+  // The caller (run_global_ba / run_local_ba) is responsible for fixing the coordinate-system
+  // anchor.  We MUST NOT unconditionally fix i==0 here because BA image index 0 is just the
+  // lowest-registered-image-index, which is a PnP-estimated camera that may have drift.
+  // Fixing a drifted camera alongside the true anchor (fix_pose[anchor_idx]=true) creates two
+  // conflicting rigid constraints → Ceres diverges → RMSE explodes into hundreds of thousands.
   for (int i = 0; i < n_cams; ++i) {
     double* pp = poses_data.data() + static_cast<size_t>(i) * 7;
     if (!problem.HasParameterBlock(pp)) continue;
-    const bool fix = (i == 0) ||
+    const bool fix =
         (input.fix_pose.size() > static_cast<size_t>(i) && input.fix_pose[static_cast<size_t>(i)]);
     if (fix)
       problem.SetParameterBlockConstant(pp);
@@ -546,9 +551,46 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // points are already in result->points3d (optimised in-place)
   result->success       = true;
   result->num_residuals = static_cast<int>(summary.num_residuals);
-  result->rmse_px       = (summary.num_residuals > 0)
-                              ? std::sqrt(summary.final_cost * 2.0 / summary.num_residuals)
-                              : 0.0;
+
+  // ── True reprojection RMSE (unrobustified, pixel units) ──────────────────
+  // summary.final_cost is the Huber-modified cost, not the true squared-pixel sum,
+  // so we recompute RMSE manually using the optimised poses, points, and cameras.
+  {
+    double sq_sum = 0.0;
+    int    n_valid = 0;
+    for (const auto& obs : input.observations) {
+      if (obs.image_index < 0 || obs.image_index >= n_cams ||
+          obs.point_index < 0 || obs.point_index >= n_pts)
+        continue;
+      const int cam_idx = input.image_camera_index[static_cast<size_t>(obs.image_index)];
+      if (cam_idx < 0 || cam_idx >= n_distinct)
+        continue;
+      const auto& K  = result->cameras[static_cast<size_t>(cam_idx)];
+      const Eigen::Vector3d& X = result->points3d[static_cast<size_t>(obs.point_index)];
+      const Eigen::Matrix3d& R = result->poses_R[static_cast<size_t>(obs.image_index)];
+      const Eigen::Vector3d& C = result->poses_C[static_cast<size_t>(obs.image_index)];
+      const Eigen::Vector3d Xc = R * (X - C);
+      double eu, ev;
+      if (Xc(2) <= 1e-12) {
+        eu = ev = 1e6; // mirrors cost-function sentinel for behind-camera points
+      } else {
+        const double inv_z = 1.0 / Xc(2);
+        const double xu = Xc(0) * inv_z, yu = Xc(1) * inv_z;
+        const double r2 = xu*xu + yu*yu, r4 = r2*r2, r6 = r4*r2;
+        const double rad = 1.0 + K.k1*r2 + K.k2*r4 + K.k3*r6;
+        const double tx = 2.0*K.p2*xu*yu + K.p1*(r2 + 2.0*xu*xu);
+        const double ty = 2.0*K.p1*xu*yu + K.p2*(r2 + 2.0*yu*yu);
+        eu = K.fx*(xu*rad + tx) + K.cx - obs.u;
+        ev = K.fy*(yu*rad + ty) + K.cy - obs.v;
+      }
+      sq_sum += eu*eu + ev*ev;
+      ++n_valid;
+    }
+    // RMSE = sqrt( sum(eu²+ev²) / num_observations )
+    // The denominator counts observations (each contributing a 2D error vector),
+    // so this matches the standard "reprojection error per observation" metric.
+    result->rmse_px = (n_valid > 0) ? std::sqrt(sq_sum / n_valid) : 0.0;
+  }
   return true;
 }
 
