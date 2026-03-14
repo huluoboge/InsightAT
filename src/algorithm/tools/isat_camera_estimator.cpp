@@ -127,8 +127,6 @@ struct GroupKeyHash {
   }
 };
 
-using ExifBuckets = std::unordered_map<GroupKey, std::vector<size_t>, GroupKeyHash>;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-image EXIF data
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +140,14 @@ struct ImageExif {
   float focal_35mm = 0.0f; ///< 35mm-equivalent focal length
   bool valid = false;
 };
+
+// Each bucket: image indices + one representative ImageExif (first valid in bucket).
+// The representative is used directly by processGroupFromExif, avoiding disk re-reads.
+struct BucketData {
+  std::vector<size_t> indices;
+  ImageExif           representative;
+};
+using ExifBuckets = std::unordered_map<GroupKey, BucketData, GroupKeyHash>;
 
 static ImageExif readExif(const std::string& path) {
   ImageExif e;
@@ -205,12 +211,42 @@ static EstimateResult estimateFocal(const ImageExif& e) {
     r.source = "exif_focal35mm";
     LOG(INFO) << "  focal estimated via 35mm-equiv: f35=" << e.focal_35mm << "mm → fx=" << r.fx
               << "px";
+    // Supplement sensor_width_mm without querying the DB when possible.
+    // Priority: (1) derive from EXIF focal_mm (O(1), no DB scan)
+    //           (2) DB loose query (O(N) linear scan) only as last resort
+    {
+      if (e.focal_mm > 0.1f) {
+        // sw = focal_mm * width_px / f_px  — exact, no DB needed
+        r.sensor_width_mm = (double)e.focal_mm * e.width / r.fx;
+        LOG(INFO) << "  sensor_width_mm derived from focal_mm=" << e.focal_mm
+                  << "mm: " << r.sensor_width_mm << "mm";
+      } else {
+        // No physical focal in EXIF → fall back to DB (O(N) scan, rare path)
+        double sw_sup = 0.0;
+        std::string mk_sup;
+        if (CameraSensorDatabase::instance().query_sensor_width_loose(
+                e.make, e.model, sw_sup, &mk_sup) && sw_sup > 0.1) {
+          r.sensor_width_mm = sw_sup;
+          LOG(INFO) << "  sensor_width_mm supplemented from DB: " << sw_sup
+                    << "mm (matched key='" << mk_sup << "')";
+        } else {
+          LOG(WARNING) << "  sensor_width_mm unknown for " << e.make << " " << e.model
+                       << " (no focal_mm in EXIF, DB miss)";
+        }
+      }
+    }
     return r;
   }
 
   // ── Method 2: physical focal length + sensor DB ───────────────────────
   double sw = 0.0;
-  bool in_db = CameraSensorDatabase::instance().query_sensor_width(e.make, e.model, sw);
+  std::string matched_key;
+  bool in_db = CameraSensorDatabase::instance().query_sensor_width_loose(
+      e.make, e.model, sw, &matched_key);
+  if (!in_db) {
+    LOG(WARNING) << "  sensor DB miss: make='" << e.make << "' model='" << e.model
+                 << "'  (DB loaded=" << CameraSensorDatabase::instance().loaded() << ")";
+  }
   if (in_db && sw > 0.1 && e.focal_mm > 0.1f) {
     r.sensor_width_mm = sw;
     r.fx = (double)e.focal_mm * e.width / sw;
@@ -218,7 +254,7 @@ static EstimateResult estimateFocal(const ImageExif& e) {
     r.focal_length_35mm = (double)e.focal_mm * 36.0 / sw;
     r.source = "sensor_db";
     LOG(INFO) << "  focal estimated via sensor DB: f_mm=" << e.focal_mm << "mm, sw=" << sw
-              << "mm → fx=" << r.fx << "px";
+              << "mm (matched key='" << matched_key << "') → fx=" << r.fx << "px";
     return r;
   }
 
@@ -245,37 +281,40 @@ struct ExifScanTask {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// scanGroupExif – 3-stage async pipeline (模仿 isat_extract)
+// scanGroupExif – two-phase pipeline optimised for million-scale groups
 //
-//   Stage 1 [multi-thread I/O]  : readExif() per image  → ExifScanTask.exif
-//   StageCurrent [main thread]  : aggregate → ExifBuckets
+//   Phase 1 [multi-thread I/O, all cores]  : readExif() per image → tasks[]
+//   Phase 2 [main thread, single pass]      : aggregate → ExifBuckets
 //
-// 磁盘 IO 在后台线程池并发，主线程做无锁汇总（StageCurrent 保证单线程）。
+// StageCurrent was removed:  at large N the chain queue (depth 32) caused
+// Stage-1 threads to stall waiting for the single-consumer queue to drain.
+// Instead we let Stage-1 run fully parallel, then do one tight serial pass
+// over the filled task array.  Aggregation into a handful of camera-model
+// buckets is O(N) with negligible per-item work (< 100 ms for 1 M images).
 // ─────────────────────────────────────────────────────────────────────────────
 
 static ExifBuckets scanGroupExif(const ImageGroup& group, int num_threads = 0) {
   const int n = static_cast<int>(group.images.size());
   if (n == 0) return {};
 
+  // Use all available cores; caller can override with --split-threads.
   if (num_threads <= 0)
-    num_threads = std::max(1, std::min(8,
-        static_cast<int>(std::thread::hardware_concurrency())));
+    num_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
 
-  // Pre-allocate task array; Stage accesses by index (no shared mutable state).
+  // Pre-allocate task array; Stage workers access disjoint indices — no locks.
   std::vector<ExifScanTask> tasks(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) {
     tasks[static_cast<size_t>(i)].image_idx = static_cast<size_t>(i);
     tasks[static_cast<size_t>(i)].path      = group.images[static_cast<size_t>(i)].filename;
   }
 
-  ExifBuckets buckets;
+  // Queue depth: large enough that producers never stall on a full queue.
+  // 4096 caps memory while giving ample headroom for num_threads workers.
+  const int queue_depth = std::min(n, 4096);
 
-  const int IO_QUEUE_SIZE  = 32;
-  const int AGG_QUEUE_SIZE = 32;
-
-  // Stage 1: multi-thread EXIF read (I/O bound)
+  // Phase 1: parallel EXIF read — pure I/O, no downstream chain.
   Stage readExifStage(
-      "ReadExif", num_threads, IO_QUEUE_SIZE,
+      "ReadExif", num_threads, queue_depth,
       [&tasks](int idx) {
         auto& t = tasks[static_cast<size_t>(idx)];
         if (!fs::exists(t.path)) {
@@ -288,34 +327,34 @@ static ExifBuckets scanGroupExif(const ImageGroup& group, int num_threads = 0) {
           LOG(WARNING) << "[auto-split] invalid EXIF (skip): " << t.path;
       });
 
-  // Stage 2 (StageCurrent = main thread): aggregate into buckets, no lock needed.
-  StageCurrent aggregateStage(
-      "AggregateExif", 1, AGG_QUEUE_SIZE,
-      [&tasks, &buckets](int idx) {
-        const auto& t = tasks[static_cast<size_t>(idx)];
-        if (!t.exif_valid) return;
-        GroupKey key;
-        key.make   = t.exif.make;
-        key.model  = t.exif.model;
-        key.width  = t.exif.width;
-        key.height = t.exif.height;
-        buckets[key].push_back(t.image_idx);
-      });
-
-  chain(readExifStage, aggregateStage);
   readExifStage.setTaskCount(n);
-  aggregateStage.setTaskCount(n);
 
-  // Push indices in background; GPU/aggregate stage runs on main thread.
+  // Push all indices from a background thread so main thread can call wait().
   std::thread push_thread([&]() {
     for (int i = 0; i < n; ++i)
       readExifStage.push(i);
   });
-
-  aggregateStage.run(); // main thread drives Stage 2
-
+  readExifStage.wait(); // blocks until every worker has finished
   push_thread.join();
-  readExifStage.wait();
+
+  // Phase 2: single-pass aggregation — O(N), no queue/lock overhead.
+  // Camera models are typically < 10 distinct keys even at million scale.
+  ExifBuckets buckets;
+  buckets.reserve(16);
+  for (int i = 0; i < n; ++i) {
+    const auto& t = tasks[static_cast<size_t>(i)];
+    if (!t.exif_valid) continue;
+    GroupKey key;
+    key.make   = t.exif.make;
+    key.model  = t.exif.model;
+    key.width  = t.exif.width;
+    key.height = t.exif.height;
+    auto& bd = buckets[key];
+    bd.indices.push_back(t.image_idx);
+    // Keep first valid sample as representative (focal_mm / focal_35mm already read).
+    if (!bd.representative.valid)
+      bd.representative = t.exif;
+  }
 
   LOG(INFO) << "[auto-split] scanned " << n << " images in group '"
             << group.group_name << "' → " << buckets.size()
@@ -330,47 +369,52 @@ static ExifBuckets scanGroupExif(const ImageGroup& group, int num_threads = 0) {
 // Returns the list of newly created sub-groups (does NOT append them itself).
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::vector<ImageGroup> splitGroup(Project& project,
-                                          ImageGroup& group,
-                                          const ExifBuckets& buckets) {
+// Returns new (non-primary) sub-groups each paired with their in-memory representative ImageExif.
+// Also sets primary_rep_out to the representative of the largest bucket (the primary group).
+static std::vector<std::pair<ImageGroup, ImageExif>>
+splitGroup(Project& project,
+           ImageGroup& group,
+           const ExifBuckets& buckets,
+           ImageExif& primary_rep_out) {
   if (buckets.size() <= 1) return {};
 
   // Find the largest bucket → stays as the primary group.
   const ExifBuckets::value_type* largest = nullptr;
   for (const auto& kv : buckets)
-    if (!largest || kv.second.size() > largest->second.size())
+    if (!largest || kv.second.indices.size() > largest->second.indices.size())
       largest = &kv;
 
-  std::vector<ImageGroup> new_groups;
+  std::vector<std::pair<ImageGroup, ImageExif>> new_groups;
   int sub_idx = 0;
 
   for (const auto& kv : buckets) {
     const bool is_primary = (&kv == largest);
 
     std::vector<Image> sub_images;
-    sub_images.reserve(kv.second.size());
-    for (size_t gi : kv.second)
+    sub_images.reserve(kv.second.indices.size());
+    for (size_t gi : kv.second.indices)
       sub_images.push_back(group.images[gi]);
 
     if (is_primary) {
-      group.images = sub_images;
+      group.images  = sub_images;
+      primary_rep_out = kv.second.representative;
       LOG(INFO) << "  [split] sub[" << sub_idx << "] PRIMARY "
                 << kv.first.make << " " << kv.first.model
                 << " " << kv.first.width << "x" << kv.first.height
                 << " → " << sub_images.size() << " images"
                 << " (retained as group " << group.group_id << ")";
     } else {
-      ImageGroup ng     = group; // copy: inherit flags/settings
-      ng.group_id       = project.next_image_group_id++;
-      ng.group_name     = group.group_name + "_sub" + std::to_string(sub_idx);
-      ng.images         = sub_images;
-      ng.group_camera   = CameraModel{}; // reset; processGroup will estimate
+      ImageGroup ng   = group; // copy: inherit flags/settings
+      ng.group_id     = project.next_image_group_id++;
+      ng.group_name   = group.group_name + "_sub" + std::to_string(sub_idx);
+      ng.images       = sub_images;
+      ng.group_camera = CameraModel{}; // reset; will be estimated from representative
       LOG(INFO) << "  [split] sub[" << sub_idx << "] "
                 << kv.first.make << " " << kv.first.model
                 << " " << kv.first.width << "x" << kv.first.height
                 << " → " << sub_images.size() << " images"
                 << " (new group " << ng.group_id << ")";
-      new_groups.push_back(std::move(ng));
+      new_groups.emplace_back(std::move(ng), kv.second.representative);
     }
     ++sub_idx;
   }
@@ -378,7 +422,92 @@ static std::vector<ImageGroup> splitGroup(Project& project,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Process a single ImageGroup
+// applyEstimateToGroup – write an EstimateResult into a group's CameraModel
+// and emit the camera_estimator.estimate event.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void applyEstimateToGroup(ImageGroup& group,
+                                 const ImageExif& representative,
+                                 const EstimateResult& est,
+                                 int images_sampled) {
+  const uint32_t gid = group.group_id;
+
+  CameraModel cam;
+  cam.type              = CameraModel::Type::kBrownConrady;
+  cam.width             = static_cast<uint32_t>(representative.width);
+  cam.height            = static_cast<uint32_t>(representative.height);
+  cam.focal_length      = est.fx;
+  cam.aspect_ratio      = (est.fy > 0.0) ? (est.fy / est.fx) : 1.0;
+  cam.principal_point_x = est.cx;
+  cam.principal_point_y = est.cy;
+  cam.sensor_width_mm   = est.sensor_width_mm;
+  cam.focal_length_35mm = est.focal_length_35mm;
+  cam.make              = representative.make;
+  cam.model             = representative.model;
+  cam.camera_name       = representative.make + " " + representative.model;
+
+  group.camera_mode  = ImageGroup::CameraMode::kGroupLevel;
+  group.group_camera = cam;
+
+  printEvent({{"type", "camera_estimator.estimate"},
+              {"ok", true},
+              {"data",
+               {{"group_id", gid},
+                {"group_name", group.group_name},
+                {"images_sampled", images_sampled},
+                {"width", cam.width},
+                {"height", cam.height},
+                {"fx", est.fx},
+                {"fy", est.fy},
+                {"cx", est.cx},
+                {"cy", est.cy},
+                {"source", est.source},
+                {"make", cam.make},
+                {"model", cam.model},
+                {"sensor_width_mm", est.sensor_width_mm},
+                {"focal_length_35mm", est.focal_length_35mm},
+                {"written_to_project", true}}}});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// processGroupFromExif – estimate + write-back using a pre-scanned ImageExif.
+// Used by the auto-split path to avoid re-reading images from disk.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void processGroupFromExif(ImageGroup& group,
+                                 const ImageExif& representative,
+                                 int n_images) {
+  const uint32_t gid = group.group_id;
+  LOG(INFO) << "Processing group " << gid << " ('" << group.group_name
+            << "') from in-memory EXIF (" << n_images << " images)";
+
+  if (!representative.valid) {
+    printEvent({{"type", "camera_estimator.estimate"},
+                {"ok", false},
+                {"data",
+                 {{"group_id", gid},
+                  {"group_name", group.group_name},
+                  {"error", "no valid representative EXIF for group"}}}});
+    return;
+  }
+
+  EstimateResult est = estimateFocal(representative);
+  if (est.fx <= 0.0 || representative.width == 0) {
+    printEvent({{"type", "camera_estimator.estimate"},
+                {"ok", false},
+                {"data",
+                 {{"group_id", gid},
+                  {"group_name", group.group_name},
+                  {"error", "focal estimation produced invalid result"}}}});
+    return;
+  }
+
+  applyEstimateToGroup(group, representative, est, n_images);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// processGroup – estimate + write-back by sampling images from disk.
+// Used when no pre-scanned EXIF is available (non-auto-split path).
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void processGroup(Project& project, ImageGroup& group, int max_sample) {
@@ -441,45 +570,9 @@ static void processGroup(Project& project, ImageGroup& group, int max_sample) {
     return;
   }
 
-  // ── Write back to group CameraModel ───────────────────────────────────
-  CameraModel cam;
-  cam.type = CameraModel::Type::kBrownConrady;
-  cam.width = static_cast<uint32_t>(representative.width);
-  cam.height = static_cast<uint32_t>(representative.height);
-  cam.focal_length = est.fx;
-  cam.aspect_ratio = (est.fy > 0.0) ? (est.fy / est.fx) : 1.0;
-  cam.principal_point_x = est.cx;
-  cam.principal_point_y = est.cy;
-  cam.sensor_width_mm = est.sensor_width_mm;
-  cam.focal_length_35mm = est.focal_length_35mm;
-  cam.make = representative.make;
-  cam.model = representative.model;
-  cam.camera_name = representative.make + " " + representative.model;
-
-  group.camera_mode = ImageGroup::CameraMode::kGroupLevel;
-  group.group_camera = cam;
-
-  // Unused: surpress warning for project param
+  // ── Write back via shared helper ──────────────────────────────────────
   (void)project;
-
-  printEvent({{"type", "camera_estimator.estimate"},
-              {"ok", true},
-              {"data",
-               {{"group_id", gid},
-                {"group_name", group.group_name},
-                {"images_sampled", sampled},
-                {"width", cam.width},
-                {"height", cam.height},
-                {"fx", est.fx},
-                {"fy", est.fy},
-                {"cx", est.cx},
-                {"cy", est.cy},
-                {"source", est.source},
-                {"make", cam.make},
-                {"model", cam.model},
-                {"sensor_width_mm", est.sensor_width_mm},
-                {"focal_length_35mm", est.focal_length_35mm},
-                {"written_to_project", true}}}});
+  applyEstimateToGroup(group, representative, est, sampled);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -550,9 +643,39 @@ int main(int argc, char* argv[]) {
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   // ── Load sensor DB ─────────────────────────────────────────────────────
-  if (!sensor_db.empty()) {
-    CameraSensorDatabase::instance().load(sensor_db);
+  // Resolve path: explicit -d > default build/data/config path > fatal error.
+  if (sensor_db.empty()) {
+    // Mirror what project_utils.py does: look for build-time default.
+    const std::string default_rel = "data/config/camera_sensor_database.txt";
+    // Search relative to the executable and to CWD.
+    std::vector<std::string> candidates;
+    {
+      fs::path exe = fs::canonical("/proc/self/exe").parent_path();
+      candidates.push_back((exe / default_rel).string());
+      candidates.push_back((exe.parent_path() / default_rel).string());
+      candidates.push_back(default_rel); // CWD fallback
+    }
+    for (const auto& c : candidates) {
+      if (fs::exists(c)) { sensor_db = c; break; }
+    }
   }
+  if (sensor_db.empty()) {
+    LOG(ERROR) << "camera_sensor_database not found. "
+                  "Use -d /path/to/camera_sensor_database.txt";
+    printEvent({{"type", "camera_estimator.estimate"}, {"ok", false},
+                {"error", "sensor_db not found"}});
+    GdalUtils::DestoryGDAL();
+    return 1;
+  }
+  if (!CameraSensorDatabase::instance().load(sensor_db)) {
+    LOG(ERROR) << "Failed to load sensor DB: " << sensor_db;
+    printEvent({{"type", "camera_estimator.estimate"}, {"ok", false},
+                {"error", "sensor_db load failed: " + sensor_db}});
+    GdalUtils::DestoryGDAL();
+    return 1;
+  }
+  LOG(INFO) << "Loaded sensor DB: " << sensor_db
+            << " (" << CameraSensorDatabase::instance().all_sensors().size() << " entries)";
 
   GdalUtils::InitGDAL();
 
@@ -600,10 +723,12 @@ int main(int argc, char* argv[]) {
       ExifBuckets buckets = scanGroupExif(grp, split_threads);
 
       if (buckets.size() > 1) {
-        std::vector<ImageGroup> new_grps = splitGroup(project, grp, buckets);
+        // splitGroup trims grp.images to the primary bucket and fills primary_rep.
+        ImageExif primary_rep;
+        auto new_grps = splitGroup(project, grp, buckets, primary_rep);
 
         json sub_arr = json::array();
-        for (const auto& ng : new_grps)
+        for (const auto& [ng, _rep] : new_grps)
           sub_arr.push_back({{"group_id",   ng.group_id},
                              {"group_name", ng.group_name},
                              {"n_images",   ng.images.size()}});
@@ -616,26 +741,31 @@ int main(int argc, char* argv[]) {
                       {"sub_groups_created", new_grps.size()},
                       {"new_groups",         sub_arr}}}});
 
-        // Append new sub-groups; they are processed after this loop.
-        for (auto& ng : new_grps)
+        // Estimate primary group from in-memory EXIF — no disk re-read.
+        processGroupFromExif(grp, primary_rep,
+                             static_cast<int>(grp.images.size()));
+        ++ok_count;
+
+        // Append new sub-groups and estimate each immediately from in-memory EXIF.
+        for (auto& [ng, rep] : new_grps) {
+          int n_img = static_cast<int>(ng.images.size());
           project.image_groups.push_back(std::move(ng));
+          processGroupFromExif(project.image_groups.back(), rep, n_img);
+          ++ok_count;
+        }
 
       } else {
+        // Single camera model — use the one bucket's representative directly.
         LOG(INFO) << "[auto-split] only 1 camera model in group " << grp.group_id
                   << " — no split needed";
+        const ImageExif& rep = buckets.begin()->second.representative;
+        processGroupFromExif(grp, rep, static_cast<int>(grp.images.size()));
+        ++ok_count;
       }
-    }
 
-    // Estimate intrinsics for the (possibly trimmed) primary group.
-    processGroup(project, grp, max_sample);
-    ++ok_count;
-  }
-
-  // Process newly created sub-groups (always appended to the end).
-  if (auto_split && !target_indices.empty()) {
-    const size_t first_new = *std::max_element(target_indices.begin(), target_indices.end()) + 1;
-    for (size_t i = first_new; i < project.image_groups.size(); ++i) {
-      processGroup(project, project.image_groups[i], max_sample);
+    } else {
+      // No auto-split: fall back to disk sampling.
+      processGroup(project, grp, max_sample);
       ++ok_count;
     }
   }
