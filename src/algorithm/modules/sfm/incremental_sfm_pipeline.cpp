@@ -1436,10 +1436,19 @@ static bool build_ba_input_colmap_local(
   ba.fix_intrinsics_flags.resize(ba.cameras.size(),
                                   static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
 
-  // ── Seed points: tracks with ≥2 observations within all_image_set ─────────
+  // ── Points: ALL triangulated tracks with ≥2 observations within all_image_set ──────────────
+  // kHybrid design: cameras are selected by co-visibility (kColmap-style above), but the point
+  // set uses every triangulated track visible in the local BA neighbourhood – identical to what
+  // kWindow does.  The seed_track_ids used for camera scoring are a strict subset of this set,
+  // so scores remain unchanged.  Using the full neighbourhood point set is critical for proper
+  // BA conditioning: with only seed tracks the system can become numerically near-singular when
+  // the batch is small (e.g. 1 image with few inliers), causing CHOLMOD "not positive definite".
   std::vector<int> track_id_to_point_index(n_tracks, -1);
   point_index_to_track_id_out->clear();
-  for (int track_id : seed_track_ids) {
+  for (size_t ti = 0; ti < n_tracks; ++ti) {
+    const int track_id = static_cast<int>(ti);
+    if (!store.is_track_valid(track_id) || !store.track_has_triangulated_xyz(track_id))
+      continue;
     obs_buf.clear();
     store.get_track_observations(track_id, &obs_buf);
     int visible_in_ba = 0;
