@@ -21,6 +21,7 @@
 #include "bundle_adjustment_analytic.h"
 
 #include <cmath>
+#include <thread>
 #include <glog/logging.h>
 
 #include <Eigen/Core>
@@ -513,6 +514,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   } else {
     options.linear_solver_type = ceres::SPARSE_SCHUR;
   }
+  options.num_threads = std::max(1, std::min(8, static_cast<int>(std::thread::hardware_concurrency())));
 
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
