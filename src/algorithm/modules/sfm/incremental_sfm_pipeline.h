@@ -355,7 +355,8 @@ struct IncrementalSfMOptions {
   // ─── Triangulation ───────────────outlier rejection:────────────────────
   /// Minimum max pairwise ray angle (degrees) for a newly triangulated point to be accepted.
   /// 0.5° is suitable for dense aerial overlap; use 2.0° for sparser datasets.
-  double min_tri_angle_deg = 0.5;
+//   double min_tri_angle_deg = 0.5;
+  double min_tri_angle_deg = 2.0;
 
   // ─── Outlier rejection ───────────────────────────────────────────────────
   double outlier_threshold_px =

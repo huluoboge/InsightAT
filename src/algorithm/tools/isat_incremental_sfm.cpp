@@ -256,20 +256,20 @@ int main(int argc, char* argv[]) {
   std::vector<bool> registered;
   IncrementalSfMOptions opts;
   opts.local_ba_strategy = LocalBAStrategy::kColmap;
+  // opts.global_ba_optimize_intrinsics_min_images = 2;
+  opts.max_global_ba_iterations = 5000;
   // Apply --object-scan preset first (individual flags override it below).
   if (cmd.used("object-scan")) {
     opts.skip_local_ba = true;
-    opts.max_global_ba_iterations = 5000;
+    opts.max_global_ba_iterations = 50;
     opts.ba_gradient_tolerance =  1e-10;
     opts.ba_function_tolerance =  1e-6;
     opts.ba_parameter_tolerance = 1e-8;
     opts.ba_dense_schur_max_variable_cams = 50;
-    opts.global_ba_optimize_intrinsics_min_images = 5;
     opts.resection_min_3d2d_count = 30;
     opts.resection_late_registered_threshold = 30;
     opts.resection_late_absolute_min = 100;
     opts.resection_late_batch_max = 5;
-    // opts.local_ba_strategy = LocalBAStrategy::kBatchNeighbor;
     LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100, late_batch_max=5.";
   }
   if (cmd.used("fix-intrinsics")) {

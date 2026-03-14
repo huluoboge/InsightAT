@@ -307,6 +307,7 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
   std::vector<unsigned char> inlier_mask(static_cast<size_t>(num_pts), 0);
 
   ensure_gpu_geo_init();
+  gpu_geo_set_solver(1);
   const int n_inliers =
       gpu_ransac_pnp(pts_pnp.data(), num_pts, K_mat, R_init, t_init, thresh_sq, inlier_mask.data());
   if (n_inliers < min_inliers) {

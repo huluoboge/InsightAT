@@ -606,7 +606,7 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
   }
 
   BAResult ba_out;
-  if (!global_bundle_analytic(ba_in, &ba_out, 50)) {
+  if (!global_bundle_analytic(ba_in, &ba_out, 5000)) {
     LOG(INFO) << "    pair (" << im0 << "," << im1 << "): BA failed";
     return result;
   }
@@ -802,7 +802,8 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       // visible in the initial pair, leaving no tracks for future cameras to triangulate.
       // Only reject individual outlier observations in the initial pair.
       int rej_obs = reject_outliers_two_view(store, trial.R1, trial.C1, im1, im2, cameras,
-                                             image_to_camera_index, 4.0);
+                                             image_to_camera_index, 10.0);
+      // int rej_obs = 0;
       int n_valid = count_two_view_valid_tracks(*store, im1, im2);
 
       LOG(INFO) << "  After commit: valid_tracks=" << n_valid << ", rejected_obs=" << rej_obs;
@@ -1968,6 +1969,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // Compute adaptive rejection threshold: max(fixed, prev_rmse * factor).
   // This prevents premature culling when RMSE is temporarily high (e.g. early intrinsics convergence).
   auto eff_reject_threshold = [&](double current_rmse) -> double {
+    // return opts.outlier_threshold_px;
     if (opts.outlier_adaptive_factor > 0.0 && current_rmse > 0.0)
       return std::max(opts.outlier_threshold_px, current_rmse * opts.outlier_adaptive_factor);
     return opts.outlier_threshold_px;
@@ -2232,6 +2234,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         break;
     }
 
+    // batch.resize(1);
     auto t_resect0 = Clock::now();
     int added = run_batch_resection(*store_out, batch, *cameras, image_to_camera_index, poses_R_out,
                                     poses_C_out, registered_out, opts.resection_min_inliers);
@@ -2298,6 +2301,26 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           (opt_skip && opts.intrinsics_progressive_freeze) ? make_frozen_vec()
                                                            : std::vector<bool>{};
       auto t_sba = Clock::now();
+
+      // ── Pass 1: pose+point warm-up with fixed intrinsics ──────────────────────────────
+      // Fresh triangulations can produce badly-positioned points (depth errors, behind-camera
+      // sentinel residuals), making the Hessian highly ill-conditioned when intrinsics are
+      // simultaneously free. A short pose-only pass settles the geometry first so that the
+      // subsequent intrinsics-open pass starts from a well-conditioned neighbourhood.
+      if (opt_skip) {
+        double rmse_warmup = 0.0;
+        auto t_wu = Clock::now();
+        run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                      image_to_camera_index, *cameras, cameras,
+                      /*optimize_intrinsics=*/false,
+                      /*max_iterations=*/25, &rmse_warmup, anchor_image,
+                      nullptr, 0u, 0.0, ba_solver_ov);
+        LOG(INFO) << "[PERF] global_ba pose-warmup: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_wu).count()
+                  << "ms  RMSE=" << rmse_warmup << " px";
+      }
+
+      // ── Pass 2: full BA with optional intrinsics ───────────────────────────────────────
       if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                         image_to_camera_index, *cameras, cameras, opt_skip,
                         opts.max_global_ba_iterations, &rmse, anchor_image,

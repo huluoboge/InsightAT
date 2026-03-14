@@ -448,7 +448,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
 
   // ── Build Ceres problem ───────────────────────────────────────────────────
   ceres::Problem problem;
-  ceres::LossFunction* loss = new ceres::HuberLoss(10.0);
+  ceres::LossFunction* loss = new ceres::HuberLoss(4.0);
 
   for (const auto& obs : input.observations) {
     if (obs.image_index < 0 || obs.image_index >= n_cams ||
@@ -462,9 +462,10 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     double* xp = result->points3d[static_cast<size_t>(obs.point_index)].data();
 
     const double scale = (obs.scale > 1e-12) ? obs.scale : 1.0;
-    ceres::CostFunction* cost = (scale == 1.0)
-        ? static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v))
-        : static_cast<ceres::CostFunction*>(new ReprojectionCostAnalyticWeighted(obs.u, obs.v, scale));
+    // ceres::CostFunction* cost = (scale == 1.0)
+    //     ? static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v))
+    //     : static_cast<ceres::CostFunction*>(new ReprojectionCostAnalyticWeighted(obs.u, obs.v, scale));
+    ceres::CostFunction* cost = static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v));
     problem.AddResidualBlock(cost, loss, ip, pp, xp);
   }
 
@@ -633,6 +634,14 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     return false;
   }
 
+  const double rmse_before = (summary.num_residuals > 0)
+      ? std::sqrt(summary.initial_cost * 2.0 / summary.num_residuals) : 0.0;
+  const double rmse_after  = (summary.num_residuals > 0)
+      ? std::sqrt(summary.final_cost  * 2.0 / summary.num_residuals) : 0.0;
+  LOG(INFO) << "global_bundle_analytic: RMSE  before=" << rmse_before
+            << " px  after=" << rmse_after << " px"
+            << "  iters=" << summary.iterations.size()
+            << "  " << summary.BriefReport();
   // ── Extract poses: q → R,  C stored directly ─────────────────────────────
   result->poses_R.resize(static_cast<size_t>(n_cams));
   result->poses_C.resize(static_cast<size_t>(n_cams));
@@ -662,9 +671,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // points are already in result->points3d (optimised in-place)
   result->success       = true;
   result->num_residuals = static_cast<int>(summary.num_residuals);
-  result->rmse_px       = (summary.num_residuals > 0)
-                              ? std::sqrt(summary.final_cost * 2.0 / summary.num_residuals)
-                              : 0.0;
+  result->rmse_px       = rmse_after;
   return true;
 }
 

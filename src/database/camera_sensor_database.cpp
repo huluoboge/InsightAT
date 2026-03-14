@@ -69,6 +69,41 @@ bool CameraSensorDatabase::query_sensor_width(const std::string& manufacturer,
   return false;
 }
 
+bool CameraSensorDatabase::query_sensor_width_loose(const std::string& manufacturer,
+                                                    const std::string& model,
+                                                    double& width_mm_out,
+                                                    std::string* matched_key) const {
+  // First try exact key.
+  if (query_sensor_width(manufacturer, model, width_mm_out)) {
+    if (matched_key) *matched_key = normalize_string(manufacturer) + "|" + normalize_string(model);
+    return true;
+  }
+
+  // Loose match: iterate the lookup table.
+  // Accept a DB entry when:
+  //   (a) normalize(EXIF Make) contains normalize(DB manufacturer), AND
+  //   (b) normalize(EXIF Model) == normalize(DB model)
+  // This handles cases like EXIF Make="NIKON CORPORATION" vs DB make="Nikon".
+  const std::string norm_make  = normalize_string(manufacturer);
+  const std::string norm_model = normalize_string(model);
+
+  for (const auto& kv : lookup_table_) {
+    // kv.first = "db_make|db_model"
+    const std::string& k = kv.first;
+    auto sep = k.find('|');
+    if (sep == std::string::npos) continue;
+    const std::string db_make  = k.substr(0, sep);
+    const std::string db_model = k.substr(sep + 1);
+
+    if (norm_model == db_model && norm_make.find(db_make) != std::string::npos) {
+      width_mm_out = kv.second;
+      if (matched_key) *matched_key = k;
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string CameraSensorDatabase::normalize_string(const std::string& s) const {
   std::string res = s;
   std::transform(res.begin(), res.end(), res.begin(), ::tolower);

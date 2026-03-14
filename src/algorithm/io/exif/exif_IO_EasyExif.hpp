@@ -69,7 +69,7 @@ public:
       sbrand.erase(0, count);
     count = sbrand.find_last_not_of(' ');
     if (count != std::string::npos)
-      sbrand.erase(count);
+      sbrand.erase(count + 1); // erase from count+1 to end, keeping the last non-space char
     return sbrand;
   }
 
@@ -81,9 +81,7 @@ public:
       smodel.erase(0, count);
     count = smodel.find_last_not_of(' ');
     if (count != std::string::npos)
-      smodel.erase(count);
-    //  smodel.erase(0, smodel.find_first_not_of(' '));
-    //   smodel.erase(smodel.find_last_not_of(' '));
+      smodel.erase(count + 1); // erase from count+1 to end, keeping the last non-space char
     return smodel;
   }
 
