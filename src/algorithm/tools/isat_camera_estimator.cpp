@@ -18,13 +18,17 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <glog/logging.h>
@@ -42,6 +46,7 @@
 #include "database/camera_sensor_database.h"
 #include "database/database_types.h"
 #include "io/exif/exif_IO_EasyExif.hpp"
+#include "task_queue/task_queue.hpp"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -90,6 +95,39 @@ static bool saveProject(const std::string& path, const Project& project) {
     return false;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GroupKey: identifies a unique camera model for auto-split grouping.
+// focal is intentionally excluded — same model may have slight EXIF focal drift.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct GroupKey {
+  std::string make;
+  std::string model;
+  int width  = 0;
+  int height = 0;
+
+  bool operator==(const GroupKey& o) const {
+    return make == o.make && model == o.model &&
+           width == o.width && height == o.height;
+  }
+};
+
+struct GroupKeyHash {
+  size_t operator()(const GroupKey& k) const {
+    // boost::hash_combine style
+    auto hc = [](size_t seed, size_t v) {
+      return seed ^ (v + 0x9e3779b9u + (seed << 6) + (seed >> 2));
+    };
+    size_t h = std::hash<std::string>{}(k.make);
+    h = hc(h, std::hash<std::string>{}(k.model));
+    h = hc(h, std::hash<int>{}(k.width));
+    h = hc(h, std::hash<int>{}(k.height));
+    return h;
+  }
+};
+
+using ExifBuckets = std::unordered_map<GroupKey, std::vector<size_t>, GroupKeyHash>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-image EXIF data
@@ -193,6 +231,150 @@ static EstimateResult estimateFocal(const ImageExif& e) {
   LOG(WARNING) << "  focal fallback (f35=35mm) → fx=" << r.fx << "px  "
                << "[make=" << e.make << " model=" << e.model << "]";
   return r;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-image EXIF scan task (Stage pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct ExifScanTask {
+  size_t image_idx = 0;
+  std::string path;
+  ImageExif   exif;
+  bool        exif_valid = false;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// scanGroupExif – 3-stage async pipeline (模仿 isat_extract)
+//
+//   Stage 1 [multi-thread I/O]  : readExif() per image  → ExifScanTask.exif
+//   StageCurrent [main thread]  : aggregate → ExifBuckets
+//
+// 磁盘 IO 在后台线程池并发，主线程做无锁汇总（StageCurrent 保证单线程）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+static ExifBuckets scanGroupExif(const ImageGroup& group, int num_threads = 0) {
+  const int n = static_cast<int>(group.images.size());
+  if (n == 0) return {};
+
+  if (num_threads <= 0)
+    num_threads = std::max(1, std::min(8,
+        static_cast<int>(std::thread::hardware_concurrency())));
+
+  // Pre-allocate task array; Stage accesses by index (no shared mutable state).
+  std::vector<ExifScanTask> tasks(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    tasks[static_cast<size_t>(i)].image_idx = static_cast<size_t>(i);
+    tasks[static_cast<size_t>(i)].path      = group.images[static_cast<size_t>(i)].filename;
+  }
+
+  ExifBuckets buckets;
+
+  const int IO_QUEUE_SIZE  = 32;
+  const int AGG_QUEUE_SIZE = 32;
+
+  // Stage 1: multi-thread EXIF read (I/O bound)
+  Stage readExifStage(
+      "ReadExif", num_threads, IO_QUEUE_SIZE,
+      [&tasks](int idx) {
+        auto& t = tasks[static_cast<size_t>(idx)];
+        if (!fs::exists(t.path)) {
+          LOG(WARNING) << "[auto-split] image not found (skip): " << t.path;
+          return;
+        }
+        t.exif       = readExif(t.path);
+        t.exif_valid = t.exif.valid;
+        if (!t.exif_valid)
+          LOG(WARNING) << "[auto-split] invalid EXIF (skip): " << t.path;
+      });
+
+  // Stage 2 (StageCurrent = main thread): aggregate into buckets, no lock needed.
+  StageCurrent aggregateStage(
+      "AggregateExif", 1, AGG_QUEUE_SIZE,
+      [&tasks, &buckets](int idx) {
+        const auto& t = tasks[static_cast<size_t>(idx)];
+        if (!t.exif_valid) return;
+        GroupKey key;
+        key.make   = t.exif.make;
+        key.model  = t.exif.model;
+        key.width  = t.exif.width;
+        key.height = t.exif.height;
+        buckets[key].push_back(t.image_idx);
+      });
+
+  chain(readExifStage, aggregateStage);
+  readExifStage.setTaskCount(n);
+  aggregateStage.setTaskCount(n);
+
+  // Push indices in background; GPU/aggregate stage runs on main thread.
+  std::thread push_thread([&]() {
+    for (int i = 0; i < n; ++i)
+      readExifStage.push(i);
+  });
+
+  aggregateStage.run(); // main thread drives Stage 2
+
+  push_thread.join();
+  readExifStage.wait();
+
+  LOG(INFO) << "[auto-split] scanned " << n << " images in group '"
+            << group.group_name << "' → " << buckets.size()
+            << " distinct camera model(s)";
+  return buckets;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// splitGroup – split an ImageGroup into per-camera-model sub-groups.
+// The largest bucket KEEPS the original group_id (primary camera).
+// All other buckets are appended as NEW groups to project.image_groups.
+// Returns the list of newly created sub-groups (does NOT append them itself).
+// ─────────────────────────────────────────────────────────────────────────────
+
+static std::vector<ImageGroup> splitGroup(Project& project,
+                                          ImageGroup& group,
+                                          const ExifBuckets& buckets) {
+  if (buckets.size() <= 1) return {};
+
+  // Find the largest bucket → stays as the primary group.
+  const ExifBuckets::value_type* largest = nullptr;
+  for (const auto& kv : buckets)
+    if (!largest || kv.second.size() > largest->second.size())
+      largest = &kv;
+
+  std::vector<ImageGroup> new_groups;
+  int sub_idx = 0;
+
+  for (const auto& kv : buckets) {
+    const bool is_primary = (&kv == largest);
+
+    std::vector<Image> sub_images;
+    sub_images.reserve(kv.second.size());
+    for (size_t gi : kv.second)
+      sub_images.push_back(group.images[gi]);
+
+    if (is_primary) {
+      group.images = sub_images;
+      LOG(INFO) << "  [split] sub[" << sub_idx << "] PRIMARY "
+                << kv.first.make << " " << kv.first.model
+                << " " << kv.first.width << "x" << kv.first.height
+                << " → " << sub_images.size() << " images"
+                << " (retained as group " << group.group_id << ")";
+    } else {
+      ImageGroup ng     = group; // copy: inherit flags/settings
+      ng.group_id       = project.next_image_group_id++;
+      ng.group_name     = group.group_name + "_sub" + std::to_string(sub_idx);
+      ng.images         = sub_images;
+      ng.group_camera   = CameraModel{}; // reset; processGroup will estimate
+      LOG(INFO) << "  [split] sub[" << sub_idx << "] "
+                << kv.first.make << " " << kv.first.model
+                << " " << kv.first.width << "x" << kv.first.height
+                << " → " << sub_images.size() << " images"
+                << " (new group " << ng.group_id << ")";
+      new_groups.push_back(std::move(ng));
+    }
+    ++sub_idx;
+  }
+  return new_groups;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,6 +504,12 @@ int main(int argc, char* argv[]) {
               .doc("Path to camera sensor database (overrides built-in)"));
   cmd.add(make_option(0, max_sample, "max-sample")
               .doc("Max images to sample per group for EXIF (default: 5)"));
+  cmd.add(make_switch(0, "auto-split")
+              .doc("Scan all images in each group; split into sub-groups when multiple camera "
+                   "models (make/model/w/h) are detected"));
+  int split_threads = 0;
+  cmd.add(make_option(0, split_threads, "split-threads")
+              .doc("Thread count for parallel EXIF scan in --auto-split (0 = auto, max 8)"));
   std::string log_level;
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose logging (INFO level)"));
@@ -339,8 +527,9 @@ int main(int argc, char* argv[]) {
     return 0;
 
   // ── Validate arguments ─────────────────────────────────────────────────
-  const bool all_groups = cmd.used('a');
-  const bool one_group = (group_id != static_cast<uint32_t>(-1));
+  const bool all_groups  = cmd.used('a');
+  const bool one_group   = (group_id != static_cast<uint32_t>(-1));
+  const bool auto_split  = cmd.used("auto-split");
 
   if (project_file.empty()) {
     std::cerr << "Error: -p/--project is required\n\n";
@@ -378,33 +567,77 @@ int main(int argc, char* argv[]) {
   }
 
   // ── Process groups ─────────────────────────────────────────────────────
-  int ok_count = 0;
-  int fail_count = 0;
-
+  // Collect original target indices first (auto-split may append new groups).
+  std::vector<size_t> target_indices;
   if (all_groups) {
-    for (auto& grp : project.image_groups) {
-      processGroup(project, grp, max_sample);
-      // Count based on last event printed (side effect: always increments)
-      ok_count++;
-    }
+    for (size_t i = 0; i < project.image_groups.size(); ++i)
+      target_indices.push_back(i);
   } else {
-    // Locate the specified group
-    ImageGroup* target = nullptr;
-    for (auto& grp : project.image_groups) {
-      if (grp.group_id == group_id) {
-        target = &grp;
+    for (size_t i = 0; i < project.image_groups.size(); ++i) {
+      if (project.image_groups[i].group_id == group_id) {
+        target_indices.push_back(i);
         break;
       }
     }
-    if (!target) {
+    if (target_indices.empty()) {
       printEvent({{"type", "camera_estimator.estimate"},
                   {"ok", false},
                   {"data", {{"group_id", group_id}, {"error", "group not found"}}}});
       GdalUtils::DestoryGDAL();
       return 1;
     }
-    processGroup(project, *target, max_sample);
-    ok_count = 1;
+  }
+
+  int ok_count   = 0;
+  int fail_count = 0;
+
+  for (size_t gi : target_indices) {
+    // Use index not pointer — splitGroup push_backs and would invalidate refs.
+    ImageGroup& grp = project.image_groups[gi];
+
+    // ── auto-split: Stage pipeline scans all images, buckets by camera model ──
+    if (auto_split && grp.images.size() > 1) {
+      ExifBuckets buckets = scanGroupExif(grp, split_threads);
+
+      if (buckets.size() > 1) {
+        std::vector<ImageGroup> new_grps = splitGroup(project, grp, buckets);
+
+        json sub_arr = json::array();
+        for (const auto& ng : new_grps)
+          sub_arr.push_back({{"group_id",   ng.group_id},
+                             {"group_name", ng.group_name},
+                             {"n_images",   ng.images.size()}});
+
+        printEvent({{"type", "camera_estimator.split"},
+                    {"ok",   true},
+                    {"data",
+                     {{"source_group_id",    grp.group_id},
+                      {"source_group_name",  grp.group_name},
+                      {"sub_groups_created", new_grps.size()},
+                      {"new_groups",         sub_arr}}}});
+
+        // Append new sub-groups; they are processed after this loop.
+        for (auto& ng : new_grps)
+          project.image_groups.push_back(std::move(ng));
+
+      } else {
+        LOG(INFO) << "[auto-split] only 1 camera model in group " << grp.group_id
+                  << " — no split needed";
+      }
+    }
+
+    // Estimate intrinsics for the (possibly trimmed) primary group.
+    processGroup(project, grp, max_sample);
+    ++ok_count;
+  }
+
+  // Process newly created sub-groups (always appended to the end).
+  if (auto_split && !target_indices.empty()) {
+    const size_t first_new = *std::max_element(target_indices.begin(), target_indices.end()) + 1;
+    for (size_t i = first_new; i < project.image_groups.size(); ++i) {
+      processGroup(project, project.image_groups[i], max_sample);
+      ++ok_count;
+    }
   }
 
   // ── Write project back ─────────────────────────────────────────────────
