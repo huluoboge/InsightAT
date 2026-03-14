@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -47,6 +48,15 @@ def set_log_tool_stderr_progress_only(enabled: bool) -> None:
     """When enabled together with stderr_at_info, only log lines that look like progress (e.g. 10/550, %)."""
     global _log_tool_stderr_progress_only
     _log_tool_stderr_progress_only = enabled
+
+
+# Matches glog header: [IWEF]MMDD HH:MM:SS.uuuuuu threadid file:line]
+_GLOG_RE = re.compile(r'^[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+ \d+ [^:]+:\d+\] ')
+
+
+def _strip_glog_prefix(line: str) -> str:
+    """Remove glog header (e.g. 'I0314 23:22:19.867266 1223135 foo.cpp:42] ') from a log line."""
+    return _GLOG_RE.sub('', line)
 
 
 def _looks_like_progress(line: str) -> bool:
@@ -223,11 +233,11 @@ def run_tool(
                 if _log_tool_stderr_at_info:
                     if _log_tool_stderr_progress_only:
                         if _looks_like_progress(stripped):
-                            log.info("[%s] %s", tool_name, stripped)
+                            log.info("[%s] %s", tool_name, _strip_glog_prefix(stripped))
                     else:
-                        log.info("[%s] %s", tool_name, stripped)
+                        log.info("%s", _strip_glog_prefix(stripped))
                 else:
-                    log.debug("[%s stderr] %s", tool_name, stripped)
+                    log.debug("[%s stderr] %s", tool_name, _strip_glog_prefix(stripped))
                 for h in logging.getLogger().handlers:
                     h.flush()
 
