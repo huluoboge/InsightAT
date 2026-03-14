@@ -263,8 +263,13 @@ struct IncrementalSfMOptions {
   int intrinsics_freeze_stable_rounds = 2;  ///< Consecutive stable BAs required to confirm freeze.
 
   // ─── Periodic global BA during local-BA phase ────────────────────────────
-  /// During local-BA phase, trigger a full global BA (with per-camera selective intrinsics) every
-  /// this many newly registered images.  Prevents distortion drift from repeated local-only passes.
+  /// During local-BA phase, trigger a full global BA every this many newly registered images.
+  /// Serves two purposes depending on freeze state:
+  ///   - Pre-freeze:  global BA with per-camera selective intrinsics, prevents distortion drift
+  ///                  accumulating from repeated local-only passes (root cause of 3D-point bending).
+  ///   - Post-freeze: all camera intrinsics are fixed (kFixIntrAll), so this becomes a pure
+  ///                  global pose + 3D-point refinement BA — still essential for correcting
+  ///                  drift that local BA cannot see across the full scene extent.
   /// 0 = disabled.  Typical: 20 images.
   int periodic_global_ba_every_n_images = 20;
 
