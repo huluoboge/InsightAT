@@ -542,6 +542,7 @@ def run_incremental_sfm(
     resection_min_3d2d: int = 0,
     late_reg_threshold: int = 0,
     late_abs_min: int = 0,
+    late_batch_max: int = 0,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -565,6 +566,7 @@ def run_incremental_sfm(
         resection_min_3d2d:     Min 3D-2D correspondences for resection candidate (0 = default 15).
         late_reg_threshold:     Late-stage resection: relax ratio floor when registered > this (0 = off).
         late_abs_min:           Late-stage absolute floor for 3D-2D count (0 = off).
+        late_batch_max:         Max images per batch in late-stage mode (0 = use batch_max). Object-scan preset: 5.
     """
     cmd = [
         _isat_incremental_sfm(),
@@ -598,6 +600,8 @@ def run_incremental_sfm(
         cmd += ["--late-reg-threshold", str(late_reg_threshold)]
     if late_abs_min > 0:
         cmd += ["--late-abs-min", str(late_abs_min)]
+    if late_batch_max > 0:
+        cmd += ["--late-batch-max", str(late_batch_max)]
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)

@@ -192,6 +192,7 @@ int main(int argc, char* argv[]) {
   int resection_min_3d2d = 0;
   int late_reg_threshold = 0;
   int late_abs_min = 0;
+  int late_batch_max = 0;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -210,7 +211,8 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, resection_min_3d2d, "resection-min-3d2d").doc("Min 3D-2D correspondences for resection candidate (0=use default 15). Object-scan preset: 30."));
   cmd.add(make_option(0, late_reg_threshold, "late-reg-threshold").doc("Late-stage resection: relax ratio floor when num_registered > this (0=disabled). Object-scan preset: 30."));
   cmd.add(make_option(0, late_abs_min, "late-abs-min").doc("Late-stage resection absolute floor (0=disabled). Object-scan preset: 100."));
-  cmd.add(make_switch(0, "object-scan").doc("Preset for circumferential/object-scan shooting: no-local-ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100."));
+  cmd.add(make_option(0, late_batch_max, "late-batch-max").doc("Max images per batch in late-stage mode (0=use batch_max). Object-scan preset: 5."));
+  cmd.add(make_switch(0, "object-scan").doc("Preset for circumferential/object-scan shooting: no-local-ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100, late_batch_max=5."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -266,7 +268,9 @@ int main(int argc, char* argv[]) {
     opts.resection_min_3d2d_count = 30;
     opts.resection_late_registered_threshold = 30;
     opts.resection_late_absolute_min = 100;
-    LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100.";
+    opts.resection_late_batch_max = 5;
+    // opts.local_ba_strategy = LocalBAStrategy::kBatchNeighbor;
+    LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100, late_batch_max=5.";
   }
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba_optimize_intrinsics = false;
@@ -285,6 +289,7 @@ int main(int argc, char* argv[]) {
   if (resection_min_3d2d > 0)        opts.resection_min_3d2d_count = resection_min_3d2d;
   if (late_reg_threshold > 0)        opts.resection_late_registered_threshold = late_reg_threshold;
   if (late_abs_min > 0)              opts.resection_late_absolute_min = late_abs_min;
+  if (late_batch_max > 0)            opts.resection_late_batch_max = late_batch_max;
   if (!run_incremental_sfm_pipeline(
           tracks_path, pairs_path, geo_dir,
           &project.cameras, project.image_to_camera_index, opts,

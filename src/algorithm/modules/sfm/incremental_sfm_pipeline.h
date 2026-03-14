@@ -56,23 +56,29 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
  *      Late-stage relaxation (object-scan): when num_registered > late_registered_threshold
  *      and late_absolute_min > 0, ratio_floor = min(ratio_floor, late_absolute_min),
  *      allowing more candidates into the batch once the map is large enough.
- *   4. batch = all candidates with score >= ratio_floor, capped at batch_max images.
+ *   4. batch = all candidates with score >= ratio_floor, capped at
+ *      late_batch_max (in late-stage mode) or batch_max (normal mode).
  *
  * @param min_3d2d_count            Absolute floor: images below this are never candidates.
  *                                  COLMAP uses 15; raise to 30 for high-overlap datasets.
  * @param batch_ratio               Relative threshold vs best candidate (OpenMVG default 0.75).
- * @param batch_max                 Upper cap on batch size to avoid over-registration per iter.
+ * @param batch_max                 Upper cap on batch size (normal mode).
  * @param late_registered_threshold When num_registered exceeds this, switch to late-stage mode.
  *                                  0 = disabled (pure ratio mode always).
  * @param late_absolute_min         Late-stage absolute floor: ratio_floor = min(ratio_floor, this).
  *                                  0 = disabled.
+ * @param late_batch_max            Hard cap on batch size in late-stage mode.  Use a lower value
+ *                                  than batch_max to avoid adding too many images at once when the
+ *                                  map is large (which makes global BA very expensive).
+ *                                  0 = use batch_max (no separate late-stage cap).
  */
 std::vector<int> choose_next_resection_batch(const TrackStore& store,
                                              const std::vector<bool>& registered,
                                              int min_3d2d_count, double batch_ratio,
                                              int batch_max,
                                              int late_registered_threshold = 0,
-                                             int late_absolute_min = 0);
+                                             int late_absolute_min = 0,
+                                             int late_batch_max = 0);
 
 /**
  * Run resection for each image in the batch; intrinsics = cameras[image_to_camera_index[im]].
@@ -248,6 +254,10 @@ struct IncrementalSfMOptions {
   /// Absolute minimum 3D-2D count in late-stage mode (see above).
   /// 0 = disabled.  Object-scan preset: 100.
   int resection_late_absolute_min = 0;
+  /// Hard cap on batch size in late-stage mode.  Should be lower than resection_batch_max
+  /// to prevent adding too many images at once when the map is large (makes global BA slow).
+  /// 0 = use resection_batch_max.  Object-scan preset: 5.
+  int resection_late_batch_max = 0;
 
   // ─── Bundle adjustment ───────────────────────────────────────────────────
   int local_ba_after_n_images =

@@ -891,7 +891,8 @@ std::vector<int> choose_next_resection_batch(const TrackStore& store,
                                              int min_3d2d_count, double batch_ratio,
                                              int batch_max,
                                              int late_registered_threshold,
-                                             int late_absolute_min) {
+                                             int late_absolute_min,
+                                             int late_batch_max) {
   using Clock = std::chrono::steady_clock;
   const int n_images = store.num_images();
   if (n_images == 0 || static_cast<int>(registered.size()) != n_images || batch_max <= 0)
@@ -939,16 +940,19 @@ std::vector<int> choose_next_resection_batch(const TrackStore& store,
   // excluded just because the best has 300 obs (ratio_floor would be 225).
   const bool late_mode = (late_registered_threshold > 0 && late_absolute_min > 0 &&
                           num_registered > late_registered_threshold);
+  // In late-stage mode: relax ratio floor AND cap batch size separately.
+  const int effective_batch_cap = (late_mode && late_batch_max > 0) ? late_batch_max : batch_max;
   if (late_mode) {
     ratio_floor = std::min(ratio_floor, late_absolute_min);
     LOG(INFO) << "  [late-mode] num_registered=" << num_registered
               << " > threshold=" << late_registered_threshold
               << ": ratio_floor relaxed to min(" << static_cast<int>(std::ceil(best_count * batch_ratio))
-              << ", " << late_absolute_min << ")=" << ratio_floor;
+              << ", " << late_absolute_min << ")=" << ratio_floor
+              << ", batch_cap=" << effective_batch_cap;
   }
   std::vector<int> out;
   for (const auto& p : unreg_count) {
-    if (p.first < ratio_floor || static_cast<int>(out.size()) >= batch_max)
+    if (p.first < ratio_floor || static_cast<int>(out.size()) >= effective_batch_cap)
       break;
     out.push_back(p.second);
   }
@@ -2156,9 +2160,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // violates this design: the "batch" in run_local_ba_colmap is meant to be a single
   // newly-registered image, and its COLMAP-paper variable-set expansion only makes
   // sense when the batch contains just one new camera.
-  const int effective_batch_max =
-      (opts.local_ba_strategy == LocalBAStrategy::kColmap) ? 1 : opts.resection_batch_max;
 
+  int effective_batch_max =
+      (opts.local_ba_strategy == LocalBAStrategy::kColmap) ? 1 : opts.resection_batch_max;
+  if(opts.skip_local_ba) {
+      LOG(INFO) << "Skipping local BA: setting effective_batch_max to " << opts.resection_batch_max;
+      effective_batch_max = opts.resection_batch_max;
+  }
   auto pipeline_start = Clock::now();
   int sfm_iter = 0;
   for (;;) {
@@ -2172,7 +2180,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         choose_next_resection_batch(*store_out, *registered_out, opts.resection_min_3d2d_count,
                                     opts.resection_batch_ratio, effective_batch_max,
                                     opts.resection_late_registered_threshold,
-                                    opts.resection_late_absolute_min);
+                                    opts.resection_late_absolute_min,
+                                    opts.resection_late_batch_max);
     auto t_choose1 = Clock::now();
     LOG(INFO) << "[PERF] choose_batch: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
@@ -2214,7 +2223,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                             opts.resection_min_3d2d_count,
                                             opts.resection_batch_ratio, effective_batch_max,
                                             opts.resection_late_registered_threshold,
-                                            opts.resection_late_absolute_min);
+                                            opts.resection_late_absolute_min,
+                                            opts.resection_late_batch_max);
           }
         }
       }
