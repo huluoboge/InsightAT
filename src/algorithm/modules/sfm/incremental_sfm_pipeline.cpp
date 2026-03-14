@@ -2011,7 +2011,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // ─── Per-camera intrinsics freeze state ─────────────────────────────────────
   struct CamFreezeState {
     bool frozen = false;
-    double prev_k1 = 0.0, prev_k2 = 0.0, prev_k3 = 0.0;
+    double prev_k1 = 0.0, prev_k2 = 0.0, prev_k3 = 0.0, prev_p1 = 0.0, prev_p2 = 0.0;
     int stable_rounds = 0;
   };
   const int n_cameras = static_cast<int>(cameras->size());
@@ -2031,7 +2031,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           ++cam_reg;
       const camera::Intrinsics& K = (*cameras)[static_cast<size_t>(c)];
       const double dk = std::abs(K.k1 - fs.prev_k1) + std::abs(K.k2 - fs.prev_k2) +
-                        std::abs(K.k3 - fs.prev_k3);
+                        std::abs(K.k3 - fs.prev_k3) + std::abs(K.p1 - fs.prev_p1) +
+                        std::abs(K.p2 - fs.prev_p2);
       if (cam_reg >= opts.intrinsics_freeze_min_images && dk < opts.intrinsics_freeze_delta_k) {
         ++fs.stable_rounds;
         if (fs.stable_rounds >= opts.intrinsics_freeze_stable_rounds) {
@@ -2043,6 +2044,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         fs.stable_rounds = 0;
       }
       fs.prev_k1 = K.k1; fs.prev_k2 = K.k2; fs.prev_k3 = K.k3;
+      fs.prev_p1 = K.p1; fs.prev_p2 = K.p2;
     }
   };
 
