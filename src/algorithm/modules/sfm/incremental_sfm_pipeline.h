@@ -256,7 +256,10 @@ struct IncrementalSfMOptions {
   /// Final global BA always re-opens all cameras (safety net against premature freeze).
   bool intrinsics_progressive_freeze = true;
   int intrinsics_freeze_min_images = 30;    ///< Level-1 gate: min registered images per camera.
-  double intrinsics_freeze_delta_k  = 1e-4; ///< Level-2: |Δk1|+|Δk2|+|Δk3| convergence threshold.
+  /// Level-2 convergence thresholds for IntrinsicsDelta::stable().
+  double intrinsics_freeze_delta_focal = 1e-3; ///< Relative focal change: (|Δfx|/fx+|Δfy|/fy)/2 < this.
+  double intrinsics_freeze_delta_pp    = 0.5;  ///< Principal-point shift: |Δcx|+|Δcy| < this (px).
+  double intrinsics_freeze_delta_dist  = 1e-4; ///< Distortion L1: |Δk1|+…+|Δp2| < this.
   int intrinsics_freeze_stable_rounds = 2;  ///< Consecutive stable BAs required to confirm freeze.
 
   // ─── Periodic global BA during local-BA phase ────────────────────────────
