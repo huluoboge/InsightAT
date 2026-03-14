@@ -89,7 +89,8 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
                             const std::vector<bool>& registered,
                             const std::vector<camera::Intrinsics>& cameras,
                             const std::vector<int>& image_to_camera_index,
-                            double min_tri_angle_deg = 0.5);
+                            double min_tri_angle_deg = 0.5,
+                            std::vector<int>* new_track_ids_out = nullptr);
 
 /**
  * Re-triangulate tracks with track_needs_retriangulation; clear flag. Use current cameras for
@@ -153,6 +154,24 @@ bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_
                          const std::vector<int>& batch, int max_variable_cameras,
                          int max_iterations, double* rmse_px_out);
 
+/**
+ * Neighbor-anchored local BA (kBatchNeighbor strategy).
+ *   Variable cameras : batch (newly resected, PnP poses).
+ *   Variable 3D points: new_track_ids (just triangulated this iteration).
+ *   Constant cameras : per-batch-image top-neighbor_k neighbors by shared triangulated point count
+ *                      (union across all batch images, excluding batch itself).
+ *   Constant 3D points: old triangulated tracks visible from ≥1 batch AND ≥1 constant camera.
+ * Intrinsics are not optimised.
+ */
+bool run_local_ba_batch_neighbor(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                                 std::vector<Eigen::Vector3d>* poses_C,
+                                 const std::vector<bool>& registered,
+                                 const std::vector<int>& image_to_camera_index,
+                                 const std::vector<camera::Intrinsics>& cameras,
+                                 const std::vector<int>& batch,
+                                 const std::vector<int>& new_track_ids, int neighbor_k,
+                                 int max_iterations, double* rmse_px_out);
+
 // ─── Full pipeline ───────────────────────────────────────────────────────────
 
 /// Strategy for the per-iteration local BA in the incremental SfM loop.
@@ -167,6 +186,10 @@ enum class LocalBAStrategy {
   /// observers of the same seed points (frozen, provide gauge fix).  Only seed
   /// points are included, so the problem is genuinely local.
   kColmap,
+  /// Neighbor-anchored: variable = batch cameras + newly triangulated points;
+  /// constant = per-batch-image top-K neighbors by co-visibility (union).
+  /// No magic window parameter – neighborhood size is data-driven.
+  kBatchNeighbor,
 };
 
 struct IncrementalSfMOptions {
@@ -209,6 +232,10 @@ struct IncrementalSfMOptions {
   /// Cameras beyond this cap are assigned to the constant (frozen) set.
   /// COLMAP default is 6 (LocalBundleAdjustor::Options::max_num_images).
   int local_ba_colmap_max_variable_images = 6;
+  /// kBatchNeighbor: for each batch image, take this many top neighbors (by shared triangulated
+  /// point count) as constant anchor cameras.  Union is taken across all batch images so every
+  /// new camera has at least min(neighbor_k, registered_count) anchors.
+  int local_ba_neighbor_k = 5;
   /// Run global BA only every N newly-registered images during the early global-BA phase
   /// (num_registered < local_ba_after_n_images).  The last BA before switching to local BA
   /// is always executed regardless.  Default = 1 (original: BA after every image).

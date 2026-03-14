@@ -1004,7 +1004,9 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
                             const std::vector<bool>& registered,
                             const std::vector<camera::Intrinsics>& cameras,
                             const std::vector<int>& image_to_camera_index,
-                            double min_tri_angle_deg) {
+                            double min_tri_angle_deg,
+                            std::vector<int>* new_track_ids_out) {
+  if (new_track_ids_out) new_track_ids_out->clear();
   using Clock = std::chrono::steady_clock;
   if (!store)
     return 0;
@@ -1075,6 +1077,7 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
     store->set_track_xyz(track_id, static_cast<float>(X(0)), static_cast<float>(X(1)),
                          static_cast<float>(X(2)));
     ++updated;
+    if (new_track_ids_out) new_track_ids_out->push_back(track_id);
   }
   auto t1 = std::chrono::steady_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -1634,6 +1637,199 @@ bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_
   return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// kBatchNeighbor local BA
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build BA input for the neighbor-anchored strategy.
+/// Variable cameras : batch.
+/// Variable 3D points: new_track_ids (just triangulated this iteration).
+/// Constant cameras : union of per-batch-image top-neighbor_k historical neighbors
+///                    (ranked by shared triangulated point count).
+/// Constant 3D points: old triangulated tracks visible from ≥1 batch AND ≥1 constant camera.
+static bool build_ba_input_batch_neighbor(
+    const TrackStore& store, const std::vector<Eigen::Matrix3d>& poses_R,
+    const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
+    const std::vector<int>& image_to_camera_index, const std::vector<camera::Intrinsics>& cameras,
+    const std::vector<int>& batch, const std::vector<int>& new_track_ids, int neighbor_k,
+    std::vector<int>* ba_image_index_to_global_out, BAInput* ba_input_out,
+    std::vector<int>* point_index_to_track_id_out) {
+  if (!ba_input_out || !ba_image_index_to_global_out || !point_index_to_track_id_out)
+    return false;
+  const int n_images = store.num_images();
+  const size_t n_tracks = store.num_tracks();
+  std::set<int> batch_set(batch.begin(), batch.end());
+  std::set<int> new_track_set(new_track_ids.begin(), new_track_ids.end());
+
+  // ── Per-batch-image top-K neighbors ──────────────────────────────────────
+  std::set<int> constant_set;
+  std::vector<int> track_ids_buf;
+  std::vector<Observation> obs_buf;
+  for (int b : batch) {
+    // Count shared triangulated tracks between b and each registered historical image.
+    std::unordered_map<int, int> neighbor_score;
+    track_ids_buf.clear();
+    store.get_image_track_observations(b, &track_ids_buf, nullptr);
+    for (int tid : track_ids_buf) {
+      if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+        continue;
+      obs_buf.clear();
+      store.get_track_observations(tid, &obs_buf);
+      for (const auto& o : obs_buf) {
+        int g = static_cast<int>(o.image_index);
+        if (g >= 0 && g < n_images && registered[static_cast<size_t>(g)] && !batch_set.count(g))
+          neighbor_score[g]++;
+      }
+    }
+    // Sort descending; take top-neighbor_k for this batch image.
+    std::vector<std::pair<int, int>> sorted(neighbor_score.begin(), neighbor_score.end());
+    std::sort(sorted.begin(), sorted.end(),
+              [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
+                return a.second > b.second;
+              });
+    int taken = 0;
+    for (const auto& p : sorted) {
+      if (taken >= neighbor_k) break;
+      constant_set.insert(p.first);
+      ++taken;
+    }
+  }
+
+  // ── Image sets ────────────────────────────────────────────────────────────
+  std::set<int> all_image_set;
+  for (int g : batch) all_image_set.insert(g);
+  for (int g : constant_set) all_image_set.insert(g);
+  if (all_image_set.empty()) return false;
+
+  std::vector<int>& global_indices = *ba_image_index_to_global_out;
+  global_indices.assign(all_image_set.begin(), all_image_set.end());
+
+  // ── BAInput: poses + cameras ──────────────────────────────────────────────
+  BAInput& ba = *ba_input_out;
+  ba.poses_R.clear(); ba.poses_C.clear(); ba.points3d.clear();
+  ba.observations.clear(); ba.image_camera_index.clear();
+  ba.cameras = cameras;
+  ba.fix_pose.clear(); ba.fix_point.clear(); ba.fix_intrinsics_flags.clear();
+  ba.optimize_intrinsics = false;
+  for (int g : global_indices) {
+    ba.poses_R.push_back(poses_R[static_cast<size_t>(g)]);
+    ba.poses_C.push_back(poses_C[static_cast<size_t>(g)]);
+    const int cam_idx = image_to_camera_index[static_cast<size_t>(g)];
+    ba.image_camera_index.push_back(
+        cam_idx >= 0 && cam_idx < static_cast<int>(cameras.size()) ? cam_idx : 0);
+  }
+  const int n_ba_images = static_cast<int>(global_indices.size());
+  ba.fix_pose.resize(static_cast<size_t>(n_ba_images), false);
+  for (int bi = 0; bi < n_ba_images; ++bi)
+    ba.fix_pose[static_cast<size_t>(bi)] = (constant_set.count(global_indices[bi]) > 0);
+  ba.fix_intrinsics_flags.resize(ba.cameras.size(),
+                                  static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
+
+  // ── Points ────────────────────────────────────────────────────────────────
+  // Variable: new_track_ids (just triangulated, XYZ needs refinement).
+  // Constant: old tracks visible from ≥1 batch AND ≥1 constant camera (anchors).
+  std::vector<int> track_id_to_point_index(n_tracks, -1);
+  point_index_to_track_id_out->clear();
+
+  // Helper: add a track if ≥2 obs in all_image_set. Returns true if added.
+  auto try_add_track = [&](int track_id, bool fix_pt) -> bool {
+    if (!store.is_track_valid(track_id) || !store.track_has_triangulated_xyz(track_id))
+      return false;
+    obs_buf.clear();
+    store.get_track_observations(track_id, &obs_buf);
+    int vis = 0;
+    for (const auto& o : obs_buf)
+      if (all_image_set.count(static_cast<int>(o.image_index))) ++vis;
+    if (vis < 2) return false;
+    const int pt_idx = static_cast<int>(point_index_to_track_id_out->size());
+    track_id_to_point_index[track_id] = pt_idx;
+    point_index_to_track_id_out->push_back(track_id);
+    float x, y, z;
+    store.get_track_xyz(track_id, &x, &y, &z);
+    ba.points3d.emplace_back(static_cast<double>(x), static_cast<double>(y),
+                             static_cast<double>(z));
+    ba.fix_point.push_back(fix_pt);
+    return true;
+  };
+
+  // Variable points: new tracks (order matters for readability only).
+  for (int tid : new_track_ids) try_add_track(tid, false);
+
+  // Constant anchor points: old tracks shared between batch and constant cameras.
+  // Collect candidates from constant cameras' reverse index, then check batch visibility.
+  std::unordered_set<int> old_candidates;
+  for (int c : constant_set) {
+    track_ids_buf.clear();
+    store.get_image_track_observations(c, &track_ids_buf, nullptr);
+    for (int tid : track_ids_buf)
+      if (!new_track_set.count(tid)) old_candidates.insert(tid);
+  }
+  for (int tid : old_candidates) {
+    // Must also be visible from at least one batch image to constrain the new camera pose.
+    obs_buf.clear();
+    store.get_track_observations(tid, &obs_buf);
+    bool seen_from_batch = false;
+    for (const auto& o : obs_buf)
+      if (batch_set.count(static_cast<int>(o.image_index))) { seen_from_batch = true; break; }
+    if (seen_from_batch) try_add_track(tid, true);
+  }
+
+  if (ba.points3d.empty()) return false;
+
+  // ── Observations ─────────────────────────────────────────────────────────
+  for (size_t ti = 0; ti < n_tracks; ++ti) {
+    const int track_id = static_cast<int>(ti);
+    const int pt_idx = track_id_to_point_index[track_id];
+    if (pt_idx < 0) continue;
+    obs_buf.clear();
+    store.get_track_observations(track_id, &obs_buf);
+    for (const auto& o : obs_buf) {
+      int g = static_cast<int>(o.image_index);
+      auto it = std::lower_bound(global_indices.begin(), global_indices.end(), g);
+      if (it == global_indices.end() || *it != g) continue;
+      int ba_im = static_cast<int>(it - global_indices.begin());
+      double scale = (o.scale > 1e-6f) ? static_cast<double>(o.scale) : 1.0;
+      ba.observations.push_back(
+          {ba_im, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v), scale});
+    }
+  }
+  return !ba.observations.empty();
+}
+
+bool run_local_ba_batch_neighbor(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                                 std::vector<Eigen::Vector3d>* poses_C,
+                                 const std::vector<bool>& registered,
+                                 const std::vector<int>& image_to_camera_index,
+                                 const std::vector<camera::Intrinsics>& cameras,
+                                 const std::vector<int>& batch,
+                                 const std::vector<int>& new_track_ids, int neighbor_k,
+                                 int max_iterations, double* rmse_px_out) {
+  if (!store || !poses_R || !poses_C || batch.empty()) return false;
+  std::vector<int> ba_image_index_to_global;
+  std::vector<int> point_index_to_track_id;
+  BAInput ba_in;
+  if (!build_ba_input_batch_neighbor(*store, *poses_R, *poses_C, registered, image_to_camera_index,
+                                     cameras, batch, new_track_ids, neighbor_k,
+                                     &ba_image_index_to_global, &ba_in, &point_index_to_track_id))
+    return false;
+  int n_variable_cams = 0, n_constant_cams = 0, n_variable_pts = 0, n_constant_pts = 0;
+  for (bool f : ba_in.fix_pose) { if (f) ++n_constant_cams; else ++n_variable_cams; }
+  for (bool f : ba_in.fix_point) { if (f) ++n_constant_pts; else ++n_variable_pts; }
+  LOG(INFO) << "run_local_ba_batch_neighbor: var_cams=" << n_variable_cams
+            << " const_cams=" << n_constant_cams << " var_pts=" << n_variable_pts
+            << " const_pts=" << n_constant_pts << " obs=" << ba_in.observations.size();
+  BAResult ba_out;
+  if (!global_bundle_analytic(ba_in, &ba_out, max_iterations)) {
+    LOG(WARNING) << "run_local_ba_batch_neighbor: solver failed";
+    return false;
+  }
+  LOG(INFO) << "run_local_ba_batch_neighbor: RMSE=" << ba_out.rmse_px << " px";
+  write_ba_result_back(ba_out, ba_image_index_to_global, point_index_to_track_id, store, poses_R,
+                       poses_C, nullptr);
+  if (rmse_px_out) *rmse_px_out = ba_out.rmse_px;
+  return true;
+}
+
 bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                   const std::string& pairs_json_path, const std::string& geo_dir,
                                   std::vector<camera::Intrinsics>* cameras,
@@ -1860,9 +2056,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     }
 
     auto t_tri0 = Clock::now();
+    std::vector<int> new_track_ids;
     int n_new_tri =
         run_batch_triangulation(store_out, batch, *poses_R_out, *poses_C_out, *registered_out,
-                                *cameras, image_to_camera_index, opts.min_tri_angle_deg);
+                                *cameras, image_to_camera_index, opts.min_tri_angle_deg,
+                                &new_track_ids);
     LOG(INFO) << "[PERF] triangulation: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
               << "ms  new_tri=" << n_new_tri;
@@ -1907,6 +2105,14 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                     image_to_camera_index, *cameras, batch,
                                     opts.local_ba_colmap_max_variable_images, 25, &rmse);
         LOG(INFO) << "[PERF] local_ba_colmap: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
+                  << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+      } else if (opts.local_ba_strategy == LocalBAStrategy::kBatchNeighbor) {
+        // ── Neighbor-anchored: variable=batch+new_pts, constant=per-image top-K neighbors ──
+        ba_ok = run_local_ba_batch_neighbor(store_out, poses_R_out, poses_C_out, *registered_out,
+                                            image_to_camera_index, *cameras, batch, new_track_ids,
+                                            opts.local_ba_neighbor_k, 25, &rmse);
+        LOG(INFO) << "[PERF] local_ba_batch_neighbor: "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
                   << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
       } else {

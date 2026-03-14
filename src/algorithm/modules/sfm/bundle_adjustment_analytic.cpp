@@ -491,12 +491,25 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   options.max_num_iterations           = max_iterations;
   options.minimizer_progress_to_stdout = false;
 
-  // When intrinsics are free, SPARSE_SCHUR (CHOLMOD) requires a positive-definite
-  // Schur complement — intrinsics coupling can violate that.  Use ITERATIVE_SCHUR
-  // instead, which is preconditioner-based and does not have this restriction.
+  // Auto-select linear solver based on variable camera count.
+  //
+  // DENSE_SCHUR: Schur complement is (6*n_var)×(6*n_var) dense – solved by LAPACK.
+  //   · LAPACK's pivot threshold is more permissive than CHOLMOD's strict PD check,
+  //     so it survives near-degenerate local configurations that kill SPARSE_SCHUR.
+  //   · Very fast for n_var ≤ 30 (Schur ≤ 180×180); use as first choice for local BA.
+  // SPARSE_SCHUR: better for large n_var (global BA, full-scene). Uses CHOLMOD.
+  // SPARSE_NORMAL_CHOLESKY: when intrinsics are free – avoids Schur complement
+  //   instability caused by intrinsics coupling.
+  const int kDenseSchurMaxVariableCams = 30;
+  int n_variable_cams = 0;
+  for (bool fixed : input.fix_pose)
+    if (!fixed) ++n_variable_cams;
+
   if (input.optimize_intrinsics) {
     options.linear_solver_type  = ceres::SPARSE_NORMAL_CHOLESKY;
     options.preconditioner_type = ceres::JACOBI;
+  } else if (n_variable_cams <= kDenseSchurMaxVariableCams) {
+    options.linear_solver_type = ceres::DENSE_SCHUR;
   } else {
     options.linear_solver_type = ceres::SPARSE_SCHUR;
   }
@@ -504,13 +517,13 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
-  // Fallback: if SPARSE_SCHUR failed (e.g. near-degenerate/near-planar scene
-  // makes the Schur complement ill-conditioned), retry with DENSE_SCHUR.
-  // For typical local-BA windows (≤20 cams → 120×120 Schur), DENSE_SCHUR is
-  // fast and LAPACK's pivot threshold is more permissive than CHOLMOD's.
-  if (!summary.IsSolutionUsable() && !input.optimize_intrinsics) {
-    LOG(WARNING) << "global_bundle_analytic: SPARSE_SCHUR failed ("
-                 << summary.message << "), retrying with DENSE_SCHUR";
+  // Fallback: if the chosen solver failed, retry with DENSE_SCHUR (LAPACK – most
+  // numerically robust).  Not needed when we already started with DENSE_SCHUR.
+  if (!summary.IsSolutionUsable() && !input.optimize_intrinsics &&
+      options.linear_solver_type != ceres::DENSE_SCHUR) {
+    LOG(WARNING) << "global_bundle_analytic: "
+                 << ceres::LinearSolverTypeToString(options.linear_solver_type)
+                 << " failed (" << summary.message << "), retrying with DENSE_SCHUR";
     options.linear_solver_type  = ceres::DENSE_SCHUR;
     options.preconditioner_type = ceres::JACOBI;
     ceres::Solve(options, &problem, &summary);
