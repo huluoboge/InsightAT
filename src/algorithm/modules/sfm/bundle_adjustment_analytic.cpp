@@ -479,6 +479,44 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       problem.SetParameterization(ip, new ceres::SubsetParameterization(kAnalyticIntrCount, fixed));
   }
 
+  // ── Intrinsics parameter bounds (prevent radial-polynomial degeneracy) ────────────────
+  //
+  // In aerial nadir imagery, feature points are concentrated at r/r_max ≈ 0.4–0.7.
+  // In this range, r², r⁴, r⁶ are nearly collinear → the optimizer can trade k1/k2/k3
+  // against each other and against focal length, creating a "bowl" or "banana" artifact
+  // even when reprojection RMSE is low.
+  //
+  // Tight bounds on distortion prevent k2/k3 from blowing up (observed k2=0.594, k3=-0.919)
+  // and constrain sigma (fy/fx) to physically plausible values for a metric camera lens.
+  //
+  // Bounds are NOT applied to fully-constant blocks (frozen cameras) — those blocks are
+  // already handled by SetParameterBlockConstant and never touch the optimizer.
+  if (input.optimize_intrinsics) {
+    for (int c = 0; c < n_distinct; ++c) {
+      double* ip = intr_params.data() + static_cast<size_t>(c) * kAnalyticIntrCount;
+      if (!problem.HasParameterBlock(ip)) continue;
+      // Skip fully-frozen cameras (all bits set → block is SetParameterBlockConstant).
+      const uint32_t flags = (input.fix_intrinsics_flags.size() > static_cast<size_t>(c))
+                                 ? static_cast<uint32_t>(input.fix_intrinsics_flags[static_cast<size_t>(c)])
+                                 : 0u;
+      int n_fixed = 0;
+      for (int i = 0; i < kAnalyticIntrCount; ++i) n_fixed += static_cast<int>((flags >> i) & 1u);
+      if (n_fixed >= kAnalyticIntrCount) continue;
+
+      // sigma = fy/fx: modern camera lenses are very close to square pixels.
+      problem.SetParameterLowerBound(ip, kSigma, 0.95);
+      problem.SetParameterUpperBound(ip, kSigma, 1.05);
+      // Radial distortion: prevent k2/k3 from blowing up.
+      //   k1 [-0.8, 0.8] — generous; k2 tighter, k3 tightest (6th-order correction).
+      problem.SetParameterLowerBound(ip, kK1, -0.8);   problem.SetParameterUpperBound(ip, kK1,  0.8);
+      problem.SetParameterLowerBound(ip, kK2, -0.5);   problem.SetParameterUpperBound(ip, kK2,  0.5);
+      problem.SetParameterLowerBound(ip, kK3, -0.3);   problem.SetParameterUpperBound(ip, kK3,  0.3);
+      // Tangential distortion: typically very small for modern drone lenses.
+      problem.SetParameterLowerBound(ip, kP1, -0.05);  problem.SetParameterUpperBound(ip, kP1,  0.05);
+      problem.SetParameterLowerBound(ip, kP2, -0.05);  problem.SetParameterUpperBound(ip, kP2,  0.05);
+    }
+  }
+
   // Fix 3D points: optional fix_point[p]
   for (int p = 0; p < n_pts; ++p) {
     double* xp = result->points3d[static_cast<size_t>(p)].data();
