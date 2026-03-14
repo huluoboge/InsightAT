@@ -183,6 +183,11 @@ int main(int argc, char* argv[]) {
   std::string geo_dir;
   std::string output_dir;
   std::string log_level;
+  int ba_max_iter = 0;
+  double ba_grad_tol = 0.0;
+  double ba_func_tol = 0.0;
+  double ba_param_tol = 0.0;
+  int ba_dense_max_cams = 0;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -191,6 +196,13 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('o', output_dir, "output").doc("Output directory"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Keep camera intrinsics fixed (do not optimize in BA). Recommended for circumferential/object-centric shots."));
+  cmd.add(make_switch(0, "no-local-ba").doc("Skip per-iteration local BA; always run global BA. Good for circumferential captures."));
+  cmd.add(make_option(0, ba_max_iter, "ba-max-iter").doc("Global BA max Ceres iterations (default: 50). Object-scan preset: 5000."));
+  cmd.add(make_option(0, ba_grad_tol, "ba-grad-tol").doc("Ceres gradient_tolerance (0=default). Object-scan preset: 1e-10."));
+  cmd.add(make_option(0, ba_func_tol, "ba-func-tol").doc("Ceres function_tolerance (0=default). Object-scan preset: 1e-6."));
+  cmd.add(make_option(0, ba_param_tol, "ba-param-tol").doc("Ceres parameter_tolerance (0=default). Object-scan preset: 1e-8."));
+  cmd.add(make_option(0, ba_dense_max_cams, "ba-dense-max-cams").doc("DENSE↔SPARSE Schur threshold (0=built-in 30). Object-scan preset: 50."));
+  cmd.add(make_switch(0, "object-scan").doc("Preset for circumferential/object-centric shooting: no-local-ba + max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -234,10 +246,29 @@ int main(int argc, char* argv[]) {
   std::vector<bool> registered;
   IncrementalSfMOptions opts;
   opts.local_ba_strategy = LocalBAStrategy::kColmap;
+  // Apply --object-scan preset first (individual flags override it below).
+  if (cmd.used("object-scan")) {
+    opts.skip_local_ba = true;
+    opts.max_global_ba_iterations = 5000;
+    opts.ba_gradient_tolerance =  1e-10;
+    opts.ba_function_tolerance =  1e-6;
+    opts.ba_parameter_tolerance = 1e-8;
+    opts.ba_dense_schur_max_variable_cams = 50;
+    LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50.";
+  }
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba_optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
   }
+  if (cmd.used("no-local-ba")) {
+    opts.skip_local_ba = true;
+    LOG(INFO) << "--no-local-ba: per-iteration local BA disabled, global BA used every iteration.";
+  }
+  if (ba_max_iter > 0)        opts.max_global_ba_iterations = ba_max_iter;
+  if (ba_grad_tol > 0.0)     opts.ba_gradient_tolerance   = ba_grad_tol;
+  if (ba_func_tol > 0.0)     opts.ba_function_tolerance   = ba_func_tol;
+  if (ba_param_tol > 0.0)    opts.ba_parameter_tolerance  = ba_param_tol;
+  if (ba_dense_max_cams > 0) opts.ba_dense_schur_max_variable_cams = ba_dense_max_cams;
   if (!run_incremental_sfm_pipeline(
           tracks_path, pairs_path, geo_dir,
           &project.cameras, project.image_to_camera_index, opts,

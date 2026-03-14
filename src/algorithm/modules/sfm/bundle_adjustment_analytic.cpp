@@ -590,7 +590,9 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // SPARSE_SCHUR: better for large n_var (global BA, full-scene). Uses CHOLMOD.
   // SPARSE_NORMAL_CHOLESKY: when intrinsics are free – avoids Schur complement
   //   instability caused by intrinsics coupling.
-  const int kDenseSchurMaxVariableCams = 30;
+  const int kDenseSchurMaxVariableCams =
+      (input.solver_dense_schur_max_variable_cams > 0)
+          ? input.solver_dense_schur_max_variable_cams : 30;
   int n_variable_cams = 0;
   for (bool fixed : input.fix_pose)
     if (!fixed) ++n_variable_cams;
@@ -604,6 +606,12 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     options.linear_solver_type = ceres::SPARSE_SCHUR;
   }
   options.num_threads = std::max(1, std::min(8, static_cast<int>(std::thread::hardware_concurrency())));
+  if (input.solver_gradient_tolerance > 0.0)
+    options.gradient_tolerance = input.solver_gradient_tolerance;
+  if (input.solver_function_tolerance > 0.0)
+    options.function_tolerance = input.solver_function_tolerance;
+  if (input.solver_parameter_tolerance > 0.0)
+    options.parameter_tolerance = input.solver_parameter_tolerance;
 
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);

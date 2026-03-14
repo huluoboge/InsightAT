@@ -107,6 +107,15 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
 
 // ─── BA (build from Store, solve, write back) ───────────────────────────────
 
+/// Optional per-call Ceres solver overrides for run_global_ba.
+/// Zero / 0.0 fields are ignored — built-in defaults apply.
+struct BASolverOverrides {
+  double gradient_tolerance          = 0.0; ///< Ceres gradient_tolerance.  0 = Ceres default.
+  double function_tolerance          = 0.0; ///< Ceres function_tolerance.  0 = Ceres default.
+  double parameter_tolerance         = 0.0; ///< Ceres parameter_tolerance. 0 = Ceres default.
+  int dense_schur_max_variable_cams  = 0;   ///< DENSE↔SPARSE Schur threshold. 0 = built-in (30).
+};
+
 /**
  * Run global BA: build BAInput from store for all registered images, solve, write back poses and
  * points.
@@ -122,7 +131,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
                    int max_iterations, double* rmse_px_out, int anchor_image = -1,
                    const std::vector<bool>* camera_frozen = nullptr,
-                   uint32_t partial_intr_fix = 0u, double focal_prior_weight = 0.0);
+                   uint32_t partial_intr_fix = 0u, double focal_prior_weight = 0.0,
+                   const BASolverOverrides& solver_overrides = {});
 
 /**
  * Run local BA: optimize a subset of images (other poses fixed). Intrinsics not optimized.
@@ -229,7 +239,7 @@ struct IncrementalSfMOptions {
                                         ///< neighbors; else last N by index.
   /// Which local-BA strategy to use.  kWindow is the default (original behaviour).
   /// Switch to kColmap to evaluate COLMAP-style 2-hop visibility expansion.
-  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kBatchNeighbor;
+  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kColmap;
   /// Maximum number of variable (freely optimised) cameras in kColmap local BA.
   /// Cameras beyond this cap are assigned to the constant (frozen) set.
   /// COLMAP default is 6 (LocalBundleAdjustor::Options::max_num_images).
@@ -249,6 +259,20 @@ struct IncrementalSfMOptions {
   /// num_registered >= this threshold (avoids instability with few cameras).
   int global_ba_optimize_intrinsics_min_images = 10;
   int max_global_ba_iterations = 50; ///< Was 50: 50 is sufficient for convergence in most cases.
+
+  // ─── Object-scan / no-local-BA mode ────────────────────────────────────────
+  /// When true, skip all per-iteration local BA; every iteration runs global BA instead.
+  /// Recommended for circumferential / object-centric captures where local BA diverges
+  /// due to low-parallax or planar-surface geometry.
+  bool skip_local_ba = false;
+
+  // ─── BA solver overrides (applied to every global BA call) ──────────────────
+  /// Ceres solver tolerance overrides.  0 / 0.0 → use built-in Ceres defaults.
+  /// Object-scan preset (--object-scan): max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50.
+  double ba_gradient_tolerance          = 0.0;
+  double ba_function_tolerance          = 0.0;
+  double ba_parameter_tolerance         = 0.0;
+  int    ba_dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in (30).
 
   // ─── Progressive intrinsics freeze (local-BA phase only) ────────────────────
   /// Active only once n_registered ≥ local_ba_after_n_images.  During the early

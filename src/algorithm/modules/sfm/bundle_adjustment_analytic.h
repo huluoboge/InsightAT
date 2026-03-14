@@ -83,6 +83,12 @@ struct BAInput {
   std::vector<uint32_t> fix_intrinsics_flags;
   std::vector<bool> fix_point;
   double focal_prior_weight = 0.0; ///< If > 0, adds a Tikhonov prior on fx: residual = sqrt(w)·(fx−fx₀)/fx₀ per camera.
+
+  // ── Optional Ceres solver overrides (0 / 0.0 = use built-in defaults) ──────
+  double solver_gradient_tolerance          = 0.0; ///< Ceres gradient_tolerance.  0 = Ceres default.
+  double solver_function_tolerance          = 0.0; ///< Ceres function_tolerance.  0 = Ceres default.
+  double solver_parameter_tolerance         = 0.0; ///< Ceres parameter_tolerance. 0 = Ceres default.
+  int    solver_dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in default (30).
 };
 
 struct BAResult {

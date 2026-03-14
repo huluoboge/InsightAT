@@ -1494,7 +1494,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
                    int max_iterations, double* rmse_px_out, int anchor_image,
                    const std::vector<bool>* camera_frozen,
-                   uint32_t partial_intr_fix, double focal_prior_weight) {
+                   uint32_t partial_intr_fix, double focal_prior_weight,
+                   const BASolverOverrides& solver_overrides) {
   if (!store || !poses_R || !poses_C)
     return false;
   std::vector<int> ba_image_index_to_global;
@@ -1504,6 +1505,11 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                                  cameras, nullptr, &ba_image_index_to_global, &ba_in,
                                  &point_index_to_track_id))
     return false;
+  // Apply optional Ceres solver overrides.
+  ba_in.solver_gradient_tolerance          = solver_overrides.gradient_tolerance;
+  ba_in.solver_function_tolerance          = solver_overrides.function_tolerance;
+  ba_in.solver_parameter_tolerance         = solver_overrides.parameter_tolerance;
+  ba_in.solver_dense_schur_max_variable_cams = solver_overrides.dense_schur_max_variable_cams;
   // Build per-camera intrinsics fix flags.
   // camera_frozen: frozen cameras keep kFixIntrAll (Schur-complement sparsity benefit).
   // partial_intr_fix: additional fix bits OR-ed into every non-frozen camera's flags,
@@ -1925,6 +1931,12 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // All global BA calls must fix this camera to preserve that origin.
   const int anchor_image = static_cast<int>(*im0_ptr);
   LOG(INFO) << "run_incremental_sfm_pipeline: anchor_image=" << anchor_image;
+  // Solver overrides derived from pipeline options (applied to every global BA call).
+  BASolverOverrides ba_solver_ov;
+  ba_solver_ov.gradient_tolerance          = opts.ba_gradient_tolerance;
+  ba_solver_ov.function_tolerance          = opts.ba_function_tolerance;
+  ba_solver_ov.parameter_tolerance         = opts.ba_parameter_tolerance;
+  ba_solver_ov.dense_schur_max_variable_cams = opts.ba_dense_schur_max_variable_cams;
 
   // count_tri_tracks: O(1) via TrackStore counter instead of full scan.
   auto count_tri_tracks = [&]() -> int {
@@ -1981,13 +1993,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                     r < opts.max_outlier_iterations - 1; ++r) {
       ++rej_ba_rounds;
       auto _t_rba0 = Clock::now();
-      if (num_registered < opts.local_ba_after_n_images) {
+      if (num_registered < opts.local_ba_after_n_images || opts.skip_local_ba) {
         const bool opt_intr = opts.global_ba_optimize_intrinsics &&
                               num_registered >= opts.global_ba_optimize_intrinsics_min_images;
         if (!run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                            image_to_camera_index, *cameras, cameras, opt_intr,
                            opts.max_global_ba_iterations, &rmse, anchor_image,
-                           nullptr, k3p12_fix(), opts.focal_prior_weight))
+                           nullptr, k3p12_fix(), opts.focal_prior_weight, ba_solver_ov))
           break;
       } else {
         if (!run_local_ba(store_out, poses_R_out, poses_C_out, *registered_out,
@@ -2163,7 +2175,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                           image_to_camera_index, *cameras, cameras, cleanup_opt_intr,
                           opts.max_global_ba_iterations, &rmse, anchor_image,
                           cleanup_opt_intr ? &frozen_cleanup : nullptr,
-                          cleanup_opt_intr ? k3p12_fix() : 0u, opts.focal_prior_weight)) {
+                          cleanup_opt_intr ? k3p12_fix() : 0u, opts.focal_prior_weight,
+                          ba_solver_ov)) {
           if (cleanup_opt_intr) update_freeze_state();
           LOG(INFO) << "[PERF] cleanup_global_ba: "
                     << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_cba0).count()
@@ -2235,7 +2248,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                           image_to_camera_index, *cameras, cameras, opt_intr,
                           opts.max_global_ba_iterations, &rmse, anchor_image,
                           opt_intr ? &frozen_early : nullptr,
-                          opt_intr ? k3p12_fix() : 0u, opts.focal_prior_weight)) {
+                          opt_intr ? k3p12_fix() : 0u, opts.focal_prior_weight, ba_solver_ov)) {
           LOG(INFO) << "[PERF] global_ba: "
                     << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
                     << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
@@ -2245,6 +2258,25 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       } else {
         LOG(INFO) << "[PERF] global_ba: skipped (every_n=" << opts.global_ba_every_n_images
                   << ", n=" << num_registered << ")";
+      }
+    } else if (opts.skip_local_ba) {
+      // ── Object-scan mode: skip local BA, run global BA every iteration ───────────────────
+      const bool opt_skip = opts.global_ba_optimize_intrinsics &&
+                            num_registered >= opts.global_ba_optimize_intrinsics_min_images;
+      const auto frozen_skip =
+          (opt_skip && opts.intrinsics_progressive_freeze) ? make_frozen_vec()
+                                                           : std::vector<bool>{};
+      auto t_sba = Clock::now();
+      if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                        image_to_camera_index, *cameras, cameras, opt_skip,
+                        opts.max_global_ba_iterations, &rmse, anchor_image,
+                        opt_skip ? &frozen_skip : nullptr,
+                        opt_skip ? k3p12_fix() : 0u, opts.focal_prior_weight, ba_solver_ov)) {
+        if (opt_skip) update_freeze_state();
+        LOG(INFO) << "[PERF] global_ba (skip_local_ba): "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_sba).count()
+                  << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+        run_ba_and_reject_outliers(&rmse);
       }
     } else {
       // ── Two-tier BA schedule (mid-freq + low-freq recalib) during local-BA phase ──────
@@ -2268,7 +2300,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                             image_to_camera_index, *cameras, cameras, true,
                             opts.max_global_ba_iterations, &rmse, anchor_image,
-                            nullptr /* all intrinsics open */)) {
+                            nullptr /* all intrinsics open */, 0u, 0.0, ba_solver_ov)) {
             update_freeze_state(/*recheck_frozen=*/true);
             LOG(INFO) << "[PERF] recalib_global_ba #" << periodic_ba_count << ": "
                       << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba).count()
@@ -2287,7 +2319,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                             image_to_camera_index, *cameras, cameras, mid_opt_intr,
                             opts.max_global_ba_iterations, &rmse, anchor_image,
                             mid_opt_intr ? &frozen_mid : nullptr,
-                            mid_opt_intr ? k3p12_fix() : 0u, opts.focal_prior_weight)) {
+                            mid_opt_intr ? k3p12_fix() : 0u, opts.focal_prior_weight,
+                            ba_solver_ov)) {
             if (mid_opt_intr) update_freeze_state(/*recheck_frozen=*/false);
             LOG(INFO) << "[PERF] periodic_global_ba #" << periodic_ba_count << ": "
                       << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba).count()
@@ -2365,7 +2398,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     double rmse = 0.0;
     if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
                       *cameras, cameras, opts.global_ba_optimize_intrinsics,
-                      opts.max_global_ba_iterations, &rmse, anchor_image)) {
+                      opts.max_global_ba_iterations, &rmse, anchor_image,
+                      nullptr, 0u, 0.0, ba_solver_ov)) {
       int rejected = 0;
       if (num_registered >= opts.reject_min_registered_images) {
         double thr = eff_reject_threshold(rmse);
@@ -2382,7 +2416,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         if (!run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                            image_to_camera_index, *cameras, cameras,
                            opts.global_ba_optimize_intrinsics, opts.max_global_ba_iterations, &rmse,
-                           anchor_image))
+                           anchor_image, nullptr, 0u, 0.0, ba_solver_ov))
           break;
         double thr = eff_reject_threshold(rmse);
         rejected =

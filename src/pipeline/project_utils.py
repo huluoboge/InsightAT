@@ -531,6 +531,13 @@ def run_incremental_sfm(
     output_dir: str | Path,
     *,
     fix_intrinsics: bool = False,
+    object_scan: bool = False,
+    no_local_ba: bool = False,
+    ba_max_iter: int = 0,
+    ba_grad_tol: float = 0.0,
+    ba_func_tol: float = 0.0,
+    ba_param_tol: float = 0.0,
+    ba_dense_max_cams: int = 0,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -540,10 +547,14 @@ def run_incremental_sfm(
     Uses pairs JSON for view graph and geo_dir for .isat_geo. Writes poses.json to output_dir.
 
     Args:
-        fix_intrinsics: Pass ``--fix-intrinsics`` to hold camera calibration constant
-            during Bundle Adjustment.  Strongly recommended for circumferential /
-            object-centric shooting where the geometry does not constrain the
-            principal point.
+        fix_intrinsics:   Pass ``--fix-intrinsics`` to hold camera calibration constant during BA.
+        object_scan:      Pass ``--object-scan`` preset (no-local-ba + 5000-iter BA + tight tols).
+        no_local_ba:      Pass ``--no-local-ba`` (skip per-iteration local BA).
+        ba_max_iter:      Override Ceres max iterations (0 = use default / object-scan value).
+        ba_grad_tol:      Override Ceres gradient_tolerance (0 = default).
+        ba_func_tol:      Override Ceres function_tolerance (0 = default).
+        ba_param_tol:     Override Ceres parameter_tolerance (0 = default).
+        ba_dense_max_cams: Override DENSE↔SPARSE Schur threshold (0 = default).
     """
     cmd = [
         _isat_incremental_sfm(),
@@ -555,6 +566,20 @@ def run_incremental_sfm(
     ]
     if fix_intrinsics:
         cmd.append("--fix-intrinsics")
+    if object_scan:
+        cmd.append("--object-scan")
+    if no_local_ba and not object_scan:
+        cmd.append("--no-local-ba")
+    if ba_max_iter > 0:
+        cmd += ["--ba-max-iter", str(ba_max_iter)]
+    if ba_grad_tol > 0.0:
+        cmd += ["--ba-grad-tol", str(ba_grad_tol)]
+    if ba_func_tol > 0.0:
+        cmd += ["--ba-func-tol", str(ba_func_tol)]
+    if ba_param_tol > 0.0:
+        cmd += ["--ba-param-tol", str(ba_param_tol)]
+    if ba_dense_max_cams > 0:
+        cmd += ["--ba-dense-max-cams", str(ba_dense_max_cams)]
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)
