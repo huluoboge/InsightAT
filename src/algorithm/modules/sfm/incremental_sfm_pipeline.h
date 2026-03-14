@@ -121,7 +121,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    const std::vector<camera::Intrinsics>& cameras,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
                    int max_iterations, double* rmse_px_out, int anchor_image = -1,
-                   const std::vector<bool>* camera_frozen = nullptr);
+                   const std::vector<bool>* camera_frozen = nullptr,
+                   uint32_t partial_intr_fix = 0u, double focal_prior_weight = 0.0);
 
 /**
  * Run local BA: optimize a subset of images (other poses fixed). Intrinsics not optimized.
@@ -280,6 +281,23 @@ struct IncrementalSfMOptions {
   ///   Re-evaluates all cameras (including frozen): may UNFREEZE cameras that drifted.
   /// Typical: 4 (= every 4×20 = 80 images).  0 = disabled (no recalib, freeze is permanent).
   int recalib_global_ba_every_n_periodic = 4;
+
+  // ─── Stage-based partial intrinsics: fix k3/p1/p2 until sufficient image coverage ──────
+  /// Aerial nadir imagery: feature points cluster at r/r_max ≈ 0.4–0.7.  In that band,
+  /// r², r⁴, r⁶ are nearly collinear — k3 (6th-order) is weakly observable and p1/p2
+  /// tangential distortion is barely identifiable without oblique views.
+  /// Fix k3/p1/p2 until num_registered >= this threshold; beyond it all 5 params are free.
+  /// 0 = always optimise all 5 distortion params (old behaviour).
+  int intrinsics_k3p12_free_min_images = 50;
+
+  // ─── Focal soft prior (Tikhonov regularisation on fx) ────────────────────────────────────
+  /// If > 0, adds a per-camera residual penalising relative focal deviation from the
+  /// pre-BA value: residual = sqrt(w)·(fx − fx₀)/fx₀.
+  /// Only adds w/fx₀² to the (fx,fx) diagonal block — Hessian sparsity is unchanged.
+  /// Active during early-phase and mid-freq periodic BAs.
+  /// Disabled (0.0) for recalib BA and final BA (those are intended to converge freely).
+  /// Typical: 10–100.  0.0 = disabled (default, backward-compatible).
+  double focal_prior_weight = 0.0;
 
   // ─── Triangulation ───────────────outlier rejection:────────────────────
   /// Minimum max pairwise ray angle (degrees) for a newly triangulated point to be accepted.

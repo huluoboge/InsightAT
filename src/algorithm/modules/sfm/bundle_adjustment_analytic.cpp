@@ -364,6 +364,36 @@ bool ReprojectionCostAnalyticWeighted::Evaluate(double const* const* params,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Focal-length soft prior (Tikhonov) — single residual, intr[9] only.
+//
+//   residual = sqrt(w) · (fx − fx₀) / fx₀   (relative focal deviation)
+//
+// Jacobian: nonzero only at kFx slot = sqrt(w)/fx₀; all other slots zero.
+// This adds exactly w/fx₀² to the (fx,fx) diagonal of the Hessian —
+// no off-diagonal entries, Schur/Cholesky sparsity is completely unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+class FocalPriorCostAnalytic
+    : public ceres::SizedCostFunction<1, kAnalyticIntrCount> {
+public:
+  FocalPriorCostAnalytic(double fx0, double weight)
+      : fx0_(fx0), sqrt_w_(std::sqrt(weight)) {}
+
+  bool Evaluate(double const* const* params, double* residuals,
+                double** jacobians) const override {
+    residuals[0] = sqrt_w_ * (params[0][kFx] - fx0_) / fx0_;
+    if (jacobians && jacobians[0]) {
+      std::fill_n(jacobians[0], kAnalyticIntrCount, 0.0);
+      jacobians[0][kFx] = sqrt_w_ / fx0_;
+    }
+    return true;
+  }
+
+private:
+  double fx0_;
+  double sqrt_w_;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // global_bundle_analytic
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -514,6 +544,27 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       // Tangential distortion: typically very small for modern drone lenses.
       problem.SetParameterLowerBound(ip, kP1, -0.05);  problem.SetParameterUpperBound(ip, kP1,  0.05);
       problem.SetParameterLowerBound(ip, kP2, -0.05);  problem.SetParameterUpperBound(ip, kP2,  0.05);
+    }
+  }
+
+  // ── Focal soft prior ─────────────────────────────────────────────────────
+  // Residual = sqrt(w)·(fx − fx₀)/fx₀, where fx₀ is the pre-BA input focal.
+  // Only active for cameras where fx is not already fixed.
+  // Does NOT add off-diagonal Hessian entries — sparsity is unchanged.
+  if (input.focal_prior_weight > 0.0) {
+    for (int c = 0; c < n_distinct; ++c) {
+      double* ip = intr_params.data() + static_cast<size_t>(c) * kAnalyticIntrCount;
+      if (!problem.HasParameterBlock(ip)) continue;
+      const uint32_t flags = (input.fix_intrinsics_flags.size() > static_cast<size_t>(c))
+                                 ? input.fix_intrinsics_flags[static_cast<size_t>(c)]
+                                 : 0u;
+      // Skip if fx is fixed (either via kFixIntrFx or kFixIntrAll).
+      if (flags & static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrFx)) continue;
+      const double fx0 = ip[kFx];
+      if (fx0 <= 0.0) continue;
+      problem.AddResidualBlock(
+          new FocalPriorCostAnalytic(fx0, input.focal_prior_weight),
+          nullptr, ip);  // nullptr: no robust loss on the prior term
     }
   }
 

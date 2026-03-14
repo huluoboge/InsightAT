@@ -82,6 +82,7 @@ struct BAInput {
   std::vector<bool> fix_pose;
   std::vector<uint32_t> fix_intrinsics_flags;
   std::vector<bool> fix_point;
+  double focal_prior_weight = 0.0; ///< If > 0, adds a Tikhonov prior on fx: residual = sqrt(w)·(fx−fx₀)/fx₀ per camera.
 };
 
 struct BAResult {
