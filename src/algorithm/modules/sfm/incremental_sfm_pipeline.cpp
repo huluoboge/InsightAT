@@ -2018,18 +2018,35 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   std::vector<CamFreezeState> cam_freeze(static_cast<size_t>(n_cameras));
 
   // Call after every global BA that may have updated intrinsics.
-  // Counts registered images per camera, checks Δk convergence, marks frozen.
-  auto update_freeze_state = [&]() {
+  // recheck_frozen=false (default): skip already-frozen cameras (fast path).
+  // recheck_frozen=true: re-evaluate frozen cameras too — unfreeze if delta now exceeds
+  //   thresholds (used after periodic global BA that re-opens all intrinsics).
+  auto update_freeze_state = [&](bool recheck_frozen = false) {
     if (!opts.intrinsics_progressive_freeze) return;
     for (int c = 0; c < n_cameras; ++c) {
       auto& fs = cam_freeze[static_cast<size_t>(c)];
-      if (fs.frozen) continue;
+      const camera::Intrinsics& K = (*cameras)[static_cast<size_t>(c)];
+      if (fs.frozen) {
+        if (!recheck_frozen) continue;
+        // Re-evaluate: unfreeze if intrinsics drifted beyond thresholds.
+        const auto d = K.delta(fs.prev);
+        if (!d.stable(opts.intrinsics_freeze_delta_focal, opts.intrinsics_freeze_delta_pp,
+                      opts.intrinsics_freeze_delta_dist)) {
+          fs.frozen = false;
+          fs.stable_rounds = 0;
+          LOG(INFO) << "  camera " << c << " intrinsics UNFROZEN"
+                    << " (focal_rel=" << d.focal_rel
+                    << " pp_px=" << d.pp_px
+                    << " dist=" << d.distortion << ")";
+        }
+        fs.prev = K;
+        continue;
+      }
       int cam_reg = 0;
       for (int i = 0; i < n_images; ++i)
         if ((*registered_out)[static_cast<size_t>(i)] &&
             image_to_camera_index[static_cast<size_t>(i)] == c)
           ++cam_reg;
-      const camera::Intrinsics& K = (*cameras)[static_cast<size_t>(c)];
       const auto d = K.delta(fs.prev);
       if (cam_reg >= opts.intrinsics_freeze_min_images &&
           d.stable(opts.intrinsics_freeze_delta_focal, opts.intrinsics_freeze_delta_pp,
@@ -2189,14 +2206,14 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
             opts.global_ba_optimize_intrinsics &&
             num_registered >= opts.global_ba_optimize_intrinsics_min_images;
         if (opt_intr_p) {
-          const auto frozen_p =
-              opts.intrinsics_progressive_freeze ? make_frozen_vec() : std::vector<bool>{};
           auto t_pba = Clock::now();
+          // Always open ALL cameras' intrinsics: true recalibration + re-evaluation of freeze.
+          // Non-periodic BAs use make_frozen_vec() for performance; this one is the checkpoint.
           if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                             image_to_camera_index, *cameras, cameras, true,
                             opts.max_global_ba_iterations, &rmse, anchor_image,
-                            opts.intrinsics_progressive_freeze ? &frozen_p : nullptr)) {
-            update_freeze_state();
+                            nullptr /* all intrinsics open */)) {
+            update_freeze_state(/*recheck_frozen=*/true);
             LOG(INFO) << "[PERF] periodic_global_ba: "
                       << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba).count()
                       << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
