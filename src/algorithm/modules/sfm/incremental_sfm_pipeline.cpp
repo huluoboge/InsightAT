@@ -1492,7 +1492,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    const std::vector<int>& image_to_camera_index,
                    const std::vector<camera::Intrinsics>& cameras,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
-                   int max_iterations, double* rmse_px_out, int anchor_image) {
+                   int max_iterations, double* rmse_px_out, int anchor_image,
+                   const std::vector<bool>* camera_frozen) {
   if (!store || !poses_R || !poses_C)
     return false;
   std::vector<int> ba_image_index_to_global;
@@ -1502,7 +1503,29 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                                  cameras, nullptr, &ba_image_index_to_global, &ba_in,
                                  &point_index_to_track_id))
     return false;
-  ba_in.optimize_intrinsics = optimize_intrinsics;
+  // Build per-camera intrinsics fix flags.
+  // camera_frozen: frozen cameras keep kFixIntrAll even when optimize_intrinsics=true,
+  // restoring Schur-complement sparsity for already-converged cameras.
+  {
+    bool any_variable = optimize_intrinsics;
+    ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(), 0u);
+    if (optimize_intrinsics && camera_frozen &&
+        camera_frozen->size() == ba_in.cameras.size()) {
+      any_variable = false;
+      for (size_t c = 0; c < ba_in.cameras.size(); ++c) {
+        if ((*camera_frozen)[c]) {
+          ba_in.fix_intrinsics_flags[c] =
+              static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+        } else {
+          any_variable = true;
+        }
+      }
+    } else if (!optimize_intrinsics) {
+      ba_in.fix_intrinsics_flags.assign(
+          ba_in.cameras.size(), static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
+    }
+    ba_in.optimize_intrinsics = any_variable;
+  }
   // Fix the coordinate-system anchor: prefer the initial-pair reference camera (anchor_image).
   // Falling back to index 0 risks anchoring a newly-PnP-estimated camera instead of the true
   // origin, causing the whole reconstruction to drift/collapse.
@@ -1518,9 +1541,6 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
     }
     ba_in.fix_pose[static_cast<size_t>(anchor_ba_idx)] = true;
   }
-  if (!optimize_intrinsics)
-    ba_in.fix_intrinsics_flags.resize(ba_in.cameras.size(),
-                                      static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
   LOG(INFO) << "run_global_ba: " << ba_in.poses_R.size() << " images, " << ba_in.points3d.size()
             << " points, " << ba_in.observations.size() << " obs, max_iter=" << max_iterations;
   BAResult ba_out;
@@ -1988,6 +2008,55 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
               << "ms  extra_ba_rounds=" << rej_ba_rounds;
   };
 
+  // ─── Per-camera intrinsics freeze state ─────────────────────────────────────
+  struct CamFreezeState {
+    bool frozen = false;
+    double prev_k1 = 0.0, prev_k2 = 0.0, prev_k3 = 0.0;
+    int stable_rounds = 0;
+  };
+  const int n_cameras = static_cast<int>(cameras->size());
+  std::vector<CamFreezeState> cam_freeze(static_cast<size_t>(n_cameras));
+
+  // Call after every global BA that may have updated intrinsics.
+  // Counts registered images per camera, checks Δk convergence, marks frozen.
+  auto update_freeze_state = [&]() {
+    if (!opts.intrinsics_progressive_freeze) return;
+    for (int c = 0; c < n_cameras; ++c) {
+      auto& fs = cam_freeze[static_cast<size_t>(c)];
+      if (fs.frozen) continue;
+      int cam_reg = 0;
+      for (int i = 0; i < n_images; ++i)
+        if ((*registered_out)[static_cast<size_t>(i)] &&
+            image_to_camera_index[static_cast<size_t>(i)] == c)
+          ++cam_reg;
+      const camera::Intrinsics& K = (*cameras)[static_cast<size_t>(c)];
+      const double dk = std::abs(K.k1 - fs.prev_k1) + std::abs(K.k2 - fs.prev_k2) +
+                        std::abs(K.k3 - fs.prev_k3);
+      if (cam_reg >= opts.intrinsics_freeze_min_images && dk < opts.intrinsics_freeze_delta_k) {
+        ++fs.stable_rounds;
+        if (fs.stable_rounds >= opts.intrinsics_freeze_stable_rounds) {
+          fs.frozen = true;
+          LOG(INFO) << "  camera " << c << " intrinsics FROZEN (dk=" << dk
+                    << ", reg_imgs=" << cam_reg << ")";
+        }
+      } else {
+        fs.stable_rounds = 0;
+      }
+      fs.prev_k1 = K.k1; fs.prev_k2 = K.k2; fs.prev_k3 = K.k3;
+    }
+  };
+
+  // Build per-camera frozen bool vector for passing to run_global_ba.
+  auto make_frozen_vec = [&]() -> std::vector<bool> {
+    std::vector<bool> v(static_cast<size_t>(n_cameras));
+    for (int c = 0; c < n_cameras; ++c)
+      v[static_cast<size_t>(c)] = cam_freeze[static_cast<size_t>(c)].frozen;
+    return v;
+  };
+
+  // Registered count at last periodic global BA (local-BA phase tracker).
+  int last_periodic_global_ba_registered = 0;
+  // ───────────────────────────────────────────────────────────────────────────────
   // Warm-up GPU context before entering the main loop so the first resection
   // does not absorb the ~1-second EGL/shader-compile cost.
   resection_init_gpu();
@@ -2017,10 +2086,15 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         const bool cleanup_opt_intr =
             opts.global_ba_optimize_intrinsics &&
             num_registered >= opts.global_ba_optimize_intrinsics_min_images;
+        const auto frozen_cleanup =
+            (cleanup_opt_intr && opts.intrinsics_progressive_freeze) ? make_frozen_vec()
+                                                                     : std::vector<bool>{};
         auto t_cba0 = Clock::now();
         if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                           image_to_camera_index, *cameras, cameras, cleanup_opt_intr,
-                          opts.max_global_ba_iterations, &rmse, anchor_image)) {
+                          opts.max_global_ba_iterations, &rmse, anchor_image,
+                          cleanup_opt_intr ? &frozen_cleanup : nullptr)) {
+          if (cleanup_opt_intr) update_freeze_state();
           LOG(INFO) << "[PERF] cleanup_global_ba: "
                     << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_cba0).count()
                     << "ms  RMSE=" << rmse;
@@ -2084,12 +2158,17 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         const bool opt_intr = opts.global_ba_optimize_intrinsics &&
                               num_registered >= opts.global_ba_optimize_intrinsics_min_images;
         auto t_ba0 = Clock::now();
+        const auto frozen_early =
+            (opt_intr && opts.intrinsics_progressive_freeze) ? make_frozen_vec()
+                                                             : std::vector<bool>{};
         if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                           image_to_camera_index, *cameras, cameras, opt_intr,
-                          opts.max_global_ba_iterations, &rmse, anchor_image)) {
+                          opts.max_global_ba_iterations, &rmse, anchor_image,
+                          opt_intr ? &frozen_early : nullptr)) {
           LOG(INFO) << "[PERF] global_ba: "
                     << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
                     << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+          if (opt_intr) update_freeze_state();
           run_ba_and_reject_outliers(&rmse);
         }
       } else {
@@ -2097,6 +2176,30 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                   << ", n=" << num_registered << ")";
       }
     } else {
+      // ── Periodic global BA to recalibrate distortion during local-BA phase ───────────
+      if (opts.periodic_global_ba_every_n_images > 0 &&
+          (num_registered - last_periodic_global_ba_registered) >=
+              opts.periodic_global_ba_every_n_images) {
+        last_periodic_global_ba_registered = num_registered;
+        const bool opt_intr_p =
+            opts.global_ba_optimize_intrinsics &&
+            num_registered >= opts.global_ba_optimize_intrinsics_min_images;
+        if (opt_intr_p) {
+          const auto frozen_p =
+              opts.intrinsics_progressive_freeze ? make_frozen_vec() : std::vector<bool>{};
+          auto t_pba = Clock::now();
+          if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                            image_to_camera_index, *cameras, cameras, true,
+                            opts.max_global_ba_iterations, &rmse, anchor_image,
+                            opts.intrinsics_progressive_freeze ? &frozen_p : nullptr)) {
+            update_freeze_state();
+            LOG(INFO) << "[PERF] periodic_global_ba: "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba).count()
+                      << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+            run_ba_and_reject_outliers(&rmse);
+          }
+        }
+      }
       auto t_ba0 = Clock::now();
       bool ba_ok = false;
       if (opts.local_ba_strategy == LocalBAStrategy::kColmap) {

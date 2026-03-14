@@ -120,7 +120,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    const std::vector<int>& image_to_camera_index,
                    const std::vector<camera::Intrinsics>& cameras,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
-                   int max_iterations, double* rmse_px_out, int anchor_image = -1);
+                   int max_iterations, double* rmse_px_out, int anchor_image = -1,
+                   const std::vector<bool>* camera_frozen = nullptr);
 
 /**
  * Run local BA: optimize a subset of images (other poses fixed). Intrinsics not optimized.
@@ -227,7 +228,7 @@ struct IncrementalSfMOptions {
                                         ///< neighbors; else last N by index.
   /// Which local-BA strategy to use.  kWindow is the default (original behaviour).
   /// Switch to kColmap to evaluate COLMAP-style 2-hop visibility expansion.
-  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kColmap;
+  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kBatchNeighbor;
   /// Maximum number of variable (freely optimised) cameras in kColmap local BA.
   /// Cameras beyond this cap are assigned to the constant (frozen) set.
   /// COLMAP default is 6 (LocalBundleAdjustor::Options::max_num_images).
@@ -247,6 +248,22 @@ struct IncrementalSfMOptions {
   /// num_registered >= this threshold (avoids instability with few cameras).
   int global_ba_optimize_intrinsics_min_images = 10;
   int max_global_ba_iterations = 50; ///< Was 50: 50 is sufficient for convergence in most cases.
+
+  // ─── Progressive intrinsics freeze ───────────────────────────────────────
+  /// Per-camera: after registered image count ≥ freeze_min_images AND |Δk1|+|Δk2|+|Δk3| <
+  /// freeze_delta_k for freeze_stable_rounds consecutive global BAs, freeze that camera's
+  /// distortion.  Subsequent global BAs skip optimising it, restoring Schur-complement sparsity.
+  /// Final global BA always re-opens all cameras (safety net against premature freeze).
+  bool intrinsics_progressive_freeze = true;
+  int intrinsics_freeze_min_images = 30;    ///< Level-1 gate: min registered images per camera.
+  double intrinsics_freeze_delta_k  = 1e-4; ///< Level-2: |Δk1|+|Δk2|+|Δk3| convergence threshold.
+  int intrinsics_freeze_stable_rounds = 2;  ///< Consecutive stable BAs required to confirm freeze.
+
+  // ─── Periodic global BA during local-BA phase ────────────────────────────
+  /// During local-BA phase, trigger a full global BA (with per-camera selective intrinsics) every
+  /// this many newly registered images.  Prevents distortion drift from repeated local-only passes.
+  /// 0 = disabled.  Typical: 20 images.
+  int periodic_global_ba_every_n_images = 20;
 
   // ─── Triangulation ───────────────outlier rejection:────────────────────
   /// Minimum max pairwise ray angle (degrees) for a newly triangulated point to be accepted.
