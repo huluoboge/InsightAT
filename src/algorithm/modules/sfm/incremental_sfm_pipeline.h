@@ -45,10 +45,25 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
                            std::vector<bool>* registered_out);
 
 /**
- * Choose up to k next images to resection (unregistered, sorted by 3D–2D count descending).
+ * Choose next resection batch using OpenMVG-style ratio threshold.
+ *
+ * Algorithm:
+ *   1. Score every unregistered image by its number of 3D-2D correspondences
+ *      (triangulated tracks visible from that image); discard images with
+ *      fewer than min_3d2d_count correspondences.
+ *   2. best_count = score of the top candidate.
+ *   3. batch = all candidates with score >= batch_ratio * best_count,
+ *      capped at batch_max images (highest scores first).
+ *
+ * @param min_3d2d_count  Absolute floor: images below this are never candidates.
+ *                        COLMAP uses 15; 6 is the PnP hard minimum.
+ * @param batch_ratio     Relative threshold vs best candidate (OpenMVG default 0.75).
+ * @param batch_max       Upper cap on batch size to avoid over-registration per iter.
  */
 std::vector<int> choose_next_resection_batch(const TrackStore& store,
-                                             const std::vector<bool>& registered, int batch_size_k);
+                                             const std::vector<bool>& registered,
+                                             int min_3d2d_count, double batch_ratio,
+                                             int batch_max);
 
 /**
  * Run resection for each image in the batch; intrinsics = cameras[image_to_camera_index[im]].
@@ -167,8 +182,18 @@ struct IncrementalSfMOptions {
   double init_min_angle_deg = 2.0; ///< Min triangulation angle for inlier tracks in initial pair.
 
   // ─── Resection loop ──────────────────────────────────────────────────────
-  int resection_batch_k = 1;
+  /// Minimum RANSAC inliers for a resection to be accepted (hard PnP minimum = 6).
   int resection_min_inliers = 6;
+  /// Minimum 3D-2D correspondence count for an image to be a resection candidate.
+  /// Images below this floor are not attempted even if they have some correspondences.
+  /// COLMAP uses 15; raise to 30 for very high-overlap datasets.
+  int resection_min_3d2d_count = 15;
+  /// OpenMVG-style ratio threshold: include all candidates whose 3D-2D count is
+  /// >= resection_batch_ratio * best_candidate_count.  0.75 = OpenMVG default.
+  double resection_batch_ratio = 0.75;
+  /// Hard upper cap on batch size per SfM iteration.  Prevents registering too
+  /// many images at once before the next BA pass stabilises the map.
+  int resection_batch_max = 20;
 
   // ─── Bundle adjustment ───────────────────────────────────────────────────
   int local_ba_after_n_images =
@@ -179,10 +204,11 @@ struct IncrementalSfMOptions {
                                         ///< neighbors; else last N by index.
   /// Which local-BA strategy to use.  kWindow is the default (original behaviour).
   /// Switch to kColmap to evaluate COLMAP-style 2-hop visibility expansion.
-  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kWindow;
+  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kColmap;
   /// Maximum number of variable (freely optimised) cameras in kColmap local BA.
   /// Cameras beyond this cap are assigned to the constant (frozen) set.
-  int local_ba_colmap_max_variable_images = 30;
+  /// COLMAP default is 6 (LocalBundleAdjustor::Options::max_num_images).
+  int local_ba_colmap_max_variable_images = 6;
   /// Run global BA only every N newly-registered images during the early global-BA phase
   /// (num_registered < local_ba_after_n_images).  The last BA before switching to local BA
   /// is always executed regardless.  Default = 1 (original: BA after every image).

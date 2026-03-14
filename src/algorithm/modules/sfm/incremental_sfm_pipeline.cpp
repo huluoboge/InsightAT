@@ -862,14 +862,16 @@ double compute_max_ray_angle_deg(const Eigen::Vector3d& X,
 
 std::vector<int> choose_next_resection_batch(const TrackStore& store,
                                              const std::vector<bool>& registered,
-                                             int batch_size_k) {
+                                             int min_3d2d_count, double batch_ratio,
+                                             int batch_max) {
   using Clock = std::chrono::steady_clock;
   const int n_images = store.num_images();
-  if (n_images == 0 || static_cast<int>(registered.size()) != n_images || batch_size_k <= 0)
+  if (n_images == 0 || static_cast<int>(registered.size()) != n_images || batch_max <= 0)
     return {};
 
   auto t0 = Clock::now();
-  std::vector<std::pair<int, int>> unreg_count;
+  // Score every unregistered image by its number of triangulated 3D-2D correspondences.
+  std::vector<std::pair<int, int>> unreg_count; // (count, global_image_idx)
   int total_track_obs_checked = 0;
   for (int im = 0; im < n_images; ++im) {
     if (registered[static_cast<size_t>(im)])
@@ -878,35 +880,46 @@ std::vector<int> choose_next_resection_batch(const TrackStore& store,
     store.get_image_track_observations(im, &track_ids, nullptr);
     total_track_obs_checked += static_cast<int>(track_ids.size());
     int count = 0;
-    for (int tid : track_ids) {
+    for (int tid : track_ids)
       if (store.track_has_triangulated_xyz(tid))
         ++count;
-    }
-    unreg_count.push_back({im, count});
+    if (count >= min_3d2d_count)
+      unreg_count.push_back({count, im});
   }
   auto t1 = Clock::now();
 
+  if (unreg_count.empty()) {
+    LOG(INFO) << "[PERF] choose_next_resection_batch: no candidates above min_3d2d=" << min_3d2d_count
+              << "  total_obs_checked=" << total_track_obs_checked;
+    return {};
+  }
+
+  // Sort descending by score.
   std::sort(unreg_count.begin(), unreg_count.end(),
             [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
-              return a.second > b.second;
+              return a.first > b.first; // higher count first
             });
+
+  // OpenMVG 75%-ratio threshold: include all within ratio of best.
+  const int best_count = unreg_count[0].first;
+  const int ratio_floor = static_cast<int>(std::ceil(best_count * batch_ratio));
   std::vector<int> out;
-  for (size_t i = 0; i < unreg_count.size() && static_cast<int>(i) < batch_size_k; ++i)
-    out.push_back(unreg_count[i].first);
+  for (const auto& p : unreg_count) {
+    if (p.first < ratio_floor || static_cast<int>(out.size()) >= batch_max)
+      break;
+    out.push_back(p.second);
+  }
 
   auto ms_count = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-  // Logging: show top candidates and selection
-  if (!unreg_count.empty()) {
-    LOG(INFO) << "[PERF] choose_next_resection_batch: " << unreg_count.size()
-              << " unregistered, selecting " << out.size()
-              << ", total_obs_checked=" << total_track_obs_checked
-              << ", count_loop=" << ms_count << "ms";
-    for (size_t i = 0; i < std::min(unreg_count.size(), size_t(5)); ++i) {
-      LOG(INFO) << "  candidate #" << i << ": image " << unreg_count[i].first << " ("
-                << unreg_count[i].second << " 3D-2D correspondences)";
-    }
-  } else {
-    LOG(INFO) << "[PERF] choose_next_resection_batch: no unregistered images with 3D-2D correspondences";
+  LOG(INFO) << "[PERF] choose_next_resection_batch: " << unreg_count.size()
+            << " candidates (above min_3d2d=" << min_3d2d_count << "), best=" << best_count
+            << ", ratio_floor=" << ratio_floor << ", selected=" << out.size()
+            << ", total_obs_checked=" << total_track_obs_checked
+            << ", count_loop=" << ms_count << "ms";
+  for (size_t i = 0; i < std::min(unreg_count.size(), size_t(5)); ++i) {
+    LOG(INFO) << "  candidate #" << i << ": image " << unreg_count[i].second << " ("
+              << unreg_count[i].first << " 3D-2D correspondences)"
+              << (i < out.size() ? "  [selected]" : "  [below ratio]");
   }
   return out;
 }
@@ -1746,7 +1759,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
     auto t_choose0 = Clock::now();
     std::vector<int> batch =
-        choose_next_resection_batch(*store_out, *registered_out, opts.resection_batch_k);
+        choose_next_resection_batch(*store_out, *registered_out, opts.resection_min_3d2d_count,
+                                    opts.resection_batch_ratio, opts.resection_batch_max);
     auto t_choose1 = Clock::now();
     LOG(INFO) << "[PERF] choose_batch: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
@@ -1776,8 +1790,10 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           if (rej > 0) {
             LOG(INFO) << "run_incremental_sfm_pipeline: cleanup BA + reject " << rej
                       << " (thr=" << cleanup_thr << " px), retry resection";
-            batch =
-                choose_next_resection_batch(*store_out, *registered_out, opts.resection_batch_k);
+          batch =
+                choose_next_resection_batch(*store_out, *registered_out,
+                                            opts.resection_min_3d2d_count,
+                                            opts.resection_batch_ratio, opts.resection_batch_max);
           }
         }
       }
