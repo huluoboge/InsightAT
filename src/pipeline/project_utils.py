@@ -257,11 +257,14 @@ def estimate_camera(
     all_groups: bool = False,
     sensor_db: str | Path | None = None,
     max_sample: int = 5,
+    auto_split: bool = True,
+    split_threads: int = 0,
 ) -> list[dict[str, Any]]:
     """
     isat_camera_estimator -p <project_path> [-g <group_id> | -a] [options]
     Returns list of ISAT_EVENT dicts (type=camera_estimator.estimate), one per group.
     When sensor_db is None, uses build/data/config/camera_sensor_database.txt if present.
+    auto_split=True (default): scan all images and split groups with mixed camera models.
     """
     if group_id is None and not all_groups:
         raise ValueError("Specify group_id or all_groups=True")
@@ -277,6 +280,10 @@ def estimate_camera(
         if default_db is not None:
             cmd += ["-d", str(default_db)]
     cmd += ["--max-sample", str(max_sample)]
+    if auto_split:
+        cmd.append("--auto-split")
+        if split_threads > 0:
+            cmd += ["--split-threads", str(split_threads)]
     return run_tool(cmd)
 
 
@@ -523,6 +530,7 @@ def run_incremental_sfm(
     geo_dir: str | Path,
     output_dir: str | Path,
     *,
+    fix_intrinsics: bool = False,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -530,6 +538,12 @@ def run_incremental_sfm(
 
     Loads tracks from .isat_tracks IDC and project JSON (images + cameras, camera_index).
     Uses pairs JSON for view graph and geo_dir for .isat_geo. Writes poses.json to output_dir.
+
+    Args:
+        fix_intrinsics: Pass ``--fix-intrinsics`` to hold camera calibration constant
+            during Bundle Adjustment.  Strongly recommended for circumferential /
+            object-centric shooting where the geometry does not constrain the
+            principal point.
     """
     cmd = [
         _isat_incremental_sfm(),
@@ -539,6 +553,8 @@ def run_incremental_sfm(
         "-g", str(geo_dir),
         "-o", str(output_dir),
     ]
+    if fix_intrinsics:
+        cmd.append("--fix-intrinsics")
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)

@@ -120,8 +120,9 @@ def run_step_create(
                 all_groups=True,
                 sensor_db=None,
                 max_sample=cfg.max_sample,
+                auto_split=True,
             )
-            log.info("Camera estimation complete (all groups)")
+            log.info("Camera estimation complete (all groups, auto-split enabled)")
         except ToolError as e:
             log.warning("Camera estimation failed (continuing): %s", e)
     emit_pipeline_event({"step": "estimate_camera", "ok": True, "data": {}})
@@ -330,6 +331,7 @@ def run_step_incremental_sfm(
             pairs_json,
             geo_dir,
             sfm_out,
+            fix_intrinsics=cfg.fix_intrinsics,
             extra_args=cfg.extra_incremental_sfm or None,
         )
         log.info("incremental_sfm output: %s | poses: %s", sfm_out, poses_json)
@@ -423,6 +425,7 @@ class SfmConfig:
         extra_geo: list[str] | None = None,
         extra_tracks: list[str] | None = None,
         extra_incremental_sfm: list[str] | None = None,
+        fix_intrinsics: bool = False,
     ) -> None:
         self.input_dir = input_dir
         self.project_path = project_path
@@ -442,6 +445,7 @@ class SfmConfig:
         self.extra_geo = list(extra_geo) if extra_geo else []
         self.extra_tracks = list(extra_tracks) if extra_tracks else []
         self.extra_incremental_sfm = list(extra_incremental_sfm) if extra_incremental_sfm else []
+        self.fix_intrinsics: bool = fix_intrinsics
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -467,6 +471,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-sample", type=int, default=5, help="Max images sampled for focal estimation (default: 5).")
     p.add_argument("--extract-backend", choices=("cuda", "glsl"), default="cuda", help="isat_extract backend (default: cuda).")
     p.add_argument("--match-backend", choices=("cuda", "glsl"), default="cuda", help="isat_match backend (default: cuda; use glsl if headless without EGL).")
+    p.add_argument("--fix-intrinsics", action="store_true",
+        help="Hold camera intrinsics fixed during Bundle Adjustment. "
+             "Recommended for circumferential / object-centric (statue, 360°) shooting.")  # noqa: E501
     p.add_argument("--dry-run", action="store_true", help="Print what would be done without running tools.")
     p.add_argument("--log-level", choices=("error", "warn", "info", "debug"), help="Log level (default: warn).")
     p.add_argument("-v", "--verbose", action="store_true", help="Same as --log-level=info.")
@@ -528,6 +535,7 @@ def main(argv: list[str] | None = None) -> int:
         log_level=log_level,
         extract_backend=args.extract_backend,
         match_backend=args.match_backend,
+        fix_intrinsics=args.fix_intrinsics,
     )
 
     try:

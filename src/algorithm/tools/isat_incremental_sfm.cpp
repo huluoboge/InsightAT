@@ -190,6 +190,7 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('g', geo_dir, "geo").doc("Directory of .isat_geo files"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
+  cmd.add(make_switch(0, "fix-intrinsics").doc("Keep camera intrinsics fixed (do not optimize in BA). Recommended for circumferential/object-centric shots."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -233,6 +234,10 @@ int main(int argc, char* argv[]) {
   std::vector<bool> registered;
   IncrementalSfMOptions opts;
   opts.local_ba_strategy = LocalBAStrategy::kColmap;
+  if (cmd.used("fix-intrinsics")) {
+    opts.global_ba_optimize_intrinsics = false;
+    LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
+  }
   if (!run_incremental_sfm_pipeline(
           tracks_path, pairs_path, geo_dir,
           &project.cameras, project.image_to_camera_index, opts,
