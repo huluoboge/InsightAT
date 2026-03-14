@@ -52,18 +52,27 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
  *      (triangulated tracks visible from that image); discard images with
  *      fewer than min_3d2d_count correspondences.
  *   2. best_count = score of the top candidate.
- *   3. batch = all candidates with score >= batch_ratio * best_count,
- *      capped at batch_max images (highest scores first).
+ *   3. ratio_floor = ceil(best_count * batch_ratio).
+ *      Late-stage relaxation (object-scan): when num_registered > late_registered_threshold
+ *      and late_absolute_min > 0, ratio_floor = min(ratio_floor, late_absolute_min),
+ *      allowing more candidates into the batch once the map is large enough.
+ *   4. batch = all candidates with score >= ratio_floor, capped at batch_max images.
  *
- * @param min_3d2d_count  Absolute floor: images below this are never candidates.
- *                        COLMAP uses 15; 6 is the PnP hard minimum.
- * @param batch_ratio     Relative threshold vs best candidate (OpenMVG default 0.75).
- * @param batch_max       Upper cap on batch size to avoid over-registration per iter.
+ * @param min_3d2d_count            Absolute floor: images below this are never candidates.
+ *                                  COLMAP uses 15; raise to 30 for high-overlap datasets.
+ * @param batch_ratio               Relative threshold vs best candidate (OpenMVG default 0.75).
+ * @param batch_max                 Upper cap on batch size to avoid over-registration per iter.
+ * @param late_registered_threshold When num_registered exceeds this, switch to late-stage mode.
+ *                                  0 = disabled (pure ratio mode always).
+ * @param late_absolute_min         Late-stage absolute floor: ratio_floor = min(ratio_floor, this).
+ *                                  0 = disabled.
  */
 std::vector<int> choose_next_resection_batch(const TrackStore& store,
                                              const std::vector<bool>& registered,
                                              int min_3d2d_count, double batch_ratio,
-                                             int batch_max);
+                                             int batch_max,
+                                             int late_registered_threshold = 0,
+                                             int late_absolute_min = 0);
 
 /**
  * Run resection for each image in the batch; intrinsics = cameras[image_to_camera_index[im]].
@@ -229,6 +238,16 @@ struct IncrementalSfMOptions {
   /// Hard upper cap on batch size per SfM iteration.  Prevents registering too
   /// many images at once before the next BA pass stabilises the map.
   int resection_batch_max = 20;
+  /// Late-stage resection relaxation.  When num_registered > this threshold and
+  /// resection_late_absolute_min > 0, the ratio floor is replaced by
+  /// min(ratio_floor, resection_late_absolute_min), allowing more candidates in.
+  /// Fixes "strong-ratio suppression" where high-obs best candidates block
+  /// perfectly-valid 150-obs images once best reaches 300+.
+  /// 0 = disabled (pure ratio mode always).  Object-scan preset: 30.
+  int resection_late_registered_threshold = 0;
+  /// Absolute minimum 3D-2D count in late-stage mode (see above).
+  /// 0 = disabled.  Object-scan preset: 100.
+  int resection_late_absolute_min = 0;
 
   // ─── Bundle adjustment ───────────────────────────────────────────────────
   int local_ba_after_n_images =

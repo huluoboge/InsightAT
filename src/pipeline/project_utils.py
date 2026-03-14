@@ -538,6 +538,10 @@ def run_incremental_sfm(
     ba_func_tol: float = 0.0,
     ba_param_tol: float = 0.0,
     ba_dense_max_cams: int = 0,
+    ba_intrinsics_min_images: int = 0,
+    resection_min_3d2d: int = 0,
+    late_reg_threshold: int = 0,
+    late_abs_min: int = 0,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -547,14 +551,20 @@ def run_incremental_sfm(
     Uses pairs JSON for view graph and geo_dir for .isat_geo. Writes poses.json to output_dir.
 
     Args:
-        fix_intrinsics:   Pass ``--fix-intrinsics`` to hold camera calibration constant during BA.
-        object_scan:      Pass ``--object-scan`` preset (no-local-ba + 5000-iter BA + tight tols).
-        no_local_ba:      Pass ``--no-local-ba`` (skip per-iteration local BA).
-        ba_max_iter:      Override Ceres max iterations (0 = use default / object-scan value).
-        ba_grad_tol:      Override Ceres gradient_tolerance (0 = default).
-        ba_func_tol:      Override Ceres function_tolerance (0 = default).
-        ba_param_tol:     Override Ceres parameter_tolerance (0 = default).
-        ba_dense_max_cams: Override DENSE↔SPARSE Schur threshold (0 = default).
+        fix_intrinsics:         Pass ``--fix-intrinsics`` to hold camera calibration constant.
+        object_scan:            Pass ``--object-scan`` preset (no-local-ba + 5000-iter BA + tight
+                                tols + intrinsics_min=5, resection_min_3d2d=30, late_threshold=30,
+                                late_abs_min=100).
+        no_local_ba:            Pass ``--no-local-ba`` (skip per-iteration local BA).
+        ba_max_iter:            Override Ceres max iterations (0 = use default).
+        ba_grad_tol:            Override Ceres gradient_tolerance (0 = default).
+        ba_func_tol:            Override Ceres function_tolerance (0 = default).
+        ba_param_tol:           Override Ceres parameter_tolerance (0 = default).
+        ba_dense_max_cams:      Override DENSE↔SPARSE Schur threshold (0 = default).
+        ba_intrinsics_min_images: Min registered images before BA optimizes intrinsics (0 = default 10).
+        resection_min_3d2d:     Min 3D-2D correspondences for resection candidate (0 = default 15).
+        late_reg_threshold:     Late-stage resection: relax ratio floor when registered > this (0 = off).
+        late_abs_min:           Late-stage absolute floor for 3D-2D count (0 = off).
     """
     cmd = [
         _isat_incremental_sfm(),
@@ -580,6 +590,14 @@ def run_incremental_sfm(
         cmd += ["--ba-param-tol", str(ba_param_tol)]
     if ba_dense_max_cams > 0:
         cmd += ["--ba-dense-max-cams", str(ba_dense_max_cams)]
+    if ba_intrinsics_min_images > 0:
+        cmd += ["--ba-intrinsics-min", str(ba_intrinsics_min_images)]
+    if resection_min_3d2d > 0:
+        cmd += ["--resection-min-3d2d", str(resection_min_3d2d)]
+    if late_reg_threshold > 0:
+        cmd += ["--late-reg-threshold", str(late_reg_threshold)]
+    if late_abs_min > 0:
+        cmd += ["--late-abs-min", str(late_abs_min)]
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)

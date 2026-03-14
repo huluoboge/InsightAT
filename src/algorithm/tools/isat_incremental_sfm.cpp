@@ -188,6 +188,10 @@ int main(int argc, char* argv[]) {
   double ba_func_tol = 0.0;
   double ba_param_tol = 0.0;
   int ba_dense_max_cams = 0;
+  int ba_intrinsics_min_images = 0;
+  int resection_min_3d2d = 0;
+  int late_reg_threshold = 0;
+  int late_abs_min = 0;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -202,7 +206,11 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, ba_func_tol, "ba-func-tol").doc("Ceres function_tolerance (0=default). Object-scan preset: 1e-6."));
   cmd.add(make_option(0, ba_param_tol, "ba-param-tol").doc("Ceres parameter_tolerance (0=default). Object-scan preset: 1e-8."));
   cmd.add(make_option(0, ba_dense_max_cams, "ba-dense-max-cams").doc("DENSE↔SPARSE Schur threshold (0=built-in 30). Object-scan preset: 50."));
-  cmd.add(make_switch(0, "object-scan").doc("Preset for circumferential/object-centric shooting: no-local-ba + max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50."));
+  cmd.add(make_option(0, ba_intrinsics_min_images, "ba-intrinsics-min").doc("Min registered images before intrinsics are optimized in global BA (0=use default 10). Object-scan preset: 5."));
+  cmd.add(make_option(0, resection_min_3d2d, "resection-min-3d2d").doc("Min 3D-2D correspondences for resection candidate (0=use default 15). Object-scan preset: 30."));
+  cmd.add(make_option(0, late_reg_threshold, "late-reg-threshold").doc("Late-stage resection: relax ratio floor when num_registered > this (0=disabled). Object-scan preset: 30."));
+  cmd.add(make_option(0, late_abs_min, "late-abs-min").doc("Late-stage resection absolute floor (0=disabled). Object-scan preset: 100."));
+  cmd.add(make_switch(0, "object-scan").doc("Preset for circumferential/object-scan shooting: no-local-ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -254,7 +262,11 @@ int main(int argc, char* argv[]) {
     opts.ba_function_tolerance =  1e-6;
     opts.ba_parameter_tolerance = 1e-8;
     opts.ba_dense_schur_max_variable_cams = 50;
-    LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50.";
+    opts.global_ba_optimize_intrinsics_min_images = 5;
+    opts.resection_min_3d2d_count = 30;
+    opts.resection_late_registered_threshold = 30;
+    opts.resection_late_absolute_min = 100;
+    LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100.";
   }
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba_optimize_intrinsics = false;
@@ -268,7 +280,11 @@ int main(int argc, char* argv[]) {
   if (ba_grad_tol > 0.0)     opts.ba_gradient_tolerance   = ba_grad_tol;
   if (ba_func_tol > 0.0)     opts.ba_function_tolerance   = ba_func_tol;
   if (ba_param_tol > 0.0)    opts.ba_parameter_tolerance  = ba_param_tol;
-  if (ba_dense_max_cams > 0) opts.ba_dense_schur_max_variable_cams = ba_dense_max_cams;
+  if (ba_dense_max_cams > 0)         opts.ba_dense_schur_max_variable_cams = ba_dense_max_cams;
+  if (ba_intrinsics_min_images > 0)  opts.global_ba_optimize_intrinsics_min_images = ba_intrinsics_min_images;
+  if (resection_min_3d2d > 0)        opts.resection_min_3d2d_count = resection_min_3d2d;
+  if (late_reg_threshold > 0)        opts.resection_late_registered_threshold = late_reg_threshold;
+  if (late_abs_min > 0)              opts.resection_late_absolute_min = late_abs_min;
   if (!run_incremental_sfm_pipeline(
           tracks_path, pairs_path, geo_dir,
           &project.cameras, project.image_to_camera_index, opts,

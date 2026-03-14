@@ -889,11 +889,16 @@ double compute_max_ray_angle_deg(const Eigen::Vector3d& X,
 std::vector<int> choose_next_resection_batch(const TrackStore& store,
                                              const std::vector<bool>& registered,
                                              int min_3d2d_count, double batch_ratio,
-                                             int batch_max) {
+                                             int batch_max,
+                                             int late_registered_threshold,
+                                             int late_absolute_min) {
   using Clock = std::chrono::steady_clock;
   const int n_images = store.num_images();
   if (n_images == 0 || static_cast<int>(registered.size()) != n_images || batch_max <= 0)
     return {};
+
+  // Count registered for late-stage logic.
+  const int num_registered = static_cast<int>(std::count(registered.begin(), registered.end(), true));
 
   auto t0 = Clock::now();
   // Score every unregistered image by its number of triangulated 3D-2D correspondences.
@@ -928,7 +933,19 @@ std::vector<int> choose_next_resection_batch(const TrackStore& store,
 
   // OpenMVG 75%-ratio threshold: include all within ratio of best.
   const int best_count = unreg_count[0].first;
-  const int ratio_floor = static_cast<int>(std::ceil(best_count * batch_ratio));
+  int ratio_floor = static_cast<int>(std::ceil(best_count * batch_ratio));
+  // Late-stage relaxation: once enough images are registered, replace the strict
+  // ratio floor with an absolute minimum, so images with e.g. 150 obs are not
+  // excluded just because the best has 300 obs (ratio_floor would be 225).
+  const bool late_mode = (late_registered_threshold > 0 && late_absolute_min > 0 &&
+                          num_registered > late_registered_threshold);
+  if (late_mode) {
+    ratio_floor = std::min(ratio_floor, late_absolute_min);
+    LOG(INFO) << "  [late-mode] num_registered=" << num_registered
+              << " > threshold=" << late_registered_threshold
+              << ": ratio_floor relaxed to min(" << static_cast<int>(std::ceil(best_count * batch_ratio))
+              << ", " << late_absolute_min << ")=" << ratio_floor;
+  }
   std::vector<int> out;
   for (const auto& p : unreg_count) {
     if (p.first < ratio_floor || static_cast<int>(out.size()) >= batch_max)
@@ -2153,7 +2170,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     auto t_choose0 = Clock::now();
     std::vector<int> batch =
         choose_next_resection_batch(*store_out, *registered_out, opts.resection_min_3d2d_count,
-                                    opts.resection_batch_ratio, effective_batch_max);
+                                    opts.resection_batch_ratio, effective_batch_max,
+                                    opts.resection_late_registered_threshold,
+                                    opts.resection_late_absolute_min);
     auto t_choose1 = Clock::now();
     LOG(INFO) << "[PERF] choose_batch: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
@@ -2193,7 +2212,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           batch =
                 choose_next_resection_batch(*store_out, *registered_out,
                                             opts.resection_min_3d2d_count,
-                                            opts.resection_batch_ratio, effective_batch_max);
+                                            opts.resection_batch_ratio, effective_batch_max,
+                                            opts.resection_late_registered_threshold,
+                                            opts.resection_late_absolute_min);
           }
         }
       }
