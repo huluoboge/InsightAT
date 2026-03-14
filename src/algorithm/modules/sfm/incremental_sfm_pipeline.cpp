@@ -2122,6 +2122,14 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // does not absorb the ~1-second EGL/shader-compile cost.
   resection_init_gpu();
 
+  // COLMAP strategy registers exactly one image per iteration, then immediately runs
+  // local BA on it (2-hop expansion centered on that single camera).  Batching >1
+  // violates this design: the "batch" in run_local_ba_colmap is meant to be a single
+  // newly-registered image, and its COLMAP-paper variable-set expansion only makes
+  // sense when the batch contains just one new camera.
+  const int effective_batch_max =
+      (opts.local_ba_strategy == LocalBAStrategy::kColmap) ? 1 : opts.resection_batch_max;
+
   auto pipeline_start = Clock::now();
   int sfm_iter = 0;
   for (;;) {
@@ -2133,7 +2141,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     auto t_choose0 = Clock::now();
     std::vector<int> batch =
         choose_next_resection_batch(*store_out, *registered_out, opts.resection_min_3d2d_count,
-                                    opts.resection_batch_ratio, opts.resection_batch_max);
+                                    opts.resection_batch_ratio, effective_batch_max);
     auto t_choose1 = Clock::now();
     LOG(INFO) << "[PERF] choose_batch: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
@@ -2172,7 +2180,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           batch =
                 choose_next_resection_batch(*store_out, *registered_out,
                                             opts.resection_min_3d2d_count,
-                                            opts.resection_batch_ratio, opts.resection_batch_max);
+                                            opts.resection_batch_ratio, effective_batch_max);
           }
         }
       }
