@@ -249,29 +249,37 @@ struct IncrementalSfMOptions {
   int global_ba_optimize_intrinsics_min_images = 10;
   int max_global_ba_iterations = 50; ///< Was 50: 50 is sufficient for convergence in most cases.
 
-  // ─── Progressive intrinsics freeze ───────────────────────────────────────
-  /// Per-camera: after registered image count ≥ freeze_min_images AND |Δk1|+|Δk2|+|Δk3| <
-  /// freeze_delta_k for freeze_stable_rounds consecutive global BAs, freeze that camera's
-  /// distortion.  Subsequent global BAs skip optimising it, restoring Schur-complement sparsity.
-  /// Final global BA always re-opens all cameras (safety net against premature freeze).
+  // ─── Progressive intrinsics freeze (local-BA phase only) ────────────────────
+  /// Active only once n_registered ≥ local_ba_after_n_images.  During the early
+  /// global-BA phase there are too few images and intrinsics are still converging;
+  /// freeze evaluation there is meaningless and potentially harmful.
+  ///
+  /// Freeze lifecycle:
+  ///   Level-1 gate  : camera must have ≥ intrinsics_freeze_min_images registered images.
+  ///   Level-2 check : IntrinsicsDelta::stable() for intrinsics_freeze_stable_rounds
+  ///                   consecutive mid-frequency global BAs → camera FROZEN.
+  ///   Unfreeze      : on the low-frequency recalib BA, frozen cameras whose delta
+  ///                   exceeds any threshold are UNFROZEN and must re-converge.
   bool intrinsics_progressive_freeze = true;
   int intrinsics_freeze_min_images = 30;    ///< Level-1 gate: min registered images per camera.
   /// Level-2 convergence thresholds for IntrinsicsDelta::stable().
   double intrinsics_freeze_delta_focal = 1e-3; ///< Relative focal change: (|Δfx|/fx+|Δfy|/fy)/2 < this.
   double intrinsics_freeze_delta_pp    = 0.5;  ///< Principal-point shift: |Δcx|+|Δcy| < this (px).
   double intrinsics_freeze_delta_dist  = 1e-4; ///< Distortion L1: |Δk1|+…+|Δp2| < this.
-  int intrinsics_freeze_stable_rounds = 2;  ///< Consecutive stable BAs required to confirm freeze.
+  int intrinsics_freeze_stable_rounds = 2;  ///< Consecutive mid-freq BAs required to confirm freeze.
 
-  // ─── Periodic global BA during local-BA phase ────────────────────────────
-  /// During local-BA phase, trigger a full global BA every this many newly registered images.
-  /// Serves two purposes depending on freeze state:
-  ///   - Pre-freeze:  global BA with per-camera selective intrinsics, prevents distortion drift
-  ///                  accumulating from repeated local-only passes (root cause of 3D-point bending).
-  ///   - Post-freeze: all camera intrinsics are fixed (kFixIntrAll), so this becomes a pure
-  ///                  global pose + 3D-point refinement BA — still essential for correcting
-  ///                  drift that local BA cannot see across the full scene extent.
-  /// 0 = disabled.  Typical: 20 images.
+  // ─── Two-tier BA schedule during local-BA phase ──────────────────────────────
+  /// Mid-frequency global BA: every N newly registered images.
+  ///   Frozen cameras use kFixIntrAll — Schur-complement sparsity benefit.
+  ///   Unfrozen cameras optimise intrinsics normally.
+  ///   Evaluates freeze convergence for unfrozen cameras (stable_rounds++).
+  /// 0 = disabled.  Typical: 15–20 images.
   int periodic_global_ba_every_n_images = 20;
+  /// Low-frequency recalib BA: every this many mid-freq BA calls.
+  ///   Opens ALL cameras' intrinsics (no frozen_vec) — true full recalibration.
+  ///   Re-evaluates all cameras (including frozen): may UNFREEZE cameras that drifted.
+  /// Typical: 4 (= every 4×20 = 80 images).  0 = disabled (no recalib, freeze is permanent).
+  int recalib_global_ba_every_n_periodic = 4;
 
   // ─── Triangulation ───────────────outlier rejection:────────────────────
   /// Minimum max pairwise ray angle (degrees) for a newly triangulated point to be accepted.

@@ -2077,6 +2077,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
   // Registered count at last periodic global BA (local-BA phase tracker).
   int last_periodic_global_ba_registered = 0;
+  int periodic_ba_count = 0; // counts mid-freq BA calls; triggers recalib every N
   // ───────────────────────────────────────────────────────────────────────────────
   // Warm-up GPU context before entering the main loop so the first resection
   // does not absorb the ~1-second EGL/shader-compile cost.
@@ -2189,7 +2190,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           LOG(INFO) << "[PERF] global_ba: "
                     << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
                     << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
-          if (opt_intr) update_freeze_state();
+          // No freeze evaluation in early phase: too few images, intrinsics still converging.
           run_ba_and_reject_outliers(&rmse);
         }
       } else {
@@ -2197,24 +2198,48 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                   << ", n=" << num_registered << ")";
       }
     } else {
-      // ── Periodic global BA to recalibrate distortion during local-BA phase ───────────
+      // ── Two-tier BA schedule (mid-freq + low-freq recalib) during local-BA phase ──────
       if (opts.periodic_global_ba_every_n_images > 0 &&
           (num_registered - last_periodic_global_ba_registered) >=
               opts.periodic_global_ba_every_n_images) {
         last_periodic_global_ba_registered = num_registered;
+        ++periodic_ba_count;
         const bool opt_intr_p =
             opts.global_ba_optimize_intrinsics &&
             num_registered >= opts.global_ba_optimize_intrinsics_min_images;
-        if (opt_intr_p) {
+
+        // Low-freq recalib: every recalib_global_ba_every_n_periodic mid-freq BAs.
+        // Opens ALL intrinsics, then re-evaluates freeze state for every camera.
+        const bool do_recalib =
+            opt_intr_p && opts.intrinsics_progressive_freeze &&
+            opts.recalib_global_ba_every_n_periodic > 0 &&
+            (periodic_ba_count % opts.recalib_global_ba_every_n_periodic == 0);
+        if (do_recalib) {
           auto t_pba = Clock::now();
-          // Always open ALL cameras' intrinsics: true recalibration + re-evaluation of freeze.
-          // Non-periodic BAs use make_frozen_vec() for performance; this one is the checkpoint.
           if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                             image_to_camera_index, *cameras, cameras, true,
                             opts.max_global_ba_iterations, &rmse, anchor_image,
                             nullptr /* all intrinsics open */)) {
             update_freeze_state(/*recheck_frozen=*/true);
-            LOG(INFO) << "[PERF] periodic_global_ba: "
+            LOG(INFO) << "[PERF] recalib_global_ba #" << periodic_ba_count << ": "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba).count()
+                      << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+            run_ba_and_reject_outliers(&rmse);
+          }
+        } else {
+          // Mid-freq global BA: frozen cameras use kFixIntrAll (Schur sparsity).
+          // Unfrozen cameras optimise intrinsics; evaluates freeze convergence.
+          const bool mid_opt_intr = opt_intr_p;
+          const auto frozen_mid =
+              (mid_opt_intr && opts.intrinsics_progressive_freeze) ? make_frozen_vec()
+                                                                   : std::vector<bool>{};
+          auto t_pba = Clock::now();
+          if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                            image_to_camera_index, *cameras, cameras, mid_opt_intr,
+                            opts.max_global_ba_iterations, &rmse, anchor_image,
+                            mid_opt_intr ? &frozen_mid : nullptr)) {
+            if (mid_opt_intr) update_freeze_state(/*recheck_frozen=*/false);
+            LOG(INFO) << "[PERF] periodic_global_ba #" << periodic_ba_count << ": "
                       << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba).count()
                       << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
             run_ba_and_reject_outliers(&rmse);
