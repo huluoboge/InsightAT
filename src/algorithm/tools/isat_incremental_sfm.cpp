@@ -232,7 +232,7 @@ int main(int argc, char* argv[]) {
   std::vector<Eigen::Vector3d> poses_C;
   std::vector<bool> registered;
   IncrementalSfMOptions opts;
-
+  opts.local_ba_strategy = LocalBAStrategy::kColmap;
   if (!run_incremental_sfm_pipeline(
           tracks_path, pairs_path, geo_dir,
           &project.cameras, project.image_to_camera_index, opts,

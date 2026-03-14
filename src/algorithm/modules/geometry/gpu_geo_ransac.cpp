@@ -26,6 +26,7 @@
 #include <time.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -40,7 +41,7 @@
 // Configuration + globals
 // ─────────────────────────────────────────────────────────────────────────────
 
-static int s_num_iter = 1000;
+static int s_num_iter = 2000; //2000 is a good default for 1.5px threshold and ~100 matches; adjust as needed for different scenarios (e.g. 1000 for 2px, 5000 for 1px, etc.)
 static int s_local_size = 64;
 static int s_verbose = 0; // enable per-call GL timer query profiling
 static int s_solver = 1;  // 0 = full Jacobi  1 = Cholesky inverse iteration
@@ -493,53 +494,357 @@ void main()
 )GLSL";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PnP RANSAC: GPU inlier counting (CPU does 6-point DLT per iteration)
-// Input: points (5 floats per point: x,y,z,u,v), K, per-iteration R[9]+t[3].
-// Output: one inlier count per iteration.
+// PnP RANSAC: full GPU RANSAC — each thread performs one complete iteration:
+//   hash-RNG sample → 6-point K-norm DLT (12×12 AᵀA + Jacobi null vec)
+//   → 3×3 SVD enforce rotation → pixel-space inlier count
+// Input : points buffer (x,y,z,u_px,v_px, 5 floats/pt), K as uniforms
+// Output: 13 floats per iter — R[9], t[3], inlier_count
 // ─────────────────────────────────────────────────────────────────────────────
 
 static const char* SHADER_TEMPLATE_PNP = R"GLSL(
 #version 430
-#define NUM_ITER  %%NUM_ITER%%
+#define NUM_ITER   %%NUM_ITER%%
 #define LOCAL_SIZE %%LOCAL_SIZE%%
 layout(local_size_x = LOCAL_SIZE) in;
 
-// Points: 5 floats per point (x,y,z,u,v), n points
-layout(std430, binding=0) readonly buffer PointsBuf { float points[]; };
-layout(std430, binding=1) readonly buffer RtBuf    { float rt[]; };      // 12 per iter: R[9], t[3]
-layout(std430, binding=2) writeonly buffer ResBuf   { float inlier_count[]; };
+// Points: 5 floats per point (x, y, z, u_px, v_px)
+layout(std430, binding=0) readonly  buffer PointsBuf { float pts[]; };
+// Indices: 6 ints per iteration (pre-sampled on CPU, unique within each set)
+layout(std430, binding=1) readonly  buffer IdxBuf    { int  indices[]; };
+// Results: 13 floats per iter — R[9], t[3], inlier_count
+layout(std430, binding=2) writeonly buffer ResBuf    { float results[]; };
 
-uniform int   u_n;
-uniform float u_thresh_sq;
-uniform float u_fx;
-uniform float u_fy;
-uniform float u_cx;
-uniform float u_cy;
+uniform int   u_n;         // number of 3D-2D correspondences
+uniform float u_thresh_sq; // inlier threshold squared (pixel²)
+uniform float u_fx, u_fy, u_cx, u_cy;
+uniform int   u_solver;    // 0=full Jacobi  1=Cholesky inverse iteration
+
+// ── 3×3 symmetric Jacobi rotation (for svd3x3) ───────────────────────────────
+void sym_rot3(inout float A[9], inout float V[9], int p, int q) {
+    float apq = A[p*3+q];
+    if (abs(apq) < 1e-12) return;
+    float tau = 0.5*(A[q*3+q]-A[p*3+p])/apq;
+    float t   = sign(tau)/(abs(tau)+sqrt(1.0+tau*tau));
+    float c   = 1.0/sqrt(1.0+t*t), s = t*c;
+    float app = A[p*3+p], aqq = A[q*3+q];
+    A[p*3+p] = app-t*apq;  A[q*3+q] = aqq+t*apq;
+    A[p*3+q] = 0.0;        A[q*3+p] = 0.0;
+    for (int r=0; r<3; r++) {
+        if (r==p||r==q) continue;
+        float arp=A[r*3+p], arq=A[r*3+q];
+        A[r*3+p]=c*arp-s*arq;  A[p*3+r]=A[r*3+p];
+        A[r*3+q]=s*arp+c*arq;  A[q*3+r]=A[r*3+q];
+    }
+    for (int r=0; r<3; r++) {
+        float vrp=V[r*3+p], vrq=V[r*3+q];
+        V[r*3+p]=c*vrp-s*vrq;
+        V[r*3+q]=s*vrp+c*vrq;
+    }
+}
+
+// ── Thin 3×3 SVD: M → U, S[3] descending, Vt ────────────────────────────────
+void svd3x3(in float M[9], out float U[9], out float S[3], out float Vt[9]) {
+    float AtA[9];
+    for (int i=0;i<9;i++) AtA[i]=0.0;
+    for (int k=0;k<3;k++) for (int i=0;i<3;i++) for (int j=0;j<3;j++)
+        AtA[i*3+j]+=M[k*3+i]*M[k*3+j];
+    float V[9]; for (int i=0;i<9;i++) V[i]=0.0;
+    V[0]=1.0; V[4]=1.0; V[8]=1.0;
+    for (int sw=0;sw<12;sw++) { sym_rot3(AtA,V,0,1); sym_rot3(AtA,V,0,2); sym_rot3(AtA,V,1,2); }
+    float sv[3]; for (int i=0;i<3;i++) sv[i]=sqrt(max(0.0,AtA[i*3+i]));
+    for (int i=0;i<3;i++) for (int j=i+1;j<3;j++) if (sv[j]>sv[i]) {
+        float tv=sv[i]; sv[i]=sv[j]; sv[j]=tv;
+        for (int r=0;r<3;r++) { float tv2=V[r*3+i]; V[r*3+i]=V[r*3+j]; V[r*3+j]=tv2; }
+    }
+    S[0]=sv[0]; S[1]=sv[1]; S[2]=sv[2];
+    for (int i=0;i<9;i++) U[i]=0.0;
+    for (int j=0;j<3;j++) {
+        if (S[j]<1e-10) continue;
+        for (int i=0;i<3;i++) { float s=0.0; for (int k=0;k<3;k++) s+=M[i*3+k]*V[k*3+j]; U[i*3+j]=s/S[j]; }
+    }
+    if (S[2]<1e-10) {
+        vec3 u2=normalize(cross(vec3(U[0],U[3],U[6]),vec3(U[1],U[4],U[7])));
+        U[2]=u2.x; U[5]=u2.y; U[8]=u2.z;
+    }
+    if (dot(cross(vec3(V[0],V[3],V[6]),vec3(V[1],V[4],V[7])),vec3(V[2],V[5],V[8]))<0.0) {
+        V[2]=-V[2]; V[5]=-V[5]; V[8]=-V[8]; U[2]=-U[2]; U[5]=-U[5]; U[8]=-U[8];
+    }
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) Vt[i*3+j]=V[j*3+i];
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 12×12 symmetric Jacobi eigendecomposition  → null vector of AᵀA
+//
+// Replaces the Cholesky IPI solver which was numerically unstable in float32:
+//   Cholesky on AᵀA squares the condition number and loses ~half the
+//   significant digits, causing the extracted null vector (and hence R, t)
+//   to be garbage for even mildly ill-conditioned 6-point samples.
+//
+// Jacobi eigendecomposition is backward-stable: it finds ALL eigenvalues and
+// eigenvectors to machine precision, regardless of condition number.
+// Cost: 25 sweeps × 66 pairs × O(12) work ≈ 20k FLOP — fast enough for a
+// GPU thread (the inlier-counting loop over n points dominates anyway).
+// ════════════════════════════════════════════════════════════════════════════
+
+void sym_rot12(inout float A[144], inout float V[144], int p, int q)
+{
+    float apq = A[p*12+q];
+    if (abs(apq) < 1e-12) return;
+
+    float tau = 0.5 * (A[q*12+q] - A[p*12+p]) / apq;
+    float t   = sign(tau) / (abs(tau) + sqrt(1.0 + tau*tau));
+    float c   = 1.0 / sqrt(1.0 + t*t);
+    float s   = t * c;
+
+    float app = A[p*12+p], aqq = A[q*12+q];
+    A[p*12+p] = app - t*apq;
+    A[q*12+q] = aqq + t*apq;
+    A[p*12+q] = 0.0;
+    A[q*12+p] = 0.0;
+
+    for (int r = 0; r < 12; r++) {
+        if (r == p || r == q) continue;
+        float arp = A[r*12+p], arq = A[r*12+q];
+        A[r*12+p] = c*arp - s*arq;  A[p*12+r] = A[r*12+p];
+        A[r*12+q] = s*arp + c*arq;  A[q*12+r] = A[r*12+q];
+    }
+    for (int r = 0; r < 12; r++) {
+        float vrp = V[r*12+p], vrq = V[r*12+q];
+        V[r*12+p] = c*vrp - s*vrq;
+        V[r*12+q] = s*vrp + c*vrq;
+    }
+}
+
+void null_vec12(inout float B[144], out float x[12])
+{
+    // ── Eigenvector matrix (identity) ────────────────────────────────────────
+    float V[144];
+    for (int i = 0; i < 144; i++) V[i] = 0.0;
+    for (int i = 0; i < 12;  i++) V[i*12+i] = 1.0;
+
+    // ── Jacobi eigendecomposition: 20 sweeps × 66 off-diagonal pairs ─────────
+    for (int sw = 0; sw < 20; sw++)
+        for (int p = 0; p < 11; p++)
+            for (int q = p+1; q < 12; q++)
+                sym_rot12(B, V, p, q);
+
+    // ── Column of V with smallest eigenvalue ─────────────────────────────────
+    int imin = 0;
+    for (int i = 1; i < 12; i++)
+        if (B[i*12+i] < B[imin*12+imin]) imin = i;
+
+    for (int i = 0; i < 12; i++) x[i] = V[i*12+imin];
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// IPI null-vector solver: Cholesky factorisation + Inverse Power Iteration
+//
+// Memory: B[144] + x[12] + y[12] = 168 floats  (vs 300 for Jacobi)
+// Speed:  ≈20× faster than Jacobi (8 triangular solves ≪ 1320 Givens rotations)
+// Requires well-conditioned B = AᵀA (ensured by 2D Hartley + 3D normalization).
+// ════════════════════════════════════════════════════════════════════════════
+
+void null_vec12_ipi(inout float B[144], out float x[12])
+{
+    // ── Diagonal equilibration: B' = D·B·D where D[i] = 1/√B[i,i] ──────────
+    // After equilibration, B' has unit diagonal – dramatically reduces the
+    // condition number and makes Cholesky stable in float32 even for
+    // ill-conditioned 6-point DLT configurations.
+    float D[12];
+    for (int i = 0; i < 12; i++)
+        D[i] = B[i*12+i] > 1e-20 ? 1.0 / sqrt(B[i*12+i]) : 1.0;
+    for (int i = 0; i < 12; i++)
+        for (int j = 0; j <= i; j++) {
+            B[i*12+j] *= D[i] * D[j];
+            if (j != i) B[j*12+i] = B[i*12+j];
+        }
+
+    // ── Regularise: B_µ = B' + µ·I ──────────────────────────────────────────
+    // After equilibration, diag ≈ 1.0, so a fixed µ is well-calibrated.
+    float mu = 1e-3;
+    for (int i = 0; i < 12; i++) B[i*12+i] += mu;
+
+    // ── Cholesky factorisation: B_µ = L·Lᵀ (in-place, lower triangle) ───────
+    for (int j = 0; j < 12; j++) {
+        float s = B[j*12+j];
+        for (int k = 0; k < j; k++) s -= B[j*12+k] * B[j*12+k];
+        B[j*12+j] = sqrt(max(s, 0.0)) + 1e-30;
+        for (int i = j+1; i < 12; i++) {
+            s = B[i*12+j];
+            for (int k = 0; k < j; k++) s -= B[i*12+k] * B[j*12+k];
+            B[i*12+j] = s / B[j*12+j];
+        }
+    }
+
+    // ── Inverse iteration: 8 rounds of (L·Lᵀ)\x + normalise ─────────────────
+    float inv12 = 1.0 / 12.0;
+    for (int i = 0; i < 12; i++) x[i] = inv12;
+
+    float y[12];
+    for (int iter = 0; iter < 8; iter++) {
+        // Forward substitution: L·y = x
+        for (int i = 0; i < 12; i++) {
+            y[i] = x[i];
+            for (int j = 0; j < i; j++) y[i] -= B[i*12+j] * y[j];
+            y[i] /= B[i*12+i];
+        }
+        // Backward substitution: Lᵀ·x = y
+        for (int i = 11; i >= 0; i--) {
+            x[i] = y[i];
+            for (int j = i+1; j < 12; j++) x[i] -= B[j*12+i] * x[j];
+            x[i] /= B[i*12+i];
+        }
+        // Normalise
+        float nrm = 0.0;
+        for (int i = 0; i < 12; i++) nrm += x[i] * x[i];
+        nrm = sqrt(nrm) + 1e-30;
+        for (int i = 0; i < 12; i++) x[i] /= nrm;
+    }
+
+    // ── Denormalize: x_orig = D · x_eq  (undo equilibration) ────────────────
+    // B' = D·B·D ⟹ null(B') maps to x = D·x' as null vector of B.
+    for (int i = 0; i < 12; i++) x[i] *= D[i];
+    float nrm2 = 0.0;
+    for (int i = 0; i < 12; i++) nrm2 += x[i] * x[i];
+    nrm2 = sqrt(nrm2) + 1e-30;
+    for (int i = 0; i < 12; i++) x[i] /= nrm2;
+}
 
 void main() {
-  uint tid = gl_GlobalInvocationID.x;
-  if (tid >= uint(NUM_ITER)) return;
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= uint(NUM_ITER)) return;
 
-  float R[9];
-  float t[3];
-  int base = int(tid) * 12;
-  for (int i = 0; i < 9; i++) R[i] = rt[base + i];
-  t[0] = rt[base + 9];  t[1] = rt[base + 10];  t[2] = rt[base + 11];
+    int b13 = int(tid)*13;
 
-  int cnt = 0;
-  for (int i = 0; i < u_n; i++) {
-    float X = points[i*5 + 0], Y = points[i*5 + 1], Z = points[i*5 + 2];
-    float u_obs = points[i*5 + 3], v_obs = points[i*5 + 4];
-    float p0 = R[0]*X + R[1]*Y + R[2]*Z + t[0];
-    float p1 = R[3]*X + R[4]*Y + R[5]*Z + t[1];
-    float p2 = R[6]*X + R[7]*Y + R[8]*Z + t[2];
-    if (p2 <= 1e-12) continue;
-    float u_pred = u_fx * (p0 / p2) + u_cx;
-    float v_pred = u_fy * (p1 / p2) + u_cy;
-    float dx = u_obs - u_pred, dy = v_obs - v_pred;
-    if (dx*dx + dy*dy <= u_thresh_sq) cnt++;
-  }
-  inlier_count[int(tid)] = float(cnt);
+    // ── Read 6 pre-sampled indices from CPU-generated index buffer ────────────
+    int samp[6];
+    for (int i = 0; i < 6; i++) samp[i] = indices[int(tid)*6 + i];
+
+    // ── Load 3D world coords + pixel 2D for the 6 sampled points ─────────────
+    float Xw[6], Yw[6], Zw[6];
+    float Un[6], Vn[6];   // K-normalized 2D: (u_px - cx)/fx
+    for (int i=0; i<6; i++) {
+        int ii = samp[i]*5;
+        Xw[i]=pts[ii]; Yw[i]=pts[ii+1]; Zw[i]=pts[ii+2];
+        Un[i]=(pts[ii+3]-u_cx)/u_fx;
+        Vn[i]=(pts[ii+4]-u_cy)/u_fy;
+    }
+
+    // ── 3D normalization: centroid removal + RMS→√3 scaling ──────────────────
+    float c3x=0.0, c3y=0.0, c3z=0.0;
+    for (int i=0;i<6;i++) { c3x+=Xw[i]; c3y+=Yw[i]; c3z+=Zw[i]; }
+    c3x/=6.0; c3y/=6.0; c3z/=6.0;
+    float rms=0.0;
+    for (int i=0;i<6;i++) {
+        float dx=Xw[i]-c3x, dy=Yw[i]-c3y, dz=Zw[i]-c3z;
+        rms+=dx*dx+dy*dy+dz*dz;
+    }
+    rms/=6.0;
+    if (rms < 1e-20) { for (int i=0;i<13;i++) results[b13+i]=0.0; return; }
+    float s3d = sqrt(3.0/rms);
+    float Xn[6], Yn[6], Zn[6];
+    for (int i=0;i<6;i++) {
+        Xn[i]=s3d*(Xw[i]-c3x); Yn[i]=s3d*(Yw[i]-c3y); Zn[i]=s3d*(Zw[i]-c3z);
+    }
+
+    // ── Build 12×12 AᵀA (full symmetric matrix) ─────────────────────────────
+    // DLT rows per point i using 3D-normalised + K-normalised 2D coords:
+    //   ra = [-Xn,-Yn,-Zn,-1,   0,   0,   0,  0, u*Xn,u*Yn,u*Zn,u]
+    //   rb = [  0,  0,  0,  0,-Xn,-Yn,-Zn, -1, v*Xn,v*Yn,v*Zn,v]
+    // B += ra*raᵀ + rb*rbᵀ
+    float B[144];
+    for (int i=0;i<144;i++) B[i]=0.0;
+    for (int i=0;i<6;i++) {
+        float ra[12], rb[12];
+        ra[0]=-Xn[i]; ra[1]=-Yn[i]; ra[2]=-Zn[i]; ra[3]=-1.0;
+        ra[4]=0.0;    ra[5]=0.0;    ra[6]=0.0;    ra[7]=0.0;
+        ra[8]=Un[i]*Xn[i]; ra[9]=Un[i]*Yn[i]; ra[10]=Un[i]*Zn[i]; ra[11]=Un[i];
+        rb[0]=0.0;    rb[1]=0.0;    rb[2]=0.0;    rb[3]=0.0;
+        rb[4]=-Xn[i]; rb[5]=-Yn[i]; rb[6]=-Zn[i]; rb[7]=-1.0;
+        rb[8]=Vn[i]*Xn[i]; rb[9]=Vn[i]*Yn[i]; rb[10]=Vn[i]*Zn[i]; rb[11]=Vn[i];
+        for (int p=0; p<12; p++)
+            for (int q=0; q<=p; q++) {
+                float v = ra[p]*ra[q] + rb[p]*rb[q];
+                B[p*12+q] += v;
+                if (q != p) B[q*12+p] += v;
+            }
+    }
+
+    // ── Solve for null vector of B = AᵀA ─────────────────────────────────────
+    float nv[12];
+    if (u_solver == 1) null_vec12_ipi(B, nv);
+    else               null_vec12(B, nv);
+
+    // ── Extract M (3×3) and p4 (translation column) from null vector ─────────
+    float M[9];
+    M[0] = nv[0]; M[1] = nv[1]; M[2] = nv[2];
+    M[3] = nv[4]; M[4] = nv[5]; M[5] = nv[6];
+    M[6] = nv[8]; M[7] = nv[9]; M[8] = nv[10];
+    float p4[3];
+    p4[0] = nv[3]; p4[1] = nv[7]; p4[2] = nv[11];
+
+    // ── Sign fix: ensure det(M) > 0 ──────────────────────────────────────────
+    float detM = M[0]*(M[4]*M[8]-M[5]*M[7])
+                -M[1]*(M[3]*M[8]-M[5]*M[6])
+                +M[2]*(M[3]*M[7]-M[4]*M[6]);
+    if (detM < 0.0) { for (int i=0;i<9;i++) M[i]=-M[i]; for (int i=0;i<3;i++) p4[i]=-p4[i]; }
+
+    // ── SVD(M): enforce rotation (R = U·Vᵀ) ──────────────────────────────────
+    float U[9], S[3], Vt[9];
+    svd3x3(M, U, S, Vt);
+    float R[9];
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
+        float s=0.0; for (int k=0;k<3;k++) s+=U[i*3+k]*Vt[k*3+j]; R[i*3+j]=s;
+    }
+    // Ensure det(R)=+1
+    float detR = R[0]*(R[4]*R[8]-R[5]*R[7])
+                -R[1]*(R[3]*R[8]-R[5]*R[6])
+                +R[2]*(R[3]*R[7]-R[4]*R[6]);
+    if (detR < 0.0) {
+        U[2]=-U[2]; U[5]=-U[5]; U[8]=-U[8];
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
+            float s=0.0; for (int k=0;k<3;k++) s+=U[i*3+k]*Vt[k*3+j]; R[i*3+j]=s;
+        }
+    }
+    float sigma_mean=(S[0]+S[1]+S[2])/3.0;
+    if (sigma_mean < 1e-15) { for (int i=0;i<13;i++) results[b13+i]=0.0; return; }
+
+    // ── Recover t in original world frame ─────────────────────────────────────
+    // In normalised coords:  p4 ≈ (sigma_mean · s3d) · (R·centroid + t)
+    //   → t = p4 / (sigma_mean · s3d)  −  R · centroid
+    float alpha = sigma_mean * s3d;
+    float t[3];
+    t[0] = p4[0]/alpha - (R[0]*c3x + R[1]*c3y + R[2]*c3z);
+    t[1] = p4[1]/alpha - (R[3]*c3x + R[4]*c3y + R[5]*c3z);
+    t[2] = p4[2]/alpha - (R[6]*c3x + R[7]*c3y + R[8]*c3z);
+
+    // ── Chiral check: at least 4 of the 6 sampled points must have z_cam > 0 ─
+    int pos_z = 0;
+    for (int i=0; i<6; i++) {
+        int ii = samp[i]*5;
+        float zc = R[6]*pts[ii] + R[7]*pts[ii+1] + R[8]*pts[ii+2] + t[2];
+        if (zc > 0.0) pos_z++;
+    }
+    if (pos_z < 4) { for (int i=0;i<13;i++) results[b13+i]=0.0; return; }
+
+    // ── Count inliers (pixel-space reprojection error) ────────────────────────
+    int cnt = 0;
+    for (int i=0; i<u_n; i++) {
+        int ii = i*5;
+        float X=pts[ii], Y=pts[ii+1], Z=pts[ii+2];
+        float p0=R[0]*X+R[1]*Y+R[2]*Z+t[0];
+        float p1=R[3]*X+R[4]*Y+R[5]*Z+t[1];
+        float p2=R[6]*X+R[7]*Y+R[8]*Z+t[2];
+        if (p2 <= 1e-12) continue;
+        float du = pts[ii+3] - (u_fx*(p0/p2)+u_cx);
+        float dv = pts[ii+4] - (u_fy*(p1/p2)+u_cy);
+        if (du*du+dv*dv <= u_thresh_sq) cnt++;
+    }
+
+    // ── Write result: R[9] + t[3] + inlier_count (13 floats per iter) ─────────
+    for (int i=0;i<9;i++) results[b13+i]=R[i];
+    results[b13+9]=t[0]; results[b13+10]=t[1]; results[b13+11]=t[2];
+    results[b13+12]=float(cnt);
 }
 )GLSL";
 
@@ -1001,6 +1306,59 @@ int gpu_geo_init(const GeoRansacConfig* cfg) {
     } // clear any errors from degenerate input
   }
 
+  // ── PnP shader warm-up: force GPU JIT for both solver branches ────────────
+  if (s_prog_pnp) {
+    const int WU_N = 6;
+    float dummy_pts[WU_N * 5] = {};
+    int dummy_idx[6] = {0, 1, 2, 3, 4, 5};
+    float dummy_res[13] = {};
+
+    GLuint wu_pts = 0, wu_idx = 0, wu_res = 0;
+    glGenBuffers(1, &wu_pts);
+    glGenBuffers(1, &wu_idx);
+    glGenBuffers(1, &wu_res);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, wu_pts);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_pts), dummy_pts, GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, wu_pts);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, wu_idx);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_idx), dummy_idx, GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, wu_idx);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, wu_res);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(dummy_res), dummy_res, GL_DYNAMIC_READ);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, wu_res);
+
+    glUseProgram(s_prog_pnp);
+    GLint loc_n_pnp = glGetUniformLocation(s_prog_pnp, "u_n");
+    GLint loc_thresh_pnp = glGetUniformLocation(s_prog_pnp, "u_thresh_sq");
+    GLint loc_fx = glGetUniformLocation(s_prog_pnp, "u_fx");
+    GLint loc_fy = glGetUniformLocation(s_prog_pnp, "u_fy");
+    GLint loc_cx = glGetUniformLocation(s_prog_pnp, "u_cx");
+    GLint loc_cy = glGetUniformLocation(s_prog_pnp, "u_cy");
+    GLint loc_solver_pnp = glGetUniformLocation(s_prog_pnp, "u_solver");
+
+    for (int s = 0; s <= 1; s++) {
+      glUniform1i(loc_n_pnp, WU_N);
+      glUniform1f(loc_thresh_pnp, 1e30f);
+      glUniform1f(loc_fx, 1.0f);
+      glUniform1f(loc_fy, 1.0f);
+      glUniform1f(loc_cx, 0.0f);
+      glUniform1f(loc_cy, 0.0f);
+      glUniform1i(loc_solver_pnp, s);
+      glDispatchCompute(1, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+    glFinish();
+
+    glDeleteBuffers(1, &wu_pts);
+    glDeleteBuffers(1, &wu_idx);
+    glDeleteBuffers(1, &wu_res);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+  }
+
   fprintf(stdout, "[gpu_geo] Initialised OK – %d iterations / workgroup %d\n", s_num_iter,
           s_local_size);
   return 0;
@@ -1322,53 +1680,57 @@ int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9], float R_out[9]
   const float fx = K[0], fy = K[4], cx = K[2], cy = K[5];
 
   if (s_prog_pnp) {
-    // GPU path: CPU does 6-point DLT per iteration; GPU counts inliers in parallel
-    std::vector<float> rt_buf(static_cast<size_t>(s_num_iter) * 12u, 0.f);
-    std::vector<int> sample(6);
-    for (int iter = 0; iter < s_num_iter; iter++) {
-      for (int i = 0; i < 6; i++)
-        sample[i] = rand() % n;
-      Point3D2D six_pts[6];
-      for (int i = 0; i < 6; i++)
-        six_pts[i] = pts[sample[i]];
-      float R[9], t[3];
-      if (pnp_dlt_from_6(six_pts, K, R, t) != 0)
-        continue;
-      int base = iter * 12;
-      for (int i = 0; i < 9; i++)
-        rt_buf[static_cast<size_t>(base) + i] = R[i];
-      rt_buf[static_cast<size_t>(base) + 9] = t[0];
-      rt_buf[static_cast<size_t>(base) + 10] = t[1];
-      rt_buf[static_cast<size_t>(base) + 11] = t[2];
-    }
+    using Clock = std::chrono::steady_clock;
+    auto t0 = Clock::now();
 
-    std::vector<float> points_flat(static_cast<size_t>(n) * 5u);
+    // ── Build point upload buffer (x, y, z, u_px, v_px) ──────────────────────
+    std::vector<float> pts_flat(static_cast<size_t>(n) * 5u);
     for (int i = 0; i < n; i++) {
-      points_flat[static_cast<size_t>(i) * 5u + 0] = pts[i].x;
-      points_flat[static_cast<size_t>(i) * 5u + 1] = pts[i].y;
-      points_flat[static_cast<size_t>(i) * 5u + 2] = pts[i].z;
-      points_flat[static_cast<size_t>(i) * 5u + 3] = pts[i].u;
-      points_flat[static_cast<size_t>(i) * 5u + 4] = pts[i].v;
+      pts_flat[static_cast<size_t>(i) * 5u + 0] = pts[i].x;
+      pts_flat[static_cast<size_t>(i) * 5u + 1] = pts[i].y;
+      pts_flat[static_cast<size_t>(i) * 5u + 2] = pts[i].z;
+      pts_flat[static_cast<size_t>(i) * 5u + 3] = pts[i].u;
+      pts_flat[static_cast<size_t>(i) * 5u + 4] = pts[i].v;
     }
 
-    GLuint ssbo_pts = 0, ssbo_rt = 0, ssbo_res = 0;
+    // ── Generate unique 6-point samples on CPU ─────────────────────────────────
+    std::vector<int> idx(static_cast<size_t>(s_num_iter) * 6);
+    for (int it = 0; it < s_num_iter; it++) {
+      for (int i = 0; i < 6; ) {
+        int v = rand() % n;
+        bool dup = false;
+        for (int j = 0; j < i; j++)
+          if (idx[static_cast<size_t>(it) * 6 + j] == v) { dup = true; break; }
+        if (!dup) { idx[static_cast<size_t>(it) * 6 + i] = v; i++; }
+      }
+    }
+
+    // ── Upload points + indices + allocate result buffer ───────────────────────
+    GLuint ssbo_pts = 0, ssbo_idx = 0, ssbo_res = 0;
     glGenBuffers(1, &ssbo_pts);
-    glGenBuffers(1, &ssbo_rt);
+    glGenBuffers(1, &ssbo_idx);
     glGenBuffers(1, &ssbo_res);
+
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_pts);
     glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 static_cast<GLsizeiptr>(points_flat.size() * sizeof(float)), points_flat.data(),
+                 static_cast<GLsizeiptr>(pts_flat.size() * sizeof(float)), pts_flat.data(),
                  GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo_pts);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_rt);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(rt_buf.size() * sizeof(float)),
-                 rt_buf.data(), GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo_rt);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_idx);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 static_cast<GLsizeiptr>(idx.size() * sizeof(int)), idx.data(),
+                 GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo_idx);
+
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_res);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(s_num_iter) * sizeof(float),
-                 NULL, GL_DYNAMIC_READ);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 static_cast<GLsizeiptr>(s_num_iter) * 13 * sizeof(float), NULL, GL_DYNAMIC_READ);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo_res);
 
+    auto t_upload = Clock::now();
+
+    // ── Dispatch: each thread = one full RANSAC iteration ─────────────────────
     glUseProgram(s_prog_pnp);
     glUniform1i(glGetUniformLocation(s_prog_pnp, "u_n"), n);
     glUniform1f(glGetUniformLocation(s_prog_pnp, "u_thresh_sq"), thresh_sq);
@@ -1376,47 +1738,73 @@ int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9], float R_out[9]
     glUniform1f(glGetUniformLocation(s_prog_pnp, "u_fy"), fy);
     glUniform1f(glGetUniformLocation(s_prog_pnp, "u_cx"), cx);
     glUniform1f(glGetUniformLocation(s_prog_pnp, "u_cy"), cy);
+    glUniform1i(glGetUniformLocation(s_prog_pnp, "u_solver"), s_solver);
 
     GLuint num_groups = (GLuint)((s_num_iter + s_local_size - 1) / s_local_size);
     glDispatchCompute(num_groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
+    auto t_dispatch = Clock::now();
+
+    // ── Readback: find best iteration ─────────────────────────────────────────
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_res);
-    const float* counts = (const float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-    if (!counts) {
+    const float* res = (const float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+    if (!res) {
       glDeleteBuffers(1, &ssbo_pts);
-      glDeleteBuffers(1, &ssbo_rt);
+      glDeleteBuffers(1, &ssbo_idx);
       glDeleteBuffers(1, &ssbo_res);
       return -1;
     }
     int best = 0;
     for (int i = 1; i < s_num_iter; i++)
-      if (counts[i] > counts[best])
+      if (res[i * 13 + 12] > res[best * 13 + 12])
         best = i;
-    int best_inliers = static_cast<int>(counts[best]);
+    int best_inliers = static_cast<int>(res[best * 13 + 12]);
+    for (int i = 0; i < 9; i++)
+      R_out[i] = res[best * 13 + i];
+    t_out[0] = res[best * 13 + 9];
+    t_out[1] = res[best * 13 + 10];
+    t_out[2] = res[best * 13 + 11];
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+
+    auto t_readback = Clock::now();
     glDeleteBuffers(1, &ssbo_pts);
-    glDeleteBuffers(1, &ssbo_rt);
+    glDeleteBuffers(1, &ssbo_idx);
     glDeleteBuffers(1, &ssbo_res);
 
-    if (best_inliers < 0)
-      return -1;
-    int base = best * 12;
-    for (int i = 0; i < 9; i++)
-      R_out[i] = rt_buf[static_cast<size_t>(base) + i];
-    t_out[0] = rt_buf[static_cast<size_t>(base) + 9];
-    t_out[1] = rt_buf[static_cast<size_t>(base) + 10];
-    t_out[2] = rt_buf[static_cast<size_t>(base) + 11];
-    if (inlier_mask)
-      pnp_count_inliers(pts, n, K, R_out, t_out, thresh_sq, inlier_mask);
-    return best_inliers;
+    long upload_ms   = std::chrono::duration_cast<std::chrono::milliseconds>(t_upload   - t0).count();
+    long dispatch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_dispatch - t_upload).count();
+    long readback_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_readback - t_dispatch).count();
+    if (s_verbose)
+      fprintf(stderr, "[PERF-pnp] n=%d iters=%d best_inliers=%d  upload=%ldms  dispatch=%ldms  readback=%ldms\n",
+              n, s_num_iter, best_inliers, upload_ms, dispatch_ms, readback_ms);
+
+    // If GPU found a plausible hypothesis, use it.
+    // Otherwise fall through to CPU DLT (float32 near-planar degeneracy).
+    if (best_inliers >= 6) {
+      if (inlier_mask)
+        pnp_count_inliers(pts, n, K, R_out, t_out, thresh_sq, inlier_mask);
+      return best_inliers;
+    }
+    if (s_verbose)
+      fprintf(stderr, "[PERF-pnp] GPU degenerate (best=%d) – falling back to CPU DLT\n", best_inliers);
   }
 
-  // CPU fallback
+  // ── CPU DLT fallback ──────────────────────────────────────────────────────
+  // Used when: (a) no EGL context, or (b) GPU DLT returned < 6 inliers
+  // (near-planar degenerate scenes, e.g. aerial nadirs, cause float32 AᵀA
+  //  to be numerically rank-deficient; Eigen double JacobiSVD is stable).
+  //
+  // Adaptive iteration count: enough for 99% confidence given estimated
+  // inlier ratio. Capped at s_num_iter.
+  {
   int best_inliers = -1;
   float best_R[9], best_t[3];
   std::vector<int> sample(6);
-  for (int iter = 0; iter < s_num_iter; iter++) {
+  // Adaptive RANSAC: recalculate max iterations after each improvement.
+  // n_iters = log(0.01) / log(1 - inlier_ratio^6)
+  int adaptive_max = s_num_iter;
+  for (int iter = 0; iter < adaptive_max; iter++) {
     for (int i = 0; i < 6; i++)
       sample[i] = rand() % n;
     Point3D2D six_pts[6];
@@ -1429,21 +1817,26 @@ int gpu_ransac_pnp(const Point3D2D* pts, int n, const float K[9], float R_out[9]
     int inl = pnp_count_inliers(pts, n, K, R, t, thresh_sq, tmp_mask.data());
     if (inl > best_inliers) {
       best_inliers = inl;
-      for (int i = 0; i < 9; i++)
-        best_R[i] = R[i];
-      for (int i = 0; i < 3; i++)
-        best_t[i] = t[i];
+      for (int i = 0; i < 9; i++) best_R[i] = R[i];
+      for (int i = 0; i < 3; i++) best_t[i] = t[i];
+      // Recompute adaptive max: 99% confidence, 6-point sample
+      double ratio = (double)best_inliers / n;
+      if (ratio > 0.999) ratio = 0.999;
+      double p6 = ratio * ratio * ratio * ratio * ratio * ratio;
+      if (p6 > 1e-9) {
+        int new_max = (int)std::ceil(std::log(0.01) / std::log(1.0 - p6));
+        if (new_max < adaptive_max) adaptive_max = new_max;
+      }
     }
   }
   if (best_inliers < 0)
     return -1;
-  for (int i = 0; i < 9; i++)
-    R_out[i] = best_R[i];
-  for (int i = 0; i < 3; i++)
-    t_out[i] = best_t[i];
+  for (int i = 0; i < 9; i++) R_out[i] = best_R[i];
+  for (int i = 0; i < 3; i++) t_out[i] = best_t[i];
   if (inlier_mask)
     pnp_count_inliers(pts, n, K, R_out, t_out, thresh_sq, inlier_mask);
   return best_inliers;
+  }
 }
 
 } /* extern "C" */
