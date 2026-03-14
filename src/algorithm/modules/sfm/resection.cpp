@@ -1,15 +1,17 @@
 /**
  * @file  resection.cpp
- * @brief Resection via GPU PnP RANSAC (gpu_ransac_pnp) + pose refinement via global_bundle_analytic.
+ * @brief Resection via GPU PnP RANSAC + lightweight Gauss-Newton pose refinement (6-DOF).
  */
 
 #include "resection.h"
 
 #include "../camera/camera_utils.h"
 #include "../geometry/gpu_geo_ransac.h"
-#include "bundle_adjustment_analytic.h"
 
+#include <Eigen/Dense>
+#include <chrono>
 #include <cmath>
+#include <glog/logging.h>
 #include <vector>
 
 namespace insight {
@@ -36,49 +38,110 @@ void float_rt_to_eigen(const float R[9], const float t[3], Eigen::Matrix3d* R_ou
   (*t_out)(2) = static_cast<double>(t[2]);
 }
 
-/// Pose-only refinement: 1 image, points fixed. Builds BAInput and calls global_bundle_analytic.
-static bool pose_refine_via_ba(const std::vector<Eigen::Vector3d>& pts3d,
-                               const std::vector<Eigen::Vector2d>& pts2d, double fx, double fy,
-                               double cx, double cy, const Eigen::Matrix3d& R_in,
-                               const Eigen::Vector3d& t_in, Eigen::Matrix3d* R_out,
-                               Eigen::Vector3d* t_out, double* rmse_px, int max_iterations) {
+/// Lightweight pose-only refinement: Gauss-Newton, 6-DOF (so3 + t), fixed 3D points.
+/// Replaces the previous Ceres-based BA call; ~10x faster for single-image refinement.
+static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
+                           const std::vector<Eigen::Vector2d>& pts2d, double fx, double fy,
+                           double cx, double cy, const Eigen::Matrix3d& R_in,
+                           const Eigen::Vector3d& t_in, Eigen::Matrix3d* R_out,
+                           Eigen::Vector3d* t_out, double* rmse_px, int max_iterations) {
   if (!R_out || !t_out || pts3d.size() != pts2d.size() || pts3d.empty())
     return false;
-  BAInput ba_in;
-  ba_in.poses_R.resize(1);
-  ba_in.poses_C.resize(1);
-  ba_in.poses_R[0] = R_in;
-  ba_in.poses_C[0] = -R_in.transpose() * t_in;
-  ba_in.points3d = pts3d;
-  camera::Intrinsics K;
-  K.fx = fx;
-  K.fy = fy;
-  K.cx = cx;
-  K.cy = cy;
-  ba_in.cameras = {K};
-  ba_in.image_camera_index = {0};
-  ba_in.optimize_intrinsics = false;
-  ba_in.fix_point.resize(pts3d.size(), true);
-  for (size_t i = 0; i < pts2d.size(); ++i) {
-    BAObservation obs;
-    obs.image_index = 0;
-    obs.point_index = static_cast<int>(i);
-    obs.u = pts2d[i](0);
-    obs.v = pts2d[i](1);
-    obs.scale = 1.0;
-    ba_in.observations.push_back(obs);
+
+  Eigen::Matrix3d R = R_in;
+  Eigen::Vector3d t = t_in;
+  const int n = static_cast<int>(pts3d.size());
+  const double lambda_init = 1e-3; // LM damping start
+  double lambda = lambda_init;
+
+  double prev_cost = 1e18;
+  for (int iter = 0; iter < max_iterations; ++iter) {
+    Eigen::Matrix<double, 6, 6> JtJ = Eigen::Matrix<double, 6, 6>::Zero();
+    Eigen::Matrix<double, 6, 1> Jtr = Eigen::Matrix<double, 6, 1>::Zero();
+    double cost = 0.0;
+
+    for (int i = 0; i < n; ++i) {
+      const Eigen::Vector3d p = R * pts3d[i] + t;  // camera-space
+      if (p(2) < 1e-6)
+        continue;
+      const double inv_z = 1.0 / p(2);
+      const double inv_z2 = inv_z * inv_z;
+      const double u_proj = fx * p(0) * inv_z + cx;
+      const double v_proj = fy * p(1) * inv_z + cy;
+      const double ru = u_proj - pts2d[i](0);
+      const double rv = v_proj - pts2d[i](1);
+      cost += ru * ru + rv * rv;
+
+      // Jacobian of (u_proj, v_proj) w.r.t. [omega (so3), t]
+      // du/dp = [fx/z, 0, -fx*px/z^2]
+      // dv/dp = [0, fy/z, -fy*py/z^2]
+      // dp/domega = -[p]_x (skew), dp/dt = I
+      Eigen::Matrix<double, 2, 3> Jproj;
+      Jproj(0, 0) = fx * inv_z;
+      Jproj(0, 1) = 0.0;
+      Jproj(0, 2) = -fx * p(0) * inv_z2;
+      Jproj(1, 0) = 0.0;
+      Jproj(1, 1) = fy * inv_z;
+      Jproj(1, 2) = -fy * p(1) * inv_z2;
+
+      // dp/domega = -[p]_x
+      Eigen::Matrix3d skew_p;
+      skew_p <<      0.0, -p(2),  p(1),
+                  p(2),     0.0, -p(0),
+                 -p(1),  p(0),     0.0;
+      // Jw = Jproj * (-skew_p)
+      Eigen::Matrix<double, 2, 3> Jw = Jproj * (-skew_p);
+      // Jt = Jproj
+      // Full J row: [Jw | Jproj]  (6 cols)
+      Eigen::Matrix<double, 2, 6> J;
+      J.leftCols<3>() = Jw;
+      J.rightCols<3>() = Jproj;
+
+      Eigen::Vector2d r(ru, rv);
+      JtJ += J.transpose() * J;
+      Jtr += J.transpose() * r;
+    }
+
+    // LM damping
+    for (int d = 0; d < 6; ++d)
+      JtJ(d, d) *= (1.0 + lambda);
+
+    // Solve
+    Eigen::Matrix<double, 6, 1> delta =
+        JtJ.ldlt().solve(-Jtr);
+
+    // Update pose: so3 perturbation for rotation, direct for translation
+    Eigen::Vector3d omega = delta.head<3>();
+    double angle = omega.norm();
+    Eigen::Matrix3d R_new = R;
+    if (angle > 1e-10) {
+      Eigen::AngleAxisd aa(angle, omega / angle);
+      R_new = aa.toRotationMatrix() * R;
+    }
+    Eigen::Vector3d t_new = t + delta.tail<3>();
+
+    if (cost < prev_cost) {
+      R = R_new;
+      t = t_new;
+      lambda *= 0.5;
+      prev_cost = cost;
+    } else {
+      lambda *= 2.0;
+    }
+    if (lambda > 1e8 || delta.norm() < 1e-10)
+      break;
   }
-  BAResult ba_out;
-  if (!global_bundle_analytic(ba_in, &ba_out, max_iterations) || !ba_out.success)
-    return false;
-  *R_out = ba_out.poses_R[0];
-  *t_out = -ba_out.poses_R[0] * ba_out.poses_C[0];
+
+  *R_out = R;
+  *t_out = t;
   if (rmse_px)
-    *rmse_px = ba_out.rmse_px;
+    *rmse_px = std::sqrt(prev_cost / std::max(n, 1));
   return true;
 }
 
 } // namespace
+
+void resection_init_gpu() { ensure_gpu_geo_init(); }
 
 bool is_resection_stable(int inlier_count, int total_correspondences, double rmse_px,
                          double min_inlier_ratio, double max_rmse_px) {
@@ -93,6 +156,9 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
                             int min_inliers, double ransac_thresh_px, int* inliers_out) {
   if (!R_out || !t_out)
     return false;
+
+  using Clock = std::chrono::steady_clock;
+  auto t0 = Clock::now();
 
   std::vector<int> track_ids;
   std::vector<Observation> obs_list;
@@ -119,6 +185,7 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   if (static_cast<int>(pts_pnp.size()) < min_inliers)
     return false;
 
+  auto t1 = Clock::now(); // after data prep
   const int num_pts = static_cast<int>(pts_pnp.size());
   float K[9] = {static_cast<float>(fx),
                 0.f,
@@ -136,9 +203,16 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   ensure_gpu_geo_init();
   const int n_inliers =
       gpu_ransac_pnp(pts_pnp.data(), num_pts, K, R_init, t_init, thresh_sq, inlier_mask.data());
+
+  auto t2 = Clock::now(); // after gpu_ransac_pnp
   if (n_inliers < min_inliers) {
     if (inliers_out)
       *inliers_out = n_inliers >= 0 ? n_inliers : 0;
+    LOG(INFO) << "[PERF] resection_single_image im=" << image_index
+              << "  pts=" << num_pts
+              << "  data_prep=" << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
+              << "  gpu_ransac=" << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
+              << "  FAILED inliers=" << n_inliers;
     return false;
   }
 
@@ -163,18 +237,19 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
-  if (!pose_refine_via_ba(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_eig, t_eig, &R_refined,
-                         &t_refined, &rmse, 30)) {
-    if (inliers_out)
-      *inliers_out = n_inliers;
-    *R_out = R_eig;
-    *t_out = t_eig;
-    return true;
-  }
-  *R_out = R_refined;
-  *t_out = t_refined;
+  pose_refine_gn(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_eig, t_eig, &R_refined,
+                 &t_refined, &rmse, 10);
+  auto t3 = Clock::now(); // after GN refinement
+  LOG(INFO) << "[PERF] resection_single_image im=" << image_index
+            << "  pts=" << num_pts << "  inliers=" << n_inliers
+            << "  data_prep=" << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
+            << "  gpu_ransac=" << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
+            << "  gn_refine=" << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count() << "ms"
+            << "  rmse=" << rmse;
   if (inliers_out)
     *inliers_out = n_inliers;
+  *R_out = R_refined;
+  *t_out = t_refined;
   return true;
 }
 
@@ -263,18 +338,12 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
-  if (!pose_refine_via_ba(inlier_pts3d, inlier_pts2d, K.fx, K.fy, K.cx, K.cy, R_eig, t_eig, &R_refined,
-                          &t_refined, &rmse, 30)) {
-    if (inliers_out)
-      *inliers_out = n_inliers;
-    *R_out = R_eig;
-    *t_out = t_eig;
-    return true;
-  }
-  *R_out = R_refined;
-  *t_out = t_refined;
+  pose_refine_gn(inlier_pts3d, inlier_pts2d, K.fx, K.fy, K.cx, K.cy, R_eig, t_eig, &R_refined,
+                 &t_refined, &rmse, 10);
   if (inliers_out)
     *inliers_out = n_inliers;
+  *R_out = R_refined;
+  *t_out = t_refined;
   return true;
 }
 

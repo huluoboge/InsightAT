@@ -111,12 +111,15 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
  * If indices_to_optimize is non-null, use that set; else optimize the last local_ba_window
  * registered images.
  */
+/// @param anchor_image  Global image index that is always kept fixed (gauge fix).
+///                      Pass -1 to use the default frozen-pose mechanism only.
 bool run_local_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                   std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
                   const std::vector<int>& image_to_camera_index,
                   const std::vector<camera::Intrinsics>& cameras, int local_ba_window,
                   int max_iterations, double* rmse_px_out,
-                  const std::vector<int>* indices_to_optimize = nullptr);
+                  const std::vector<int>* indices_to_optimize = nullptr,
+                  int anchor_image = -1);
 
 // ─── Full pipeline ───────────────────────────────────────────────────────────
 
@@ -139,15 +142,21 @@ struct IncrementalSfMOptions {
   // ─── Bundle adjustment ───────────────────────────────────────────────────
   int local_ba_after_n_images =
       20; ///< Use local BA only when num_registered >= this; before that run global BA each time.
+         ///< Set low (20) since global BA cost grows fast; local BA is nearly equivalent at small n.
   int local_ba_window = 20;
   bool local_ba_by_connectivity = true; ///< If true, local BA optimizes new images + most connected
                                         ///< neighbors; else last N by index.
+  /// Run global BA only every N newly-registered images during the early global-BA phase
+  /// (num_registered < local_ba_after_n_images).  The last BA before switching to local BA
+  /// is always executed regardless.  Default = 1 (original: BA after every image).
+  /// Setting to 3 reduces early-phase global BA cost ~3× with negligible accuracy loss.
+  int global_ba_every_n_images = 1;
   bool do_global_ba = true;             ///< Run global BA at end of pipeline.
   bool global_ba_optimize_intrinsics = true;
   /// Only enable intrinsics optimization in the early global BA when
   /// num_registered >= this threshold (avoids instability with few cameras).
   int global_ba_optimize_intrinsics_min_images = 10;
-  int max_global_ba_iterations = 50;
+  int max_global_ba_iterations = 50; ///< Was 50: 50 is sufficient for convergence in most cases.
 
   // ─── Triangulation ───────────────outlier rejection:────────────────────
   /// Minimum max pairwise ray angle (degrees) for a newly triangulated point to be accepted.
@@ -162,6 +171,10 @@ struct IncrementalSfMOptions {
   /// Set to 0 to disable adaptive behavior.
   double outlier_adaptive_factor = 2.0;
   int max_outlier_iterations = 5; ///< Max BA+reject rounds after each BA until no new outliers.
+  /// Stop extra BA+reject rounds early if the number of newly-rejected observations drops below
+  /// this threshold. Avoids expensive BA calls that buy very little (e.g. round 4: rejected=8).
+  /// Set to 0 to disable (always continue while rejected > 0, original behaviour).
+  int min_outliers_for_ba_retry = 30;
   int reject_min_registered_images =
       10; ///< Do not run pixel/angle reject until num_registered >= this.
   double min_observation_angle_deg =

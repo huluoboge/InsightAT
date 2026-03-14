@@ -30,6 +30,10 @@ namespace sfm {
  * @param max_rmse_px    Maximum acceptable RMSE in pixels (default 10.0).
  * @return true if resection is considered stable.
  */
+/// Pre-initialise the GPU RANSAC context.  Call once before the SfM pipeline's
+/// main loop to amortise the ~1-second EGL/shader-compile cost on first use.
+void resection_init_gpu();
+
 bool is_resection_stable(int inlier_count, int total_correspondences, double rmse_px,
                          double min_inlier_ratio = 0.4, double max_rmse_px = 10.0);
 
