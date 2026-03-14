@@ -18,6 +18,7 @@
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <glog/logging.h>
 #include <set>
@@ -31,26 +32,33 @@ namespace sfm {
 
 namespace {
 
-bool load_pair_geo(const std::string& geo_path, Eigen::Matrix3d* R, Eigen::Vector3d* t) {
+enum class GeoLoadStatus { kOk, kFileNotFound, kNoTwoview, kBadBlobs };
+
+GeoLoadStatus load_pair_geo_ex(const std::string& geo_path, Eigen::Matrix3d* R,
+                               Eigen::Vector3d* t) {
   if (!R || !t)
-    return false;
+    return GeoLoadStatus::kFileNotFound;
   io::IDCReader reader(geo_path);
   if (!reader.is_valid())
-    return false;
+    return GeoLoadStatus::kFileNotFound;
   const auto& meta = reader.get_metadata();
   if (!meta.contains("twoview"))
-    return false;
+    return GeoLoadStatus::kNoTwoview;
   auto R_blob = reader.read_blob<float>("R_matrix");
   auto t_blob = reader.read_blob<float>("t_vector");
   if (R_blob.size() != 9u || t_blob.size() != 3u)
-    return false;
+    return GeoLoadStatus::kBadBlobs;
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j)
       (*R)(i, j) = static_cast<double>(R_blob[static_cast<size_t>(i * 3 + j)]);
   (*t)(0) = static_cast<double>(t_blob[0]);
   (*t)(1) = static_cast<double>(t_blob[1]);
   (*t)(2) = static_cast<double>(t_blob[2]);
-  return true;
+  return GeoLoadStatus::kOk;
+}
+
+bool load_pair_geo(const std::string& geo_path, Eigen::Matrix3d* R, Eigen::Vector3d* t) {
+  return load_pair_geo_ex(geo_path, R, t) == GeoLoadStatus::kOk;
 }
 
 // NOTE: triangulate_two_view_tracks removed — replaced by local triangulation in
@@ -354,15 +362,17 @@ int count_two_view_valid_tracks(const TrackStore& store, int im0, int im1) {
 
 /// Load geo for pair (im0, im1); geo files are always stored as min_max.isat_geo.
 /// If im0 > im1 the stored pose is inverted so that im0 is always the reference camera.
-bool load_pair_geo_flexible(const std::string& dir, int im0, int im1, Eigen::Matrix3d* R,
-                            Eigen::Vector3d* t) {
+// Returns kOk and fills R/t on success; otherwise returns status and leaves R/t untouched.
+GeoLoadStatus load_pair_geo_flexible(const std::string& dir, int im0, int im1, Eigen::Matrix3d* R,
+                                     Eigen::Vector3d* t) {
   const int lo = std::min(im0, im1);
   const int hi = std::max(im0, im1);
   const std::string path = dir + std::to_string(lo) + "_" + std::to_string(hi) + ".isat_geo";
   Eigen::Matrix3d R_file;
   Eigen::Vector3d t_file;
-  if (!load_pair_geo(path, &R_file, &t_file))
-    return false;
+  const GeoLoadStatus st = load_pair_geo_ex(path, &R_file, &t_file);
+  if (st != GeoLoadStatus::kOk)
+    return st;
   if (im0 == lo) {
     // File stores lo→hi; caller wants im0→im1, same direction
     *R = R_file;
@@ -372,7 +382,7 @@ bool load_pair_geo_flexible(const std::string& dir, int im0, int im1, Eigen::Mat
     *R = R_file.transpose();
     *t = -(R_file.transpose() * t_file);
   }
-  return true;
+  return GeoLoadStatus::kOk;
 }
 
 /// Rank all images by total correspondence count (sum over tracks of (track_len - 1)).
@@ -454,12 +464,22 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
                                                double outlier_thresh_px, double min_angle_deg) {
   InitPairTrialResult result;
 
-  // 1. Load geo (try both orderings)
+  // 1. Load geo (handles im0>im1 by inverting; file is always stored as lo_hi.isat_geo)
   Eigen::Matrix3d R;
   Eigen::Vector3d t;
-  if (!load_pair_geo_flexible(dir, im0, im1, &R, &t)) {
-    LOG(INFO) << "    pair (" << im0 << "," << im1 << "): no geo file found";
-    return result;
+  {
+    const GeoLoadStatus st = load_pair_geo_flexible(dir, im0, im1, &R, &t);
+    if (st != GeoLoadStatus::kOk) {
+      if (st == GeoLoadStatus::kNoTwoview) {
+        // File exists but was written without --twoview; R/t not available.
+        // Re-run isat_geo with --twoview to enable initial pair selection.
+        DLOG(INFO) << "    pair (" << im0 << "," << im1
+                   << "): geo file exists but no twoview R/t (run isat_geo --twoview)";
+      } else {
+        DLOG(INFO) << "    pair (" << im0 << "," << im1 << "): geo file not found";
+      }
+      return result;
+    }
   }
   Eigen::Vector3d C1 = -R.transpose() * t;
 
@@ -687,15 +707,17 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
 
     LOG(INFO) << "  --- Trying first image " << im1 << " (corr=" << first_images[fi].second << "), "
               << second_images.size() << " second candidates ---";
-    if (second_images.size() <= 5u) {
-      for (size_t si = 0; si < second_images.size(); ++si)
-        LOG(INFO) << "    second #" << si << ": image " << second_images[si].first
-                  << " (shared=" << second_images[si].second << ")";
-    } else {
-      for (size_t si = 0; si < 3; ++si)
-        LOG(INFO) << "    second #" << si << ": image " << second_images[si].first
-                  << " (shared=" << second_images[si].second << ")";
-      LOG(INFO) << "    ... (" << second_images.size() - 3 << " more)";
+    {
+      const size_t show_n = std::min(second_images.size(), size_t(5));
+      for (size_t si = 0; si < show_n; ++si) {
+        const int im2c = second_images[si].first;
+        const int f_inl = view_graph.get_F_inliers(static_cast<uint32_t>(im1),
+                                                    static_cast<uint32_t>(im2c));
+        LOG(INFO) << "    second #" << si << ": image " << im2c
+                  << " (shared=" << second_images[si].second << ", F_inliers=" << f_inl << ")";
+      }
+      if (second_images.size() > show_n)
+        LOG(INFO) << "    ... (" << second_images.size() - show_n << " more)";
     }
 
     const size_t max_second = std::min(second_images.size(), size_t(50));
@@ -705,6 +727,29 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       if (tried_pairs.count(pair_key))
         continue;
       tried_pairs.insert(pair_key);
+
+      // Skip pairs flagged as degenerate in view graph (pure rotation / planar scene)
+      {
+        const int f_inl = view_graph.get_F_inliers(static_cast<uint32_t>(im1),
+                                                    static_cast<uint32_t>(im2));
+        // Look up full PairGeoInfo for degeneracy flag
+        bool skip_deg = false;
+        for (size_t pi = 0; pi < view_graph.num_pairs(); ++pi) {
+          const auto& pg = view_graph.pair_at(pi);
+          const uint32_t lo = std::min(static_cast<uint32_t>(im1), static_cast<uint32_t>(im2));
+          const uint32_t hi = std::max(static_cast<uint32_t>(im1), static_cast<uint32_t>(im2));
+          if (pg.image1_index == lo && pg.image2_index == hi) {
+            if (pg.is_degenerate) {
+              skip_deg = true;
+              DLOG(INFO) << "    pair (" << im1 << "," << im2
+                         << "): skip (degenerate, F_inliers=" << f_inl << ")";
+            }
+            break;
+          }
+        }
+        if (skip_deg)
+          continue;
+      }
 
       // Try this pair (NO store mutation)
       auto trial = try_initial_pair_candidate(*store, im1, im2, dir, cameras, image_to_camera_index,
@@ -813,15 +858,20 @@ double compute_max_ray_angle_deg(const Eigen::Vector3d& X,
 std::vector<int> choose_next_resection_batch(const TrackStore& store,
                                              const std::vector<bool>& registered,
                                              int batch_size_k) {
+  using Clock = std::chrono::steady_clock;
   const int n_images = store.num_images();
   if (n_images == 0 || static_cast<int>(registered.size()) != n_images || batch_size_k <= 0)
     return {};
+
+  auto t0 = Clock::now();
   std::vector<std::pair<int, int>> unreg_count;
+  int total_track_obs_checked = 0;
   for (int im = 0; im < n_images; ++im) {
     if (registered[static_cast<size_t>(im)])
       continue;
     std::vector<int> track_ids;
     store.get_image_track_observations(im, &track_ids, nullptr);
+    total_track_obs_checked += static_cast<int>(track_ids.size());
     int count = 0;
     for (int tid : track_ids) {
       if (store.track_has_triangulated_xyz(tid))
@@ -829,6 +879,8 @@ std::vector<int> choose_next_resection_batch(const TrackStore& store,
     }
     unreg_count.push_back({im, count});
   }
+  auto t1 = Clock::now();
+
   std::sort(unreg_count.begin(), unreg_count.end(),
             [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
               return a.second > b.second;
@@ -836,16 +888,20 @@ std::vector<int> choose_next_resection_batch(const TrackStore& store,
   std::vector<int> out;
   for (size_t i = 0; i < unreg_count.size() && static_cast<int>(i) < batch_size_k; ++i)
     out.push_back(unreg_count[i].first);
+
+  auto ms_count = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
   // Logging: show top candidates and selection
   if (!unreg_count.empty()) {
-    LOG(INFO) << "choose_next_resection_batch: " << unreg_count.size()
-              << " unregistered images, selecting " << out.size();
+    LOG(INFO) << "[PERF] choose_next_resection_batch: " << unreg_count.size()
+              << " unregistered, selecting " << out.size()
+              << ", total_obs_checked=" << total_track_obs_checked
+              << ", count_loop=" << ms_count << "ms";
     for (size_t i = 0; i < std::min(unreg_count.size(), size_t(5)); ++i) {
       LOG(INFO) << "  candidate #" << i << ": image " << unreg_count[i].first << " ("
                 << unreg_count[i].second << " 3D-2D correspondences)";
     }
   } else {
-    LOG(INFO) << "choose_next_resection_batch: no unregistered images with 3D-2D correspondences";
+    LOG(INFO) << "[PERF] choose_next_resection_batch: no unregistered images with 3D-2D correspondences";
   }
   return out;
 }
@@ -905,6 +961,7 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
                             const std::vector<camera::Intrinsics>& cameras,
                             const std::vector<int>& image_to_camera_index,
                             double min_tri_angle_deg) {
+  using Clock = std::chrono::steady_clock;
   if (!store)
     return 0;
   const int n_images = store->num_images();
@@ -914,8 +971,12 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
     return 0;
   std::set<int> new_set(new_registered_image_indices.begin(), new_registered_image_indices.end());
   int updated = 0;
+  int tracks_scanned = 0, tracks_skipped_no_new = 0, tracks_skipped_few_views = 0;
+  int tracks_skipped_depth = 0, tracks_skipped_angle = 0;
+  auto t0 = Clock::now();
   std::vector<Observation> obs_buf;
   for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
+    ++tracks_scanned;
     const int track_id = static_cast<int>(ti);
     if (!store->is_track_valid(track_id) || store->track_has_triangulated_xyz(track_id))
       continue;
@@ -937,8 +998,14 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
       rays_n.push_back(Eigen::Vector2d((u - K.cx) / K.fx, (v - K.cy) / K.fy));
       reg_inds.push_back(im);
     }
-    if (!has_new || static_cast<int>(reg_inds.size()) < 2)
+    if (!has_new) {
+      ++tracks_skipped_no_new;
       continue;
+    }
+    if (static_cast<int>(reg_inds.size()) < 2) {
+      ++tracks_skipped_few_views;
+      continue;
+    }
     std::vector<Eigen::Matrix3d> R_list;
     std::vector<Eigen::Vector3d> C_list;
     for (int im : reg_inds) {
@@ -947,16 +1014,29 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
     }
     Eigen::Vector3d X = triangulate_point_multiview(R_list, C_list, rays_n);
     // Cheirality: positive depth in every observing camera
-    if (!check_all_depths_positive(X, R_list, C_list))
+    if (!check_all_depths_positive(X, R_list, C_list)) {
+      ++tracks_skipped_depth;
       continue;
+    }
     // Angle filter: reject degenerate (near-zero parallax) triangulations
-    if (compute_max_ray_angle_deg(X, C_list) < min_tri_angle_deg)
+    if (compute_max_ray_angle_deg(X, C_list) < min_tri_angle_deg) {
+      ++tracks_skipped_angle;
       continue;
+    }
     store->set_track_xyz(track_id, static_cast<float>(X(0)), static_cast<float>(X(1)),
                          static_cast<float>(X(2)));
     ++updated;
   }
-  LOG(INFO) << "run_batch_triangulation: " << updated << " tracks newly triangulated";
+  auto t1 = std::chrono::steady_clock::now();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+  LOG(INFO) << "[PERF] run_batch_triangulation: " << ms << "ms"
+            << "  total_tracks=" << store->num_tracks()
+            << "  scanned=" << tracks_scanned
+            << "  skip_no_new=" << tracks_skipped_no_new
+            << "  skip_few_views=" << tracks_skipped_few_views
+            << "  skip_depth=" << tracks_skipped_depth
+            << "  skip_angle=" << tracks_skipped_angle
+            << "  newly_tri=" << updated;
   return updated;
 }
 
@@ -972,12 +1052,16 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
       static_cast<int>(poses_C.size()) != n_images ||
       static_cast<int>(registered.size()) != n_images)
     return 0;
+  using Clock = std::chrono::steady_clock;
+  auto t0 = Clock::now();
   int updated = 0;
+  int retri_scanned = 0;
   std::vector<Observation> obs_buf;
   for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
     const int track_id = static_cast<int>(ti);
     if (!store->is_track_valid(track_id) || !store->track_needs_retriangulation(track_id))
       continue;
+    ++retri_scanned;
     obs_buf.clear();
     store->get_track_observations(track_id, &obs_buf);
     std::vector<int> reg_inds;
@@ -1019,7 +1103,12 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
     store->set_track_retriangulation_flag(track_id, false);
     ++updated;
   }
-  LOG(INFO) << "run_retriangulation: " << updated << " tracks re-triangulated";
+  auto t1 = std::chrono::steady_clock::now();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+  LOG(INFO) << "[PERF] run_retriangulation: " << ms << "ms"
+            << "  total_tracks=" << store->num_tracks()
+            << "  flagged_scanned=" << retri_scanned
+            << "  re_tri=" << updated;
   return updated;
 }
 
@@ -1352,13 +1441,18 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   const int anchor_image = static_cast<int>(*im0_ptr);
   LOG(INFO) << "run_incremental_sfm_pipeline: anchor_image=" << anchor_image;
 
-  // Count triangulated tracks for diagnostics
+  // Count triangulated tracks for diagnostics (also times itself to expose overhead)
   auto count_tri_tracks = [&]() -> int {
+    auto _t0 = std::chrono::steady_clock::now();
     int n = 0;
     for (size_t ti = 0; ti < store_out->num_tracks(); ++ti)
       if (store_out->is_track_valid(static_cast<int>(ti)) &&
           store_out->track_has_triangulated_xyz(static_cast<int>(ti)))
         ++n;
+    auto _ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - _t0).count();
+    if (_ms >= 5)
+      LOG(INFO) << "[PERF] count_tri_tracks: " << _ms << "ms  total_tracks=" << store_out->num_tracks();
     return n;
   };
   LOG(INFO) << "Triangulated tracks after initial pair: " << count_tri_tracks();
@@ -1418,11 +1512,23 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       *rmse_out = rmse;
   };
 
+  using Clock = std::chrono::steady_clock;
+  auto pipeline_start = Clock::now();
+  int sfm_iter = 0;
   for (;;) {
-    LOG(INFO) << "════ SfM iteration: registered=" << num_registered << "/" << n_images
-              << ", tri_tracks=" << count_tri_tracks() << " ════";
+    ++sfm_iter;
+    auto iter_start = Clock::now();
+    LOG(INFO) << "════ SfM iter #" << sfm_iter << ": registered=" << num_registered << "/"
+              << n_images << ", tri_tracks=" << count_tri_tracks() << " ════";
+
+    auto t_choose0 = Clock::now();
     std::vector<int> batch =
         choose_next_resection_batch(*store_out, *registered_out, opts.resection_batch_k);
+    auto t_choose1 = Clock::now();
+    LOG(INFO) << "[PERF] choose_batch: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
+              << "ms";
+
     if (batch.empty()) {
       if (opts.retry_resection_after_cleanup &&
           num_registered >= opts.reject_min_registered_images) {
@@ -1431,9 +1537,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         const bool cleanup_opt_intr =
             opts.global_ba_optimize_intrinsics &&
             num_registered >= opts.global_ba_optimize_intrinsics_min_images;
+        auto t_cba0 = Clock::now();
         if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                           image_to_camera_index, *cameras, cameras, cleanup_opt_intr,
                           opts.max_global_ba_iterations, &rmse, anchor_image)) {
+          LOG(INFO) << "[PERF] cleanup_global_ba: "
+                    << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_cba0).count()
+                    << "ms  RMSE=" << rmse;
           double cleanup_thr = eff_reject_threshold(rmse);
           int rej =
               reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
@@ -1451,15 +1561,26 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       if (batch.empty())
         break;
     }
+
+    auto t_resect0 = Clock::now();
     int added = run_batch_resection(*store_out, batch, *cameras, image_to_camera_index, poses_R_out,
                                     poses_C_out, registered_out, opts.resection_min_inliers);
+    LOG(INFO) << "[PERF] resection: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_resect0).count()
+              << "ms  added=" << added;
     if (added == 0) {
       LOG(WARNING) << "  No images could be resected in this batch, stopping";
       break;
     }
+
+    auto t_tri0 = Clock::now();
     int n_new_tri =
         run_batch_triangulation(store_out, batch, *poses_R_out, *poses_C_out, *registered_out,
                                 *cameras, image_to_camera_index, opts.min_tri_angle_deg);
+    LOG(INFO) << "[PERF] triangulation: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
+              << "ms  new_tri=" << n_new_tri;
+
     num_registered = 0;
     for (bool r : *registered_out)
       if (r)
@@ -1471,11 +1592,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     if (num_registered < opts.local_ba_after_n_images) {
       const bool opt_intr = opts.global_ba_optimize_intrinsics &&
                             num_registered >= opts.global_ba_optimize_intrinsics_min_images;
+      auto t_ba0 = Clock::now();
       if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
                         *cameras, cameras, opt_intr, opts.max_global_ba_iterations, &rmse,
                         anchor_image)) {
-        LOG(INFO) << "run_incremental_sfm_pipeline: global BA after resection, n=" << num_registered
-                  << " RMSE=" << rmse << " px";
+        LOG(INFO) << "[PERF] global_ba: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
+                  << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
         run_ba_and_reject_outliers(&rmse);
       }
     } else {
@@ -1487,14 +1610,23 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         if (!connectivity_indices.empty())
           local_indices = &connectivity_indices;
       }
+      auto t_ba0 = Clock::now();
       if (run_local_ba(store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
                        *cameras, opts.local_ba_window, 25, &rmse, local_indices)) {
-        LOG(INFO) << "run_incremental_sfm_pipeline: local BA after resection, n=" << num_registered
-                  << " RMSE=" << rmse << " px";
+        LOG(INFO) << "[PERF] local_ba: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
+                  << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
         run_ba_and_reject_outliers(&rmse);
       }
     }
+
+    LOG(INFO) << "[PERF] iter #" << sfm_iter << " total: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - iter_start).count()
+              << "ms";
   }
+  LOG(INFO) << "[PERF] main_loop total: "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - pipeline_start).count()
+            << "ms  iters=" << sfm_iter;
 
   run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
                       image_to_camera_index, opts.min_tri_angle_deg);

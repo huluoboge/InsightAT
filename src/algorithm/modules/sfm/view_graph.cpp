@@ -42,22 +42,28 @@ void ViewGraph::ensure_degree_computed() const {
   degree_dirty_ = false;
 }
 
-double ViewGraph::get_pair_score(size_t pair_index, double w_stable, double w_points,
-                                 double w_connect) const {
+double ViewGraph::get_pair_score(size_t pair_index, double w_f_inliers, double w_connect,
+                                 double w_stable) const {
   if (pair_index >= pairs_.size())
     return -1e9;
   ensure_degree_computed();
   const auto& p = pairs_[pair_index];
   double s = 0.0;
-  if (p.stable && p.twoview_ok)
-    s += w_stable;
-  s += w_points * std::log(1.0 + static_cast<double>(std::max(0, p.num_valid_points)));
+  // Primary: F inliers (log scale to avoid dominance by large counts)
+  s += w_f_inliers * std::log(1.0 + static_cast<double>(std::max(0, p.F_inliers)));
+  // Connectivity bonus
   int d1 = 0, d2 = 0;
   if (static_cast<size_t>(p.image1_index) < image_degree_.size())
     d1 = image_degree_[static_cast<size_t>(p.image1_index)];
   if (static_cast<size_t>(p.image2_index) < image_degree_.size())
     d2 = image_degree_[static_cast<size_t>(p.image2_index)];
   s += w_connect * static_cast<double>(d1 + d2);
+  // Supplementary bonus if twoview result is stable
+  if (p.twoview_ok && p.stable)
+    s += w_stable;
+  // Degeneracy penalty
+  if (p.is_degenerate)
+    s -= 5.0;
   return s;
 }
 
@@ -70,11 +76,11 @@ ViewGraph::choose_initial_pair(const std::set<uint32_t>& registered) const {
   double best_score = -1e9;
   for (size_t i = 0; i < pairs_.size(); ++i) {
     const auto& p = pairs_[i];
-    if (!p.twoview_ok || !p.stable)
+    if (!p.F_ok || p.is_degenerate)
       continue;
     if (registered.count(p.image1_index) || registered.count(p.image2_index))
       continue;
-    double sc = get_pair_score(i);
+    const double sc = get_pair_score(i);
     if (sc > best_score) {
       best_score = sc;
       best = i;
@@ -85,20 +91,31 @@ ViewGraph::choose_initial_pair(const std::set<uint32_t>& registered) const {
   return std::make_pair(pairs_[best].image1_index, pairs_[best].image2_index);
 }
 
-std::vector<size_t> ViewGraph::get_candidate_pair_indices_sorted(const std::set<uint32_t>& registered) const {
+std::vector<size_t>
+ViewGraph::get_candidate_pair_indices_sorted(const std::set<uint32_t>& registered) const {
   std::vector<size_t> indices;
   for (size_t i = 0; i < pairs_.size(); ++i) {
     const auto& p = pairs_[i];
-    if (!p.twoview_ok || !p.stable)
+    // F_ok is the minimum requirement; degenerate pairs are skipped.
+    if (!p.F_ok || p.is_degenerate)
       continue;
     if (registered.count(p.image1_index) || registered.count(p.image2_index))
       continue;
     indices.push_back(i);
   }
-  std::sort(indices.begin(), indices.end(), [this](size_t a, size_t b) {
-    return get_pair_score(a) > get_pair_score(b);
-  });
+  std::sort(indices.begin(), indices.end(),
+            [this](size_t a, size_t b) { return get_pair_score(a) > get_pair_score(b); });
   return indices;
+}
+
+int ViewGraph::get_F_inliers(uint32_t im_a, uint32_t im_b) const {
+  const uint32_t lo = std::min(im_a, im_b);
+  const uint32_t hi = std::max(im_a, im_b);
+  for (const auto& p : pairs_) {
+    if (p.image1_index == lo && p.image2_index == hi)
+      return p.F_inliers;
+  }
+  return -1;
 }
 
 } // namespace sfm

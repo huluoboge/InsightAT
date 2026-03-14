@@ -50,11 +50,37 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
     info.image2_index = idx2;
     if (meta.contains("geometry")) {
       const auto& gm = meta["geometry"];
-      if (gm.contains("E") && gm["E"].contains("estimated"))
-        info.E_ok = gm["E"]["estimated"].get<bool>();
-      if (gm.contains("E") && gm["E"].contains("num_inliers"))
-        info.E_inliers = gm["E"]["num_inliers"].get<int>();
+      // F — primary, always present
+      if (gm.contains("F")) {
+        const auto& jF = gm["F"];
+        if (jF.contains("estimated"))
+          info.F_ok = jF["estimated"].get<bool>();
+        if (jF.contains("num_inliers"))
+          info.F_inliers = jF["num_inliers"].get<int>();
+        if (jF.contains("inlier_ratio"))
+          info.F_inlier_ratio = jF["inlier_ratio"].get<float>();
+      }
+      // H — degeneracy signal
+      if (gm.contains("H")) {
+        const auto& jH = gm["H"];
+        if (jH.contains("estimated"))
+          info.H_ok = jH["estimated"].get<bool>();
+        if (jH.contains("num_inliers"))
+          info.H_inliers = jH["num_inliers"].get<int>();
+      }
+      // Degeneracy
+      if (gm.contains("degeneracy") && gm["degeneracy"].contains("is_degenerate"))
+        info.is_degenerate = gm["degeneracy"]["is_degenerate"].get<bool>();
+      // E — supplementary
+      if (gm.contains("E")) {
+        const auto& jE = gm["E"];
+        if (jE.contains("estimated"))
+          info.E_ok = jE["estimated"].get<bool>();
+        if (jE.contains("num_inliers"))
+          info.E_inliers = jE["num_inliers"].get<int>();
+      }
     }
+    // twoview — supplementary, only present when isat_geo was run with --twoview
     if (meta.contains("twoview")) {
       const auto& tv = meta["twoview"];
       info.twoview_ok = true;
