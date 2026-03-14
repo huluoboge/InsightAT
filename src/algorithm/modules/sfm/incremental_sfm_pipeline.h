@@ -121,7 +121,38 @@ bool run_local_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                   const std::vector<int>* indices_to_optimize = nullptr,
                   int anchor_image = -1);
 
+/**
+ * COLMAP-style local BA: 2-hop visibility expansion from `batch` (newly registered images).
+ *   Hop-1: seed 3D points visible from batch.
+ *   Hop-2: registered cameras observing seed points, scored by count; top
+ *          max_variable_cameras become the "variable" (optimised) set.
+ *   Hop-3: remaining observers of seed points → "constant" (frozen) cameras providing gauge fix.
+ * Only the seed points are included, so the BA problem is genuinely local.
+ * Intrinsics are not optimised.
+ */
+bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                         std::vector<Eigen::Vector3d>* poses_C,
+                         const std::vector<bool>& registered,
+                         const std::vector<int>& image_to_camera_index,
+                         const std::vector<camera::Intrinsics>& cameras,
+                         const std::vector<int>& batch, int max_variable_cameras,
+                         int max_iterations, double* rmse_px_out);
+
 // ─── Full pipeline ───────────────────────────────────────────────────────────
+
+/// Strategy for the per-iteration local BA in the incremental SfM loop.
+enum class LocalBAStrategy {
+  /// Current default: select the last N / connectivity-ranked images as the
+  /// variable window; all registered images are fed to the solver (outer
+  /// cameras frozen).  Simple and robust.
+  kWindow,
+  /// COLMAP-style: 2-hop visibility graph expansion from the newly registered
+  /// batch.  Variable cameras = top-scored neighbours (up to
+  /// local_ba_colmap_max_variable_images).  Constant cameras = additional
+  /// observers of the same seed points (frozen, provide gauge fix).  Only seed
+  /// points are included, so the problem is genuinely local.
+  kColmap,
+};
 
 struct IncrementalSfMOptions {
   // ─── Initial pair selection (COLMAP-style, track-based) ───────────────────
@@ -146,6 +177,12 @@ struct IncrementalSfMOptions {
   int local_ba_window = 20;
   bool local_ba_by_connectivity = true; ///< If true, local BA optimizes new images + most connected
                                         ///< neighbors; else last N by index.
+  /// Which local-BA strategy to use.  kWindow is the default (original behaviour).
+  /// Switch to kColmap to evaluate COLMAP-style 2-hop visibility expansion.
+  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kWindow;
+  /// Maximum number of variable (freely optimised) cameras in kColmap local BA.
+  /// Cameras beyond this cap are assigned to the constant (frozen) set.
+  int local_ba_colmap_max_variable_images = 30;
   /// Run global BA only every N newly-registered images during the early global-BA phase
   /// (num_registered < local_ba_after_n_images).  The last BA before switching to local BA
   /// is always executed regardless.  Default = 1 (original: BA after every image).

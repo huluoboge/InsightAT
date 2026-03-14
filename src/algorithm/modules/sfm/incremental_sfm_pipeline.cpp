@@ -1268,6 +1268,160 @@ static void log_cameras(const std::vector<camera::Intrinsics>& cameras, const ch
   }
 }
 
+/// COLMAP-style local BA input builder.
+///
+/// Expansion from `batch` (newly registered images):
+///   Hop-1  seed_points  = triangulated tracks visible from any image in batch.
+///   Hop-2  variable_set = registered cameras observing seed_points, sorted by
+///                         shared-point count descending, capped at max_variable_cameras.
+///   Hop-3  constant_set = remaining registered observers of seed_points (frozen).
+///
+/// BAInput produced:
+///   images  = variable_set ∪ constant_set (sorted by global index)
+///   points  = seed_points with ≥2 observations in that image set
+///   fix_pose: false for variable, true for constant
+///   fix_intrinsics: all fixed (local BA never touches intrinsics)
+static bool build_ba_input_colmap_local(
+    const TrackStore& store, const std::vector<Eigen::Matrix3d>& poses_R,
+    const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
+    const std::vector<int>& image_to_camera_index, const std::vector<camera::Intrinsics>& cameras,
+    const std::vector<int>& batch, int max_variable_cameras,
+    std::vector<int>* ba_image_index_to_global_out, BAInput* ba_input_out,
+    std::vector<int>* point_index_to_track_id_out) {
+  if (!ba_input_out || !ba_image_index_to_global_out || !point_index_to_track_id_out)
+    return false;
+  const int n_images = store.num_images();
+  const size_t n_tracks = store.num_tracks();
+
+  // ── Hop 1: seed tracks visible from at least one batch image ─────────────
+  std::set<int> batch_set(batch.begin(), batch.end());
+  std::vector<int> seed_track_ids;
+  seed_track_ids.reserve(n_tracks / 4);
+  std::vector<Observation> obs_buf;
+  for (size_t ti = 0; ti < n_tracks; ++ti) {
+    const int track_id = static_cast<int>(ti);
+    if (!store.is_track_valid(track_id) || !store.track_has_triangulated_xyz(track_id))
+      continue;
+    obs_buf.clear();
+    store.get_track_observations(track_id, &obs_buf);
+    for (const auto& o : obs_buf) {
+      if (batch_set.count(static_cast<int>(o.image_index))) {
+        seed_track_ids.push_back(track_id);
+        break;
+      }
+    }
+  }
+  if (seed_track_ids.empty())
+    return false;
+
+  // ── Hop 2: score cameras by number of seed tracks observed ───────────────
+  std::unordered_map<int, int> cam_score;
+  for (int track_id : seed_track_ids) {
+    obs_buf.clear();
+    store.get_track_observations(track_id, &obs_buf);
+    for (const auto& o : obs_buf) {
+      int g = static_cast<int>(o.image_index);
+      if (g >= 0 && g < n_images && registered[static_cast<size_t>(g)])
+        cam_score[g]++;
+    }
+  }
+  // Sort descending by score; take top max_variable_cameras.
+  std::vector<std::pair<int, int>> score_list; // (score, global_idx)
+  score_list.reserve(cam_score.size());
+  for (const auto& kv : cam_score)
+    score_list.push_back({kv.second, kv.first});
+  std::sort(score_list.begin(), score_list.end(),
+            [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
+              return a.first > b.first;
+            });
+  std::set<int> variable_set;
+  const int n_take = std::min(max_variable_cameras, static_cast<int>(score_list.size()));
+  for (int i = 0; i < n_take; ++i)
+    variable_set.insert(score_list[i].second);
+
+  // ── Hop 3: constant cameras – observe seed points but outside variable set ─
+  std::set<int> constant_set;
+  for (const auto& kv : cam_score)
+    if (!variable_set.count(kv.first))
+      constant_set.insert(kv.first);
+
+  // ── Union image list (sorted) ─────────────────────────────────────────────
+  std::set<int> all_image_set;
+  for (int g : variable_set) all_image_set.insert(g);
+  for (int g : constant_set) all_image_set.insert(g);
+  std::vector<int>& global_indices = *ba_image_index_to_global_out;
+  global_indices.assign(all_image_set.begin(), all_image_set.end());
+  if (global_indices.empty())
+    return false;
+
+  // ── Populate BAInput ──────────────────────────────────────────────────────
+  BAInput& ba = *ba_input_out;
+  ba.poses_R.clear(); ba.poses_C.clear(); ba.points3d.clear();
+  ba.observations.clear(); ba.image_camera_index.clear();
+  ba.cameras = cameras;
+  ba.fix_pose.clear(); ba.fix_point.clear(); ba.fix_intrinsics_flags.clear();
+  ba.optimize_intrinsics = false;
+  for (int g : global_indices) {
+    ba.poses_R.push_back(poses_R[static_cast<size_t>(g)]);
+    ba.poses_C.push_back(poses_C[static_cast<size_t>(g)]);
+    const int cam_idx = image_to_camera_index[static_cast<size_t>(g)];
+    ba.image_camera_index.push_back(
+        cam_idx >= 0 && cam_idx < static_cast<int>(cameras.size()) ? cam_idx : 0);
+  }
+  const int n_ba_images = static_cast<int>(global_indices.size());
+  // variable cameras free, constant cameras frozen.
+  ba.fix_pose.resize(static_cast<size_t>(n_ba_images), false);
+  for (int bi = 0; bi < n_ba_images; ++bi)
+    ba.fix_pose[static_cast<size_t>(bi)] = (constant_set.count(global_indices[bi]) > 0);
+  ba.fix_intrinsics_flags.resize(ba.cameras.size(),
+                                  static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
+
+  // ── Seed points: tracks with ≥2 observations within all_image_set ─────────
+  std::vector<int> track_id_to_point_index(n_tracks, -1);
+  point_index_to_track_id_out->clear();
+  for (int track_id : seed_track_ids) {
+    obs_buf.clear();
+    store.get_track_observations(track_id, &obs_buf);
+    int visible_in_ba = 0;
+    for (const auto& o : obs_buf)
+      if (all_image_set.count(static_cast<int>(o.image_index)))
+        ++visible_in_ba;
+    if (visible_in_ba < 2)
+      continue;
+    const int pt_idx = static_cast<int>(point_index_to_track_id_out->size());
+    track_id_to_point_index[track_id] = pt_idx;
+    point_index_to_track_id_out->push_back(track_id);
+    float x, y, z;
+    store.get_track_xyz(track_id, &x, &y, &z);
+    ba.points3d.emplace_back(static_cast<double>(x), static_cast<double>(y),
+                             static_cast<double>(z));
+  }
+  if (ba.points3d.empty())
+    return false;
+  ba.fix_point.resize(ba.points3d.size(), false);
+
+  // ── Observations ─────────────────────────────────────────────────────────
+  for (size_t ti = 0; ti < n_tracks; ++ti) {
+    const int track_id = static_cast<int>(ti);
+    const int pt_idx = track_id_to_point_index[track_id];
+    if (pt_idx < 0)
+      continue;
+    obs_buf.clear();
+    store.get_track_observations(track_id, &obs_buf);
+    for (const auto& o : obs_buf) {
+      int g = static_cast<int>(o.image_index);
+      auto it = std::lower_bound(global_indices.begin(), global_indices.end(), g);
+      if (it == global_indices.end() || *it != g)
+        continue;
+      int ba_im = static_cast<int>(it - global_indices.begin());
+      double scale = (o.scale > 1e-6f) ? static_cast<double>(o.scale) : 1.0;
+      ba.observations.push_back(
+          {ba_im, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v), scale});
+    }
+  }
+  return !ba.observations.empty();
+}
+
 } // namespace
 
 bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
@@ -1378,6 +1532,43 @@ bool run_local_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                        poses_C, nullptr);
   // Intrinsics are fixed in local BA, but log current values for tracking.
   log_cameras(cameras, "run_local_ba");
+  if (rmse_px_out)
+    *rmse_px_out = ba_out.rmse_px;
+  return true;
+}
+
+bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                         std::vector<Eigen::Vector3d>* poses_C,
+                         const std::vector<bool>& registered,
+                         const std::vector<int>& image_to_camera_index,
+                         const std::vector<camera::Intrinsics>& cameras,
+                         const std::vector<int>& batch, int max_variable_cameras,
+                         int max_iterations, double* rmse_px_out) {
+  if (!store || !poses_R || !poses_C || batch.empty())
+    return false;
+  std::vector<int> ba_image_index_to_global;
+  std::vector<int> point_index_to_track_id;
+  BAInput ba_in;
+  if (!build_ba_input_colmap_local(*store, *poses_R, *poses_C, registered, image_to_camera_index,
+                                   cameras, batch, max_variable_cameras,
+                                   &ba_image_index_to_global, &ba_in, &point_index_to_track_id))
+    return false;
+  int n_variable = 0, n_constant = 0;
+  for (bool f : ba_in.fix_pose) {
+    if (f) ++n_constant; else ++n_variable;
+  }
+  LOG(INFO) << "run_local_ba_colmap: variable=" << n_variable << " constant=" << n_constant
+            << " images=" << ba_image_index_to_global.size()
+            << " points=" << ba_in.points3d.size()
+            << " obs=" << ba_in.observations.size();
+  BAResult ba_out;
+  if (!global_bundle_analytic(ba_in, &ba_out, max_iterations)) {
+    LOG(WARNING) << "run_local_ba_colmap: solver failed";
+    return false;
+  }
+  LOG(INFO) << "run_local_ba_colmap: RMSE=" << ba_out.rmse_px << " px";
+  write_ba_result_back(ba_out, ba_image_index_to_global, point_index_to_track_id, store, poses_R,
+                       poses_C, nullptr);
   if (rmse_px_out)
     *rmse_px_out = ba_out.rmse_px;
   return true;
@@ -1645,22 +1836,35 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                   << ", n=" << num_registered << ")";
       }
     } else {
-      const std::vector<int>* local_indices = nullptr;
-      std::vector<int> connectivity_indices;
-      if (opts.local_ba_by_connectivity && !batch.empty()) {
-        connectivity_indices = choose_local_ba_indices_by_connectivity(*store_out, *registered_out,
-                                                                       batch, opts.local_ba_window);
-        if (!connectivity_indices.empty())
-          local_indices = &connectivity_indices;
-      }
       auto t_ba0 = Clock::now();
-      if (run_local_ba(store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
-                       *cameras, opts.local_ba_window, 25, &rmse, local_indices, anchor_image)) {
-        LOG(INFO) << "[PERF] local_ba: "
+      bool ba_ok = false;
+      if (opts.local_ba_strategy == LocalBAStrategy::kColmap) {
+        // ── COLMAP-style: 2-hop visibility expansion from newly registered batch ──
+        ba_ok = run_local_ba_colmap(store_out, poses_R_out, poses_C_out, *registered_out,
+                                    image_to_camera_index, *cameras, batch,
+                                    opts.local_ba_colmap_max_variable_images, 25, &rmse);
+        LOG(INFO) << "[PERF] local_ba_colmap: "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
                   << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
-        run_ba_and_reject_outliers(&rmse);
+      } else {
+        // ── kWindow: last-N / connectivity-ranked set, all registered in BA ──
+        const std::vector<int>* local_indices = nullptr;
+        std::vector<int> connectivity_indices;
+        if (opts.local_ba_by_connectivity && !batch.empty()) {
+          connectivity_indices = choose_local_ba_indices_by_connectivity(
+              *store_out, *registered_out, batch, opts.local_ba_window);
+          if (!connectivity_indices.empty())
+            local_indices = &connectivity_indices;
+        }
+        ba_ok = run_local_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                             image_to_camera_index, *cameras, opts.local_ba_window, 25, &rmse,
+                             local_indices, anchor_image);
+        LOG(INFO) << "[PERF] local_ba_window: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
+                  << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
       }
+      if (ba_ok)
+        run_ba_and_reject_outliers(&rmse);
     }
 
     LOG(INFO) << "[PERF] iter #" << sfm_iter << " total: "
