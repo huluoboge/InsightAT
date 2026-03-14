@@ -2034,10 +2034,15 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                       opts.intrinsics_freeze_delta_dist)) {
           fs.frozen = false;
           fs.stable_rounds = 0;
-          LOG(INFO) << "  camera " << c << " intrinsics UNFROZEN"
-                    << " (focal_rel=" << d.focal_rel
+          LOG(INFO) << "  [freeze] camera " << c << " UNFROZEN"
+                    << " focal_rel=" << d.focal_rel
                     << " pp_px=" << d.pp_px
-                    << " dist=" << d.distortion << ")";
+                    << " dist=" << d.distortion;
+        } else {
+          LOG(INFO) << "  [freeze] camera " << c << " still FROZEN"
+                    << " focal_rel=" << d.focal_rel
+                    << " pp_px=" << d.pp_px
+                    << " dist=" << d.distortion;
         }
         fs.prev = K;
         continue;
@@ -2047,20 +2052,41 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         if ((*registered_out)[static_cast<size_t>(i)] &&
             image_to_camera_index[static_cast<size_t>(i)] == c)
           ++cam_reg;
+      if (cam_reg < opts.intrinsics_freeze_min_images) {
+        // Level-1 gate not met yet; don't count stable_rounds but still update prev.
+        LOG(INFO) << "  [freeze] camera " << c << " L1-pending: reg=" << cam_reg
+                  << "/" << opts.intrinsics_freeze_min_images << " images (need more)";
+        fs.prev = K;
+        continue;
+      }
       const auto d = K.delta(fs.prev);
-      if (cam_reg >= opts.intrinsics_freeze_min_images &&
-          d.stable(opts.intrinsics_freeze_delta_focal, opts.intrinsics_freeze_delta_pp,
+      if (d.stable(opts.intrinsics_freeze_delta_focal, opts.intrinsics_freeze_delta_pp,
                    opts.intrinsics_freeze_delta_dist)) {
         ++fs.stable_rounds;
         if (fs.stable_rounds >= opts.intrinsics_freeze_stable_rounds) {
           fs.frozen = true;
-          LOG(INFO) << "  camera " << c << " intrinsics FROZEN"
-                    << " (focal_rel=" << d.focal_rel
+          LOG(INFO) << "  [freeze] camera " << c << " FROZEN"
+                    << " focal_rel=" << d.focal_rel
                     << " pp_px=" << d.pp_px
                     << " dist=" << d.distortion
-                    << " reg_imgs=" << cam_reg << ")";
+                    << " reg_imgs=" << cam_reg;
+        } else {
+          LOG(INFO) << "  [freeze] camera " << c << " stable_rounds=" << fs.stable_rounds
+                    << "/" << opts.intrinsics_freeze_stable_rounds
+                    << " focal_rel=" << d.focal_rel
+                    << " pp_px=" << d.pp_px
+                    << " dist=" << d.distortion
+                    << " reg_imgs=" << cam_reg;
         }
       } else {
+        LOG(INFO) << "  [freeze] camera " << c << " not-stable → reset"
+                  << " focal_rel=" << d.focal_rel
+                  << " (thr=" << opts.intrinsics_freeze_delta_focal << ")"
+                  << " pp_px=" << d.pp_px
+                  << " (thr=" << opts.intrinsics_freeze_delta_pp << ")"
+                  << " dist=" << d.distortion
+                  << " (thr=" << opts.intrinsics_freeze_delta_dist << ")"
+                  << " reg_imgs=" << cam_reg;
         fs.stable_rounds = 0;
       }
       fs.prev = K;
