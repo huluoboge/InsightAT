@@ -89,17 +89,41 @@ void TrackStore::set_track_xyz(int track_id, float x, float y, float z) {
   track_xyz_[i] = x;
   track_xyz_[i + 1] = y;
   track_xyz_[i + 2] = z;
-  track_flags_[static_cast<size_t>(track_id)] |= track_flags::kHasTriangulated;
+  auto& f = track_flags_[static_cast<size_t>(track_id)];
+  if (!(f & track_flags::kHasTriangulated)) {
+    // First time this track gets a 3D point; maintain the O(1) counter.
+    f |= track_flags::kHasTriangulated;
+    ++num_triangulated_;
+  }
+}
+
+void TrackStore::clear_track_xyz(int track_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= num_tracks())
+    return;
+  auto& f = track_flags_[static_cast<size_t>(track_id)];
+  if (f & track_flags::kHasTriangulated) {
+    f &= ~track_flags::kHasTriangulated;
+    --num_triangulated_;
+  }
 }
 
 void TrackStore::set_track_retriangulation_flag(int track_id, bool value) {
   if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
     return;
   auto& f = track_flags_[static_cast<size_t>(track_id)];
-  if (value)
+  if (value) {
     f |= track_flags::kNeedsRetriangulation;
-  else
+    retri_pending_ids_.push_back(track_id); // O(1) append; duplicates OK, drained lazily
+  } else {
     f &= ~track_flags::kNeedsRetriangulation;
+  }
+}
+
+void TrackStore::drain_retriangulation_pending(std::vector<int>* out) {
+  if (out)
+    *out = std::move(retri_pending_ids_);
+  // After move, retri_pending_ids_ is valid-but-unspecified; reset to empty.
+  retri_pending_ids_.clear();
 }
 
 bool TrackStore::track_needs_retriangulation(int track_id) const {
@@ -124,6 +148,21 @@ int TrackStore::get_track_observations(int track_id, std::vector<Observation>* o
     obs_out->push_back(o);
   }
   return static_cast<int>(obs_out->size());
+}
+
+int TrackStore::get_track_obs_ids(int track_id, std::vector<int>* obs_ids_out) const {
+  assert(obs_ids_out);
+  obs_ids_out->clear();
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_obs_ids_.size())
+    return 0;
+  if (!is_track_valid(track_id))
+    return 0;
+  const std::vector<int>& ids = track_obs_ids_[static_cast<size_t>(track_id)];
+  for (int obs_id : ids) {
+    if (is_obs_valid(obs_id))
+      obs_ids_out->push_back(obs_id);
+  }
+  return static_cast<int>(obs_ids_out->size());
 }
 
 int TrackStore::get_image_observation_indices(int image_index,
@@ -190,7 +229,13 @@ void TrackStore::get_obs(int obs_id, Observation* out) const {
 void TrackStore::mark_track_deleted(int track_id) {
   if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
     return;
-  track_flags_[static_cast<size_t>(track_id)] &= ~track_flags::kAlive;
+  auto& f = track_flags_[static_cast<size_t>(track_id)];
+  if (f & track_flags::kAlive) {
+    // If this track had a triangulated 3D point, decrement the counter.
+    if (f & track_flags::kHasTriangulated)
+      --num_triangulated_;
+    f &= ~track_flags::kAlive;
+  }
 }
 
 void TrackStore::mark_observation_deleted(int obs_id) {

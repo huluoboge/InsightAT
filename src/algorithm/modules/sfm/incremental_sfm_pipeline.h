@@ -245,6 +245,11 @@ struct IncrementalSfMOptions {
   bool enable_sigma_filter = false; ///< After reject loop, one more pass with threshold = rmse * 3.
   int final_reject_max_rounds =
       10; ///< After final global BA, iterate BA+reject until no outliers or this many rounds.
+  /// Run run_retriangulation() every this many SfM iterations inside the main loop.
+  /// 0 = disable periodic retriangulation (only the final pass at the end runs).
+  /// 3 is a good default: covers tracks cleared by outlier rejection AND tracks
+  /// that became triangulatable only after more cameras were registered.
+  int retriangulation_every_n_iters = 3;
   bool retry_resection_after_cleanup =
       true; ///< When no resection candidates, run one global BA+reject then try again once.
 };

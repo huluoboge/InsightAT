@@ -144,6 +144,7 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
     return 0;
   const double thresh_sq = threshold_px * threshold_px;
   int marked = 0;
+  std::unordered_set<int> dirty_tracks; // tracks that lost at least one obs this call
   for (size_t i = 0; i < store->num_observations(); ++i) {
     const int obs_id = static_cast<int>(i);
     if (!store->is_obs_valid(obs_id))
@@ -165,6 +166,7 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
     Eigen::Vector3d p = R * (X - C);
     if (p(2) <= 1e-12) {
       store->mark_observation_deleted(obs_id);
+      dirty_tracks.insert(tid);
       ++marked;
       continue;
     }
@@ -179,8 +181,24 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
     const double v_obs = static_cast<double>(obs.v);
     if ((u_obs - u_pred) * (u_obs - u_pred) + (v_obs - v_pred) * (v_obs - v_pred) > thresh_sq) {
       store->mark_observation_deleted(obs_id);
+      dirty_tracks.insert(tid);
       ++marked;
     }
+  }
+  // Clear XYZ for tracks that now have fewer than 2 valid observations so that
+  // run_retriangulation can re-triangulate them once more images are registered.
+  std::vector<int> obs_ids_chk;
+  for (int tid : dirty_tracks) {
+    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+      continue; // already cleared or invalid
+    obs_ids_chk.clear();
+    store->get_track_obs_ids(tid, &obs_ids_chk);
+    int valid_obs = 0;
+    for (int oid : obs_ids_chk)
+      if (store->is_obs_valid(oid))
+        ++valid_obs;
+    if (valid_obs < 2)
+      store->clear_track_xyz(tid);
   }
   return marked;
 }
@@ -241,6 +259,14 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
         ++marked;
       }
     }
+    // If this track lost enough observations that fewer than 2 registered views
+    // remain, clear its XYZ so run_retriangulation can recover it later.
+    int still_valid = 0;
+    for (const auto& ro : reg)
+      if (store->is_obs_valid(ro.obs_id))
+        ++still_valid;
+    if (still_valid < 2)
+      store->clear_track_xyz(tid);
   }
   return marked;
 }
@@ -1077,17 +1103,23 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
     return 0;
   using Clock = std::chrono::steady_clock;
   auto t0 = Clock::now();
-  // Collect only the tracks that were explicitly flagged, not a full scan.
-  std::vector<int> pending;
-  store->drain_retriangulation_pending(&pending);
+  // Full scan: try every track that does NOT yet have a valid 3D position.
+  // This covers two cases:
+  //   (a) tracks never triangulated (angle/depth filters previously rejected them)
+  //   (b) tracks whose XYZ was cleared by reject_outliers after losing all obs support
+  // The flag/pending mechanism is no longer used here; it is kept in TrackStore for
+  // external callers but drain_retriangulation_pending() is called here to keep the
+  // pending list tidy.
+  std::vector<int> dummy_pending;
+  store->drain_retriangulation_pending(&dummy_pending); // drain to prevent unbounded growth
   int updated = 0;
-  int retri_scanned = 0;
+  int scanned = 0, skip_few = 0, skip_depth = 0, skip_angle = 0;
   std::vector<Observation> obs_buf;
-  for (int track_id : pending) {
-    // Handles duplicates and entries cleared between scheduling and this call.
-    if (!store->is_track_valid(track_id) || !store->track_needs_retriangulation(track_id))
-      continue;
-    ++retri_scanned;
+  for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
+    const int track_id = static_cast<int>(ti);
+    if (!store->is_track_valid(track_id) || store->track_has_triangulated_xyz(track_id))
+      continue; // skip already-triangulated tracks
+    ++scanned;
     obs_buf.clear();
     store->get_track_observations(track_id, &obs_buf);
     std::vector<int> reg_inds;
@@ -1104,7 +1136,7 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
       reg_inds.push_back(im);
     }
     if (static_cast<int>(reg_inds.size()) < 2) {
-      store->set_track_retriangulation_flag(track_id, false);
+      ++skip_few;
       continue;
     }
     std::vector<Eigen::Matrix3d> R_list;
@@ -1114,27 +1146,26 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
       C_list.push_back(poses_C[static_cast<size_t>(im)]);
     }
     Eigen::Vector3d X = triangulate_point_multiview(R_list, C_list, rays_n);
-    // Cheirality: positive depth in every observing camera
     if (!check_all_depths_positive(X, R_list, C_list)) {
-      store->set_track_retriangulation_flag(track_id, false);
+      ++skip_depth;
       continue;
     }
-    // Angle filter: reject degenerate (near-zero parallax) triangulations
     if (compute_max_ray_angle_deg(X, C_list) < min_tri_angle_deg) {
-      store->set_track_retriangulation_flag(track_id, false);
+      ++skip_angle;
       continue;
     }
     store->set_track_xyz(track_id, static_cast<float>(X(0)), static_cast<float>(X(1)),
                          static_cast<float>(X(2)));
-    store->set_track_retriangulation_flag(track_id, false);
     ++updated;
   }
   auto t1 = std::chrono::steady_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
   LOG(INFO) << "[PERF] run_retriangulation: " << ms << "ms"
             << "  total_tracks=" << store->num_tracks()
-            << "  pending=" << pending.size()
-            << "  flagged_scanned=" << retri_scanned
+            << "  scanned_untri=" << scanned
+            << "  skip_few_views=" << skip_few
+            << "  skip_depth=" << skip_depth
+            << "  skip_angle=" << skip_angle
             << "  re_tri=" << updated;
   return updated;
 }
@@ -1347,10 +1378,26 @@ static bool build_ba_input_colmap_local(
             [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
               return a.first > b.first;
             });
+  // Batch images MUST be variable: their pose is a raw PnP result not yet BA-refined.
+  // Freezing any batch image as a constant would corrupt the BA (its stale pose acts as a
+  // wrong anchor and pulls 3D points to wrong positions).
+  // Strategy: fill the variable set from batch first, then top-scored historical cameras
+  // up to max_variable_cameras total.
   std::set<int> variable_set;
-  const int n_take = std::min(max_variable_cameras, static_cast<int>(score_list.size()));
-  for (int i = 0; i < n_take; ++i)
-    variable_set.insert(score_list[i].second);
+  for (int g : batch)
+    if (cam_score.count(g))
+      variable_set.insert(g);
+  const int historical_slots =
+      std::max(0, max_variable_cameras - static_cast<int>(variable_set.size()));
+  int historical_taken = 0;
+  for (const auto& p : score_list) {
+    if (historical_taken >= historical_slots)
+      break;
+    if (!variable_set.count(p.second)) {
+      variable_set.insert(p.second);
+      ++historical_taken;
+    }
+  }
 
   // ── Hop 3: constant cameras – observe seed points but outside variable set ─
   std::set<int> constant_set;
@@ -1881,6 +1928,19 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       }
       if (ba_ok)
         run_ba_and_reject_outliers(&rmse);
+    }
+
+    // Periodic re-triangulation: recover tracks that were (a) cleared by outlier
+    // rejection after losing their 3D support, or (b) skippable previously but now
+    // have sufficient registered observers.  Full scan but fast in practice.
+    if (opts.retriangulation_every_n_iters > 0 &&
+        sfm_iter % opts.retriangulation_every_n_iters == 0) {
+      auto t_retri = Clock::now();
+      int n_retri = run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                        *cameras, image_to_camera_index, opts.min_tri_angle_deg);
+      LOG(INFO) << "[PERF] periodic_retri: "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_retri).count()
+                << "ms  re_tri=" << n_retri << "  total_tri=" << count_tri_tracks();
     }
 
     LOG(INFO) << "[PERF] iter #" << sfm_iter << " total: "

@@ -90,11 +90,23 @@ public:
   bool track_has_triangulated_xyz(int track_id) const;
   void get_track_xyz(int track_id, float* x, float* y, float* z) const;
   void set_track_xyz(int track_id, float x, float y, float z);
+  /// Clear the triangulated-XYZ flag (e.g. after all supporting observations
+  /// are rejected).  Decrements num_triangulated_; the stale XYZ value is left
+  /// in-place and will be overwritten on the next successful triangulation.
+  void clear_track_xyz(int track_id);
   void set_track_retriangulation_flag(int track_id, bool value);
   bool track_needs_retriangulation(int track_id) const;
+  /// Consume and return all track ids that had their retriangulation flag set.
+  /// The caller should re-check is_track_valid() and track_needs_retriangulation()
+  /// on each element to handle duplicates and already-cleared entries.
+  void drain_retriangulation_pending(std::vector<int>* out);
 
   /// Iterate valid observations of a track (writes to obs_out; returns count).
   int get_track_observations(int track_id, std::vector<Observation>* obs_out) const;
+
+  /// Get the global observation-ids belonging to a track (only alive obs).
+  /// Faster than get_track_observations when only obs_ids are needed (no struct copy).
+  int get_track_obs_ids(int track_id, std::vector<int>* obs_ids_out) const;
 
   /// Iterate valid observations for an image (obs indices and optionally Observation structs).
   int get_image_observation_indices(int image_index, std::vector<int>* obs_indices_out) const;
@@ -112,6 +124,8 @@ public:
 
   size_t num_tracks() const { return track_xyz_.size() / 3u; }
   size_t num_observations() const { return obs_track_id_.size(); }
+  /// O(1): number of alive tracks that have been triangulated.
+  int num_triangulated_tracks() const { return num_triangulated_; }
 
 private:
   int num_images_ = 0;
@@ -127,6 +141,9 @@ private:
   std::vector<uint8_t> obs_flags_;
 
   std::vector<std::vector<int>> image_obs_ids_; // image_index -> list of global obs indices
+
+  int num_triangulated_ = 0; ///< Maintained by set_track_xyz (+1 on first XYZ) and mark_track_deleted (-1 if triangulated).
+  std::vector<int> retri_pending_ids_; ///< Accumulates track ids whenever kNeedsRetriangulation is set; drained by drain_retriangulation_pending().
 };
 
 } // namespace sfm
