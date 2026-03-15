@@ -60,7 +60,7 @@ uint32_t IntrinsicsSchedule::fix_mask_for(int n_registered) const {
 IncrementalSfMOptions make_aerial_preset() {
     IncrementalSfMOptions o;
     // Initial pair
-    o.init.min_tracks_after    = 50;
+    o.init.min_tracks_for_intital_pair    = 50;
     o.init.max_first_images    = 100;
     o.init.max_second_images   = 50;
     o.init.ba_rmse_max         = 8.0;
@@ -102,13 +102,16 @@ IncrementalSfMOptions make_aerial_preset() {
     o.global_ba.periodic_every_n_images         = 20;
     // Outlier rejection
     o.outlier.threshold_px          = 4.0;
-    o.outlier.adaptive_factor       = 2.0;
     o.outlier.max_iterations        = 5;
     o.outlier.min_for_retry         = 30;
     o.outlier.min_registered_images = 10;
     o.outlier.min_angle_deg         = 2.0;
-    o.outlier.sigma_filter          = false;
     o.outlier.final_max_rounds      = 10;
+    o.outlier.max_depth_factor      = 200.0;
+    o.outlier.two_pass_rejection    = true;
+    o.outlier.coarse_mad_k          = 2.5;
+    o.outlier.coarse_max_rounds     = 5;
+    o.outlier.refine_mad_k          = 3.0;
     // Triangulation
     o.triangulation.min_angle_deg                  = 2.0;
     o.triangulation.retriangulation_every_n_iters  = 3;
@@ -386,6 +389,98 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
   return marked;
 }
 
+/// Reject observations whose corresponding 3D point lies behind the camera (non-positive depth)
+/// or whose depth exceeds max_depth_factor × median scene depth.  The median is computed once
+/// over all valid observations so that the extreme points drive the threshold, not contaminate it.
+/// max_depth_factor <= 0 disables the upper-bound check; only cheirality (depth ≤ 0) is tested.
+int reject_outliers_depth(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
+                          const std::vector<Eigen::Vector3d>& poses_C,
+                          const std::vector<bool>& registered, double max_depth_factor) {
+  if (!store)
+    return 0;
+  const int n_images = store->num_images();
+  if (static_cast<int>(poses_R.size()) != n_images ||
+      static_cast<int>(poses_C.size()) != n_images ||
+      static_cast<int>(registered.size()) != n_images)
+    return 0;
+
+  // Pass 1: collect all positive depths to compute median.
+  std::vector<double> depths;
+  for (size_t i = 0; i < store->num_observations(); ++i) {
+    const int obs_id = static_cast<int>(i);
+    if (!store->is_obs_valid(obs_id))
+      continue;
+    Observation obs;
+    store->get_obs(obs_id, &obs);
+    const int im = static_cast<int>(obs.image_index);
+    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    const int tid = store->obs_track_id(obs_id);
+    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+      continue;
+    float tx, ty, tz;
+    store->get_track_xyz(tid, &tx, &ty, &tz);
+    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                            static_cast<double>(tz));
+    const double depth = (poses_R[static_cast<size_t>(im)] * (X - poses_C[static_cast<size_t>(im)]))(2);
+    if (depth > 0.0)
+      depths.push_back(depth);
+  }
+
+  // Determine max allowed depth from median of positive depths.
+  double max_depth = std::numeric_limits<double>::max();
+  if (max_depth_factor > 0.0 && !depths.empty()) {
+    std::nth_element(depths.begin(), depths.begin() + static_cast<ptrdiff_t>(depths.size() / 2),
+                     depths.end());
+    const double median_depth = depths[depths.size() / 2];
+    max_depth = median_depth * max_depth_factor;
+  }
+
+  // Pass 2: mark observations that violate depth bounds.
+  int marked = 0;
+  std::unordered_set<int> dirty_tracks;
+  for (size_t i = 0; i < store->num_observations(); ++i) {
+    const int obs_id = static_cast<int>(i);
+    if (!store->is_obs_valid(obs_id))
+      continue;
+    Observation obs;
+    store->get_obs(obs_id, &obs);
+    const int im = static_cast<int>(obs.image_index);
+    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    const int tid = store->obs_track_id(obs_id);
+    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+      continue;
+    float tx, ty, tz;
+    store->get_track_xyz(tid, &tx, &ty, &tz);
+    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                            static_cast<double>(tz));
+    const double depth =
+        (poses_R[static_cast<size_t>(im)] * (X - poses_C[static_cast<size_t>(im)]))(2);
+    if (depth <= 0.0 || depth > max_depth) {
+      store->mark_observation_deleted(obs_id);
+      dirty_tracks.insert(tid);
+      ++marked;
+    }
+  }
+
+  // Clear XYZ of tracks that lost support (< 2 valid observations).
+  std::vector<int> obs_ids_chk;
+  for (int tid : dirty_tracks) {
+    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+      continue;
+    obs_ids_chk.clear();
+    store->get_track_obs_ids(tid, &obs_ids_chk);
+    int valid_obs = 0;
+    for (int oid : obs_ids_chk)
+      if (store->is_obs_valid(oid))
+        ++valid_obs;
+    if (valid_obs < 2)
+      store->clear_track_xyz(tid);
+  }
+  return marked;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAD-based coarse rejection helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -650,7 +745,7 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
                                                const std::string& dir,
                                                const std::vector<camera::Intrinsics>& cameras,
                                                const std::vector<int>& image_to_camera_index,
-                                               int min_tracks_after, double ba_rmse_max,
+                                               int min_tracks_for_intital_pair, double ba_rmse_max,
                                                double outlier_thresh_px, double min_angle_deg) {
 
   const double kPi = 3.141592653589793;
@@ -913,7 +1008,7 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
         if (pq.max_reproj_px <= thr_k)
           ++cnt;
       chosen_thr = thr_k;
-      if (cnt >= min_tracks_after)
+      if (cnt >= min_tracks_for_intital_pair)
         break;
     }
     // If still short, extend to p99 as a last resort.
@@ -922,7 +1017,7 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
       for (const auto& pq : pt_quality)
         if (pq.max_reproj_px <= chosen_thr)
           ++cnt;
-      if (cnt < min_tracks_after && errors.size() >= 10) {
+      if (cnt < min_tracks_for_intital_pair && errors.size() >= 10) {
         const size_t p99_idx = (errors.size() * 99) / 100;
         chosen_thr = std::max(chosen_thr, errors[std::min(p99_idx, errors.size() - 1)]);
       }
@@ -953,8 +1048,8 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
             << " mad_thr=" << mad_thr;
 
   // Step 5: Minimum inlier count and RMSE gate.
-  if (n_inlier < min_tracks_after) {
-    LOG(INFO) << "    pair (" << im0 << "," << im1 << "): REJECTED (need " << min_tracks_after
+  if (n_inlier < min_tracks_for_intital_pair) {
+    LOG(INFO) << "    pair (" << im0 << "," << im1 << "): REJECTED (need " << min_tracks_for_intital_pair
               << " inlier tracks, got " << n_inlier << ")";
     return result;
   }
@@ -982,7 +1077,7 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
 // ─────────────────────────────────────────────────────────────────────────────
 bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_dir,
                            TrackStore* store, const std::vector<camera::Intrinsics>& cameras,
-                           const std::vector<int>& image_to_camera_index, int min_tracks_after,
+                           const std::vector<int>& image_to_camera_index, int min_tracks_for_intital_pair,
                            uint32_t* initial_im0_out, uint32_t* initial_im1_out,
                            std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
@@ -999,7 +1094,7 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       << "Initial pair selection: first image by track correspondences, second by ViewGraph score";
   LOG(INFO) << "  n_images=" << n_images << ", n_tracks=" << store->num_tracks()
             << ", n_obs=" << store->num_observations();
-  LOG(INFO) << "  min_tracks_after=" << min_tracks_after;
+  LOG(INFO) << "  min_tracks_for_intital_pair=" << min_tracks_for_intital_pair;
   LOG(INFO) << "  ViewGraph pairs (informational): " << view_graph.num_pairs();
 
   // Step 1: Rank first images by total correspondence count
@@ -1057,7 +1152,7 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       double outlier_thresh_px = 4.0;
       double min_angle_deg = 2.0;
       auto trial = try_initial_pair_candidate(*store, im1, im2, dir, cameras, image_to_camera_index,
-                                              min_tracks_after, ba_rmse_max, outlier_thresh_px,
+                                              min_tracks_for_intital_pair, ba_rmse_max, outlier_thresh_px,
                                               min_angle_deg);
       if (!trial.success)
         continue;
@@ -2240,7 +2335,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   uint32_t* im0_ptr = initial_im0_out ? initial_im0_out : &local_im0;
   uint32_t* im1_ptr = initial_im1_out ? initial_im1_out : &local_im1;
   if (!run_initial_pair_loop(view_graph, geo_dir, store_out, *cameras, image_to_camera_index,
-                             opts.init.min_tracks_after, im0_ptr, im1_ptr, poses_R_out, poses_C_out,
+                             opts.init.min_tracks_for_intital_pair, im0_ptr, im1_ptr, poses_R_out, poses_C_out,
                              registered_out)) {
     LOG(ERROR) << "run_incremental_sfm_pipeline: no initial pair succeeded";
     return false;
@@ -2287,16 +2382,6 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   auto count_tri_tracks = [&]() -> int { return store_out->num_triangulated_tracks(); };
   LOG(INFO) << "Triangulated tracks after initial pair: " << count_tri_tracks();
 
-  // Compute adaptive rejection threshold: max(fixed, prev_rmse * factor).
-  // This prevents premature culling when RMSE is temporarily high (e.g. early intrinsics
-  // convergence).
-  auto eff_reject_threshold = [&](double current_rmse) -> double {
-    // return opts.outlier.threshold_px;
-    if (opts.outlier.adaptive_factor > 0.0 && current_rmse > 0.0)
-      return std::max(opts.outlier.threshold_px, current_rmse * opts.outlier.adaptive_factor);
-    return opts.outlier.threshold_px;
-  };
-
   using Clock = std::chrono::steady_clock; // shared by lambdas and main loop below
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -2329,8 +2414,10 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     double thr =
         compute_mad_threshold_from_errors(errs, opts.outlier.coarse_mad_k, opts.outlier.threshold_px);
     int rejected =
-        reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                                  image_to_camera_index, thr);
+        reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                              opts.outlier.max_depth_factor);
+    rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                          *cameras, image_to_camera_index, thr);
     rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
                                                *registered_out, opts.outlier.min_angle_deg);
     LOG(INFO) << "  [coarse_pass] round 0: thr=" << thr << " px  rejected=" << rejected;
@@ -2349,8 +2436,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                    *cameras, image_to_camera_index);
       thr = compute_mad_threshold_from_errors(errs, opts.outlier.coarse_mad_k,
                                               opts.outlier.threshold_px);
-      rejected = reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                           *cameras, image_to_camera_index, thr);
+      rejected =
+          reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                opts.outlier.max_depth_factor);
+      rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                            *cameras, image_to_camera_index, thr);
       rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
                                                  *registered_out, opts.outlier.min_angle_deg);
       LOG(INFO) << "  [coarse_pass] round " << r + 1 << ": thr=" << thr << " px  rejected="
@@ -2369,22 +2459,32 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     int rejected = 0;
     int rej_ba_rounds = 0;
     if (do_reject) {
-      double thr = eff_reject_threshold(rmse);
+      // Round 0: depth + MAD-reproj + angle.
       auto _t0 = Clock::now();
-      rejected = reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                           *cameras, image_to_camera_index, thr);
+      rejected +=
+          reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                opts.outlier.max_depth_factor);
+      auto errs = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                        *cameras, image_to_camera_index);
+      double thr = compute_mad_threshold_from_errors(errs, opts.outlier.refine_mad_k,
+                                                     opts.outlier.threshold_px);
       auto _t1 = Clock::now();
+      rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                            *cameras, image_to_camera_index, thr);
+      auto _t2 = Clock::now();
       rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
                                                   *registered_out, opts.outlier.min_angle_deg);
-      auto _t2 = Clock::now();
+      auto _t3 = Clock::now();
       if (rejected > 0)
-        LOG(INFO) << "  [PERF] outlier rejection round 0: " << rejected
-                  << " obs marked (thr=" << thr << " px)"
-                  << "  reproj="
+        LOG(INFO) << "  [refine_pass] round 0: MAD_thr=" << thr << " px  rejected=" << rejected
+                  << "  depth+collect="
                   << std::chrono::duration_cast<std::chrono::milliseconds>(_t1 - _t0).count()
                   << "ms"
-                  << "  angle="
+                  << "  reproj="
                   << std::chrono::duration_cast<std::chrono::milliseconds>(_t2 - _t1).count()
+                  << "ms"
+                  << "  angle="
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(_t3 - _t2).count()
                   << "ms";
     }
     for (int r = 0; rejected >= std::max(1, opts.outlier.min_for_retry) &&
@@ -2397,7 +2497,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                               num_registered >= opts.global_ba.optimize_intrinsics_min_images;
         if (!run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                            image_to_camera_index, *cameras, cameras, opt_intr,
-                           opts.global_ba.max_iterations, &rmse, anchor_image, nullptr, opts.intrinsics.fix_mask_for(num_registered),
+                           opts.global_ba.max_iterations, &rmse, anchor_image, nullptr,
+                           opts.intrinsics.fix_mask_for(num_registered),
                            opts.intrinsics.focal_prior_weight, ba_solver_ov))
           break;
       } else {
@@ -2407,9 +2508,15 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           break;
       }
       auto _t_rba1 = Clock::now();
-      double thr = eff_reject_threshold(rmse);
-      rejected = reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                           *cameras, image_to_camera_index, thr);
+      // Re-compute MAD threshold from fresh errors after BA.
+      auto errs = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                        *cameras, image_to_camera_index);
+      double thr = compute_mad_threshold_from_errors(errs, opts.outlier.refine_mad_k,
+                                                     opts.outlier.threshold_px);
+      rejected = reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                       opts.outlier.max_depth_factor);
+      rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                            *cameras, image_to_camera_index, thr);
       auto _t_rba2 = Clock::now();
       rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
                                                   *registered_out, opts.outlier.min_angle_deg);
@@ -2424,10 +2531,6 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                 << std::chrono::duration_cast<std::chrono::milliseconds>(_t_rba3 - _t_rba2).count()
                 << "ms"
                 << "  rejected=" << rejected;
-    }
-    if (do_reject && opts.outlier.sigma_filter && rmse > 0.01) {
-      reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                                image_to_camera_index, rmse * 3.0);
     }
     if (rmse_out)
       *rmse_out = rmse;
@@ -2595,10 +2698,16 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                       << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_cba0)
                              .count()
                       << "ms  RMSE=" << rmse;
-            double cleanup_thr = eff_reject_threshold(rmse);
+            auto cleanup_errs =
+                collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                      *cameras, image_to_camera_index);
+            double cleanup_thr = compute_mad_threshold_from_errors(
+                cleanup_errs, opts.outlier.refine_mad_k, opts.outlier.threshold_px);
             int rej =
-                reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                          *cameras, image_to_camera_index, cleanup_thr);
+                reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                      opts.outlier.max_depth_factor);
+            rej += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                             *cameras, image_to_camera_index, cleanup_thr);
             rej += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
                                                    *registered_out, opts.outlier.min_angle_deg);
             if (rej > 0) {
@@ -2882,14 +2991,22 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                       ba_solver_ov)) {
       int rejected = 0;
       if (num_registered >= opts.outlier.min_registered_images) {
-        double thr = eff_reject_threshold(rmse);
-        rejected = reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                             *cameras, image_to_camera_index, thr);
+        auto final_errs0 =
+            collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                  *cameras, image_to_camera_index);
+        double thr = compute_mad_threshold_from_errors(final_errs0, opts.outlier.refine_mad_k,
+                                                       opts.outlier.threshold_px);
+        rejected =
+            reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                  opts.outlier.max_depth_factor);
+        rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out,
+                                              *registered_out, *cameras, image_to_camera_index,
+                                              thr);
         rejected += reject_outliers_angle_multiview(
             store_out, *poses_R_out, *poses_C_out, *registered_out, opts.outlier.min_angle_deg);
         if (rejected > 0)
           LOG(INFO) << "  final outlier rejection: " << rejected
-                    << " observations marked (thr=" << thr << " px)";
+                    << " observations marked (MAD_thr=" << thr << " px)";
       }
       for (int r = 0; rejected > 0 && r < opts.outlier.final_max_rounds - 1; ++r) {
         if (!run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
@@ -2897,15 +3014,19 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                            opts.global_ba.optimize_intrinsics, opts.global_ba.max_iterations, &rmse,
                            anchor_image, nullptr, 0u, 0.0, ba_solver_ov))
           break;
-        double thr = eff_reject_threshold(rmse);
-        rejected = reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                             *cameras, image_to_camera_index, thr);
+        auto final_errs_r =
+            collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                  *cameras, image_to_camera_index);
+        double thr = compute_mad_threshold_from_errors(final_errs_r, opts.outlier.refine_mad_k,
+                                                       opts.outlier.threshold_px);
+        rejected =
+            reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                  opts.outlier.max_depth_factor);
+        rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out,
+                                              *registered_out, *cameras, image_to_camera_index,
+                                              thr);
         rejected += reject_outliers_angle_multiview(
             store_out, *poses_R_out, *poses_C_out, *registered_out, opts.outlier.min_angle_deg);
-      }
-      if (opts.outlier.sigma_filter && rmse > 0.01) {
-        reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                                  image_to_camera_index, rmse * 3.0);
       }
     }
   }
