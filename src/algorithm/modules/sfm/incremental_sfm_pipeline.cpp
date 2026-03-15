@@ -444,36 +444,6 @@ std::vector<std::pair<int, int>> find_initial_first_images(const TrackStore& sto
   return result;
 }
 
-/// For a given first image, find connected second images via shared tracks.
-/// Returns {image_index, shared_track_count} sorted descending, filtered by min_shared.
-std::vector<std::pair<int, int>> find_initial_second_images(const TrackStore& store, int im_first,
-                                                            int min_shared) {
-  std::unordered_map<int, int> shared_count;
-  std::vector<int> track_ids;
-  store.get_image_track_observations(im_first, &track_ids, nullptr);
-  for (int tid : track_ids) {
-    if (!store.is_track_valid(tid))
-      continue;
-    std::vector<Observation> obs;
-    store.get_track_observations(tid, &obs);
-    for (const auto& o : obs) {
-      int im2 = static_cast<int>(o.image_index);
-      if (im2 != im_first)
-        shared_count[im2]++;
-    }
-  }
-  std::vector<std::pair<int, int>> result;
-  for (const auto& p : shared_count) {
-    if (p.second >= min_shared)
-      result.push_back(p);
-  }
-  std::sort(result.begin(), result.end(),
-            [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
-              return a.second > b.second;
-            });
-  return result;
-}
-
 /// Trial result for an initial pair candidate (no store mutation).
 struct InitPairTrialResult {
   bool success = false;
@@ -709,7 +679,7 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
     dir += '/';
 
   LOG(INFO) << "================================================================";
-  LOG(INFO) << "Initial pair selection (COLMAP-style, track-based)";
+  LOG(INFO) << "Initial pair selection: first image by track correspondences, second by ViewGraph score";
   LOG(INFO) << "  n_images=" << n_images << ", n_tracks=" << store->num_tracks()
             << ", n_obs=" << store->num_observations();
   LOG(INFO) << "  min_tracks_after=" << min_tracks_after;
@@ -732,55 +702,41 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
 
   for (size_t fi = 0; fi < max_first; ++fi) {
     const int im1 = first_images[fi].first;
-    auto second_images = find_initial_second_images(*store, im1, std::min(30, min_tracks_after));
-    if (second_images.empty())
+
+    // Phase 2: rank second-image candidates via ViewGraph quality score.
+    // Hard filters (F_ok && !is_degenerate) are applied inside get_second_image_candidates_sorted.
+    // Soft score rewards E_ok, twoview_ok, stable, num_valid_points (w_pt is highest).
+    const std::set<uint32_t> registered_so_far; // empty during initial-pair search
+    auto second_candidates = view_graph.get_second_image_candidates_sorted(
+        static_cast<uint32_t>(im1), registered_so_far);
+    if (second_candidates.empty())
       continue;
 
     LOG(INFO) << "  --- Trying first image " << im1 << " (corr=" << first_images[fi].second << "), "
-              << second_images.size() << " second candidates ---";
+              << second_candidates.size() << " second candidates (ViewGraph-scored) ---";
     {
-      const size_t show_n = std::min(second_images.size(), size_t(5));
+      const size_t show_n = std::min(second_candidates.size(), size_t(5));
       for (size_t si = 0; si < show_n; ++si) {
-        const int im2c = second_images[si].first;
-        const int f_inl = view_graph.get_F_inliers(static_cast<uint32_t>(im1),
-                                                    static_cast<uint32_t>(im2c));
-        LOG(INFO) << "    second #" << si << ": image " << im2c
-                  << " (shared=" << second_images[si].second << ", F_inliers=" << f_inl << ")";
+        const auto& sc = second_candidates[si];
+        LOG(INFO) << "    second #" << si << ": image " << sc.image_index
+                  << " score=" << sc.score
+                  << " F_inliers=" << sc.F_inliers
+                  << " E_ok=" << sc.E_ok
+                  << " twoview_ok=" << sc.twoview_ok
+                  << " stable=" << sc.stable
+                  << " n_pts=" << sc.num_valid_points;
       }
-      if (second_images.size() > show_n)
-        LOG(INFO) << "    ... (" << second_images.size() - show_n << " more)";
+      if (second_candidates.size() > show_n)
+        LOG(INFO) << "    ... (" << second_candidates.size() - show_n << " more)";
     }
 
-    const size_t max_second = std::min(second_images.size(), size_t(50));
+    const size_t max_second = std::min(second_candidates.size(), size_t(50));
     for (size_t si = 0; si < max_second; ++si) {
-      const int im2 = second_images[si].first;
+      const int im2 = static_cast<int>(second_candidates[si].image_index);
       auto pair_key = std::make_pair(std::min(im1, im2), std::max(im1, im2));
       if (tried_pairs.count(pair_key))
         continue;
       tried_pairs.insert(pair_key);
-
-      // Skip pairs flagged as degenerate in view graph (pure rotation / planar scene)
-      {
-        const int f_inl = view_graph.get_F_inliers(static_cast<uint32_t>(im1),
-                                                    static_cast<uint32_t>(im2));
-        // Look up full PairGeoInfo for degeneracy flag
-        bool skip_deg = false;
-        for (size_t pi = 0; pi < view_graph.num_pairs(); ++pi) {
-          const auto& pg = view_graph.pair_at(pi);
-          const uint32_t lo = std::min(static_cast<uint32_t>(im1), static_cast<uint32_t>(im2));
-          const uint32_t hi = std::max(static_cast<uint32_t>(im1), static_cast<uint32_t>(im2));
-          if (pg.image1_index == lo && pg.image2_index == hi) {
-            if (pg.is_degenerate) {
-              skip_deg = true;
-              DLOG(INFO) << "    pair (" << im1 << "," << im2
-                         << "): skip (degenerate, F_inliers=" << f_inl << ")";
-            }
-            break;
-          }
-        }
-        if (skip_deg)
-          continue;
-      }
 
       // Try this pair (NO store mutation)
       auto trial = try_initial_pair_candidate(*store, im1, im2, dir, cameras, image_to_camera_index,

@@ -108,6 +108,65 @@ ViewGraph::get_candidate_pair_indices_sorted(const std::set<uint32_t>& registere
   return indices;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2: Second image selection
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::vector<SecondImageCandidate>
+ViewGraph::get_second_image_candidates_sorted(uint32_t first_image,
+                                              const std::set<uint32_t>& registered,
+                                              double w_f, double w_e, double w_tv,
+                                              double w_st, double w_pt) const {
+  std::vector<SecondImageCandidate> result;
+  for (size_t i = 0; i < pairs_.size(); ++i) {
+    const PairGeoInfo& p = pairs_[i];
+
+    // ── Hard filters ─────────────────────────────────────────────────────────
+    if (!p.F_ok || p.is_degenerate)
+      continue;
+
+    // Determine which endpoint is "other"
+    uint32_t other = 0;
+    if (p.image1_index == first_image)
+      other = p.image2_index;
+    else if (p.image2_index == first_image)
+      other = p.image1_index;
+    else
+      continue;
+
+    if (registered.count(other))
+      continue;
+
+    // ── Composite score ───────────────────────────────────────────────────────
+    // w_pt (triangulated point count) carries the most weight as it directly
+    // reflects reconstruction quality.  E_ok and twoview_ok/stable are bonus
+    // signals when the twoview step was run.
+    const double score =
+        w_f  * std::log(1.0 + static_cast<double>(std::max(0, p.F_inliers)))
+      + w_e  * (p.E_ok       ? 1.0 : 0.0)
+      + w_tv * (p.twoview_ok  ? 1.0 : 0.0)
+      + w_st * (p.stable      ? 1.0 : 0.0)
+      + w_pt * std::log(1.0 + static_cast<double>(std::max(0, p.num_valid_points)));
+
+    SecondImageCandidate sc;
+    sc.pair_index       = i;
+    sc.image_index      = other;
+    sc.score            = score;
+    sc.E_ok             = p.E_ok;
+    sc.twoview_ok       = p.twoview_ok;
+    sc.stable           = p.stable;
+    sc.F_inliers        = p.F_inliers;
+    sc.num_valid_points = p.num_valid_points;
+    result.push_back(sc);
+  }
+
+  std::stable_sort(result.begin(), result.end(),
+                   [](const SecondImageCandidate& a, const SecondImageCandidate& b) {
+                     return a.score > b.score;
+                   });
+  return result;
+}
+
 int ViewGraph::get_F_inliers(uint32_t im_a, uint32_t im_b) const {
   const uint32_t lo = std::min(im_a, im_b);
   const uint32_t hi = std::max(im_a, im_b);

@@ -47,9 +47,44 @@ struct PairGeoInfo {
   int num_valid_points = 0;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Second-image candidate (Phase 2 of initial pair selection)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Scored candidate for the second image in initial-pair selection.
+ * Produced by ViewGraph::get_second_image_candidates_sorted().
+ *
+ * score = w_f  * log1p(F_inliers)
+ *       + w_e  * (E_ok       ? 1 : 0)
+ *       + w_tv * (twoview_ok ? 1 : 0)
+ *       + w_st * (stable     ? 1 : 0)
+ *       + w_pt * log1p(num_valid_points)
+ *
+ * Default weights: w_f=1.0, w_e=0.5, w_tv=1.0, w_st=0.8, w_pt=1.2
+ */
+struct SecondImageCandidate {
+  size_t pair_index = 0;        ///< index into ViewGraph pairs
+  uint32_t image_index = 0;     ///< candidate second image
+  double score = 0.0;
+  // ── score components (for diagnostics) ───────────────────────────────────
+  bool E_ok = false;
+  bool twoview_ok = false;
+  bool stable = false;
+  int F_inliers = 0;
+  int num_valid_points = 0;
+};
+
 /**
  * View graph: list of pairs with geometry, used to score and choose initial pair.
  * Connectivity is derived from how many pairs each image appears in.
+ *
+ * Two-phase initial pair selection:
+ *   Phase 1 — First image: ranked by TrackStore correspondence count (caller's
+ *             responsibility; ViewGraph provides get_F_inliers for info only).
+ *   Phase 2 — Second image: ranked by composite quality score from ViewGraph.
+ *             Hard filters: F_ok && !is_degenerate && not registered.
+ *             Soft score rewards E_ok, twoview_ok, stable, num_valid_points.
  */
 class ViewGraph {
 public:
@@ -66,6 +101,34 @@ public:
   /// Weights: w_f_inliers=1.0, w_connect=0.3, w_stable=0.5 (tunable).
   double get_pair_score(size_t pair_index, double w_f_inliers = 1.0, double w_connect = 0.3,
                         double w_stable = 0.5) const;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Phase 2: Second image selection (given first image)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Given \p first_image, returns second-image candidates sorted by composite score DESC.
+   *
+   * Hard filters applied: F_ok && !is_degenerate && other image not in \p registered.
+   *
+   * score = w_f  * log1p(F_inliers)
+   *       + w_e  * (E_ok       ? 1 : 0)
+   *       + w_tv * (twoview_ok ? 1 : 0)
+   *       + w_st * (stable     ? 1 : 0)
+   *       + w_pt * log1p(num_valid_points)
+   *
+   * w_pt > w_tv: actual triangulated point count is the strongest reconstruction signal.
+   */
+  std::vector<SecondImageCandidate>
+  get_second_image_candidates_sorted(uint32_t first_image,
+                                     const std::set<uint32_t>& registered,
+                                     double w_f = 1.0, double w_e = 0.5,
+                                     double w_tv = 1.0, double w_st = 0.8,
+                                     double w_pt = 1.2) const;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Legacy helpers
+  // ─────────────────────────────────────────────────────────────────────────
 
   /// Best initial pair: both images not in \p registered, F_ok && !is_degenerate, max score.
   /// Returns (image1_index, image2_index) or nullopt if none.
