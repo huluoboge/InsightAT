@@ -219,172 +219,146 @@ enum class LocalBAStrategy {
   kBatchNeighbor,
 };
 
-struct IncrementalSfMOptions {
-  // ─── Initial pair selection (COLMAP-style, track-based) ───────────────────
-  int min_tracks_after = 50; ///< Minimum valid two-view tracks after filter to accept initial pair.
-  int init_max_first_images = 100; ///< Max first-image candidates to try in COLMAP-style selection.
-  int init_max_second_images = 50; ///< Max second-image candidates per first image.
-  int init_min_shared_tracks =
-      30; ///< Min shared tracks for an image to be a second-image candidate.
-  double init_ba_rmse_max = 10.0; ///< Max BA RMSE (px) to accept initial pair.
-  double init_outlier_threshold_px =
-      4.0; ///< Reprojection threshold for soft inlier count during initial pair trial.
-  double init_min_angle_deg = 2.0; ///< Min triangulation angle for inlier tracks in initial pair.
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-option groups
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // ─── Resection loop ──────────────────────────────────────────────────────
-  /// Minimum RANSAC inliers for a resection to be accepted (hard PnP minimum = 6).
-  int resection_min_inliers = 6;
-  /// Minimum 3D-2D correspondence count for an image to be a resection candidate.
-  /// Images below this floor are not attempted even if they have some correspondences.
-  /// COLMAP uses 15; raise to 30 for very high-overlap datasets.
-  int resection_min_3d2d_count = 15;
-  /// OpenMVG-style ratio threshold: include all candidates whose 3D-2D count is
-  /// >= resection_batch_ratio * best_candidate_count.  0.75 = OpenMVG default.
-  double resection_batch_ratio = 0.75;
-  /// Hard upper cap on batch size per SfM iteration.  Prevents registering too
-  /// many images at once before the next BA pass stabilises the map.
-  int resection_batch_max = 20;
-  /// Late-stage resection relaxation.  When num_registered > this threshold and
-  /// resection_late_absolute_min > 0, the ratio floor is replaced by
-  /// min(ratio_floor, resection_late_absolute_min), allowing more candidates in.
-  /// Fixes "strong-ratio suppression" where high-obs best candidates block
-  /// perfectly-valid 150-obs images once best reaches 300+.
-  /// 0 = disabled (pure ratio mode always).  Object-scan preset: 30.
-  int resection_late_registered_threshold = 0;
-  /// Absolute minimum 3D-2D count in late-stage mode (see above).
-  /// 0 = disabled.  Object-scan preset: 100.
-  int resection_late_absolute_min = 0;
-  /// Hard cap on batch size in late-stage mode.  Should be lower than resection_batch_max
-  /// to prevent adding too many images at once when the map is large (makes global BA slow).
-  /// 0 = use resection_batch_max.  Object-scan preset: 5.
-  int resection_late_batch_max = 0;
-
-  // ─── Bundle adjustment ───────────────────────────────────────────────────
-  int local_ba_after_n_images =
-      20; ///< Use local BA only when num_registered >= this; before that run global BA each time.
-         ///< Set low (20) since global BA cost grows fast; local BA is nearly equivalent at small n.
-  int local_ba_window = 20;
-  bool local_ba_by_connectivity = true; ///< If true, local BA optimizes new images + most connected
-                                        ///< neighbors; else last N by index.
-  /// Which local-BA strategy to use.  kWindow is the default (original behaviour).
-  /// Switch to kColmap to evaluate COLMAP-style 2-hop visibility expansion.
-  LocalBAStrategy local_ba_strategy = LocalBAStrategy::kColmap;
-  /// Maximum number of variable (freely optimised) cameras in kColmap local BA.
-  /// Cameras beyond this cap are assigned to the constant (frozen) set.
-  /// COLMAP default is 6 (LocalBundleAdjustor::Options::max_num_images).
-  int local_ba_colmap_max_variable_images = 6;
-  /// kBatchNeighbor: for each batch image, take this many top neighbors (by shared triangulated
-  /// point count) as constant anchor cameras.  Union is taken across all batch images so every
-  /// new camera has at least min(neighbor_k, registered_count) anchors.
-  int local_ba_neighbor_k = 5;
-  /// Run global BA only every N newly-registered images during the early global-BA phase
-  /// (num_registered < local_ba_after_n_images).  The last BA before switching to local BA
-  /// is always executed regardless.  Default = 1 (original: BA after every image).
-  /// Setting to 3 reduces early-phase global BA cost ~3× with negligible accuracy loss.
-  int global_ba_every_n_images = 1;
-  bool do_global_ba = true;             ///< Run global BA at end of pipeline.
-  bool global_ba_optimize_intrinsics = true;
-  /// Only enable intrinsics optimization in the early global BA when
-  /// num_registered >= this threshold (avoids instability with few cameras).
-  int global_ba_optimize_intrinsics_min_images = 10;
-  int max_global_ba_iterations = 50; ///< Was 50: 50 is sufficient for convergence in most cases.
-
-  // ─── Object-scan / no-local-BA mode ────────────────────────────────────────
-  /// When true, skip all per-iteration local BA; every iteration runs global BA instead.
-  /// Recommended for circumferential / object-centric captures where local BA diverges
-  /// due to low-parallax or planar-surface geometry.
-  bool skip_local_ba = false;
-
-  // ─── BA solver overrides (applied to every global BA call) ──────────────────
-  /// Ceres solver tolerance overrides.  0 / 0.0 → use built-in Ceres defaults.
-  /// Object-scan preset (--object-scan): max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50.
-  double ba_gradient_tolerance          = 0.0;
-  double ba_function_tolerance          = 0.0;
-  double ba_parameter_tolerance         = 0.0;
-  int    ba_dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in (30).
-
-  // ─── Progressive intrinsics freeze (local-BA phase only) ────────────────────
-  /// Active only once n_registered ≥ local_ba_after_n_images.  During the early
-  /// global-BA phase there are too few images and intrinsics are still converging;
-  /// freeze evaluation there is meaningless and potentially harmful.
-  ///
-  /// Freeze lifecycle:
-  ///   Level-1 gate  : camera must have ≥ intrinsics_freeze_min_images registered images.
-  ///   Level-2 check : IntrinsicsDelta::stable() for intrinsics_freeze_stable_rounds
-  ///                   consecutive mid-frequency global BAs → camera FROZEN.
-  ///   Unfreeze      : on the low-frequency recalib BA, frozen cameras whose delta
-  ///                   exceeds any threshold are UNFROZEN and must re-converge.
-  bool intrinsics_progressive_freeze = true;
-  int intrinsics_freeze_min_images = 30;    ///< Level-1 gate: min registered images per camera.
-  /// Level-2 convergence thresholds for IntrinsicsDelta::stable().
-  double intrinsics_freeze_delta_focal = 1e-3; ///< Relative focal change: (|Δfx|/fx+|Δfy|/fy)/2 < this.
-  double intrinsics_freeze_delta_pp    = 0.5;  ///< Principal-point shift: |Δcx|+|Δcy| < this (px).
-  double intrinsics_freeze_delta_dist  = 1e-4; ///< Distortion L1: |Δk1|+…+|Δp2| < this.
-  int intrinsics_freeze_stable_rounds = 2;  ///< Consecutive mid-freq BAs required to confirm freeze.
-
-  // ─── Two-tier BA schedule during local-BA phase ──────────────────────────────
-  /// Mid-frequency global BA: every N newly registered images.
-  ///   Frozen cameras use kFixIntrAll — Schur-complement sparsity benefit.
-  ///   Unfrozen cameras optimise intrinsics normally.
-  ///   Evaluates freeze convergence for unfrozen cameras (stable_rounds++).
-  /// 0 = disabled.  Typical: 15–20 images.
-  int periodic_global_ba_every_n_images = 20;
-  /// Low-frequency recalib BA: every this many mid-freq BA calls.
-  ///   Opens ALL cameras' intrinsics (no frozen_vec) — true full recalibration.
-  ///   Re-evaluates all cameras (including frozen): may UNFREEZE cameras that drifted.
-  /// Typical: 4 (= every 4×20 = 80 images).  0 = disabled (no recalib, freeze is permanent).
-  int recalib_global_ba_every_n_periodic = 4;
-
-  // ─── Stage-based partial intrinsics: fix k3/p1/p2 until sufficient image coverage ──────
-  /// Aerial nadir imagery: feature points cluster at r/r_max ≈ 0.4–0.7.  In that band,
-  /// r², r⁴, r⁶ are nearly collinear — k3 (6th-order) is weakly observable and p1/p2
-  /// tangential distortion is barely identifiable without oblique views.
-  /// Fix k3/p1/p2 until num_registered >= this threshold; beyond it all 5 params are free.
-  /// 0 = always optimise all 5 distortion params (old behaviour).
-  int intrinsics_k3p12_free_min_images = 50;
-
-  // ─── Focal soft prior (Tikhonov regularisation on fx) ────────────────────────────────────
-  /// If > 0, adds a per-camera residual penalising relative focal deviation from the
-  /// pre-BA value: residual = sqrt(w)·(fx − fx₀)/fx₀.
-  /// Only adds w/fx₀² to the (fx,fx) diagonal block — Hessian sparsity is unchanged.
-  /// Active during early-phase and mid-freq periodic BAs.
-  /// Disabled (0.0) for recalib BA and final BA (those are intended to converge freely).
-  /// Typical: 10–100.  0.0 = disabled (default, backward-compatible).
-  double focal_prior_weight = 0.0;
-
-  // ─── Triangulation ───────────────outlier rejection:────────────────────
-  /// Minimum max pairwise ray angle (degrees) for a newly triangulated point to be accepted.
-  /// 0.5° is suitable for dense aerial overlap; use 2.0° for sparser datasets.
-//   double min_tri_angle_deg = 0.5;
-  double min_tri_angle_deg = 2.0;
-
-  // ─── Outlier rejection ───────────────────────────────────────────────────
-  double outlier_threshold_px =
-      4.0; ///< Mark observation deleted if reprojection error > this (after each BA).
-  /// Adaptive outlier threshold factor. Effective threshold = max(outlier_threshold_px, prev_rmse * this).
-  /// Prevents aggressive culling when RMSE is temporarily high (e.g. during early intrinsics convergence).
-  /// Set to 0 to disable adaptive behavior.
-  double outlier_adaptive_factor = 2.0;
-  int max_outlier_iterations = 5; ///< Max BA+reject rounds after each BA until no new outliers.
-  /// Stop extra BA+reject rounds early if the number of newly-rejected observations drops below
-  /// this threshold. Avoids expensive BA calls that buy very little (e.g. round 4: rejected=8).
-  /// Set to 0 to disable (always continue while rejected > 0, original behaviour).
-  int min_outliers_for_ba_retry = 30;
-  int reject_min_registered_images =
-      10; ///< Do not run pixel/angle reject until num_registered >= this.
-  double min_observation_angle_deg =
-      2.0; ///< Mark observation deleted if max parallax angle (with other views in track) < this.
-  bool enable_sigma_filter = false; ///< After reject loop, one more pass with threshold = rmse * 3.
-  int final_reject_max_rounds =
-      10; ///< After final global BA, iterate BA+reject until no outliers or this many rounds.
-  /// Run run_retriangulation() every this many SfM iterations inside the main loop.
-  /// 0 = disable periodic retriangulation (only the final pass at the end runs).
-  /// 3 is a good default: covers tracks cleared by outlier rejection AND tracks
-  /// that became triangulatable only after more cameras were registered.
-  int retriangulation_every_n_iters = 3;
-  bool retry_resection_after_cleanup =
-      true; ///< When no resection candidates, run one global BA+reject then try again once.
+/// Options for initial pair selection.
+struct InitPairOptions {
+  int min_tracks_after = 50;         ///< Min inlier tracks after MAD filter to accept pair.
+  int max_first_images = 100;        ///< Max first-image candidates to try.
+  int max_second_images = 50;        ///< Max second-image candidates per first image.
+  double ba_rmse_max = 10.0;         ///< Max BA RMSE (px) to accept pair.
+  double outlier_threshold_px = 4.0; ///< MAD floor (fallback when distribution is very narrow).
+  double min_angle_deg = 2.0;        ///< Min triangulation angle; max is hard-coded to 60°.
 };
+
+/// Options for the resection batch loop.
+struct ResectionOptions {
+  int min_inliers = 6;                  ///< Min PnP RANSAC inliers to accept resection.
+  int min_3d2d_count = 15;              ///< Min 3D-2D correspondences to consider an image.
+  double batch_ratio = 0.75;            ///< Include images with score ≥ ratio × best_score.
+  int batch_max = 20;                   ///< Hard cap on batch size (normal mode).
+  int late_registered_threshold = 0;    ///< Switch to late-stage mode above this count (0=off).
+  int late_absolute_min = 0;            ///< Late-stage absolute-minimum 3D-2D floor (0=off).
+  int late_batch_max = 0;               ///< Late-stage batch cap (0 = use batch_max).
+  bool retry_after_cleanup = true;      ///< Retry after cleanup BA+reject when batch is empty.
+};
+
+/// Progressive intrinsics unlock schedule + freeze policy.
+///
+/// Four phases keyed on num_registered:
+///   Phase 0 (< phase1_min):             fix ALL — no intrinsics optimisation.
+///   Phase 1 [phase1_min, phase2_min):   optimise fx/fy only.
+///   Phase 2 [phase2_min, phase3_min):   optimise fx/fy + k1/k2.
+///   Phase 3 (≥ phase3_min):             optimise all (cx/cy, k3, p1, p2 unlocked).
+///
+/// fix_mask_for(n) returns the FixIntrinsicsMask to pass as partial_intr_fix
+/// to run_global_ba().  It supersedes the old intrinsics_k3p12_free_min_images field.
+struct IntrinsicsSchedule {
+  // ── Phase unlock thresholds ───────────────────────────────────────────────
+  int phase1_min_images = 3;    ///< Start optimising fx/fy.
+  int phase2_min_images = 10;   ///< Also unlock k1/k2.
+  int phase3_min_images = 100;  ///< Unlock cx/cy + k3/p1/p2 (full intrinsics).
+
+  // ── Progressive freeze (local-BA phase) ──────────────────────────────────
+  bool progressive_freeze = true;
+  int freeze_min_images = 30;           ///< Level-1 gate: min registered images per camera.
+  double freeze_delta_focal = 1e-3;     ///< Relative focal convergence threshold.
+  double freeze_delta_pp = 0.5;         ///< Principal-point convergence threshold (px).
+  double freeze_delta_dist = 1e-4;      ///< Distortion L1 convergence threshold.
+  int freeze_stable_rounds = 2;         ///< Consecutive stable BAs needed to confirm freeze.
+
+  // ── Low-frequency recalibration ───────────────────────────────────────────
+  int recalib_every_n_periodic = 4;    ///< Full-recalib every N mid-freq BAs (0 = disabled).
+
+  // ── Focal soft prior ──────────────────────────────────────────────────────
+  double focal_prior_weight = 0.0;     ///< Tikhonov weight on focal deviation (0 = disabled).
+
+  /// Returns the partial_intr_fix bitmask for run_global_ba() based on registration count.
+  uint32_t fix_mask_for(int n_registered) const;
+};
+
+/// Options for local BA.
+struct LocalBAOptions {
+  int switch_after_n_images = 20;                        ///< Switch from global to local BA.
+  int window = 20;                                       ///< Window size for kWindow strategy.
+  bool by_connectivity = true;                           ///< Rank by co-visibility, not index.
+  LocalBAStrategy strategy = LocalBAStrategy::kColmap;
+  int colmap_max_variable_images = 6;                    ///< Max variable cameras in kColmap.
+  int neighbor_k = 5;                                    ///< Anchor neighbors in kBatchNeighbor.
+  bool skip = false;                                     ///< Skip local BA (object-scan mode).
+  int max_iterations = 25;
+};
+
+/// Options for global BA.
+struct GlobalBAOptions {
+  bool enabled = true;
+  bool optimize_intrinsics = true;
+  int optimize_intrinsics_min_images = 10;  ///< Gate: don't touch intrinsics below this count.
+  int max_iterations = 50;
+  int every_n_images = 1;              ///< Early-phase: run global BA every N registrations.
+  int periodic_every_n_images = 20;    ///< Local-BA phase: mid-freq global BA every N images.
+  BASolverOverrides solver_overrides;  ///< Ceres solver parameter overrides.
+};
+
+/// Options for outlier rejection.
+struct OutlierOptions {
+  double threshold_px = 4.0;          ///< Fixed outlier threshold (px).
+  double adaptive_factor = 2.0;       ///< Effective thr = max(threshold_px, rmse * factor).
+  int max_iterations = 5;             ///< Max BA+reject rounds after each BA call.
+  int min_for_retry = 30;             ///< Skip extra BA round if newly rejected < this.
+  int min_registered_images = 10;     ///< Don't reject outliers until this many are registered.
+  double min_angle_deg = 2.0;         ///< Reject if max parallax angle < this.
+  bool sigma_filter = false;          ///< Extra pass at rmse×3 after reject loop.
+  int final_max_rounds = 10;          ///< Max rounds in the final global-BA reject loop.
+};
+
+/// Options for triangulation and periodic re-triangulation.
+struct TriangulationOptions {
+  double min_angle_deg = 2.0;             ///< Min max pairwise angle for a triangulated point.
+  int retriangulation_every_n_iters = 3;  ///< Periodic re-triangulation every N SfM iterations.
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IncrementalSfMOptions — hierarchical pipeline configuration
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct IncrementalSfMOptions {
+  InitPairOptions      init;
+  ResectionOptions     resection;
+  IntrinsicsSchedule   intrinsics;
+  LocalBAOptions       local_ba;
+  GlobalBAOptions      global_ba;
+  OutlierOptions       outlier;
+  TriangulationOptions triangulation;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preset factory functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// UAV nadir aerial photogrammetry (default local_ba_strategy = kColmap).
+IncrementalSfMOptions make_aerial_preset();
+/// Circumferential / object-scan captures (skip_local_ba, more aggressive BA).
+IncrementalSfMOptions make_object_scan_preset();
+/// Conservative general-purpose preset.
+IncrementalSfMOptions make_general_preset();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (Legacy flat-struct fields — kept as a migration reference; NOT part of
+// the struct above.  Delete this block once all callers are updated.)
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTE: the following grouped fields were previously in IncrementalSfMOptions:
+//   init.*         ← was: min_tracks_after, init_ba_rmse_max, init_min_angle_deg, …
+//   resection.*    ← was: resection_min_inliers, resection_min_3d2d_count, …
+//   intrinsics.*   ← was: intrinsics_progressive_freeze, intrinsics_freeze_*, …
+//                       intrinsics_k3p12_free_min_images (→ intrinsics.fix_mask_for())
+//   local_ba.*     ← was: local_ba_after_n_images, local_ba_window, skip_local_ba, …
+//   global_ba.*    ← was: do_global_ba, max_global_ba_iterations, ba_gradient_tolerance, …
+//   outlier.*      ← was: outlier_threshold_px, reject_min_registered_images, …
+//   triangulation.*← was: min_tri_angle_deg, retriangulation_every_n_iters
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Run full incremental SfM: load store from IDC, build view graph, initial pair, resection loop,

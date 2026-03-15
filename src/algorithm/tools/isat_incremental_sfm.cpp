@@ -255,41 +255,41 @@ int main(int argc, char* argv[]) {
   std::vector<Eigen::Vector3d> poses_C;
   std::vector<bool> registered;
   IncrementalSfMOptions opts;
-  opts.local_ba_strategy = LocalBAStrategy::kColmap;
-  // opts.global_ba_optimize_intrinsics_min_images = 2;
-  opts.max_global_ba_iterations = 5000;
+  opts.local_ba.strategy = LocalBAStrategy::kColmap;
+  // opts.global_ba.optimize_intrinsics_min_images = 2;
+  opts.global_ba.max_iterations = 5000;
   // Apply --object-scan preset first (individual flags override it below).
   if (cmd.used("object-scan")) {
-    opts.skip_local_ba = true;
-    opts.max_global_ba_iterations = 50;
-    opts.ba_gradient_tolerance =  1e-10;
-    opts.ba_function_tolerance =  1e-6;
-    opts.ba_parameter_tolerance = 1e-8;
-    opts.ba_dense_schur_max_variable_cams = 50;
-    opts.resection_min_3d2d_count = 30;
-    opts.resection_late_registered_threshold = 30;
-    opts.resection_late_absolute_min = 100;
-    opts.resection_late_batch_max = 5;
+    opts.local_ba.skip = true;
+    opts.global_ba.max_iterations = 50;
+    opts.global_ba.solver_overrides.gradient_tolerance =  1e-10;
+    opts.global_ba.solver_overrides.function_tolerance =  1e-6;
+    opts.global_ba.solver_overrides.parameter_tolerance = 1e-8;
+    opts.global_ba.solver_overrides.dense_schur_max_variable_cams = 50;
+    opts.resection.min_3d2d_count = 30;
+    opts.resection.late_registered_threshold = 30;
+    opts.resection.late_absolute_min = 100;
+    opts.resection.late_batch_max = 5;
     LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100, late_batch_max=5.";
   }
   if (cmd.used("fix-intrinsics")) {
-    opts.global_ba_optimize_intrinsics = false;
+    opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
   }
   if (cmd.used("no-local-ba")) {
-    opts.skip_local_ba = true;
+    opts.local_ba.skip = true;
     LOG(INFO) << "--no-local-ba: per-iteration local BA disabled, global BA used every iteration.";
   }
-  if (ba_max_iter > 0)        opts.max_global_ba_iterations = ba_max_iter;
-  if (ba_grad_tol > 0.0)     opts.ba_gradient_tolerance   = ba_grad_tol;
-  if (ba_func_tol > 0.0)     opts.ba_function_tolerance   = ba_func_tol;
-  if (ba_param_tol > 0.0)    opts.ba_parameter_tolerance  = ba_param_tol;
-  if (ba_dense_max_cams > 0)         opts.ba_dense_schur_max_variable_cams = ba_dense_max_cams;
-  if (ba_intrinsics_min_images > 0)  opts.global_ba_optimize_intrinsics_min_images = ba_intrinsics_min_images;
-  if (resection_min_3d2d > 0)        opts.resection_min_3d2d_count = resection_min_3d2d;
-  if (late_reg_threshold > 0)        opts.resection_late_registered_threshold = late_reg_threshold;
-  if (late_abs_min > 0)              opts.resection_late_absolute_min = late_abs_min;
-  if (late_batch_max > 0)            opts.resection_late_batch_max = late_batch_max;
+  if (ba_max_iter > 0)        opts.global_ba.max_iterations = ba_max_iter;
+  if (ba_grad_tol > 0.0)     opts.global_ba.solver_overrides.gradient_tolerance   = ba_grad_tol;
+  if (ba_func_tol > 0.0)     opts.global_ba.solver_overrides.function_tolerance   = ba_func_tol;
+  if (ba_param_tol > 0.0)    opts.global_ba.solver_overrides.parameter_tolerance  = ba_param_tol;
+  if (ba_dense_max_cams > 0)         opts.global_ba.solver_overrides.dense_schur_max_variable_cams = ba_dense_max_cams;
+  if (ba_intrinsics_min_images > 0)  opts.global_ba.optimize_intrinsics_min_images = ba_intrinsics_min_images;
+  if (resection_min_3d2d > 0)        opts.resection.min_3d2d_count = resection_min_3d2d;
+  if (late_reg_threshold > 0)        opts.resection.late_registered_threshold = late_reg_threshold;
+  if (late_abs_min > 0)              opts.resection.late_absolute_min = late_abs_min;
+  if (late_batch_max > 0)            opts.resection.late_batch_max = late_batch_max;
   if (!run_incremental_sfm_pipeline(
           tracks_path, pairs_path, geo_dir,
           &project.cameras, project.image_to_camera_index, opts,
