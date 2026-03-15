@@ -1,3 +1,4 @@
+
 # InsightAT Copilot Instructions
 
 InsightAT 是一个面向航空摄影测量的**空三（Aerial Triangulation）处理软件**，覆盖从特征提取、图像检索、特征匹配、几何验证到两视图重建的完整 GPU 加速流水线，并通过 CLI-First 架构支持 headless/Docker/云端运行。
@@ -233,3 +234,9 @@ make isat_geo -j4                   # 构建单个工具
 - `OmegaPhiKappa`（Z-Y-X 外旋，摄影测量）≠ `YawPitchRoll`（Z-Y-X 内旋，航空学）
 - ATTask 创建后输入快照已冻结，之后添加的测量数据不会影响该任务
 - GPU Stage 2（主线程 EGL）中**禁止读写磁盘**
+
+# 文档
+详细文档请先阅读 README.md，编码规范请遵守doc/design/CODING_STYLE.md. 
+
+# 其他说明
+在agent模式下， 应该先就理解的内容进行总结，并交互确认，甚至讨论， 然后再进行设计和代码编写。 首先需要是一个Structure from Motion (SfM), 摄影测量、计算机视觉多视图几何，SLAM方面的专家，要有非常强的时间经验和算法工程能力， 以这个背景来进行思考、设计和编码

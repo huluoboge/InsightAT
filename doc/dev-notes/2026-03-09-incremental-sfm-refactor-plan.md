@@ -75,7 +75,7 @@
 3. **Pipeline 步骤**（`run_incremental_sfm_pipeline`）
    - 从 IDC 加载 store，校验与 project 的 num_images 一致。
    - `build_view_graph_from_geo(pairs_json, geo_dir)` → ViewGraph。
-   - `run_initial_pair_loop`：候选对按 score 降序，对每对加载 geo、两视图三角化、两视图 BA、reject_outliers_two_view、filter_tracks_two_view，满足 min_tracks_after 且 RMSE 可接受则写出 poses/registered 并返回。
+   - `run_initial_pair_loop`：候选对按 score 降序，对每对加载 geo、两视图三角化、两视图 BA、reject_outliers_two_view、filter_tracks_two_view，满足 min_tracks_for_intital_pair 且 RMSE 可接受则写出 poses/registered 并返回。
    - Resection 循环：`choose_next_resection_batch(store, registered, k)` → `run_batch_resection` → `run_batch_triangulation`；可选每 N 张做一次 `run_local_ba`。
    - `run_retriangulation`（needs_retriangulation 的 track 多视图 DLT 后写回 xyz 并清除标记）。
    - 可选 `run_global_ba`，写回 poses、points、以及（若开启）cameras。

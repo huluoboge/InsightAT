@@ -448,7 +448,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
 
   // ── Build Ceres problem ───────────────────────────────────────────────────
   ceres::Problem problem;
-  ceres::LossFunction* loss = new ceres::HuberLoss(4.0);
+  ceres::LossFunction* loss = new ceres::HuberLoss(input.huber_loss_delta > 0.0 ? input.huber_loss_delta : 4.0);
 
   for (const auto& obs : input.observations) {
     if (obs.image_index < 0 || obs.image_index >= n_cams ||
@@ -579,7 +579,8 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
 
   // ── Solve ─────────────────────────────────────────────────────────────────
   ceres::Solver::Options options;
-  options.max_num_iterations           = max_iterations;
+  options.max_num_iterations = (input.solver_max_num_iterations > 0)
+      ? input.solver_max_num_iterations : max_iterations;
   options.minimizer_progress_to_stdout = false;
 
   // Auto-select linear solver based on variable camera count.
