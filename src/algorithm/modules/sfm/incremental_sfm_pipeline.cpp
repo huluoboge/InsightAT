@@ -2624,7 +2624,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     const int n_rounds = std::max(1, max_rounds);
     for (int r = 0; r < n_rounds; ++r) {
       BASolverOverrides ov = base_ov;
-      if (do_reject && !optimize_intrinsics) {
+      if (do_reject) {
         // Compute Huber δ from NEW images when available: they carry the freshest
         // (and noisiest) matches and set the appropriate scale for robust BA.
         // The already-settled global reconstruction has tiny residuals → would
@@ -2648,8 +2648,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                             : " (global)");
         }
       }
+      ov.huber_loss_delta = 10.0;
       // Detection rounds (r>0): tighten solver tolerances for speed.
-      if (r > 0) {
+      // if (r > 0) 
+      if(!optimize_intrinsics)
+      {
         if (ov.function_tolerance == 0.0)
           ov.function_tolerance = 1e-3;
         if (ov.gradient_tolerance == 0.0)
@@ -2675,15 +2678,21 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         break;
       if (!do_reject)
         break;
-      auto errs = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                        *cameras, image_to_camera_index);
-      double thr =
-          compute_mad_threshold_from_errors(errs, opts.outlier.mad_k, opts.outlier.threshold_px);
-      if (thr <= 4.0) {
+      // auto errs = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+      //                                   *cameras, image_to_camera_index);
+      // double thr =
+      //     compute_mad_threshold_from_errors(errs, opts.outlier.mad_k, opts.outlier.threshold_px);
+      // if (thr <= 4.0) {
+      //   thr = 4.0;
+      // }
+      double thr = 8.0;
+      if(optimize_intrinsics)
+      {
         thr = 4.0;
       }
-      int rejected = reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                           opts.outlier.max_depth_factor);
+      int rejected = 0;
+      // reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+      //                                      opts.outlier.max_depth_factor);
       rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
                                             *cameras, image_to_camera_index, thr);
       rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
