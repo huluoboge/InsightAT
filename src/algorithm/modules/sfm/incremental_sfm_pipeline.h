@@ -312,6 +312,15 @@ struct OutlierOptions {
   double min_angle_deg = 2.0;         ///< Reject if max parallax angle < this.
   bool sigma_filter = false;          ///< Extra pass at rmse×3 after reject loop.
   int final_max_rounds = 10;          ///< Max rounds in the final global-BA reject loop.
+  // ── Two-pass coarse/refine rejection ─────────────────────────────────────
+  /// When true, every global BA is preceded by a coarse pass (all intrinsics fixed,
+  /// MAD-based adaptive threshold) that cleans gross outliers before opening intrinsics.
+  bool   two_pass_rejection = true;
+  /// Coarse-pass MAD multiplier: threshold = median(e) + coarse_mad_k * 1.4826 * MAD(e).
+  /// More aggressive than the fine-pass adaptive_factor (typical fine ≈ 2.0, coarse ≈ 2.5).
+  double coarse_mad_k       = 2.5;
+  /// Maximum BA + MAD-reject rounds in the coarse pass.
+  int    coarse_max_rounds  = 5;
 };
 
 /// Options for triangulation and periodic re-triangulation.

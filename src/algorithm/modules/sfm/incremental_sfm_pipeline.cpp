@@ -386,6 +386,78 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
   return marked;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MAD-based coarse rejection helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Collect per-observation reprojection errors (px) for all valid triangulated observations
+/// across registered images.  Used to compute a MAD-adaptive coarse rejection threshold.
+static std::vector<double> collect_reproj_errors(
+    const TrackStore& store, const std::vector<Eigen::Matrix3d>& poses_R,
+    const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
+    const std::vector<camera::Intrinsics>& cameras,
+    const std::vector<int>& image_to_camera_index) {
+  std::vector<double> errors;
+  const int n_images = store.num_images();
+  if (static_cast<int>(poses_R.size()) != n_images ||
+      static_cast<int>(poses_C.size()) != n_images ||
+      static_cast<int>(registered.size()) != n_images ||
+      static_cast<int>(image_to_camera_index.size()) != n_images)
+    return errors;
+  for (size_t i = 0; i < store.num_observations(); ++i) {
+    const int obs_id = static_cast<int>(i);
+    if (!store.is_obs_valid(obs_id))
+      continue;
+    Observation obs;
+    store.get_obs(obs_id, &obs);
+    const int im = static_cast<int>(obs.image_index);
+    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    const int tid = store.obs_track_id(obs_id);
+    if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+      continue;
+    float tx, ty, tz;
+    store.get_track_xyz(tid, &tx, &ty, &tz);
+    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                            static_cast<double>(tz));
+    const Eigen::Matrix3d& R = poses_R[static_cast<size_t>(im)];
+    const Eigen::Vector3d& C = poses_C[static_cast<size_t>(im)];
+    Eigen::Vector3d p = R * (X - C);
+    if (p(2) <= 1e-12)
+      continue; // behind camera — cheirality filter handles this
+    const camera::Intrinsics& K =
+        cameras[static_cast<size_t>(image_to_camera_index[static_cast<size_t>(im)])];
+    const double xn = p(0) / p(2), yn = p(1) / p(2);
+    double xd, yd;
+    camera::apply_distortion(xn, yn, K, &xd, &yd);
+    const double u_pred = K.fx * xd + K.cx;
+    const double v_pred = K.fy * yd + K.cy;
+    const double du = static_cast<double>(obs.u) - u_pred;
+    const double dv = static_cast<double>(obs.v) - v_pred;
+    errors.push_back(std::sqrt(du * du + dv * dv));
+  }
+  return errors;
+}
+
+/// Compute MAD-based adaptive threshold from a pre-collected error vector.
+/// threshold = median(e) + k_sigma * 1.4826 * MAD(e), clamped to >= floor_px.
+static double compute_mad_threshold_from_errors(const std::vector<double>& errors,
+                                                double k_sigma, double floor_px) {
+  if (errors.empty())
+    return floor_px;
+  std::vector<double> sorted = errors;
+  std::sort(sorted.begin(), sorted.end());
+  const double median_e = sorted[sorted.size() / 2];
+  std::vector<double> abs_dev;
+  abs_dev.reserve(sorted.size());
+  for (double e : sorted)
+    abs_dev.push_back(std::abs(e - median_e));
+  std::sort(abs_dev.begin(), abs_dev.end());
+  const double mad      = abs_dev[abs_dev.size() / 2];
+  const double sigma_hat = 1.4826 * mad;
+  return std::max(floor_px, median_e + k_sigma * sigma_hat);
+}
+
 /// Return image indices to optimize for local BA: new_registered + most connected neighbors (by
 /// shared tracks), up to local_ba_window.
 std::vector<int> choose_local_ba_indices_by_connectivity(
@@ -1881,6 +1953,11 @@ bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_
                                    cameras, batch, max_variable_cameras, &ba_image_index_to_global,
                                    &ba_in, &point_index_to_track_id))
     return false;
+  // Local BA never optimises intrinsics: ensure consistent kFixIntrAll regardless of how
+  // build_ba_input_colmap_local initialised fix_intrinsics_flags.
+  ba_in.optimize_intrinsics = false;
+  ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(),
+                                    static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
   int n_variable = 0, n_constant = 0;
   for (bool f : ba_in.fix_pose) {
     if (f)
@@ -2221,6 +2298,67 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   };
 
   using Clock = std::chrono::steady_clock; // shared by lambdas and main loop below
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Pass 1 of the two-pass rejection structure: geometry-only BA (kFixIntrAll) followed by
+  // MAD-adaptive iterative rejection.  When two_pass_rejection=false this is a no-op.
+  // ────────────────────────────────────────────────────────────────────────────
+  auto run_coarse_reject_pass = [&](double* rmse_out) -> bool {
+    if (!opts.outlier.two_pass_rejection)
+      return true;
+    const uint32_t kFixAll = static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+    auto t_c0 = Clock::now();
+    double coarse_rmse = 0.0;
+    if (!run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                       image_to_camera_index, *cameras, cameras,
+                       /*optimize_intrinsics=*/false, opts.global_ba.max_iterations,
+                       &coarse_rmse, anchor_image, nullptr, kFixAll,
+                       /*focal_prior_weight=*/0.0, ba_solver_ov))
+      return false;
+    LOG(INFO) << "[coarse_pass] BA RMSE=" << coarse_rmse << " px  t="
+              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_c0).count()
+              << "ms";
+    if (rmse_out)
+      *rmse_out = coarse_rmse;
+    if (num_registered < opts.outlier.min_registered_images)
+      return true;
+    auto errs = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                      *cameras, image_to_camera_index);
+    if (errs.empty())
+      return true;
+    double thr =
+        compute_mad_threshold_from_errors(errs, opts.outlier.coarse_mad_k, opts.outlier.threshold_px);
+    int rejected =
+        reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+                                  image_to_camera_index, thr);
+    rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
+                                               *registered_out, opts.outlier.min_angle_deg);
+    LOG(INFO) << "  [coarse_pass] round 0: thr=" << thr << " px  rejected=" << rejected;
+    for (int r = 0; rejected >= std::max(1, opts.outlier.min_for_retry) &&
+                    r < opts.outlier.coarse_max_rounds - 1;
+         ++r) {
+      double iter_rmse = 0.0;
+      if (!run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                         image_to_camera_index, *cameras, cameras, false,
+                         opts.global_ba.max_iterations, &iter_rmse, anchor_image,
+                         nullptr, kFixAll, 0.0, ba_solver_ov))
+        break;
+      if (rmse_out)
+        *rmse_out = iter_rmse;
+      errs = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                   *cameras, image_to_camera_index);
+      thr = compute_mad_threshold_from_errors(errs, opts.outlier.coarse_mad_k,
+                                              opts.outlier.threshold_px);
+      rejected = reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                           *cameras, image_to_camera_index, thr);
+      rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
+                                                 *registered_out, opts.outlier.min_angle_deg);
+      LOG(INFO) << "  [coarse_pass] round " << r + 1 << ": thr=" << thr << " px  rejected="
+                << rejected;
+    }
+    return true;
+  };
+
   auto run_ba_and_reject_outliers = [&](double* rmse_out) {
     auto _t_rej_start = Clock::now();
     // Capture RMSE from the preceding BA (passed in via rmse_out) before resetting.
@@ -2433,35 +2571,45 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         const bool cleanup_opt_intr =
             opts.global_ba.optimize_intrinsics &&
             num_registered >= opts.global_ba.optimize_intrinsics_min_images;
-        const auto frozen_cleanup = (cleanup_opt_intr && opts.intrinsics.progressive_freeze)
-                                        ? make_frozen_vec()
-                                        : std::vector<bool>{};
+        const uint32_t kFixAll_c = static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+        const uint32_t refine_mask_c =
+            cleanup_opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
+        // Pass 1: coarse geometry + MAD reject.
         auto t_cba0 = Clock::now();
-        if (run_global_ba(
-                store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
-                *cameras, cameras, cleanup_opt_intr, opts.global_ba.max_iterations, &rmse,
-                anchor_image, cleanup_opt_intr ? &frozen_cleanup : nullptr,
-                cleanup_opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u, opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
-          if (cleanup_opt_intr)
-            update_freeze_state();
-          LOG(INFO) << "[PERF] cleanup_global_ba: "
-                    << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_cba0)
-                           .count()
-                    << "ms  RMSE=" << rmse;
-          double cleanup_thr = eff_reject_threshold(rmse);
-          int rej =
-              reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                        *cameras, image_to_camera_index, cleanup_thr);
-          rej += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
-                                                 *registered_out, opts.outlier.min_angle_deg);
-          if (rej > 0) {
-            LOG(INFO) << "run_incremental_sfm_pipeline: cleanup BA + reject " << rej
-                      << " (thr=" << cleanup_thr << " px), retry resection";
-            batch = choose_next_resection_batch(
-                *store_out, *registered_out, opts.resection.min_3d2d_count,
-                opts.resection.batch_ratio, effective_batch_max,
-                opts.resection.late_registered_threshold, opts.resection.late_absolute_min,
-                opts.resection.late_batch_max);
+        run_coarse_reject_pass(&rmse);
+        // Pass 2: refine BA with schedule mask (skip if coarse pass already used kFixIntrAll).
+        const bool do_refine_c =
+            !opts.outlier.two_pass_rejection || (refine_mask_c != kFixAll_c);
+        if (do_refine_c) {
+          const auto frozen_cleanup = (cleanup_opt_intr && opts.intrinsics.progressive_freeze)
+                                          ? make_frozen_vec()
+                                          : std::vector<bool>{};
+          if (run_global_ba(
+                  store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
+                  *cameras, cameras, cleanup_opt_intr, opts.global_ba.max_iterations, &rmse,
+                  anchor_image, cleanup_opt_intr ? &frozen_cleanup : nullptr,
+                  refine_mask_c, opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
+            if (cleanup_opt_intr)
+              update_freeze_state();
+            LOG(INFO) << "[PERF] cleanup_global_ba: "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_cba0)
+                             .count()
+                      << "ms  RMSE=" << rmse;
+            double cleanup_thr = eff_reject_threshold(rmse);
+            int rej =
+                reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                          *cameras, image_to_camera_index, cleanup_thr);
+            rej += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
+                                                   *registered_out, opts.outlier.min_angle_deg);
+            if (rej > 0) {
+              LOG(INFO) << "run_incremental_sfm_pipeline: cleanup BA + reject " << rej
+                        << " (thr=" << cleanup_thr << " px), retry resection";
+              batch = choose_next_resection_batch(
+                  *store_out, *registered_out, opts.resection.min_3d2d_count,
+                  opts.resection.batch_ratio, effective_batch_max,
+                  opts.resection.late_registered_threshold, opts.resection.late_absolute_min,
+                  opts.resection.late_batch_max);
+            }
           }
         }
       }
@@ -2509,21 +2657,30 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       if (do_global_ba) {
         const bool opt_intr = opts.global_ba.optimize_intrinsics &&
                               num_registered >= opts.global_ba.optimize_intrinsics_min_images;
-        auto t_ba0 = Clock::now();
-        const auto frozen_early = (opt_intr && opts.intrinsics.progressive_freeze)
-                                      ? make_frozen_vec()
-                                      : std::vector<bool>{};
-        if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
-                          image_to_camera_index, *cameras, cameras, opt_intr,
-                          opts.global_ba.max_iterations, &rmse, anchor_image,
-                          opt_intr ? &frozen_early : nullptr, opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u,
-                          opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
-          LOG(INFO)
-              << "[PERF] global_ba: "
-              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
-              << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
-          // No freeze evaluation in early phase: too few images, intrinsics still converging.
-          run_ba_and_reject_outliers(&rmse);
+        const uint32_t kFixAll_e = static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+        const uint32_t refine_mask_e = opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
+        // Pass 1: coarse geometry + MAD reject (all intrinsics fixed).
+        run_coarse_reject_pass(&rmse);
+        // Pass 2: refine BA with schedule-based intrinsics mask.
+        const bool do_refine_e =
+            !opts.outlier.two_pass_rejection || (refine_mask_e != kFixAll_e);
+        if (do_refine_e) {
+          auto t_ba0 = Clock::now();
+          const auto frozen_early = (opt_intr && opts.intrinsics.progressive_freeze)
+                                        ? make_frozen_vec()
+                                        : std::vector<bool>{};
+          if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                            image_to_camera_index, *cameras, cameras, opt_intr,
+                            opts.global_ba.max_iterations, &rmse, anchor_image,
+                            opt_intr ? &frozen_early : nullptr, refine_mask_e,
+                            opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
+            LOG(INFO)
+                << "[PERF] global_ba (refine): "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
+                << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+            // No freeze in early phase: too few images, intrinsics still converging.
+            run_ba_and_reject_outliers(&rmse);
+          }
         }
       } else {
         LOG(INFO) << "[PERF] global_ba: skipped (every_n=" << opts.global_ba.every_n_images
@@ -2533,17 +2690,17 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       // ── Object-scan mode: skip local BA, run global BA every iteration ───────────────────
       const bool opt_skip = opts.global_ba.optimize_intrinsics &&
                             num_registered >= opts.global_ba.optimize_intrinsics_min_images;
-      const auto frozen_skip = (opt_skip && opts.intrinsics.progressive_freeze)
-                                   ? make_frozen_vec()
-                                   : std::vector<bool>{};
+      const uint32_t kFixAll_s = static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+      const uint32_t refine_mask_skip =
+          opt_skip ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
       auto t_sba = Clock::now();
 
-      // ── Pass 1: pose+point warm-up with fixed intrinsics ──────────────────────────────
-      // Fresh triangulations can produce badly-positioned points (depth errors, behind-camera
-      // sentinel residuals), making the Hessian highly ill-conditioned when intrinsics are
-      // simultaneously free. A short pose-only pass settles the geometry first so that the
-      // subsequent intrinsics-open pass starts from a well-conditioned neighbourhood.
-      if (opt_skip) {
+      // ── Pass 1: coarse geometry + MAD reject (replaces old pose-warmup when enabled) ────
+      // When two_pass_rejection=true: coarse pass = kFixIntrAll BA + MAD reject.
+      // When false: keep original opt_skip-only warmup for backward compatibility.
+      if (opts.outlier.two_pass_rejection) {
+        run_coarse_reject_pass(&rmse);
+      } else if (opt_skip) {
         double rmse_warmup = 0.0;
         auto t_wu = Clock::now();
         run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
@@ -2557,18 +2714,26 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
             << "ms  RMSE=" << rmse_warmup << " px";
       }
 
-      // ── Pass 2: full BA with optional intrinsics ───────────────────────────────────────
-      if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
-                        *cameras, cameras, opt_skip, opts.global_ba.max_iterations, &rmse,
-                        anchor_image, opt_skip ? &frozen_skip : nullptr,
-                        opt_skip ? opts.intrinsics.fix_mask_for(num_registered) : 0u, opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
-        if (opt_skip)
-          update_freeze_state();
-        LOG(INFO)
-            << "[PERF] global_ba (skip_local_ba): "
-            << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_sba).count()
-            << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
-        run_ba_and_reject_outliers(&rmse);
+      // ── Pass 2: refine BA with schedule-based intrinsics mask ─────────────────────────────
+      const bool do_refine_skip =
+          !opts.outlier.two_pass_rejection || (refine_mask_skip != kFixAll_s);
+      if (do_refine_skip) {
+        const auto frozen_skip = (opt_skip && opts.intrinsics.progressive_freeze)
+                                     ? make_frozen_vec()
+                                     : std::vector<bool>{};
+        if (run_global_ba(
+                store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
+                *cameras, cameras, opt_skip, opts.global_ba.max_iterations, &rmse, anchor_image,
+                opt_skip ? &frozen_skip : nullptr, refine_mask_skip,
+                opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
+          if (opt_skip)
+            update_freeze_state();
+          LOG(INFO)
+              << "[PERF] global_ba (skip_local_ba): "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_sba).count()
+              << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+          run_ba_and_reject_outliers(&rmse);
+        }
       }
     } else {
       // ── Two-tier BA schedule (mid-freq + low-freq recalib) during local-BA phase ──────
@@ -2587,6 +2752,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                 (periodic_ba_count % opts.intrinsics.recalib_every_n_periodic == 0);
         if (do_recalib) {
           auto t_pba = Clock::now();
+          // Pass 1: coarse geometry + MAD reject before re-opening all intrinsics.
+          run_coarse_reject_pass(&rmse);
+          // Pass 2: recalib BA — open all intrinsics, then re-evaluate freeze state.
           if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                             image_to_camera_index, *cameras, cameras, true,
                             opts.global_ba.max_iterations, &rmse, anchor_image,
@@ -2602,22 +2770,33 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           // Mid-freq global BA: frozen cameras use kFixIntrAll (Schur sparsity).
           // Unfrozen cameras optimise intrinsics; evaluates freeze convergence.
           const bool mid_opt_intr = opt_intr_p;
-          const auto frozen_mid = (mid_opt_intr && opts.intrinsics.progressive_freeze)
-                                      ? make_frozen_vec()
-                                      : std::vector<bool>{};
-          auto t_pba = Clock::now();
-          if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
-                            image_to_camera_index, *cameras, cameras, mid_opt_intr,
-                            opts.global_ba.max_iterations, &rmse, anchor_image,
-                            mid_opt_intr ? &frozen_mid : nullptr, mid_opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u,
-                            opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
-            if (mid_opt_intr)
-              update_freeze_state(/*recheck_frozen=*/false);
-            LOG(INFO) << "[PERF] periodic_global_ba #" << periodic_ba_count << ": "
-                      << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba)
-                             .count()
-                      << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
-            run_ba_and_reject_outliers(&rmse);
+          const uint32_t kFixAll_m = static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+          const uint32_t refine_mask_mid =
+              mid_opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
+          // Pass 1: coarse geometry + MAD reject with all intrinsics fixed.
+          run_coarse_reject_pass(&rmse);
+          // Pass 2: mid-freq refine BA — frozen cameras use kFixIntrAll; unfrozen optimise.
+          const bool do_refine_mid =
+              !opts.outlier.two_pass_rejection || (refine_mask_mid != kFixAll_m);
+          if (do_refine_mid) {
+            const auto frozen_mid = (mid_opt_intr && opts.intrinsics.progressive_freeze)
+                                        ? make_frozen_vec()
+                                        : std::vector<bool>{};
+            auto t_pba = Clock::now();
+            if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
+                              image_to_camera_index, *cameras, cameras, mid_opt_intr,
+                              opts.global_ba.max_iterations, &rmse, anchor_image,
+                              mid_opt_intr ? &frozen_mid : nullptr, refine_mask_mid,
+                              opts.intrinsics.focal_prior_weight, ba_solver_ov)) {
+              if (mid_opt_intr)
+                update_freeze_state(/*recheck_frozen=*/false);
+              LOG(INFO) << "[PERF] periodic_global_ba #" << periodic_ba_count << ": "
+                        << std::chrono::duration_cast<std::chrono::milliseconds>(
+                               Clock::now() - t_pba)
+                               .count()
+                        << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+              run_ba_and_reject_outliers(&rmse);
+            }
           }
         }
       }
@@ -2692,8 +2871,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   LOG(INFO) << "Final retriangulation done. tri_tracks=" << count_tri_tracks();
 
   if (opts.global_ba.enabled) {
-    LOG(INFO) << "Running final global BA...";
+    LOG(INFO) << "Running final global BA (two-pass: coarse+refine)...";
     double rmse = 0.0;
+    // Pass 1: coarse geometry + MAD reject — cleans outliers before opening all intrinsics.
+    run_coarse_reject_pass(&rmse);
+    // Pass 2: final refine BA — all intrinsics open (0u = no flags = fully free).
     if (run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
                       *cameras, cameras, opts.global_ba.optimize_intrinsics,
                       opts.global_ba.max_iterations, &rmse, anchor_image, nullptr, 0u, 0.0,
