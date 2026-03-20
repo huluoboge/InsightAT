@@ -427,7 +427,7 @@ int main(int argc, char* argv[]) {
   std::string vlad_codebook;
   std::string vlad_cache_dir;
   std::string pca_model_file;
-  int vlad_top_k = 20;
+  int vlad_top_k = 50;
   float target_scale = 4.0f;
   float scale_sigma = 2.0f;
 
@@ -466,7 +466,7 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, vlad_cache_dir, "vlad-cache")
               .doc("Directory for VLAD vector cache (.isat_vlad files)"));
   cmd.add(make_option(0, vlad_top_k, "vlad-top-k")
-              .doc("Top-k most similar images per query for VLAD (default: 20)"));
+              .doc("Top-k most similar images per query for VLAD (default: 50)"));
   cmd.add(make_option(0, pca_model_file, "pca-model")
               .doc("PCA model file (.pca format) for VLAD dimensionality reduction"));
   cmd.add(make_option(0, target_scale, "vlad-target-scale")

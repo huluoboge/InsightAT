@@ -602,7 +602,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   if (input.optimize_intrinsics) {
     options.linear_solver_type  = ceres::SPARSE_NORMAL_CHOLESKY;
     options.preconditioner_type = ceres::JACOBI;
-  } else if (n_variable_cams <= kDenseSchurMaxVariableCams) {
+  } else if (n_variable_cams <= 1000) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
   } else {
     options.linear_solver_type = ceres::SPARSE_SCHUR;

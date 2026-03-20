@@ -23,6 +23,9 @@ set(BUILD_UTILS OFF CACHE BOOL "Disable DBow3 utils")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build DBow3 as static library")
 add_subdirectory(DBow3)
 
+# PoseLib for alternate resection / absolute-pose backend
+add_subdirectory(PoseLib)
+
 list(APPEND directories cereal cmdLine progress stlplus3) 
 foreach(inDirectory ${directories})
 install(

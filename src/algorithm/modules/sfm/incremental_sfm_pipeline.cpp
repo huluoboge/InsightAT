@@ -39,18 +39,74 @@ namespace sfm {
 uint32_t IntrinsicsSchedule::fix_mask_for(int n_registered) const {
   using M = FixIntrinsicsMask;
   // Phase 0: too few images — freeze everything
-  if (n_registered < phase1_min_images)
+  if (n_registered < 5)
     return static_cast<uint32_t>(M::kFixIntrAll);
   // Phase 1: only fx/fy free; fix sigma, cx, cy, all distortion
-  if (n_registered < phase2_min_images)
+  if (n_registered < 10)
     return static_cast<uint32_t>(M::kFixIntrSigma | M::kFixIntrCx | M::kFixIntrCy | M::kFixIntrK1 |
                                  M::kFixIntrK2 | M::kFixIntrK3 | M::kFixIntrP1 | M::kFixIntrP2);
   // Phase 2: fx/fy + k1/k2 free; fix sigma, cx, cy, k3, p1, p2
-  if (n_registered < phase3_min_images)
+  if (n_registered < 30)
     return static_cast<uint32_t>(M::kFixIntrSigma | M::kFixIntrCx | M::kFixIntrCy | M::kFixIntrK3 |
                                  M::kFixIntrP1 | M::kFixIntrP2);
   // Phase 3: all intrinsics free
   return 0u;
+}
+
+std::vector<uint32_t>
+IntrinsicsSchedule::fix_masks_per_camera(const std::vector<bool>& registered,
+                                          const std::vector<int>& image_to_camera_index,
+                                          int n_cameras) const {
+  if (n_cameras <= 0)
+    return {};
+  // Count registered images per camera.
+  std::vector<int> cam_count(static_cast<size_t>(n_cameras), 0);
+  int total_registered = 0;
+  const size_t n = std::min(registered.size(), image_to_camera_index.size());
+  for (size_t i = 0; i < n; ++i) {
+    if (registered[i]) {
+      const int c = image_to_camera_index[i];
+      if (c >= 0 && c < n_cameras) {
+        ++cam_count[static_cast<size_t>(c)];
+        ++total_registered;
+      }
+    }
+  }
+  // Synchronise intrinsics phase across all cameras by using the global average
+  // registered count (total_registered / n_cameras) as the effective count for
+  // every active camera.
+  //
+  // Rationale: in a multi-camera rig (e.g. 5-direction oblique aerial rig),
+  // cameras facing LEFT/RIGHT register images faster than BACK/DOWN/FRONT
+  // because of their wider cross-strip overlap.  If each camera advances its
+  // own intrinsics phase independently, early cameras unlock focal length while
+  // late cameras are still frozen, creating a systematic cross-camera fx
+  // mismatch that triggers outlier-rejection cascades and breaks the cross-
+  // direction track graph.
+  //
+  // Using total/n_cameras means all active cameras share the same phase gate.
+  // The phase thresholds (5, 10, 30) are now interpreted as
+  // "N images registered on average across all cameras", which is a stable,
+  // rig-level criterion independent of individual direction connectivity.
+  //
+  // Exception: cameras with zero registered images remain fully frozen
+  // (effective = 0 → kFixIntrAll).  If a direction never registers, it does
+  // not block the remaining cameras from progressing.
+  //
+  // NOTE: The ideal long-term solution is to supply GNSS position priors to
+  // the incremental BA (as in the reference InsightMap pipeline).  With GPS
+  // anchoring the metric scale from the very first BA round, intrinsics can
+  // be released freely without any phase schedule.
+  const int effective_count = (n_cameras > 0) ? (total_registered / n_cameras) : 0;
+  const uint32_t global_mask = fix_mask_for(effective_count);
+  std::vector<uint32_t> masks(static_cast<size_t>(n_cameras));
+  for (int c = 0; c < n_cameras; ++c) {
+    masks[static_cast<size_t>(c)] =
+        (cam_count[static_cast<size_t>(c)] == 0)
+            ? static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll)
+            : global_mask;
+  }
+  return masks;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,6 +368,144 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
       store->clear_track_xyz(tid);
   }
   return marked;
+}
+
+/// Post-resection cleanup for newly registered images only.
+///
+/// Purpose:
+///   A successful PnP/RANSAC only guarantees a consistent inlier subset for the
+///   new camera pose. Other existing image↔track associations on that image may
+///   still be wrong. Before triangulating new tracks or running BA, drop those
+///   bad observations so they do not pollute the map.
+///
+/// Policy:
+///   - Only inspect the supplied `image_indices`.
+///   - Only inspect observations whose tracks already have triangulated XYZ.
+///   - Delete the observation if the point projects behind the camera or the
+///     pixel reprojection error exceeds `threshold_px`.
+///   - If a track loses enough support that <2 valid observations remain,
+///     clear its XYZ so later retriangulation can recover it.
+static int reject_outliers_post_resection(
+    TrackStore* store, const std::vector<int>& image_indices,
+    const std::vector<Eigen::Matrix3d>& poses_R, const std::vector<Eigen::Vector3d>& poses_C,
+    const std::vector<bool>& registered, const std::vector<camera::Intrinsics>& cameras,
+    const std::vector<int>& image_to_camera_index, double threshold_px) {
+  if (!store || image_indices.empty())
+    return 0;
+  const int n_images = store->num_images();
+  if (static_cast<int>(poses_R.size()) != n_images ||
+      static_cast<int>(poses_C.size()) != n_images ||
+      static_cast<int>(registered.size()) != n_images ||
+      static_cast<int>(image_to_camera_index.size()) != n_images)
+    return 0;
+
+  const double thresh_sq = threshold_px * threshold_px;
+  int marked = 0;
+  std::unordered_set<int> dirty_tracks;
+  std::vector<int> obs_ids;
+
+  for (int im : image_indices) {
+    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    obs_ids.clear();
+    store->get_image_observation_indices(im, &obs_ids);
+    const camera::Intrinsics& K =
+        cameras[static_cast<size_t>(image_to_camera_index[static_cast<size_t>(im)])];
+    const Eigen::Matrix3d& R = poses_R[static_cast<size_t>(im)];
+    const Eigen::Vector3d& C = poses_C[static_cast<size_t>(im)];
+    for (int obs_id : obs_ids) {
+      if (!store->is_obs_valid(obs_id))
+        continue;
+      const int tid = store->obs_track_id(obs_id);
+      if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+        continue;
+
+      float tx, ty, tz;
+      store->get_track_xyz(tid, &tx, &ty, &tz);
+      const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                              static_cast<double>(tz));
+      const Eigen::Vector3d p = R * (X - C);
+      if (p(2) <= 1e-12) {
+        store->mark_observation_deleted(obs_id);
+        dirty_tracks.insert(tid);
+        ++marked;
+        continue;
+      }
+
+      const double xn = p(0) / p(2), yn = p(1) / p(2);
+      double xd, yd;
+      camera::apply_distortion(xn, yn, K, &xd, &yd);
+      const double u_pred = K.fx * xd + K.cx;
+      const double v_pred = K.fy * yd + K.cy;
+
+      Observation obs;
+      store->get_obs(obs_id, &obs);
+      const double du = static_cast<double>(obs.u) - u_pred;
+      const double dv = static_cast<double>(obs.v) - v_pred;
+      if (du * du + dv * dv > thresh_sq) {
+        store->mark_observation_deleted(obs_id);
+        dirty_tracks.insert(tid);
+        ++marked;
+      }
+    }
+  }
+
+  std::vector<int> track_obs_ids;
+  for (int tid : dirty_tracks) {
+    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+      continue;
+    track_obs_ids.clear();
+    store->get_track_obs_ids(tid, &track_obs_ids);
+    if (track_obs_ids.size() < 2)
+      store->clear_track_xyz(tid);
+  }
+  return marked;
+}
+
+static int count_valid_triangulated_observations_on_image(const TrackStore& store, int image_index) {
+  std::vector<int> obs_ids;
+  store.get_image_observation_indices(image_index, &obs_ids);
+  int count = 0;
+  for (int obs_id : obs_ids) {
+    if (!store.is_obs_valid(obs_id))
+      continue;
+    const int tid = store.obs_track_id(obs_id);
+    if (store.is_track_valid(tid) && store.track_has_triangulated_xyz(tid))
+      ++count;
+  }
+  return count;
+}
+
+static int rollback_weak_post_resection_images(
+    const TrackStore& store, const std::vector<int>& image_indices, int min_support,
+    std::vector<Eigen::Matrix3d>* poses_R, std::vector<Eigen::Vector3d>* poses_C,
+    std::vector<bool>* registered, std::vector<int>* kept_images_out) {
+  if (kept_images_out)
+    kept_images_out->clear();
+  if (!poses_R || !poses_C || !registered)
+    return 0;
+
+  int removed = 0;
+  for (int im : image_indices) {
+    if (im < 0 || static_cast<size_t>(im) >= registered->size() ||
+        !(*registered)[static_cast<size_t>(im)])
+      continue;
+    const int support = count_valid_triangulated_observations_on_image(store, im);
+    if (support < min_support) {
+      (*registered)[static_cast<size_t>(im)] = false;
+      if (static_cast<size_t>(im) < poses_R->size())
+        (*poses_R)[static_cast<size_t>(im)] = Eigen::Matrix3d::Identity();
+      if (static_cast<size_t>(im) < poses_C->size())
+        (*poses_C)[static_cast<size_t>(im)] = Eigen::Vector3d::Zero();
+      ++removed;
+      LOG(INFO) << "  post_resection_cleanup: rollback image " << im
+                << " (remaining triangulated obs=" << support << " < " << min_support << ")";
+      continue;
+    }
+    if (kept_images_out)
+      kept_images_out->push_back(im);
+  }
+  return removed;
 }
 
 /// Mark observations whose max parallax angle (with any other view in the same track) is <
@@ -1471,9 +1665,11 @@ int run_batch_resection(const TrackStore& store, const std::vector<int>& image_i
                         const std::vector<int>& image_to_camera_index,
                         std::vector<Eigen::Matrix3d>* poses_R,
                         std::vector<Eigen::Vector3d>* poses_C, std::vector<bool>* registered,
-                        int min_inliers) {
+                        int min_inliers, std::vector<int>* registered_images_out) {
   if (!poses_R || !poses_C || !registered)
     return 0;
+  if (registered_images_out)
+    registered_images_out->clear();
   int added = 0;
   for (int im : image_indices) {
     if (im < 0 || static_cast<size_t>(im) >= image_to_camera_index.size())
@@ -1490,17 +1686,21 @@ int run_batch_resection(const TrackStore& store, const std::vector<int>& image_i
     Eigen::Matrix3d R;
     Eigen::Vector3d t;
     int inliers = 0;
+    double rmse_px = 0.0;
     // const double ransac_thresh_px = 8.0;
     const double ransac_thresh_px =
         4.0; // tighter threshold since we have good initialization from tracks
-    if (!resection_single_image(K, store, im, &R, &t, min_inliers, ransac_thresh_px, &inliers)) {
+    if (!resection_single_image(K, store, im, &R, &t, min_inliers, ransac_thresh_px, &inliers,
+                                &rmse_px)) {
       LOG(INFO) << "  resection image " << im << ": FAILED (3D-2D=" << n_3d2d
-                << ", inliers=" << inliers << ", need " << min_inliers << ")";
+                << ", inliers=" << inliers << ", rmse=" << rmse_px << ", need "
+                << min_inliers << ")";
       continue;
     }
     Eigen::Vector3d C = -R.transpose() * t;
-    LOG(INFO) << "  resection image " << im << ": OK (3D-2D=" << n_3d2d << ", inliers=" << inliers
-              << ", C=[" << C(0) << "," << C(1) << "," << C(2) << "])";
+    LOG(INFO) << "  resection image " << im << ": OK (3D-2D=" << n_3d2d << ", inliers="
+              << inliers << ", rmse=" << rmse_px << ", C=[" << C(0) << "," << C(1) << ","
+              << C(2) << "])";
     if (static_cast<size_t>(im) >= poses_R->size())
       poses_R->resize(static_cast<size_t>(im) + 1);
     if (static_cast<size_t>(im) >= poses_C->size())
@@ -1510,6 +1710,8 @@ int run_batch_resection(const TrackStore& store, const std::vector<int>& image_i
     (*poses_R)[static_cast<size_t>(im)] = R;
     (*poses_C)[static_cast<size_t>(im)] = C;
     (*registered)[static_cast<size_t>(im)] = true;
+    if (registered_images_out)
+      registered_images_out->push_back(im);
     ++added;
   }
   LOG(INFO) << "run_batch_resection: " << added << "/" << image_indices.size()
@@ -2014,7 +2216,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
                    int max_iterations, double* rmse_px_out, int anchor_image,
                    const std::vector<bool>* camera_frozen, uint32_t partial_intr_fix,
-                   double focal_prior_weight, const BASolverOverrides& solver_overrides) {
+                   double focal_prior_weight, const BASolverOverrides& solver_overrides,
+                   const std::vector<uint32_t>* partial_intr_fix_per_cam) {
   if (!store || !poses_R || !poses_C)
     return false;
   std::vector<int> ba_image_index_to_global;
@@ -2035,18 +2238,27 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
     ba_in.huber_loss_delta = solver_overrides.huber_loss_delta;
   // Build per-camera intrinsics fix flags.
   // camera_frozen: frozen cameras keep kFixIntrAll (Schur-complement sparsity benefit).
-  // partial_intr_fix: additional fix bits OR-ed into every non-frozen camera's flags,
-  //   e.g. kFixIntrK3|kFixIntrP1|kFixIntrP2 during the stage-limited phase.
+  // partial_intr_fix_per_cam (priority): per-camera schedule mask based on each camera's own
+  //   registered image count. When provided, replaces the scalar partial_intr_fix for
+  //   non-frozen cameras, enabling independent phase progression per camera.
+  // partial_intr_fix (fallback): scalar applied to all non-frozen cameras when
+  //   partial_intr_fix_per_cam is not provided.
   {
     ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(), 0u);
     if (!optimize_intrinsics) {
       ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(),
                                         static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
     } else {
+      const bool use_per_cam = partial_intr_fix_per_cam &&
+                               partial_intr_fix_per_cam->size() == ba_in.cameras.size();
       for (size_t c = 0; c < ba_in.cameras.size(); ++c) {
         const bool frozen = (camera_frozen && c < camera_frozen->size() && (*camera_frozen)[c]);
-        ba_in.fix_intrinsics_flags[c] =
-            frozen ? static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll) : partial_intr_fix;
+        if (frozen) {
+          ba_in.fix_intrinsics_flags[c] = static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+        } else {
+          ba_in.fix_intrinsics_flags[c] =
+              use_per_cam ? (*partial_intr_fix_per_cam)[c] : partial_intr_fix;
+        }
       }
     }
     bool any_variable = false;
@@ -2542,8 +2754,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   }
   // Warm-up GPU context before entering the main loop so the first resection
   // does not absorb the ~1-second EGL/shader-compile cost.
+  set_resection_backend(opts.resection.backend);
+  LOG(INFO) << "run_incremental_sfm_pipeline: resection_backend="
+            << resection_backend_name(get_resection_backend());
   resection_init_gpu();
-  gpu_geo_set_solver(0); // use jacobian svd, resection slower but more robust
+  if (resection_backend_uses_gpu(get_resection_backend())) {
+    gpu_geo_set_solver(0); // use jacobian svd, resection slower but more robust
+  }
 
   // ────────────────────────────────────────────────────────────────────────
   // The initial-pair im0 defines the world coordinate origin (C=0, R=I).
@@ -2663,10 +2880,18 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       auto t_ba = Clock::now();
       use_global = true;
       if (use_global) {
+        // Compute per-camera phase masks: each camera's unlock stage is determined by
+        // the number of its own registered images, not the total registered count.
+        std::vector<uint32_t> per_cam_masks;
+        if (optimize_intrinsics)
+          per_cam_masks = opts.intrinsics.fix_masks_per_camera(
+              *registered_out, image_to_camera_index,
+              static_cast<int>(cameras->size()));
         ok = run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                            image_to_camera_index, *cameras, cameras, optimize_intrinsics,
                            opts.global_ba.max_iterations, &rmse, anchor_image, frozen_ptr, fix_mask,
-                           focal_prior_weight, ov);
+                           focal_prior_weight, ov,
+                           optimize_intrinsics ? &per_cam_masks : nullptr);
       } else {
         ok = dispatch_local_ba(lba_batch, lba_new_tracks, ov, &rmse);
       }
@@ -2896,22 +3121,57 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       // This guards against degenerate configurations (collinear/planar points, etc.)
       // that would cause the top-ranked image's resection to fail silently.
       for (const ResectionCandidate& cand : colmap_candidates) {
+        std::vector<int> registered_images;
         const int n = run_batch_resection(
             *store_out, {cand.image_index}, *cameras, image_to_camera_index, poses_R_out,
-            poses_C_out, registered_out, static_cast<int>(opts.resection.min_inliers));
+            poses_C_out, registered_out, static_cast<int>(opts.resection.min_inliers),
+            &registered_images);
         LOG(INFO) << "  [kColmap] img=" << cand.image_index << " 3d2d=" << cand.num_3d2d
                   << " cov=" << cand.coverage << (cand.is_primary ? "" : " [fallback]") << " → "
                   << (n > 0 ? "OK" : "FAIL");
-        if (n > 0) {
-          added = 1;
-          batch = {cand.image_index}; // downstream (triangulate + local BA) sees only this image
-          break;
-        }
+        if (n <= 0)
+          continue;
+
+        const double post_resection_reproj_thr_px = std::max(6.0, opts.outlier.threshold_px * 2.0);
+        const int n_rejected_post_resection =
+            reject_outliers_post_resection(store_out, registered_images, *poses_R_out, *poses_C_out,
+                                           *registered_out, *cameras, image_to_camera_index,
+                                           post_resection_reproj_thr_px);
+        std::vector<int> kept_images;
+        rollback_weak_post_resection_images(*store_out, registered_images,
+                                            static_cast<int>(opts.resection.min_inliers),
+                                            poses_R_out, poses_C_out, registered_out,
+                                            &kept_images);
+        LOG(INFO) << "  post_resection_cleanup: rejected=" << n_rejected_post_resection
+                  << " obs on new images, reproj_thr=" << post_resection_reproj_thr_px
+                  << " px, kept_images=" << kept_images.size();
+        if (kept_images.empty())
+          continue;
+
+        added = static_cast<int>(kept_images.size());
+        batch = kept_images; // downstream sees only accepted new images
+        break;
       }
     } else {
+      std::vector<int> registered_images;
       added = run_batch_resection(*store_out, batch, *cameras, image_to_camera_index, poses_R_out,
                                   poses_C_out, registered_out,
-                                  static_cast<int>(2.5 * opts.resection.min_inliers));
+                                  static_cast<int>(2.5 * opts.resection.min_inliers),
+                                  &registered_images);
+      const double post_resection_reproj_thr_px = std::max(6.0, opts.outlier.threshold_px * 2.0);
+      const int n_rejected_post_resection =
+          reject_outliers_post_resection(store_out, registered_images, *poses_R_out, *poses_C_out,
+                                         *registered_out, *cameras, image_to_camera_index,
+                                         post_resection_reproj_thr_px);
+      std::vector<int> kept_images;
+      rollback_weak_post_resection_images(*store_out, registered_images,
+                                          static_cast<int>(opts.resection.min_inliers), poses_R_out,
+                                          poses_C_out, registered_out, &kept_images);
+      LOG(INFO) << "  post_resection_cleanup: rejected=" << n_rejected_post_resection
+                << " obs on new images, reproj_thr=" << post_resection_reproj_thr_px
+                << " px, kept_images=" << kept_images.size();
+      batch = kept_images;
+      added = static_cast<int>(kept_images.size());
     }
     LOG(INFO)
         << "[PERF] resection: "

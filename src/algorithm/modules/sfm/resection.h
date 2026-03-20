@@ -20,6 +20,11 @@
 namespace insight {
 namespace sfm {
 
+enum class ResectionBackend {
+    kGpuRansac,
+    kPoseLib,
+};
+
 /**
  * Check if a resection result is stable: inlier ratio and reprojection RMSE.
  *
@@ -33,6 +38,11 @@ namespace sfm {
 /// Pre-initialise the GPU RANSAC context.  Call once before the SfM pipeline's
 /// main loop to amortise the ~1-second EGL/shader-compile cost on first use.
 void resection_init_gpu();
+
+void set_resection_backend(ResectionBackend backend);
+ResectionBackend get_resection_backend();
+const char* resection_backend_name(ResectionBackend backend);
+bool resection_backend_uses_gpu(ResectionBackend backend);
 
 bool is_resection_stable(int inlier_count, int total_correspondences, double rmse_px,
                          double min_inlier_ratio = 0.4, double max_rmse_px = 10.0);
@@ -53,7 +63,7 @@ bool is_resection_stable(int inlier_count, int total_correspondences, double rms
 bool resection_single_image(const TrackStore& store, int image_index, double fx, double fy,
                             double cx, double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
-                            int* inliers_out = nullptr);
+                            int* inliers_out = nullptr, double* rmse_px_out = nullptr);
 
 /**
  * Overload: run resection with algorithm intrinsics (camera::Intrinsics).
@@ -72,7 +82,7 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
 bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
-                            int* inliers_out = nullptr);
+                            int* inliers_out = nullptr, double* rmse_px_out = nullptr);
 
 /**
  * Count grid cells that contain at least one 3D–2D observation (COLMAP-style

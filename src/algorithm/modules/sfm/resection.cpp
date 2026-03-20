@@ -8,16 +8,21 @@
 #include "../camera/camera_utils.h"
 #include "../geometry/gpu_geo_ransac.h"
 
+#include <PoseLib/robust.h>
+
 #include <Eigen/Dense>
 #include <chrono>
 #include <cmath>
 #include <glog/logging.h>
+#include <limits>
 #include <vector>
 
 namespace insight {
 namespace sfm {
 
 namespace {
+
+ResectionBackend g_resection_backend = ResectionBackend::kGpuRansac;
 
 /// Ensure GPU RANSAC (EGL) is initialised once for resection PnP.
 static void ensure_gpu_geo_init() {
@@ -54,11 +59,34 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
   const double lambda_init = 1e-3; // LM damping start
   double lambda = lambda_init;
 
-  double prev_cost = 1e18;
+  auto evaluate_cost = [&](const Eigen::Matrix3d& R_eval, const Eigen::Vector3d& t_eval,
+                           int* valid_count_out) -> double {
+    double cost = 0.0;
+    int valid_count = 0;
+    for (int i = 0; i < n; ++i) {
+      const Eigen::Vector3d p = R_eval * pts3d[i] + t_eval;
+      if (p(2) < 1e-6)
+        continue;
+      const double inv_z = 1.0 / p(2);
+      const double u_proj = fx * p(0) * inv_z + cx;
+      const double v_proj = fy * p(1) * inv_z + cy;
+      const double ru = u_proj - pts2d[i](0);
+      const double rv = v_proj - pts2d[i](1);
+      cost += ru * ru + rv * rv;
+      ++valid_count;
+    }
+    if (valid_count_out)
+      *valid_count_out = valid_count;
+    return cost;
+  };
+
+  int valid_count = 0;
+  double prev_cost = evaluate_cost(R, t, &valid_count);
   for (int iter = 0; iter < max_iterations; ++iter) {
     Eigen::Matrix<double, 6, 6> JtJ = Eigen::Matrix<double, 6, 6>::Zero();
     Eigen::Matrix<double, 6, 1> Jtr = Eigen::Matrix<double, 6, 1>::Zero();
     double cost = 0.0;
+    int used_obs = 0;
 
     for (int i = 0; i < n; ++i) {
       const Eigen::Vector3d p = R * pts3d[i] + t;  // camera-space
@@ -71,6 +99,7 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
       const double ru = u_proj - pts2d[i](0);
       const double rv = v_proj - pts2d[i](1);
       cost += ru * ru + rv * rv;
+      ++used_obs;
 
       // Jacobian of (u_proj, v_proj) w.r.t. [omega (so3), t]
       // du/dp = [fx/z, 0, -fx*px/z^2]
@@ -102,6 +131,9 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
       Jtr += J.transpose() * r;
     }
 
+    if (used_obs <= 0)
+      break;
+
     // LM damping
     for (int d = 0; d < 6; ++d)
       JtJ(d, d) *= (1.0 + lambda);
@@ -120,11 +152,15 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
     }
     Eigen::Vector3d t_new = t + delta.tail<3>();
 
-    if (cost < prev_cost) {
+    int new_valid_count = 0;
+    const double new_cost = evaluate_cost(R_new, t_new, &new_valid_count);
+
+    if (new_valid_count > 0 && new_cost < prev_cost) {
       R = R_new;
       t = t_new;
       lambda *= 0.5;
-      prev_cost = cost;
+      prev_cost = new_cost;
+      valid_count = new_valid_count;
     } else {
       lambda *= 2.0;
     }
@@ -135,13 +171,158 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
   *R_out = R;
   *t_out = t;
   if (rmse_px)
-    *rmse_px = std::sqrt(prev_cost / std::max(n, 1));
+    *rmse_px = std::sqrt(prev_cost / std::max(valid_count, 1));
+  return true;
+}
+
+static double compute_pose_rmse_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
+                                        const std::vector<Eigen::Vector2d>& pts2d, double fx,
+                                        double fy, double cx, double cy,
+                                        const Eigen::Matrix3d& R, const Eigen::Vector3d& t) {
+  if (pts3d.empty() || pts3d.size() != pts2d.size())
+    return std::numeric_limits<double>::infinity();
+
+  double cost = 0.0;
+  int valid_count = 0;
+  for (size_t i = 0; i < pts3d.size(); ++i) {
+    const Eigen::Vector3d p = R * pts3d[i] + t;
+    if (p(2) < 1e-6)
+      continue;
+    const double inv_z = 1.0 / p(2);
+    const double u_proj = fx * p(0) * inv_z + cx;
+    const double v_proj = fy * p(1) * inv_z + cy;
+    const double du = u_proj - pts2d[i](0);
+    const double dv = v_proj - pts2d[i](1);
+    cost += du * du + dv * dv;
+    ++valid_count;
+  }
+  if (valid_count <= 0)
+    return std::numeric_limits<double>::infinity();
+  return std::sqrt(cost / static_cast<double>(valid_count));
+}
+
+static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
+                                      const std::vector<Eigen::Vector2d>& pts2d, double fx,
+                                      double fy, double cx, double cy, int min_inliers,
+                                      double ransac_thresh_px, Eigen::Matrix3d* R_out,
+                                      Eigen::Vector3d* t_out, int* inliers_out,
+                                      double* rmse_px_out) {
+  if (!R_out || !t_out || pts3d.size() != pts2d.size() || pts3d.empty())
+    return false;
+
+  using Clock = std::chrono::steady_clock;
+  auto t0 = Clock::now();
+
+  std::vector<poselib::Point2D> points2d;
+  std::vector<poselib::Point3D> points3d;
+  points2d.reserve(pts2d.size());
+  points3d.reserve(pts3d.size());
+  for (size_t i = 0; i < pts2d.size(); ++i) {
+    points2d.push_back(pts2d[i]);
+    points3d.push_back(pts3d[i]);
+  }
+
+  poselib::AbsolutePoseOptions opt;
+  opt.max_error = ransac_thresh_px;
+  opt.ransac.max_iterations = 10000;
+  opt.ransac.min_iterations = 1000;
+  opt.bundle.max_iterations = 25;
+  opt.bundle.loss_type = poselib::BundleOptions::CAUCHY;
+  opt.bundle.loss_scale = std::max(1.0, ransac_thresh_px);
+
+  poselib::Image image;
+  image.camera = poselib::Camera(poselib::CameraModelId::PINHOLE, {fx, fy, cx, cy});
+  std::vector<char> inlier_mask;
+  const poselib::RansacStats stats =
+      poselib::estimate_absolute_pose(points2d, points3d, opt, &image, &inlier_mask);
+
+  auto t1 = Clock::now();
+  const int n_inliers = static_cast<int>(stats.num_inliers);
+  if (inliers_out)
+    *inliers_out = n_inliers;
+  if (n_inliers < min_inliers) {
+    LOG(INFO) << "[PERF] resection_single_image(poselib)"
+              << "  pts=" << pts3d.size()
+              << "  poselib="
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
+              << "  FAILED inliers=" << n_inliers;
+    return false;
+  }
+
+  Eigen::Matrix3d R = image.pose.R();
+  Eigen::Vector3d t = image.pose.t;
+
+  std::vector<Eigen::Vector3d> inlier_pts3d;
+  std::vector<Eigen::Vector2d> inlier_pts2d;
+  inlier_pts3d.reserve(static_cast<size_t>(n_inliers));
+  inlier_pts2d.reserve(static_cast<size_t>(n_inliers));
+  for (size_t i = 0; i < inlier_mask.size() && i < pts3d.size(); ++i) {
+    if (!inlier_mask[i])
+      continue;
+    inlier_pts3d.push_back(pts3d[i]);
+    inlier_pts2d.push_back(pts2d[i]);
+  }
+
+  Eigen::Matrix3d R_refined = R;
+  Eigen::Vector3d t_refined = t;
+  double gn_rmse = 0.0;
+  if (!inlier_pts3d.empty()) {
+    pose_refine_gn(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R, t, &R_refined, &t_refined,
+                   &gn_rmse, 10);
+  }
+  auto t2 = Clock::now();
+
+  const double rmse =
+      compute_pose_rmse_pinhole(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_refined, t_refined);
+  LOG(INFO) << "[PERF] resection_single_image(poselib)"
+            << "  pts=" << pts3d.size() << "  inliers=" << n_inliers
+            << "  poselib="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
+            << "  gn_refine="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
+            << "  rmse=" << rmse;
+  if (rmse_px_out)
+    *rmse_px_out = rmse;
+  if (!is_resection_stable(n_inliers, static_cast<int>(pts3d.size()), rmse,
+                           /*min_inlier_ratio=*/0.10,
+                           /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
+    LOG(INFO) << "[PERF] resection_single_image(poselib)"
+              << "  rejected_by_stability: inlier_ratio="
+              << (pts3d.empty() ? 0.0
+                               : static_cast<double>(n_inliers) / static_cast<double>(pts3d.size()))
+              << "  rmse=" << rmse;
+    return false;
+  }
+
+  *R_out = R_refined;
+  *t_out = t_refined;
   return true;
 }
 
 } // namespace
 
-void resection_init_gpu() { ensure_gpu_geo_init(); }
+void resection_init_gpu() {
+  if (resection_backend_uses_gpu(g_resection_backend))
+    ensure_gpu_geo_init();
+}
+
+void set_resection_backend(ResectionBackend backend) { g_resection_backend = backend; }
+
+ResectionBackend get_resection_backend() { return g_resection_backend; }
+
+const char* resection_backend_name(ResectionBackend backend) {
+  switch (backend) {
+    case ResectionBackend::kGpuRansac:
+      return "gpu";
+    case ResectionBackend::kPoseLib:
+      return "poselib";
+  }
+  return "unknown";
+}
+
+bool resection_backend_uses_gpu(ResectionBackend backend) {
+  return backend == ResectionBackend::kGpuRansac;
+}
 
 bool is_resection_stable(int inlier_count, int total_correspondences, double rmse_px,
                          double min_inlier_ratio, double max_rmse_px) {
@@ -153,7 +334,8 @@ bool is_resection_stable(int inlier_count, int total_correspondences, double rms
 
 bool resection_single_image(const TrackStore& store, int image_index, double fx, double fy,
                             double cx, double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
-                            int min_inliers, double ransac_thresh_px, int* inliers_out) {
+                            int min_inliers, double ransac_thresh_px, int* inliers_out,
+                            double* rmse_px_out) {
   if (!R_out || !t_out)
     return false;
 
@@ -184,6 +366,20 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   }
   if (static_cast<int>(pts_pnp.size()) < min_inliers)
     return false;
+
+  if (g_resection_backend == ResectionBackend::kPoseLib) {
+    std::vector<Eigen::Vector3d> pts3d;
+    std::vector<Eigen::Vector2d> pts2d;
+    pts3d.reserve(pts_pnp.size());
+    pts2d.reserve(pts_pnp.size());
+    for (const Point3D2D& pt : pts_pnp) {
+      pts3d.emplace_back(static_cast<double>(pt.x), static_cast<double>(pt.y),
+                         static_cast<double>(pt.z));
+      pts2d.emplace_back(static_cast<double>(pt.u), static_cast<double>(pt.v));
+    }
+    return resection_poselib_pinhole(pts3d, pts2d, fx, fy, cx, cy, min_inliers,
+                                     ransac_thresh_px, R_out, t_out, inliers_out, rmse_px_out);
+  }
 
   auto t1 = Clock::now(); // after data prep
   const int num_pts = static_cast<int>(pts_pnp.size());
@@ -246,6 +442,17 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
             << "  gpu_ransac=" << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
             << "  gn_refine=" << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count() << "ms"
             << "  rmse=" << rmse;
+  if (rmse_px_out)
+    *rmse_px_out = rmse;
+  if (!is_resection_stable(n_inliers, num_pts, rmse,
+                           /*min_inlier_ratio=*/0.10,
+                           /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
+    LOG(INFO) << "[PERF] resection_single_image im=" << image_index
+              << "  rejected_by_stability: inlier_ratio="
+              << (num_pts > 0 ? static_cast<double>(n_inliers) / static_cast<double>(num_pts) : 0.0)
+              << "  rmse=" << rmse;
+    return false;
+  }
   if (inliers_out)
     *inliers_out = n_inliers;
   *R_out = R_refined;
@@ -255,11 +462,11 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
 
 bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
-                            int min_inliers, double ransac_thresh_px,
-                            int* inliers_out) {
+                            int min_inliers, double ransac_thresh_px, int* inliers_out,
+                            double* rmse_px_out) {
   if (!K.has_distortion()) {
     return resection_single_image(store, image_index, K.fx, K.fy, K.cx, K.cy, R_out, t_out,
-                                  min_inliers, ransac_thresh_px, inliers_out);
+                                  min_inliers, ransac_thresh_px, inliers_out, rmse_px_out);
   }
 
   // Collect raw observations (distorted pixels) for this image.
@@ -297,6 +504,20 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
   }
   if (static_cast<int>(pts_pnp.size()) < min_inliers)
     return false;
+
+  if (g_resection_backend == ResectionBackend::kPoseLib) {
+    std::vector<Eigen::Vector3d> pts3d;
+    std::vector<Eigen::Vector2d> pts2d;
+    pts3d.reserve(pts_pnp.size());
+    pts2d.reserve(pts_pnp.size());
+    for (const Point3D2D& pt : pts_pnp) {
+      pts3d.emplace_back(static_cast<double>(pt.x), static_cast<double>(pt.y),
+                         static_cast<double>(pt.z));
+      pts2d.emplace_back(static_cast<double>(pt.u), static_cast<double>(pt.v));
+    }
+    return resection_poselib_pinhole(pts3d, pts2d, K.fx, K.fy, K.cx, K.cy, min_inliers,
+                                     ransac_thresh_px, R_out, t_out, inliers_out, rmse_px_out);
+  }
 
   const int num_pts = static_cast<int>(pts_pnp.size());
   const float fx = static_cast<float>(K.fx), fy = static_cast<float>(K.fy);
@@ -341,6 +562,12 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
   double rmse = 0.0;
   pose_refine_gn(inlier_pts3d, inlier_pts2d, K.fx, K.fy, K.cx, K.cy, R_eig, t_eig, &R_refined,
                  &t_refined, &rmse, 10);
+  if (rmse_px_out)
+    *rmse_px_out = rmse;
+  if (!is_resection_stable(n_inliers, num_pts, rmse,
+                           /*min_inlier_ratio=*/0.10,
+                           /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px)))
+    return false;
   if (inliers_out)
     *inliers_out = n_inliers;
   *R_out = R_refined;

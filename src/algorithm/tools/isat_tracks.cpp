@@ -121,9 +121,30 @@ static uint64_t node_key(uint32_t image_index, uint32_t feature_id) {
   return (static_cast<uint64_t>(image_index) << 32) | feature_id;
 }
 
+static uint32_t image_index_from_node_key(uint64_t key) {
+  return static_cast<uint32_t>(key >> 32);
+}
+
 struct UnionFind {
   std::unordered_map<uint64_t, int> node_id_;  // key (image_index<<32|feat_id) -> internal id
   std::vector<int> parent_;                     // internal id -> parent (internal id)
+  std::vector<int> component_size_;
+  std::vector<std::vector<uint32_t>> component_images_;
+
+  static bool component_has_image(const std::vector<uint32_t>& images, uint32_t image_index) {
+    return std::find(images.begin(), images.end(), image_index) != images.end();
+  }
+
+  static bool components_overlap_images(const std::vector<uint32_t>& a,
+                                        const std::vector<uint32_t>& b) {
+    const std::vector<uint32_t>& small = (a.size() <= b.size()) ? a : b;
+    const std::vector<uint32_t>& large = (a.size() <= b.size()) ? b : a;
+    for (uint32_t image_index : small) {
+      if (component_has_image(large, image_index))
+        return true;
+    }
+    return false;
+  }
 
   int get_or_create(uint64_t key) {
     auto it = node_id_.find(key);
@@ -132,6 +153,8 @@ struct UnionFind {
     const int id = static_cast<int>(parent_.size());
     node_id_[key] = id;
     parent_.push_back(id);
+    component_size_.push_back(1);
+    component_images_.push_back({image_index_from_node_key(key)});
     return id;
   }
 
@@ -140,11 +163,27 @@ struct UnionFind {
     return find_by_id(id);
   }
 
-  void merge_keys(uint64_t k1, uint64_t k2) {
-    const int a = find_key(k1);
-    const int b = find_key(k2);
-    if (a != b)
-      parent_[static_cast<size_t>(a)] = b;
+  bool merge_keys(uint64_t k1, uint64_t k2) {
+    int a = find_key(k1);
+    int b = find_key(k2);
+    if (a == b)
+      return true;
+
+    if (components_overlap_images(component_images_[static_cast<size_t>(a)],
+                                  component_images_[static_cast<size_t>(b)])) {
+      return false;
+    }
+
+    if (component_size_[static_cast<size_t>(a)] < component_size_[static_cast<size_t>(b)])
+      std::swap(a, b);
+
+    parent_[static_cast<size_t>(b)] = a;
+    component_size_[static_cast<size_t>(a)] += component_size_[static_cast<size_t>(b)];
+    std::vector<uint32_t>& dst = component_images_[static_cast<size_t>(a)];
+    const std::vector<uint32_t>& src = component_images_[static_cast<size_t>(b)];
+    dst.insert(dst.end(), src.begin(), src.end());
+    component_images_[static_cast<size_t>(b)].clear();
+    return true;
   }
 
   int find_by_id(int i) {
@@ -246,6 +285,8 @@ static bool save_track_store_to_idc(const TrackStore& store,
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void phase1_union_find(UnionFind* uf, const std::vector<PairDesc>& pairs) {
+  int merged_edges = 0;
+  int rejected_same_image_component = 0;
   for (const auto& p : pairs) {
     IDCReader geo_rd(p.geo_file);
     IDCReader match_rd(p.match_file);
@@ -266,9 +307,15 @@ static void phase1_union_find(UnionFind* uf, const std::vector<PairDesc>& pairs)
       const size_t mi = static_cast<size_t>(m);
       uint16_t idx1 = indices[mi * 2];
       uint16_t idx2 = indices[mi * 2 + 1];
-      uf->merge_keys(node_key(p.image1_index, idx1), node_key(p.image2_index, idx2));
+      if (uf->merge_keys(node_key(p.image1_index, idx1), node_key(p.image2_index, idx2))) {
+        ++merged_edges;
+      } else {
+        ++rejected_same_image_component;
+      }
     }
   }
+  LOG(INFO) << "Phase 1 merge stats: merged_edges=" << merged_edges
+            << " rejected_same_image_component=" << rejected_same_image_component;
 }
 
 // Encode (track_id, image_index, feature_id) for dedup. Low 16 bits = feature_id (< 65536);
@@ -278,6 +325,20 @@ static inline uint64_t obs_key(int n_images, int track_id, uint32_t image_index,
          static_cast<uint64_t>(feature_id);
 }
 
+static inline uint64_t track_image_key(int track_id, uint32_t image_index) {
+  return (static_cast<uint64_t>(static_cast<uint32_t>(track_id)) << 32) |
+         static_cast<uint64_t>(image_index);
+}
+
+struct ObservationCandidate {
+  int track_id = -1;
+  uint32_t image_index = 0;
+  uint32_t feature_id = 0;
+  float u = 0.f;
+  float v = 0.f;
+  float scale = 1.f;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 2: Fill observations from match + geo inlier masks (no 3D from two-view)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,8 +347,18 @@ static void phase2_fill_observations(TrackStore* store, const std::vector<PairDe
                                    int n_images,
                                    const std::unordered_map<int, int>& root_to_track_id,
                                    UnionFind& uf) {
+  std::unordered_set<uint64_t> exact_candidate_obs;
+  exact_candidate_obs.reserve(static_cast<size_t>(store->num_tracks()) * 4u);
   std::unordered_set<uint64_t> added_obs;
   added_obs.reserve(static_cast<size_t>(store->num_tracks()) * 4u);
+  std::unordered_map<uint64_t, ObservationCandidate> obs_per_track_image;
+  obs_per_track_image.reserve(static_cast<size_t>(store->num_tracks()) * 4u);
+  std::unordered_set<int> conflicted_tracks;
+  conflicted_tracks.reserve(static_cast<size_t>(store->num_tracks()) / 8u + 1u);
+
+  int duplicate_feature_obs = 0;
+  int conflicting_same_image_obs = 0;
+  int rejected_conflict_tracks = 0;
 
   const uint32_t n_ui = static_cast<uint32_t>(n_images);
   for (const auto& p : pairs) {
@@ -321,10 +392,14 @@ static void phase2_fill_observations(TrackStore* store, const std::vector<PairDe
       uint16_t idx1 = indices[mi * 2];
       uint16_t idx2 = indices[mi * 2 + 1];
       uint64_t k1 = node_key(p.image1_index, idx1);
-      auto rit = root_to_track_id.find(uf.find_key(k1));
-      if (rit == root_to_track_id.end())
+      uint64_t k2 = node_key(p.image2_index, idx2);
+      // Look up each side independently: after Phase-1 same-image guard, k1 and k2
+      // may belong to different components. Each observation must go to its own track
+      // to avoid injecting wrong coordinates into the other side's track.
+      auto rit1 = root_to_track_id.find(uf.find_key(k1));
+      auto rit2 = root_to_track_id.find(uf.find_key(k2));
+      if (rit1 == root_to_track_id.end() && rit2 == root_to_track_id.end())
         continue;
-      int track_id = rit->second;
       float x1 = coords[mi * 4];
       float y1 = coords[mi * 4 + 1];
       float x2 = coords[mi * 4 + 2];
@@ -334,14 +409,131 @@ static void phase2_fill_observations(TrackStore* store, const std::vector<PairDe
         s1 = scales[mi * 2];
         s2 = scales[mi * 2 + 1];
       }
-      const uint64_t key1 = obs_key(n_images, track_id, slot1, idx1);
-      if (added_obs.insert(key1).second)
-        store->add_observation(track_id, slot1, idx1, x1, y1, s1);
-      const uint64_t key2 = obs_key(n_images, track_id, slot2, idx2);
-      if (added_obs.insert(key2).second)
-        store->add_observation(track_id, slot2, idx2, x2, y2, s2);
+      ObservationCandidate c1, c2;
+      const bool have_c1 = (rit1 != root_to_track_id.end());
+      const bool have_c2 = (rit2 != root_to_track_id.end());
+      if (have_c1) {
+        c1.track_id    = rit1->second;
+        c1.image_index = slot1;
+        c1.feature_id  = idx1;
+        c1.u = x1; c1.v = y1; c1.scale = s1;
+      }
+      if (have_c2) {
+        c2.track_id    = rit2->second;
+        c2.image_index = slot2;
+        c2.feature_id  = idx2;
+        c2.u = x2; c2.v = y2; c2.scale = s2;
+      }
+
+      for (int _side = 0; _side < 2; ++_side) {
+        if (_side == 0 && !have_c1) continue;
+        if (_side == 1 && !have_c2) continue;
+        const ObservationCandidate& cand = (_side == 0) ? c1 : c2;
+        const uint64_t exact_key = obs_key(n_images, cand.track_id, cand.image_index,
+                                           static_cast<uint16_t>(cand.feature_id));
+        if (!exact_candidate_obs.insert(exact_key).second) {
+          ++duplicate_feature_obs;
+          continue;
+        }
+
+        const uint64_t ti_key = track_image_key(cand.track_id, cand.image_index);
+        auto [it, inserted] = obs_per_track_image.emplace(ti_key, cand);
+        if (inserted)
+          continue;
+
+        if (it->second.feature_id == cand.feature_id) {
+          ++duplicate_feature_obs;
+          continue;
+        }
+
+        ++conflicting_same_image_obs;
+        if (conflicted_tracks.insert(cand.track_id).second) {
+          ++rejected_conflict_tracks;
+        }
+      }
     }
   }
+
+  std::vector<ObservationCandidate> final_obs;
+  final_obs.reserve(obs_per_track_image.size());
+  for (const auto& kv : obs_per_track_image) {
+    if (conflicted_tracks.find(kv.second.track_id) != conflicted_tracks.end())
+      continue;
+    final_obs.push_back(kv.second);
+  }
+  std::sort(final_obs.begin(), final_obs.end(), [](const ObservationCandidate& a,
+                                                   const ObservationCandidate& b) {
+    if (a.track_id != b.track_id)
+      return a.track_id < b.track_id;
+    if (a.image_index != b.image_index)
+      return a.image_index < b.image_index;
+    return a.feature_id < b.feature_id;
+  });
+
+  for (const ObservationCandidate& cand : final_obs) {
+    const uint64_t exact_key = obs_key(n_images, cand.track_id, cand.image_index,
+                                       static_cast<uint16_t>(cand.feature_id));
+    if (!added_obs.insert(exact_key).second)
+      continue;
+    store->add_observation(cand.track_id, cand.image_index, cand.feature_id, cand.u, cand.v,
+                           cand.scale);
+  }
+
+  LOG(INFO) << "Phase 2 uniqueness: kept=" << final_obs.size()
+            << " duplicate_feature_obs=" << duplicate_feature_obs
+            << " conflicting_same_image_obs=" << conflicting_same_image_obs
+            << " rejected_conflict_tracks=" << rejected_conflict_tracks
+            << " conflicted_tracks=" << conflicted_tracks.size();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-build filter: remove tracks with fewer than min_degree observations.
+// Builds a compact new TrackStore (renumbered) and returns stats.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct FilterStats {
+  int in_tracks = 0;
+  int in_obs = 0;
+  int removed_tracks = 0;
+  int removed_obs = 0;
+  int out_tracks = 0;
+  int out_obs = 0;
+};
+
+static FilterStats compact_tracks_min_degree(const TrackStore& src, int n_images, int min_degree,
+                                             TrackStore* dst) {
+  FilterStats stats;
+  stats.in_tracks = static_cast<int>(src.num_tracks());
+  stats.in_obs    = static_cast<int>(src.num_observations());
+
+  dst->set_num_images(n_images);
+  dst->reserve_tracks(static_cast<size_t>(stats.in_tracks));
+  dst->reserve_observations(static_cast<size_t>(stats.in_obs));
+
+  std::vector<Observation> obs_buf;
+  for (int t = 0; t < stats.in_tracks; ++t) {
+    if (!src.is_track_valid(t)) {
+      ++stats.removed_tracks;
+      continue;
+    }
+    obs_buf.clear();
+    const int deg = src.get_track_observations(t, &obs_buf);
+    if (deg < min_degree) {
+      ++stats.removed_tracks;
+      stats.removed_obs += deg;
+      continue;
+    }
+    // Keep this track
+    float x = 0.f, y = 0.f, z = 0.f;
+    src.get_track_xyz(t, &x, &y, &z);
+    const int new_tid = dst->add_track(x, y, z);
+    for (const Observation& o : obs_buf)
+      dst->add_observation(new_tid, o.image_index, o.feature_id, o.u, o.v, o.scale);
+  }
+
+  stats.out_tracks = static_cast<int>(dst->num_tracks());
+  stats.out_obs    = static_cast<int>(dst->num_observations());
+  return stats;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -363,6 +555,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('l', image_list, "image-list")
               .doc("Image list JSON from isat_project extract (required). Defines image_index baseline for SfM."));
   cmd.add(make_option('o', output_path, "output").doc("Output .isat_tracks IDC path"));
+  int min_track_length = 1;
+  cmd.add(make_option(0, min_track_length, "min-track-length")
+              .doc("Remove tracks with fewer than N observations (degree filter). Default=1 (keep all). "
+                   "Use 3 to discard degree-1 and degree-2 tracks."));
   cmd.add(make_switch(0, "stats").doc("Only load existing IDC and print stats to stderr"));
   std::string log_level;
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
@@ -460,13 +656,28 @@ int main(int argc, char* argv[]) {
   phase2_fill_observations(&store, pairs, n_images, root_to_track_id, uf);
   LOG(INFO) << "Phase 2: " << store.num_observations() << " observations (track xyz from SfM later)";
 
-  if (!save_track_store_to_idc(store, image_indices, output_path))
+  // ── Optional degree filter ─────────────────────────────────────────────────
+  const TrackStore* store_to_save = &store;
+  TrackStore filtered_store;
+  if (min_track_length > 1) {
+    const FilterStats fstats = compact_tracks_min_degree(store, n_images, min_track_length,
+                                                         &filtered_store);
+    LOG(INFO) << "Degree filter (min=" << min_track_length << "):"
+              << "  removed_tracks=" << fstats.removed_tracks
+              << "  removed_obs=" << fstats.removed_obs
+              << "  kept_tracks=" << fstats.out_tracks
+              << "  kept_obs=" << fstats.out_obs;
+    store_to_save = &filtered_store;
+  }
+
+  if (!save_track_store_to_idc(*store_to_save, image_indices, output_path))
     return 1;
   print_event({{"type", "tracks.build"},
               {"ok", true},
               {"data",
                {{"output", output_path},
-                {"num_tracks", static_cast<int>(store.num_tracks())},
-                {"num_observations", static_cast<int>(store.num_observations())}}}});
+                {"min_track_length", min_track_length},
+                {"num_tracks", static_cast<int>(store_to_save->num_tracks())},
+                {"num_observations", static_cast<int>(store_to_save->num_observations())}}}});
   return 0;
 }

@@ -24,7 +24,9 @@
 #include <fstream>
 #include <glog/logging.h>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -180,6 +182,78 @@ FeatureData loadFeaturesIDC(const std::string& idc_path) {
 }
 
 /**
+ * Enforce explicit one-to-one uniqueness on a match set.
+ *
+ * The GPU matcher is asked to do mutual-best matching, but downstream geometry/track building
+ * should not rely on that invariant always holding. We therefore keep only the best match for each
+ * feature on both sides, using descriptor distance when available.
+ */
+static size_t sanitize_matches_one_to_one(MatchResult* matches) {
+  if (!matches || matches->num_matches == 0 || matches->indices.empty())
+    return 0;
+
+  const size_t n = matches->indices.size();
+  if (matches->coords_pixel.size() != n) {
+    LOG(WARNING) << "sanitize_matches_one_to_one: inconsistent match buffers, skipping";
+    matches->num_matches = matches->indices.size();
+    return 0;
+  }
+
+  uint16_t max_idx1 = 0;
+  uint16_t max_idx2 = 0;
+  for (const auto& idx : matches->indices) {
+    max_idx1 = std::max(max_idx1, idx.first);
+    max_idx2 = std::max(max_idx2, idx.second);
+  }
+
+  std::vector<size_t> order(n);
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(), [matches](size_t a, size_t b) {
+    const float da = (a < matches->distances.size()) ? matches->distances[a]
+                                                     : std::numeric_limits<float>::infinity();
+    const float db = (b < matches->distances.size()) ? matches->distances[b]
+                                                     : std::numeric_limits<float>::infinity();
+    if (da != db)
+      return da < db;
+    return a < b;
+  });
+
+  std::vector<uint8_t> used1(static_cast<size_t>(max_idx1) + 1u, 0u);
+  std::vector<uint8_t> used2(static_cast<size_t>(max_idx2) + 1u, 0u);
+  std::vector<size_t> kept;
+  kept.reserve(n);
+  for (size_t pos : order) {
+    const auto& idx = matches->indices[pos];
+    if (used1[static_cast<size_t>(idx.first)] || used2[static_cast<size_t>(idx.second)])
+      continue;
+    used1[static_cast<size_t>(idx.first)] = 1u;
+    used2[static_cast<size_t>(idx.second)] = 1u;
+    kept.push_back(pos);
+  }
+
+  if (kept.size() == n) {
+    matches->num_matches = n;
+    return 0;
+  }
+
+  std::sort(kept.begin(), kept.end());
+
+  MatchResult filtered;
+  filtered.reserve(kept.size());
+  for (size_t pos : kept) {
+    filtered.indices.push_back(matches->indices[pos]);
+    filtered.coords_pixel.push_back(matches->coords_pixel[pos]);
+    if (pos < matches->distances.size())
+      filtered.distances.push_back(matches->distances[pos]);
+  }
+  filtered.num_matches = kept.size();
+
+  const size_t removed = n - kept.size();
+  *matches = std::move(filtered);
+  return removed;
+}
+
+/**
  * Write match result to IDC file
  */
 bool writeMatchIDC(const MatchResult& matches, const PairTask& pair,
@@ -276,7 +350,7 @@ int main(int argc, char* argv[]) {
   std::string feature_dir;
   float ratio_test = 0.8f;
   int max_matches = -1;
-  int max_features = 4096; // cap per image before GPU upload
+  int max_features = 10000; // cap per image before GPU upload
   int num_threads = 4;
 
   // Required arguments
@@ -412,12 +486,16 @@ int main(int argc, char* argv[]) {
         auto start = std::chrono::high_resolution_clock::now();
 
         task.matches = matcher.match(task.features1, task.features2, match_options);
+          const size_t removed_non_unique = sanitize_matches_one_to_one(&task.matches);
 
         auto end = std::chrono::high_resolution_clock::now();
         int match_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
         LOG(INFO) << "Matched pair [" << index << "/" << pair_tasks.size()
-                  << "]: " << task.matches.num_matches << " matches in " << match_time << "ms";
+            << "]: " << task.matches.num_matches << " matches in " << match_time << "ms"
+            << (removed_non_unique > 0 ? " (removed " + std::to_string(removed_non_unique) +
+                        " non-unique matches)"
+                      : "");
 
         // Free feature memory
         task.features1.clear();

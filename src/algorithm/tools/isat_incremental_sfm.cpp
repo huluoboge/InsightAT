@@ -183,6 +183,7 @@ int main(int argc, char* argv[]) {
   std::string geo_dir;
   std::string output_dir;
   std::string log_level;
+  std::string resection_backend;
   int ba_max_iter = 0;
   double ba_grad_tol = 0.0;
   double ba_func_tol = 0.0;
@@ -200,6 +201,7 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('g', geo_dir, "geo").doc("Directory of .isat_geo files"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
+  cmd.add(make_option(0, resection_backend, "resection-backend").doc("Resection backend: gpu|poselib (default: gpu)."));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Keep camera intrinsics fixed (do not optimize in BA). Recommended for circumferential/object-centric shots."));
   cmd.add(make_switch(0, "no-local-ba").doc("Skip per-iteration local BA; always run global BA. Good for circumferential captures."));
   cmd.add(make_option(0, ba_max_iter, "ba-max-iter").doc("Global BA max Ceres iterations (default: 50). Object-scan preset: 5000."));
@@ -257,8 +259,9 @@ int main(int argc, char* argv[]) {
   IncrementalSfMOptions opts;
   opts.local_ba.strategy = LocalBAStrategy::kColmap;
   // opts.global_ba.optimize_intrinsics_min_images = 2;
-  opts.global_ba.max_iterations = 5000;
+  opts.global_ba.max_iterations = 500;
   // Apply --object-scan preset first (individual flags override it below).
+  opts.intrinsics.focal_prior_weight = 100.f;
   if (cmd.used("object-scan")) {
     opts.local_ba.skip = true;
     opts.global_ba.max_iterations = 50;
@@ -279,6 +282,17 @@ int main(int argc, char* argv[]) {
   if (cmd.used("no-local-ba")) {
     opts.local_ba.skip = true;
     LOG(INFO) << "--no-local-ba: per-iteration local BA disabled, global BA used every iteration.";
+  }
+  if (!resection_backend.empty()) {
+    if (resection_backend == "gpu") {
+      opts.resection.backend = ResectionBackend::kGpuRansac;
+    } else if (resection_backend == "poselib") {
+      opts.resection.backend = ResectionBackend::kPoseLib;
+    } else {
+      LOG(ERROR) << "Unknown --resection-backend='" << resection_backend
+                 << "' (expected gpu or poselib)";
+      return 1;
+    }
   }
   if (ba_max_iter > 0)        opts.global_ba.max_iterations = ba_max_iter;
   if (ba_grad_tol > 0.0)     opts.global_ba.solver_overrides.gradient_tolerance   = ba_grad_tol;

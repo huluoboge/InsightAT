@@ -90,5 +90,6 @@
         "variant": "cpp",
         "__nullptr": "cpp",
         "ios": "cpp"
-    }
+    },
+    "C_Cpp.default.compilerPath": "/usr/bin/g++"
 }

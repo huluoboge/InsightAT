@@ -1,0 +1,285 @@
+#pragma once
+#include "pybind11_extension.h"
+
+#include <PoseLib/poselib.h>
+#include <pybind11/eigen.h>
+#include <pybind11/iostream.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
+namespace py = pybind11;
+
+inline std::string toString(const Eigen::MatrixXd &mat) {
+    std::stringstream ss;
+    ss << mat;
+    return ss.str();
+}
+
+namespace poselib {
+template <typename T> void update(const py::dict &input, const std::string &name, T &value) {
+    if (input.contains(name)) {
+        value = input[name.c_str()].cast<T>();
+    }
+}
+template <> inline void update(const py::dict &input, const std::string &name, bool &value) {
+    if (input.contains(name)) {
+        py::object input_value = input[name.c_str()];
+        value = (py::str(input_value).is(py::str(Py_True)));
+    }
+}
+
+inline void update_ransac_options(const py::dict &input, RansacOptions &ransac_opt) {
+    update(input, "max_iterations", ransac_opt.max_iterations);
+    update(input, "min_iterations", ransac_opt.min_iterations);
+    update(input, "dyn_num_trials_mult", ransac_opt.dyn_num_trials_mult);
+    update(input, "success_prob", ransac_opt.success_prob);
+    update(input, "seed", ransac_opt.seed);
+    update(input, "progressive_sampling", ransac_opt.progressive_sampling);
+    update(input, "max_prosac_iterations", ransac_opt.max_prosac_iterations);
+    // "score_initial_model" purposely omitted
+}
+
+inline void update_bundle_options(const py::dict &input, BundleOptions &bundle_opt) {
+    update(input, "max_iterations", bundle_opt.max_iterations);
+    update(input, "loss_scale", bundle_opt.loss_scale);
+    update(input, "gradient_tol", bundle_opt.gradient_tol);
+    update(input, "step_tol", bundle_opt.step_tol);
+    update(input, "relative_cost_tol", bundle_opt.relative_cost_tol);
+    update(input, "initial_lambda", bundle_opt.initial_lambda);
+    update(input, "min_lambda", bundle_opt.min_lambda);
+    update(input, "max_lambda", bundle_opt.max_lambda);
+    update(input, "lambda_factor", bundle_opt.lambda_factor);
+    update(input, "verbose", bundle_opt.verbose);
+    if (input.contains("loss_type")) {
+        std::string loss_type = input["loss_type"].cast<std::string>();
+        for (char &c : loss_type)
+            c = std::toupper(c);
+        if (loss_type == "TRIVIAL") {
+            bundle_opt.loss_type = BundleOptions::LossType::TRIVIAL;
+        } else if (loss_type == "TRUNCATED") {
+            bundle_opt.loss_type = BundleOptions::LossType::TRUNCATED;
+        } else if (loss_type == "HUBER") {
+            bundle_opt.loss_type = BundleOptions::LossType::HUBER;
+        } else if (loss_type == "CAUCHY") {
+            bundle_opt.loss_type = BundleOptions::LossType::CAUCHY;
+        } else if (loss_type == "TRUNCATED_CAUCHY") {
+            bundle_opt.loss_type = BundleOptions::LossType::TRUNCATED_CAUCHY;
+        } else if (loss_type == "TRUNCATED_LE_ZACH") {
+            bundle_opt.loss_type = BundleOptions::LossType::TRUNCATED_LE_ZACH;
+        }
+    }
+    if (input.contains("lambda_update")) {
+        std::string lambda_update = input["lambda_update"].cast<std::string>();
+        for (char &c : lambda_update)
+            c = std::toupper(c);
+        if (lambda_update == "NIELSEN") {
+            bundle_opt.lambda_update = BundleOptions::LambdaUpdateType::NIELSEN;
+        } else if (lambda_update == "FIXED_FACTOR") {
+            bundle_opt.lambda_update = BundleOptions::LambdaUpdateType::FIXED_FACTOR;
+        }
+    }
+    if (input.contains("damping")) {
+        std::string damping = input["damping"].cast<std::string>();
+        for (char &c : damping)
+            c = std::toupper(c);
+        if (damping == "LEVENBERG") {
+            bundle_opt.damping = BundleOptions::DampingType::LEVENBERG;
+        } else if (damping == "MARQUARDT") {
+            bundle_opt.damping = BundleOptions::DampingType::MARQUARDT;
+        }
+    }
+}
+
+inline void update_absolute_pose_options(const py::dict &input, AbsolutePoseOptions &opt) {
+    // Handle nested ransac and bundle options
+    if (input.contains("ransac")) {
+        update_ransac_options(input["ransac"].cast<py::dict>(), opt.ransac);
+    }
+    if (input.contains("bundle")) {
+        update_bundle_options(input["bundle"].cast<py::dict>(), opt.bundle);
+    }
+
+    update(input, "max_error", opt.max_error);
+    update(input, "estimate_focal_length", opt.estimate_focal_length);
+    update(input, "estimate_extra_params", opt.estimate_extra_params);
+    update(input, "min_fov", opt.min_fov);
+}
+
+inline void update_relative_pose_options(const py::dict &input, RelativePoseOptions &opt) {
+    // Handle nested ransac and bundle options
+    if (input.contains("ransac")) {
+        update_ransac_options(input["ransac"].cast<py::dict>(), opt.ransac);
+    }
+    if (input.contains("bundle")) {
+        update_bundle_options(input["bundle"].cast<py::dict>(), opt.bundle);
+    }
+
+    update(input, "max_error", opt.max_error);
+    update(input, "tangent_sampson", opt.tangent_sampson);
+    update(input, "real_focal_check", opt.real_focal_check);
+}
+
+inline void update_hybrid_pose_options(const py::dict &input, HybridPoseOptions &opt) {
+    // Handle nested ransac and bundle options
+    if (input.contains("ransac")) {
+        update_ransac_options(input["ransac"].cast<py::dict>(), opt.ransac);
+    }
+    if (input.contains("bundle")) {
+        update_bundle_options(input["bundle"].cast<py::dict>(), opt.bundle);
+    }
+
+    // max_errors is a std::array<double, 2> with indices [2D-3D, 2D-2D]
+    if (input.contains("max_errors")) {
+        auto max_errors_list = input["max_errors"].cast<std::vector<double>>();
+        if (max_errors_list.size() >= 2) {
+            opt.max_errors[0] = max_errors_list[0];
+            opt.max_errors[1] = max_errors_list[1];
+        }
+    }
+}
+
+inline void update_homography_options(const py::dict &input, HomographyOptions &opt) {
+    // Handle nested ransac and bundle options
+    if (input.contains("ransac")) {
+        update_ransac_options(input["ransac"].cast<py::dict>(), opt.ransac);
+    }
+    if (input.contains("bundle")) {
+        update_bundle_options(input["bundle"].cast<py::dict>(), opt.bundle);
+    }
+
+    update(input, "max_error", opt.max_error);
+}
+
+inline void update_monodepth_relative_pose_options(const py::dict &input, MonoDepthRelativePoseOptions &opt) {
+    // Handle nested ransac and bundle options
+    if (input.contains("ransac")) {
+        update_ransac_options(input["ransac"].cast<py::dict>(), opt.ransac);
+    }
+    if (input.contains("bundle")) {
+        update_bundle_options(input["bundle"].cast<py::dict>(), opt.bundle);
+    }
+
+    // max_errors is a std::array<double, 2> with indices [reproj_error, epipolar_error]
+    if (input.contains("max_errors")) {
+        auto max_errors_list = input["max_errors"].cast<std::vector<double>>();
+        if (max_errors_list.size() >= 2) {
+            opt.max_errors[0] = max_errors_list[0];
+            opt.max_errors[1] = max_errors_list[1];
+        }
+    }
+
+    update(input, "estimate_shift", opt.estimate_shift);
+    update(input, "weight_sampson", opt.weight_sampson);
+}
+
+inline void write_to_dict(const RansacOptions &ransac_opt, py::dict &dict) {
+    dict["max_iterations"] = ransac_opt.max_iterations;
+    dict["min_iterations"] = ransac_opt.min_iterations;
+    dict["dyn_num_trials_mult"] = ransac_opt.dyn_num_trials_mult;
+    dict["success_prob"] = ransac_opt.success_prob;
+    dict["seed"] = ransac_opt.seed;
+    dict["progressive_sampling"] = ransac_opt.progressive_sampling;
+    dict["max_prosac_iterations"] = ransac_opt.max_prosac_iterations;
+}
+
+inline void write_to_dict(const BundleOptions &bundle_opt, py::dict &dict) {
+    dict["max_iterations"] = bundle_opt.max_iterations;
+    dict["loss_scale"] = bundle_opt.loss_scale;
+    switch (bundle_opt.loss_type) {
+    default:
+    case BundleOptions::LossType::TRIVIAL:
+        dict["loss_type"] = "TRIVIAL";
+        break;
+    case BundleOptions::LossType::TRUNCATED:
+        dict["loss_type"] = "TRUNCATED";
+        break;
+    case BundleOptions::LossType::HUBER:
+        dict["loss_type"] = "HUBER";
+        break;
+    case BundleOptions::LossType::CAUCHY:
+        dict["loss_type"] = "CAUCHY";
+        break;
+    case BundleOptions::LossType::TRUNCATED_CAUCHY:
+        dict["loss_type"] = "TRUNCATED_CAUCHY";
+        break;
+    case BundleOptions::LossType::TRUNCATED_LE_ZACH:
+        dict["loss_type"] = "TRUNCATED_LE_ZACH";
+        break;
+    }
+    dict["gradient_tol"] = bundle_opt.gradient_tol;
+    dict["step_tol"] = bundle_opt.step_tol;
+    dict["relative_cost_tol"] = bundle_opt.relative_cost_tol;
+    dict["initial_lambda"] = bundle_opt.initial_lambda;
+    dict["min_lambda"] = bundle_opt.min_lambda;
+    dict["max_lambda"] = bundle_opt.max_lambda;
+    dict["lambda_factor"] = bundle_opt.lambda_factor;
+    dict["verbose"] = bundle_opt.verbose;
+    switch (bundle_opt.lambda_update) {
+    default:
+    case BundleOptions::LambdaUpdateType::NIELSEN:
+        dict["lambda_update"] = "NIELSEN";
+        break;
+    case BundleOptions::LambdaUpdateType::FIXED_FACTOR:
+        dict["lambda_update"] = "FIXED_FACTOR";
+        break;
+    }
+    switch (bundle_opt.damping) {
+    default:
+    case BundleOptions::DampingType::LEVENBERG:
+        dict["damping"] = "LEVENBERG";
+        break;
+    case BundleOptions::DampingType::MARQUARDT:
+        dict["damping"] = "MARQUARDT";
+        break;
+    }
+}
+
+inline void write_to_dict(const BundleStats &stats, py::dict &dict) {
+    dict["iterations"] = stats.iterations;
+    dict["cost"] = stats.cost;
+    dict["initial_cost"] = stats.initial_cost;
+    dict["invalid_steps"] = stats.invalid_steps;
+    dict["grad_norm"] = stats.grad_norm;
+    dict["step_norm"] = stats.step_norm;
+    dict["lambda"] = stats.lambda;
+}
+
+inline void write_to_dict(const RansacStats &stats, py::dict &dict) {
+    dict["refinements"] = stats.refinements;
+    dict["iterations"] = stats.iterations;
+    dict["num_inliers"] = stats.num_inliers;
+    dict["inlier_ratio"] = stats.inlier_ratio;
+    dict["model_score"] = stats.model_score;
+}
+
+inline Camera camera_from_dict(const py::dict &camera_dict) {
+    Camera camera;
+    camera.model_id = Camera::id_from_string(camera_dict["model"].cast<std::string>());
+
+    update(camera_dict, "width", camera.width);
+    update(camera_dict, "height", camera.height);
+
+    camera.params = camera_dict["params"].cast<std::vector<double>>();
+    return camera;
+}
+
+inline std::vector<bool> convert_inlier_vector(const std::vector<char> &inliers) {
+    std::vector<bool> inliers_bool(inliers.size());
+    for (size_t k = 0; k < inliers.size(); ++k) {
+        inliers_bool[k] = static_cast<bool>(inliers[k]);
+    }
+    return inliers_bool;
+}
+
+inline std::vector<std::vector<bool>> convert_inlier_vectors(const std::vector<std::vector<char>> &inliers) {
+    std::vector<std::vector<bool>> inliers_bool(inliers.size());
+    for (size_t cam_k = 0; cam_k < inliers.size(); ++cam_k) {
+        inliers_bool[cam_k].resize(inliers[cam_k].size());
+        for (size_t pt_k = 0; pt_k < inliers[cam_k].size(); ++pt_k) {
+            inliers_bool[cam_k][pt_k] = static_cast<bool>(inliers[cam_k][pt_k]);
+        }
+    }
+    return inliers_bool;
+}
+
+} // namespace poselib

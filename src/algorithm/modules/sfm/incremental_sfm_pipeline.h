@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../camera/camera_types.h"
+#include "resection.h"
 #include "track_store.h"
 #include "view_graph.h"
 #include <Eigen/Core>
@@ -117,7 +118,8 @@ int run_batch_resection(const TrackStore& store, const std::vector<int>& image_i
                         const std::vector<int>& image_to_camera_index,
                         std::vector<Eigen::Matrix3d>* poses_R,
                         std::vector<Eigen::Vector3d>* poses_C, std::vector<bool>* registered,
-                        int min_inliers = 15);
+                        int min_inliers = 15,
+                        std::vector<int>* registered_images_out = nullptr);
 
 /**
  * Triangulate tracks that have observations in the given new images and in already-registered
@@ -175,7 +177,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
                    int max_iterations, double* rmse_px_out, int anchor_image = -1,
                    const std::vector<bool>* camera_frozen = nullptr, uint32_t partial_intr_fix = 0u,
-                   double focal_prior_weight = 0.0, const BASolverOverrides& solver_overrides = {});
+                   double focal_prior_weight = 0.0, const BASolverOverrides& solver_overrides = {},
+                   const std::vector<uint32_t>* partial_intr_fix_per_cam = nullptr);
 
 /**
  * Run local BA: optimize a subset of images (other poses fixed). Intrinsics not optimized.
@@ -261,6 +264,7 @@ struct InitPairOptions {
 
 /// Options for the resection batch loop.
 struct ResectionOptions {
+  ResectionBackend backend = ResectionBackend::kPoseLib; ///< Absolute-pose backend.
   int min_inliers = 15;               ///< Min PnP RANSAC inliers to accept resection.
   int min_3d2d_count = 30;           ///< Min 3D-2D correspondences to consider an image.
   double batch_ratio = 0.75;         ///< Include images with score ≥ ratio × best_score.
@@ -283,7 +287,7 @@ struct ResectionOptions {
 /// to run_global_ba().  It supersedes the old intrinsics_k3p12_free_min_images field.
 struct IntrinsicsSchedule {
   // ── Phase unlock thresholds ───────────────────────────────────────────────
-  int phase1_min_images = 3;   ///< Start optimising fx/fy.
+  int phase1_min_images = 1;   ///< Start optimising fx/fy.
   int phase2_min_images = 10;  ///< Also unlock k1/k2.
   int phase3_min_images = 100; ///< Unlock cx/cy + k3/p1/p2 (full intrinsics).
 
@@ -303,6 +307,13 @@ struct IntrinsicsSchedule {
 
   /// Returns the partial_intr_fix bitmask for run_global_ba() based on registration count.
   uint32_t fix_mask_for(int n_registered) const;
+
+  /// Returns a per-camera vector of partial_intr_fix bitmasks.
+  /// Each camera's phase is determined by its own registered image count (images of that
+  /// specific camera that have been successfully registered), rather than the total.
+  std::vector<uint32_t> fix_masks_per_camera(const std::vector<bool>& registered,
+                                              const std::vector<int>& image_to_camera_index,
+                                              int n_cameras) const;
 };
 
 /// Options for local BA.

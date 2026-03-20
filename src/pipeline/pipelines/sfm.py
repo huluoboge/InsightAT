@@ -238,7 +238,7 @@ def run_step_match(
             vlad_codebook=codebook_path,
             vlad_cache_dir=vlad_dir / "cache",
             pca_model_file=pca_path,
-            vlad_top_k=20,
+            vlad_top_k=50,
             extra_args=cfg.extra_retrieve or None,
         )
     emit_pipeline_event({"step": "retrieve_pairs", "ok": True, "data": {"pairs_json": str(pairs_retrieve)}})

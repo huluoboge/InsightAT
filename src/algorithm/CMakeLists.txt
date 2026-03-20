@@ -135,6 +135,11 @@ endif()
 # 创建库目标
 # ─────────────────────────────────────────────────────────────
 
+include_directories(
+    ${CMAKE_SOURCE_DIR}/third_party/PoseLib
+    ${CMAKE_BINARY_DIR}/third_party/PoseLib/generated_headers
+)
+
 add_library(InsightATAlgorithm STATIC ${ALGORITHM_SOURCES})
 
 # ─────────────────────────────────────────────────────────────
@@ -145,6 +150,7 @@ target_include_directories(InsightATAlgorithm
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/..
         ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_SOURCE_DIR}/third_party/PoseLib
         ${CMAKE_SOURCE_DIR}/third_party/DBow3/src
 )
 
@@ -155,6 +161,8 @@ target_link_libraries(InsightATAlgorithm
         util
         algorithm_camera
         sfm_module
+        PoseLib
+        PoseLib::PoseLib
         ${OpenCV_LIBS}
         DBoW3
         sift_gpu

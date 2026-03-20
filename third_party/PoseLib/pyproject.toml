@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel>=0.38", "pybind11==3.0.1", "pybind11-stubgen", "ruff", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poselib"
+dynamic = ["version"]
+description = "RANSAC + collection of minimal solvers for camera pose estimation."
+authors = [
+    {name = "Viktor Larsson and contributors", email = "viktor.larsson@math.lth.se"}
+]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3.5",
+]
+
+[tool.cibuildwheel]
+test-extras = ["test"]
+test-command = "pip install \"posebench @ https://github.com/PoseLib/posebench/archive/d3129b854561b24f44a2ae1b05b7b1667dd47516.tar.gz\" && pytest -s -v {project}/tests"
+
+[tool.setuptools]
+license-files = ["LICENSE"]
+
+[dependency-groups]
+dev = [
+    "clang-format==21.1.8",
+]

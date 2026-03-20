@@ -218,6 +218,7 @@ else()
 endif()
 
 include_directories(third_party)
+include_directories(third_party/PoseLib)
 include_directories(src)
 
 add_subdirectory(third_party)
