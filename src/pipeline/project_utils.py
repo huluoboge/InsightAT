@@ -329,6 +329,9 @@ def extract_features_dual(
         "--nfeatures-retrieval", str(nfeatures_retrieval),
         "--resize-retrieval", str(resize_retrieval),
         "--extract-backend", extract_backend,
+        "--no-adapt",
+        "--nms",
+        "--uint8"
     ]
     if extra_args:
         cmd += extra_args

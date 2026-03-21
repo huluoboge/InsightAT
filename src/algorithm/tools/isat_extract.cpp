@@ -132,7 +132,7 @@ int main(int argc, char* argv[]) {
   std::string output_retrieval_dir; // Dual-output: retrieval features directory
 
   // SIFT-specific options
-  int nfeatures = 8000;
+  int nfeatures = 40000;
   int nfeatures_retrieval = 1500; // Dual-output: retrieval features count
   int resize_retrieval = 1024;    // Dual-output: retrieval image resize dimension
   float threshold = 0.02f;
@@ -173,7 +173,7 @@ int main(int argc, char* argv[]) {
   // SIFT-specific parameters
   // ================================================================
   cmd.add(make_option('n', nfeatures, "nfeatures")
-              .doc("[SIFT] Maximum features per image (default: 8000)"));
+              .doc("[SIFT] Maximum features per image (default: 40000)"));
   cmd.add(make_option('t', threshold, "threshold").doc("[SIFT] Peak threshold (default: 0.02)"));
   cmd.add(
       make_option(0, octaves, "octaves").doc("[SIFT] Number of octaves, -1=auto (default: -1)"));
@@ -208,17 +208,6 @@ int main(int argc, char* argv[]) {
               .doc("[SuperPoint] NMS radius in pixels (default: 4)"));
   cmd.add(make_option(0, superpoint_max_keypoints, "superpoint-max-keypoints")
               .doc("[SuperPoint] Maximum keypoints to keep (default: 1024)"));
-
-  // Descriptor options
-  cmd.add(make_option(0, normalization, "norm")
-              .doc("Normalization: l1root (RootSIFT) or l2 (default: l1root)"));
-  cmd.add(make_switch(0, "uint8").doc("Convert descriptors to uint8 (saves memory)"));
-
-  // NMS options
-  cmd.add(make_switch(0, "nms").doc("Enable non-maximum suppression"));
-  cmd.add(make_option(0, nms_radius, "nms-radius").doc("NMS radius in pixels (default: 3.0)"));
-  cmd.add(
-      make_switch(0, "nms-no-orient").doc("NMS ignores orientation (removes multi-orientation)"));
 
   // Logging options
   std::string log_level;
@@ -394,7 +383,7 @@ int main(int argc, char* argv[]) {
   Stage imageLoadStage("ImageLoad", NUM_IO_THREADS, IO_QUEUE_SIZE,
                        [&image_tasks, process_retrieval, resize_retrieval](int index) {
                          auto& task = image_tasks[index];
-                         cv::Mat image = cv::imread(task.image_path);
+                         cv::Mat image = cv::imread(task.image_path,cv::IMREAD_UNCHANGED);
                          if (image.empty()) {
                            LOG(ERROR) << "Failed to load image: " << task.image_path;
                            return;

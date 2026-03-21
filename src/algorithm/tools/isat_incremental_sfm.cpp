@@ -261,7 +261,7 @@ int main(int argc, char* argv[]) {
   // opts.global_ba.optimize_intrinsics_min_images = 2;
   opts.global_ba.max_iterations = 500;
   // Apply --object-scan preset first (individual flags override it below).
-  opts.intrinsics.focal_prior_weight = 100.f;
+  opts.intrinsics.focal_prior_weight = 10.f;
   if (cmd.used("object-scan")) {
     opts.local_ba.skip = true;
     opts.global_ba.max_iterations = 50;
@@ -273,7 +273,7 @@ int main(int argc, char* argv[]) {
     opts.resection.late_registered_threshold = 30;
     opts.resection.late_absolute_min = 100;
     opts.resection.late_batch_max = 5;
-    LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=5000, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100, late_batch_max=5.";
+    LOG(INFO) << "--object-scan preset: skip_local_ba, max_iter=500, grad=1e-10, func=1e-6, param=1e-8, dense_max=50, intrinsics_min=5, resection_min_3d2d=30, late_reg_threshold=30, late_abs_min=100, late_batch_max=5.";
   }
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba.optimize_intrinsics = false;

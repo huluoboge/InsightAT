@@ -55,58 +55,73 @@ uint32_t IntrinsicsSchedule::fix_mask_for(int n_registered) const {
 
 std::vector<uint32_t>
 IntrinsicsSchedule::fix_masks_per_camera(const std::vector<bool>& registered,
-                                          const std::vector<int>& image_to_camera_index,
-                                          int n_cameras) const {
+                                         const std::vector<int>& image_to_camera_index,
+                                         int n_cameras) const {
   if (n_cameras <= 0)
     return {};
-  // Count registered images per camera.
-  std::vector<int> cam_count(static_cast<size_t>(n_cameras), 0);
-  int total_registered = 0;
-  const size_t n = std::min(registered.size(), image_to_camera_index.size());
-  for (size_t i = 0; i < n; ++i) {
+  std::vector<uint32_t> masks(static_cast<size_t>(n_cameras));
+  std::vector<int> cam_registered_count(static_cast<size_t>(n_cameras), 0);
+  for (int i = 0; i < static_cast<int>(registered.size()); ++i) {
     if (registered[i]) {
-      const int c = image_to_camera_index[i];
-      if (c >= 0 && c < n_cameras) {
-        ++cam_count[static_cast<size_t>(c)];
-        ++total_registered;
+      int cam_idx = image_to_camera_index[i];
+      if (cam_idx >= 0 && cam_idx < n_cameras) {
+        cam_registered_count[static_cast<size_t>(cam_idx)]++;
       }
     }
   }
-  // Synchronise intrinsics phase across all cameras by using the global average
-  // registered count (total_registered / n_cameras) as the effective count for
-  // every active camera.
-  //
-  // Rationale: in a multi-camera rig (e.g. 5-direction oblique aerial rig),
-  // cameras facing LEFT/RIGHT register images faster than BACK/DOWN/FRONT
-  // because of their wider cross-strip overlap.  If each camera advances its
-  // own intrinsics phase independently, early cameras unlock focal length while
-  // late cameras are still frozen, creating a systematic cross-camera fx
-  // mismatch that triggers outlier-rejection cascades and breaks the cross-
-  // direction track graph.
-  //
-  // Using total/n_cameras means all active cameras share the same phase gate.
-  // The phase thresholds (5, 10, 30) are now interpreted as
-  // "N images registered on average across all cameras", which is a stable,
-  // rig-level criterion independent of individual direction connectivity.
-  //
-  // Exception: cameras with zero registered images remain fully frozen
-  // (effective = 0 → kFixIntrAll).  If a direction never registers, it does
-  // not block the remaining cameras from progressing.
-  //
-  // NOTE: The ideal long-term solution is to supply GNSS position priors to
-  // the incremental BA (as in the reference InsightMap pipeline).  With GPS
-  // anchoring the metric scale from the very first BA round, intrinsics can
-  // be released freely without any phase schedule.
-  const int effective_count = (n_cameras > 0) ? (total_registered / n_cameras) : 0;
-  const uint32_t global_mask = fix_mask_for(effective_count);
-  std::vector<uint32_t> masks(static_cast<size_t>(n_cameras));
   for (int c = 0; c < n_cameras; ++c) {
-    masks[static_cast<size_t>(c)] =
-        (cam_count[static_cast<size_t>(c)] == 0)
-            ? static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll)
-            : global_mask;
+    masks[static_cast<size_t>(c)] = fix_mask_for(cam_registered_count[static_cast<size_t>(c)]);
   }
   return masks;
+
+  // // Count registered images per camera.
+  // std::vector<int> cam_count(static_cast<size_t>(n_cameras), 0);
+  // int total_registered = 0;
+  // const size_t n = std::min(registered.size(), image_to_camera_index.size());
+  // for (size_t i = 0; i < n; ++i) {
+  //   if (registered[i]) {
+  //     const int c = image_to_camera_index[i];
+  //     if (c >= 0 && c < n_cameras) {
+  //       ++cam_count[static_cast<size_t>(c)];
+  //       ++total_registered;
+  //     }
+  //   }
+  // }
+  // // Synchronise intrinsics phase across all cameras by using the global average
+  // // registered count (total_registered / n_cameras) as the effective count for
+  // // every active camera.
+  // //
+  // // Rationale: in a multi-camera rig (e.g. 5-direction oblique aerial rig),
+  // // cameras facing LEFT/RIGHT register images faster than BACK/DOWN/FRONT
+  // // because of their wider cross-strip overlap.  If each camera advances its
+  // // own intrinsics phase independently, early cameras unlock focal length while
+  // // late cameras are still frozen, creating a systematic cross-camera fx
+  // // mismatch that triggers outlier-rejection cascades and breaks the cross-
+  // // direction track graph.
+  // //
+  // // Using total/n_cameras means all active cameras share the same phase gate.
+  // // The phase thresholds (5, 10, 30) are now interpreted as
+  // // "N images registered on average across all cameras", which is a stable,
+  // // rig-level criterion independent of individual direction connectivity.
+  // //
+  // // Exception: cameras with zero registered images remain fully frozen
+  // // (effective = 0 → kFixIntrAll).  If a direction never registers, it does
+  // // not block the remaining cameras from progressing.
+  // //
+  // // NOTE: The ideal long-term solution is to supply GNSS position priors to
+  // // the incremental BA (as in the reference InsightMap pipeline).  With GPS
+  // // anchoring the metric scale from the very first BA round, intrinsics can
+  // // be released freely without any phase schedule.
+  // const int effective_count = (n_cameras > 0) ? (total_registered / n_cameras) : 0;
+  // const uint32_t global_mask = fix_mask_for(effective_count);
+  // std::vector<uint32_t> masks(static_cast<size_t>(n_cameras));
+  // for (int c = 0; c < n_cameras; ++c) {
+  //   masks[static_cast<size_t>(c)] =
+  //       (cam_count[static_cast<size_t>(c)] == 0)
+  //           ? static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll)
+  //           : global_mask;
+  // }
+  // return masks;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,11 +400,13 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
 ///     pixel reprojection error exceeds `threshold_px`.
 ///   - If a track loses enough support that <2 valid observations remain,
 ///     clear its XYZ so later retriangulation can recover it.
-static int reject_outliers_post_resection(
-    TrackStore* store, const std::vector<int>& image_indices,
-    const std::vector<Eigen::Matrix3d>& poses_R, const std::vector<Eigen::Vector3d>& poses_C,
-    const std::vector<bool>& registered, const std::vector<camera::Intrinsics>& cameras,
-    const std::vector<int>& image_to_camera_index, double threshold_px) {
+static int reject_outliers_post_resection(TrackStore* store, const std::vector<int>& image_indices,
+                                          const std::vector<Eigen::Matrix3d>& poses_R,
+                                          const std::vector<Eigen::Vector3d>& poses_C,
+                                          const std::vector<bool>& registered,
+                                          const std::vector<camera::Intrinsics>& cameras,
+                                          const std::vector<int>& image_to_camera_index,
+                                          double threshold_px) {
   if (!store || image_indices.empty())
     return 0;
   const int n_images = store->num_images();
@@ -462,7 +479,8 @@ static int reject_outliers_post_resection(
   return marked;
 }
 
-static int count_valid_triangulated_observations_on_image(const TrackStore& store, int image_index) {
+static int count_valid_triangulated_observations_on_image(const TrackStore& store,
+                                                          int image_index) {
   std::vector<int> obs_ids;
   store.get_image_observation_indices(image_index, &obs_ids);
   int count = 0;
@@ -1693,14 +1711,13 @@ int run_batch_resection(const TrackStore& store, const std::vector<int>& image_i
     if (!resection_single_image(K, store, im, &R, &t, min_inliers, ransac_thresh_px, &inliers,
                                 &rmse_px)) {
       LOG(INFO) << "  resection image " << im << ": FAILED (3D-2D=" << n_3d2d
-                << ", inliers=" << inliers << ", rmse=" << rmse_px << ", need "
-                << min_inliers << ")";
+                << ", inliers=" << inliers << ", rmse=" << rmse_px << ", need " << min_inliers
+                << ")";
       continue;
     }
     Eigen::Vector3d C = -R.transpose() * t;
-    LOG(INFO) << "  resection image " << im << ": OK (3D-2D=" << n_3d2d << ", inliers="
-              << inliers << ", rmse=" << rmse_px << ", C=[" << C(0) << "," << C(1) << ","
-              << C(2) << "])";
+    LOG(INFO) << "  resection image " << im << ": OK (3D-2D=" << n_3d2d << ", inliers=" << inliers
+              << ", rmse=" << rmse_px << ", C=[" << C(0) << "," << C(1) << "," << C(2) << "])";
     if (static_cast<size_t>(im) >= poses_R->size())
       poses_R->resize(static_cast<size_t>(im) + 1);
     if (static_cast<size_t>(im) >= poses_C->size())
@@ -2249,8 +2266,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
       ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(),
                                         static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
     } else {
-      const bool use_per_cam = partial_intr_fix_per_cam &&
-                               partial_intr_fix_per_cam->size() == ba_in.cameras.size();
+      const bool use_per_cam =
+          partial_intr_fix_per_cam && partial_intr_fix_per_cam->size() == ba_in.cameras.size();
       for (size_t c = 0; c < ba_in.cameras.size(); ++c) {
         const bool frozen = (camera_frozen && c < camera_frozen->size() && (*camera_frozen)[c]);
         if (frozen) {
@@ -2867,9 +2884,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       }
       ov.huber_loss_delta = 10.0;
       // Detection rounds (r>0): tighten solver tolerances for speed.
-      // if (r > 0) 
-      if(!optimize_intrinsics)
-      {
+      // if (r > 0)
+      if (!optimize_intrinsics) {
         if (ov.function_tolerance == 0.0)
           ov.function_tolerance = 1e-3;
         if (ov.gradient_tolerance == 0.0)
@@ -2885,13 +2901,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         std::vector<uint32_t> per_cam_masks;
         if (optimize_intrinsics)
           per_cam_masks = opts.intrinsics.fix_masks_per_camera(
-              *registered_out, image_to_camera_index,
-              static_cast<int>(cameras->size()));
+              *registered_out, image_to_camera_index, static_cast<int>(cameras->size()));
         ok = run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
                            image_to_camera_index, *cameras, cameras, optimize_intrinsics,
                            opts.global_ba.max_iterations, &rmse, anchor_image, frozen_ptr, fix_mask,
-                           focal_prior_weight, ov,
-                           optimize_intrinsics ? &per_cam_masks : nullptr);
+                           focal_prior_weight, ov, optimize_intrinsics ? &per_cam_masks : nullptr);
       } else {
         ok = dispatch_local_ba(lba_batch, lba_new_tracks, ov, &rmse);
       }
@@ -2911,8 +2925,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       //   thr = 4.0;
       // }
       double thr = 8.0;
-      if(optimize_intrinsics)
-      {
+      if (optimize_intrinsics) {
         thr = 4.0;
       }
       int rejected = 0;
@@ -3122,47 +3135,46 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       // that would cause the top-ranked image's resection to fail silently.
       for (const ResectionCandidate& cand : colmap_candidates) {
         std::vector<int> registered_images;
-        const int n = run_batch_resection(
-            *store_out, {cand.image_index}, *cameras, image_to_camera_index, poses_R_out,
-            poses_C_out, registered_out, static_cast<int>(opts.resection.min_inliers),
-            &registered_images);
+        int resectin_minliers = 50;
+        const int n =
+            run_batch_resection(*store_out, {cand.image_index}, *cameras, image_to_camera_index,
+                                poses_R_out, poses_C_out, registered_out,
+                                static_cast<int>(resectin_minliers), &registered_images);
         LOG(INFO) << "  [kColmap] img=" << cand.image_index << " 3d2d=" << cand.num_3d2d
                   << " cov=" << cand.coverage << (cand.is_primary ? "" : " [fallback]") << " → "
                   << (n > 0 ? "OK" : "FAIL");
         if (n <= 0)
           continue;
+        added =  1;
+        batch = {registered_images[0]}; // downstream sees only accepted new image
 
-        const double post_resection_reproj_thr_px = std::max(6.0, opts.outlier.threshold_px * 2.0);
-        const int n_rejected_post_resection =
-            reject_outliers_post_resection(store_out, registered_images, *poses_R_out, *poses_C_out,
-                                           *registered_out, *cameras, image_to_camera_index,
-                                           post_resection_reproj_thr_px);
-        std::vector<int> kept_images;
-        rollback_weak_post_resection_images(*store_out, registered_images,
-                                            static_cast<int>(opts.resection.min_inliers),
-                                            poses_R_out, poses_C_out, registered_out,
-                                            &kept_images);
-        LOG(INFO) << "  post_resection_cleanup: rejected=" << n_rejected_post_resection
-                  << " obs on new images, reproj_thr=" << post_resection_reproj_thr_px
-                  << " px, kept_images=" << kept_images.size();
-        if (kept_images.empty())
-          continue;
-
-        added = static_cast<int>(kept_images.size());
-        batch = kept_images; // downstream sees only accepted new images
+        // const double post_resection_reproj_thr_px = std::max(6.0, opts.outlier.threshold_px * 2.0);
+        // const int n_rejected_post_resection = reject_outliers_post_resection(
+        //     store_out, registered_images, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+        //     image_to_camera_index, post_resection_reproj_thr_px);
+        // std::vector<int> kept_images;
+        // rollback_weak_post_resection_images(*store_out, registered_images,
+        //                                     static_cast<int>(opts.resection.min_inliers),
+        //                                     poses_R_out, poses_C_out, registered_out, &kept_images);
+        // LOG(INFO) << "  post_resection_cleanup: rejected=" << n_rejected_post_resection
+        //           << " obs on new images, reproj_thr=" << post_resection_reproj_thr_px
+        //           << " px, kept_images=" << kept_images.size();
+        // if (kept_images.empty())
+        //   continue;
+            
+        // added = static_cast<int>(kept_images.size());
+        // batch = kept_images; // downstream sees only accepted new images
         break;
       }
     } else {
       std::vector<int> registered_images;
-      added = run_batch_resection(*store_out, batch, *cameras, image_to_camera_index, poses_R_out,
-                                  poses_C_out, registered_out,
-                                  static_cast<int>(2.5 * opts.resection.min_inliers),
-                                  &registered_images);
+      added = run_batch_resection(
+          *store_out, batch, *cameras, image_to_camera_index, poses_R_out, poses_C_out,
+          registered_out, static_cast<int>(2.5 * opts.resection.min_inliers), &registered_images);
       const double post_resection_reproj_thr_px = std::max(6.0, opts.outlier.threshold_px * 2.0);
-      const int n_rejected_post_resection =
-          reject_outliers_post_resection(store_out, registered_images, *poses_R_out, *poses_C_out,
-                                         *registered_out, *cameras, image_to_camera_index,
-                                         post_resection_reproj_thr_px);
+      const int n_rejected_post_resection = reject_outliers_post_resection(
+          store_out, registered_images, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+          image_to_camera_index, post_resection_reproj_thr_px);
       std::vector<int> kept_images;
       rollback_weak_post_resection_images(*store_out, registered_images,
                                           static_cast<int>(opts.resection.min_inliers), poses_R_out,
@@ -3213,7 +3225,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         // const bool opt_intr = opts.global_ba.optimize_intrinsics &&
         //                       num_registered >= opts.global_ba.optimize_intrinsics_min_images;
         // bool opt_intr = opts.global_ba.optimize_intrinsics;
-        bool opt_intr = false;
+        bool opt_intr = true;
         // 主要由phase策略来决定内参的优化顺序
         uint32_t refine_mask_e = opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
         auto t_ba0 = Clock::now();
