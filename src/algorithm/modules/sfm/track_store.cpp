@@ -165,6 +165,18 @@ int TrackStore::get_track_obs_ids(int track_id, std::vector<int>* obs_ids_out) c
   return static_cast<int>(obs_ids_out->size());
 }
 
+int TrackStore::get_track_all_obs_ids(int track_id, std::vector<int>* obs_ids_out) const {
+  assert(obs_ids_out);
+  obs_ids_out->clear();
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_obs_ids_.size())
+    return 0;
+  if (!is_track_valid(track_id))
+    return 0;
+  // Return ALL obs ids (alive AND deleted) stored for this track.
+  *obs_ids_out = track_obs_ids_[static_cast<size_t>(track_id)];
+  return static_cast<int>(obs_ids_out->size());
+}
+
 int TrackStore::get_image_observation_indices(int image_index,
                                               std::vector<int>* obs_indices_out) const {
   assert(obs_indices_out);

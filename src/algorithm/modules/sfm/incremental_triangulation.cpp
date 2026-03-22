@@ -138,9 +138,9 @@ Eigen::Vector3d triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& 
 // recovered as  u_undist = rays_n[i](0)*fx + cx.  Mathematically equivalent to
 // triangulate_point_multiview but operates in pixel space (different row scaling of A).
 Eigen::Vector3d triangulate_point_dlt_openmvg(const std::vector<Eigen::Matrix3d>& R_list,
-                                               const std::vector<Eigen::Vector3d>& C_list,
-                                               const std::vector<Eigen::Vector2d>& rays_n,
-                                               const std::vector<camera::Intrinsics>& K_list) {
+                                              const std::vector<Eigen::Vector3d>& C_list,
+                                              const std::vector<Eigen::Vector2d>& rays_n,
+                                              const std::vector<camera::Intrinsics>& K_list) {
   const int N = static_cast<int>(R_list.size());
   if (N < 2 || static_cast<int>(C_list.size()) != N || static_cast<int>(rays_n.size()) != N ||
       static_cast<int>(K_list.size()) != N)
@@ -263,7 +263,7 @@ refine_point_multiview_gn(Eigen::Vector3d X, const std::vector<Eigen::Matrix3d>&
     const Eigen::Vector3d dx = JtJ.ldlt().solve(Jtr);
     if (!dx.allFinite())
       break;
-    const Eigen::Vector3d X_new = X - dx;  // correct GN descent: X_new = X - (J^T J)^{-1} J^T r
+    const Eigen::Vector3d X_new = X - dx; // correct GN descent: X_new = X - (J^T J)^{-1} J^T r
     // Only accept the step if it actually reduces the residual (no line search, so guard against
     // ill-conditioned J^T J producing an overshooting step).
     Eigen::VectorXd r_new(r.size());
@@ -337,9 +337,9 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
   }
 
   if (N == 2) {
-    LOG(INFO) << "N=2, min inlier views: " << opt.min_inlier_views;
+    // LOG(INFO) << "N=2, min inlier views: " << opt.min_inlier_views;
     if (opt.min_inlier_views > 2) {
-      LOG(INFO) << "min inlier views > 2, but N=2, returning false";
+      // LOG(INFO) << "min inlier views > 2, but N=2, returning false";
       return false;
     }
 
@@ -356,54 +356,59 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
     //           << " X_omvg=(" << X_omvg.transpose() << ")"
     //           << " diff=" << (X - X_omvg).norm();
     // {
-    //   const double e0_cur  = reproj_error_px(X,      R_list[0], C_list[0], cameras_per_view[0], u_px[0], v_px[0]);
-    //   const double e1_cur  = reproj_error_px(X,      R_list[1], C_list[1], cameras_per_view[1], u_px[1], v_px[1]);
-    //   const double e0_omvg = reproj_error_px(X_omvg, R_list[0], C_list[0], cameras_per_view[0], u_px[0], v_px[0]);
-    //   const double e1_omvg = reproj_error_px(X_omvg, R_list[1], C_list[1], cameras_per_view[1], u_px[1], v_px[1]);
+    //   const double e0_cur  = reproj_error_px(X,      R_list[0], C_list[0], cameras_per_view[0],
+    //   u_px[0], v_px[0]); const double e1_cur  = reproj_error_px(X,      R_list[1], C_list[1],
+    //   cameras_per_view[1], u_px[1], v_px[1]); const double e0_omvg = reproj_error_px(X_omvg,
+    //   R_list[0], C_list[0], cameras_per_view[0], u_px[0], v_px[0]); const double e1_omvg =
+    //   reproj_error_px(X_omvg, R_list[1], C_list[1], cameras_per_view[1], u_px[1], v_px[1]);
     //   LOG(INFO) << "[dlt_cmp] reproj_cur=(" << e0_cur << "," << e1_cur << ")"
     //             << " reproj_omvg=(" << e0_omvg << "," << e1_omvg << ")";
     // }
 
     if (!X.allFinite() || X.norm() < 1e-12) {
-      LOG(INFO) << "X is not finite or norm < 1e-12, returning false";
+      // LOG(INFO) << "X is not finite or norm < 1e-12, returning false";
       return false;
     }
     if (!check_all_depths_positive(X, R_list, C_list)) {
-      LOG(INFO) << "X is not all depths positive, returning false";
+      // LOG(INFO) << "X is not all depths positive, returning false";
       return false;
     }
     // Angle check before GN: degenerate geometry makes J^T J near-singular → GN diverges.
     const double ang_pre = compute_max_ray_angle_deg(X, C2);
     if (ang_pre < opt.min_tri_angle_deg || ang_pre > opt.max_tri_angle_deg) {
-      LOG(INFO) << "pre-GN angle " << ang_pre << " outside [" << opt.min_tri_angle_deg << ","
-                << opt.max_tri_angle_deg << "], skip GN";
+      // LOG(INFO) << "pre-GN angle " << ang_pre << " outside [" << opt.min_tri_angle_deg << ","
+      //           << opt.max_tri_angle_deg << "], skip GN";
       return false;
     }
     // Pre-GN reproj check.
     double e0 = reproj_error_px(X, R_list[0], C_list[0], cameras_per_view[0], u_px[0], v_px[0]);
     double e1 = reproj_error_px(X, R_list[1], C_list[1], cameras_per_view[1], u_px[1], v_px[1]);
     if (e0 > opt.ransac_inlier_px || e1 > opt.ransac_inlier_px) {
-      LOG(INFO) << "reproj error " << e0 << " or " << e1 << " is greater than "
-                << opt.ransac_inlier_px;
+      // LOG(INFO) << "reproj error " << e0 << " or " << e1 << " is greater than "
+      //           << opt.ransac_inlier_px;
       return false;
     }
-    std::vector<size_t> idx = {0, 1};
-    Eigen::Vector3d X_gn = refine_point_multiview_gn(X, R_list, C_list, cameras_per_view, u_px, v_px, idx,
-                                                      opt.gn_max_iterations, opt.gn_tolerance);
-    // Re-check reproj after GN.
-    const double e0_gn = reproj_error_px(X_gn, R_list[0], C_list[0], cameras_per_view[0], u_px[0], v_px[0]);
-    const double e1_gn = reproj_error_px(X_gn, R_list[1], C_list[1], cameras_per_view[1], u_px[1], v_px[1]);
-    LOG(INFO) << "[dlt_cmp] pre_gn=(" << e0 << "," << e1 << ") post_gn=(" << e0_gn << "," << e1_gn << ")";
-    if (e0_gn > opt.ransac_inlier_px || e1_gn > opt.ransac_inlier_px) {
-      LOG(INFO) << "post-GN reproj " << e0_gn << " or " << e1_gn << " > " << opt.ransac_inlier_px
-                << ", reject";
-      return false;
-    }
+    // std::vector<size_t> idx = {0, 1};
+    // Eigen::Vector3d X_gn =
+    //     refine_point_multiview_gn(X, R_list, C_list, cameras_per_view, u_px, v_px, idx,
+    //                               opt.gn_max_iterations, opt.gn_tolerance);
+    // // Re-check reproj after GN.
+    // const double e0_gn =
+    //     reproj_error_px(X_gn, R_list[0], C_list[0], cameras_per_view[0], u_px[0], v_px[0]);
+    // const double e1_gn =
+    //     reproj_error_px(X_gn, R_list[1], C_list[1], cameras_per_view[1], u_px[1], v_px[1]);
+    // // LOG(INFO) << "[dlt_cmp] pre_gn=(" << e0 << "," << e1 << ") post_gn=(" << e0_gn << "," <<
+    // // e1_gn << ")";
+    // if (e0_gn > opt.ransac_inlier_px || e1_gn > opt.ransac_inlier_px) {
+    //   // LOG(INFO) << "post-GN reproj " << e0_gn << " or " << e1_gn << " > " << opt.ransac_inlier_px
+    //   //           << ", reject";
+    //   return false;
+    // }
     out->inlier_mask.resize(2);
     out->inlier_mask[0] = true;
     out->inlier_mask[1] = true;
     out->success = true;
-    out->X = X_gn;
+    out->X = X;
     return true;
   }
 
@@ -458,11 +463,12 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
   }
 
   if (best_cnt < effective_min_inliers) {
-    LOG(INFO) << "best count " << best_cnt << " is less than effective min inliers "
-              << effective_min_inliers;
+    // LOG(INFO) << "best count " << best_cnt << " is less than effective min inliers "
+    // << effective_min_inliers;
     return false;
   }
 
+  #if 0
   std::vector<size_t> in_idx;
   in_idx.reserve(static_cast<size_t>(best_cnt));
   for (int i = 0; i < N; ++i) {
@@ -517,9 +523,12 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
     LOG(INFO) << "inlier count befor GN is : " << best_cnt;
     return false;
   }
-
+  // out->X = X;
+#else
+  out->inlier_mask = std::move(best_mask);
+  out->X = best_X;
+#endif
   out->success = true;
-  out->X = X;
   return true;
 }
 
@@ -569,7 +578,7 @@ static bool rebuild_registered_arrays_from_track(
     reg_obs_ids->push_back(oid);
     reg_inds->push_back(im);
     rays_n->push_back(Eigen::Vector2d((u - K.cx) / K.fx, (v - K.cy) / K.fy));
-    u_px->push_back(static_cast<double>(u));    
+    u_px->push_back(static_cast<double>(u));
     v_px->push_back(static_cast<double>(v));
     K_per_view->push_back(K);
   }
@@ -635,12 +644,12 @@ static bool triangulate_track_common(
 
   if (!robust_ok) {
     // nv >= 3 and robust failed
-    if (kTriangulationDiagLog) {
-      LOG(INFO) << "[tri_diag] robust_multiview_failed tid=" << track_id << " nv=" << nv
-                << " min_inlier_views=" << opt.min_inlier_views
-                << " ransac_inlier_px=" << opt.ransac_inlier_px << " reg_inds=["
-                << tri_diag_format_reg_inds(reg_inds) << "]";
-    }
+    // if (kTriangulationDiagLog) {
+    //   LOG(INFO) << "[tri_diag] robust_multiview_failed tid=" << track_id << " nv=" << nv
+    //             << " min_inlier_views=" << opt.min_inlier_views
+    //             << " ransac_inlier_px=" << opt.ransac_inlier_px << " reg_inds=["
+    //             << tri_diag_format_reg_inds(reg_inds) << "]";
+    // }
     return set_fail(TriFailCode::kRobustMultiviewFailed);
   }
 
@@ -661,12 +670,12 @@ static bool triangulate_track_common(
       ++n_committed;
     } else {
       store->mark_observation_deleted(reg_obs_ids[static_cast<size_t>(i)]);
-      if (kTriangulationDiagLog) {
-        LOG(INFO) << "[tri_diag] obs_delete reason="
-                  << (is_robust_inlier ? "inlier_reproj_mismatch" : "robust_outlier")
-                  << " tid=" << track_id << " obs_id=" << reg_obs_ids[static_cast<size_t>(i)]
-                  << " del_image=" << reg_inds[static_cast<size_t>(i)];
-      }
+      // if (kTriangulationDiagLog) {
+      //   LOG(INFO) << "[tri_diag] obs_delete reason="
+      //             << (is_robust_inlier ? "inlier_reproj_mismatch" : "robust_outlier")
+      //             << " tid=" << track_id << " obs_id=" << reg_obs_ids[static_cast<size_t>(i)]
+      //             << " del_image=" << reg_inds[static_cast<size_t>(i)];
+      // }
     }
   }
 
@@ -910,6 +919,11 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   return updated;
 }
 
+/// Restore previously-deleted observations whose reprojection error (against the current
+/// triangulated XYZ) is within strict_px.
+///
+/// Old O(T * N_obs) double-loop replaced by the per-track obs list: for each triangulated
+/// track we walk only its own obs list (alive + deleted), which is O(T * avg_obs_per_track).
 static int restore_observations_strict(TrackStore* store,
                                        const std::vector<Eigen::Matrix3d>& poses_R,
                                        const std::vector<Eigen::Vector3d>& poses_C,
@@ -918,7 +932,7 @@ static int restore_observations_strict(TrackStore* store,
                                        const std::vector<int>& image_to_camera_index,
                                        double strict_px, int n_images) {
   int restored = 0;
-  const size_t n_obs = store->num_observations();
+  std::vector<int> all_oids;
   for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
     const int track_id = static_cast<int>(ti);
     if (!store->is_track_valid(track_id) || !store->track_has_triangulated_xyz(track_id))
@@ -927,12 +941,13 @@ static int restore_observations_strict(TrackStore* store,
     store->get_track_xyz(track_id, &tx, &ty, &tz);
     const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
                             static_cast<double>(tz));
-    for (size_t oid = 0; oid < n_obs; ++oid) {
-      if (store->obs_track_id(static_cast<int>(oid)) != track_id ||
-          store->is_obs_valid(static_cast<int>(oid)))
-        continue;
+    // get_track_all_obs_ids returns alive + deleted obs for this track only.
+    store->get_track_all_obs_ids(track_id, &all_oids);
+    for (int oid : all_oids) {
+      if (store->is_obs_valid(oid))
+        continue; // already alive, skip
       Observation obs;
-      store->get_obs(static_cast<int>(oid), &obs);
+      store->get_obs(oid, &obs);
       const int im = static_cast<int>(obs.image_index);
       if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
         continue;
@@ -941,7 +956,7 @@ static int restore_observations_strict(TrackStore* store,
           reproj_error_px(X, poses_R[static_cast<size_t>(im)], poses_C[static_cast<size_t>(im)], K,
                           static_cast<double>(obs.u), static_cast<double>(obs.v));
       if (e <= strict_px) {
-        store->mark_observation_restored(static_cast<int>(oid));
+        store->mark_observation_restored(oid);
         ++restored;
       }
     }
@@ -964,38 +979,54 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
     return 0;
   using Clock = std::chrono::steady_clock;
   auto t0 = Clock::now();
-  std::vector<int> dummy_pending;
-  store->drain_retriangulation_pending(&dummy_pending);
 
-  const int n_restored =
-      restore_observations_strict(store, poses_R, poses_C, registered, cameras,
-                                  image_to_camera_index, opts.restore_strict_reproj_px, n_images);
+  // Drain the pending queue (populated by reject_outliers_multiview when it marks obs deleted).
+  // Currently unused for the untriangulated scan, but drain so the queue stays clean.
+  std::vector<int> retri_track_ids;
+  store->drain_retriangulation_pending(&retri_track_ids);
 
-  int new_tri = 0;
-  int scanned = 0, skip_few = 0, skip_fail = 0;
-  for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
-    const int track_id = static_cast<int>(ti);
-    if (!store->is_track_valid(track_id) || store->track_has_triangulated_xyz(track_id))
-      continue;
-    ++scanned;
-    TriFailCode rt_fc = TriFailCode::kOk;
-    if (triangulate_track_common(store, track_id, poses_R, poses_C, n_images, registered, cameras,
-                                 image_to_camera_index, opts.robust.min_tri_angle_deg, opts.robust,
-                                 &rt_fc)) {
-      ++new_tri;
-    } else {
-      if (rt_fc == TriFailCode::kInsufficientRegisteredViews)
-        ++skip_few;
-      else
-        ++skip_fail;
+  int n_track = 0, n_observers = 0;
+  for (int track_id : retri_track_ids) {
+    if (store->is_track_valid(track_id) && store->track_has_triangulated_xyz(track_id)) {
+      continue; // already retriangulated by a previous pass, skip
+    }
+    std::vector<int> obs_ids_out;
+    store->get_track_all_obs_ids(track_id, &obs_ids_out);
+    float tx, ty, tz;
+    store->get_track_xyz(track_id, &tx, &ty, &tz);
+    bool has_valid_obs = false;
+    for (int oid : obs_ids_out) {
+      if (!store->is_obs_valid(oid)) {
+        // test reproject error
+        Observation obs;
+        store->get_obs(oid, &obs);
+        const int im = static_cast<int>(obs.image_index);
+        if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)]) {
+          continue;
+        }
+        const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
+
+        const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                                static_cast<double>(tz));
+        const double e =
+            reproj_error_px(X, poses_R[static_cast<size_t>(im)], poses_C[static_cast<size_t>(im)],
+                            K, static_cast<double>(obs.u), static_cast<double>(obs.v));
+        if (e <= opts.restore_strict_reproj_px) {
+          store->mark_observation_restored(oid);
+          ++n_observers;
+          has_valid_obs = true;
+        }
+      }
+    }
+    if (has_valid_obs) {
+      ++n_track;
     }
   }
   auto t1 = std::chrono::steady_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
   LOG(INFO) << "[PERF] run_retriangulation: " << ms << "ms"
-            << "  restored_obs=" << n_restored << "  scanned_untri=" << scanned
-            << "  skip_few_views=" << skip_few << "  fail=" << skip_fail << "  new_tri=" << new_tri;
-  return n_restored + new_tri;
+            << "  restored_obs=" << n_observers << "  restored_tracks=" << n_track;
+  return n_track;
 }
 
 int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,

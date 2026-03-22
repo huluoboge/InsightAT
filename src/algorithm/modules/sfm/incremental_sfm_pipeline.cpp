@@ -358,6 +358,7 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
     const double v_obs = static_cast<double>(obs.v);
     if ((u_obs - u_pred) * (u_obs - u_pred) + (v_obs - v_pred) * (v_obs - v_pred) > thresh_sq) {
       store->mark_observation_deleted(obs_id);
+      store->set_track_retriangulation_flag(tid, true);
       dirty_tracks.insert(tid);
       ++marked;
     }
@@ -2630,7 +2631,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     // Try each candidate in score order; use the first that succeeds (degenerate configs, etc.).
     for (const ResectionCandidate& cand : resection_candidates) {
       std::vector<int> registered_images;
-      const int resectin_minliers = 50;
+      const int resectin_minliers = 30;
       const int n =
           run_batch_resection(*store_out, {cand.image_index}, *cameras, image_to_camera_index,
                               poses_R_out, poses_C_out, registered_out, resectin_minliers,
@@ -2804,7 +2805,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     // Periodic re-triangulation: recover tracks that were (a) cleared by outlier
     // rejection after losing their 3D support, or (b) skippable previously but now
     // have sufficient registered observers.  Full scan but fast in practice.
-    if (false && opts.triangulation.retriangulation_every_n_iters > 0 &&
+    if (num_registered > 3 && opts.triangulation.retriangulation_every_n_iters > 0 &&
         sfm_iter % opts.triangulation.retriangulation_every_n_iters == 0) {
       auto t_retri = Clock::now();
       int n_retri =

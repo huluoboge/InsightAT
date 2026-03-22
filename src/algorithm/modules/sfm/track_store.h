@@ -108,6 +108,10 @@ public:
   /// Faster than get_track_observations when only obs_ids are needed (no struct copy).
   int get_track_obs_ids(int track_id, std::vector<int>* obs_ids_out) const;
 
+  /// Get ALL global observation-ids for a track, including logically-deleted ones.
+  /// Used by run_retriangulation to check whether a deleted obs can be restored.
+  int get_track_all_obs_ids(int track_id, std::vector<int>* obs_ids_out) const;
+
   /// Iterate valid observations for an image (obs indices and optionally Observation structs).
   int get_image_observation_indices(int image_index, std::vector<int>* obs_indices_out) const;
   int get_image_track_observations(int image_index, std::vector<int>* track_ids_out,
