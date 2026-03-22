@@ -62,14 +62,24 @@ struct ScoredUnreg {
 
 } // namespace
 
-std::vector<ResectionCandidate>
-choose_resection_candidates(const TrackStore& store, const std::vector<bool>& registered,
-                            int min_3d2d_count, int max_candidates, float min_coverage_good) {
+std::vector<ResectionCandidate> choose_resection_candidates(const TrackStore& store,
+                                                            const std::vector<bool>& registered,
+                                                            int min_3d2d_count, int max_candidates,
+                                                            float min_coverage_good) {
   const int n_images = store.num_images();
   if (n_images == 0 || static_cast<int>(registered.size()) != n_images || max_candidates <= 0)
     return {};
 
+  int n_registed = 0;
   std::vector<ScoredUnreg> scored;
+  for (int im = 0; im < n_images; ++im) {
+    if (registered[static_cast<size_t>(im)]) {
+      ++n_registed;
+    }
+  }
+  // cap candidates to 30% of registered views, but at least 2
+  int max_count = std::max<int>(2, static_cast<int>(n_registed * 0.3));
+  max_candidates = std::min(max_candidates, max_count);
   for (int im = 0; im < n_images; ++im) {
     if (registered[static_cast<size_t>(im)])
       continue;
@@ -114,6 +124,14 @@ choose_resection_candidates(const TrackStore& store, const std::vector<bool>& re
     c.coverage = p.coverage;
     out.push_back(c);
   }
+  if (out.size() > 1) {
+    for (int i = 1; i < out.size(); ++i) {
+      if (out[i].num_3d2d < 100) {
+        out.resize(i);
+        break;
+      }
+    }
+  }
   LOG(INFO) << "choose_resection_candidates: " << scored.size() << " eligible → " << n_list
             << " listed  (sort: cov>=" << min_coverage_good << " first, then 3d2d desc, cov desc)";
   return out;
@@ -157,11 +175,11 @@ int run_batch_resection(TrackStore& store, const std::vector<int>& image_indices
     }
     Eigen::Vector3d C = -R.transpose() * t;
     if (post_resection_reproj_thresh_px > 0.0) {
-      const int n_pr =
-          prune_resection_observations_reprojection(&store, im, R, C, K, post_resection_reproj_thresh_px);
+      const int n_pr = prune_resection_observations_reprojection(&store, im, R, C, K,
+                                                                 post_resection_reproj_thresh_px);
       if (n_pr > 0)
-        LOG(INFO) << "  post_resection_reproj: image " << im << " pruned " << n_pr << " obs (thr="
-                  << post_resection_reproj_thresh_px << " px)";
+        LOG(INFO) << "  post_resection_reproj: image " << im << " pruned " << n_pr
+                  << " obs (thr=" << post_resection_reproj_thresh_px << " px)";
     }
     LOG(INFO) << "  resection image " << im << ": OK (3D-2D=" << n_3d2d << ", inliers=" << inliers
               << ", rmse=" << rmse_px << ", C=[" << C(0) << "," << C(1) << "," << C(2) << "])";

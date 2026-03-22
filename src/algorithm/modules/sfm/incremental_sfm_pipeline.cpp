@@ -62,6 +62,13 @@ IntrinsicsSchedule::fix_masks_per_camera(const std::vector<bool>& registered,
     return {};
   std::vector<uint32_t> masks(static_cast<size_t>(n_cameras));
   std::vector<int> cam_registered_count(static_cast<size_t>(n_cameras), 0);
+  int total_registered = 0;
+  for (size_t i = 0; i < registered.size(); ++i) {
+    if (registered[i]) {
+      ++total_registered;
+    }
+  }
+#if 1
   for (int i = 0; i < static_cast<int>(registered.size()); ++i) {
     if (registered[i]) {
       int cam_idx = image_to_camera_index[i];
@@ -73,6 +80,11 @@ IntrinsicsSchedule::fix_masks_per_camera(const std::vector<bool>& registered,
   for (int c = 0; c < n_cameras; ++c) {
     masks[static_cast<size_t>(c)] = fix_mask_for(cam_registered_count[static_cast<size_t>(c)]);
   }
+#else
+  for (int c = 0; c < n_cameras; ++c) {
+    masks[static_cast<size_t>(c)] = fix_mask_for(total_registered);
+  }
+#endif
   return masks;
 
   // // Count registered images per camera.
@@ -137,7 +149,7 @@ IncrementalSfMOptions make_aerial_preset() {
   o.init.max_second_images = 50;
   o.init.ba_rmse_max = 8.0;
   o.init.outlier_threshold_px = 4.0;
-  o.init.min_angle_deg = 0.5;
+  o.init.min_angle_deg = 1.5;
   // Resection
   o.resection.min_inliers = 15; // 15=6 * 2.5; // 2.5× the inliers needed to accept an image, to be
                                 // more robust to early outliers before local BA can clean up.
@@ -1786,7 +1798,7 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
             << "  ba[0]_global_im=" << ba_image_index_to_global[0];
   BAResult ba_out;
   if (!global_bundle_analytic(ba_in, &ba_out, max_iterations)) {
-    LOG(WARNING) << "run_global_ba: solver failed";
+    LOG(INFO) << "run_global_ba: solver failed";
     return false;
   }
   LOG(INFO) << "run_global_ba: RMSE=" << ba_out.rmse_px << " px, success=" << ba_out.success;
@@ -2627,11 +2639,15 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         << "[PERF] choose_resection_candidates: "
         << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
         << "ms";
+    if (resection_candidates.empty()) {
+      LOG(INFO) << "  No resection candidates found, stopping";
+      break;
+    }
     auto t_resect0 = Clock::now();
     // Try each candidate in score order; use the first that succeeds (degenerate configs, etc.).
     for (const ResectionCandidate& cand : resection_candidates) {
       std::vector<int> registered_images;
-      const int resectin_minliers = 30;
+      const int resectin_minliers = 20;
       const int n =
           run_batch_resection(*store_out, {cand.image_index}, *cameras, image_to_camera_index,
                               poses_R_out, poses_C_out, registered_out, resectin_minliers,
@@ -2641,49 +2657,53 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       if (n <= 0)
         continue;
       new_registered_image_indices.push_back(registered_images[0]);
-      break;
-    }
-    LOG(INFO)
-        << "[PERF] resection: "
-        << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_resect0).count()
-        << "ms  added=" << new_registered_image_indices.size();
-    if (new_registered_image_indices.empty()) {
-      LOG(WARNING) << "  No images could be resected this iteration, stopping";
-      break;
-    }
-    {
-      int nr = 0;
+      LOG(INFO)
+          << "[PERF] resection: "
+          << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_resect0).count()
+          << "ms  added=" << new_registered_image_indices.size();
+      {
+        int nr = 0;
+        for (bool r : *registered_out)
+          if (r)
+            ++nr;
+        const PipelineReprojStats st_re =
+            compute_pipeline_reproj_stats(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                          *cameras, image_to_camera_index);
+        agent_log_pipeline_reproj_step("after_resection", sfm_iter, nr, st_re);
+      }
+      if (new_registered_image_indices.empty()) {
+        break;
+      }
+      auto t_tri0 = Clock::now();
+      std::vector<int> new_track_ids;
+      int n_new_tri = run_batch_triangulation(
+          store_out, new_registered_image_indices, *poses_R_out, *poses_C_out, *registered_out,
+          *cameras, image_to_camera_index, opts.triangulation.min_angle_deg, &new_track_ids,
+          opts.triangulation.commit_reproj_px);
+      LOG(INFO)
+          << "[PERF] triangulation: "
+          << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
+          << "ms  new_tri=" << n_new_tri;
+
+      num_registered = 0;
       for (bool r : *registered_out)
         if (r)
-          ++nr;
-      const PipelineReprojStats st_re = compute_pipeline_reproj_stats(
-          *store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras, image_to_camera_index);
-      agent_log_pipeline_reproj_step("after_resection", sfm_iter, nr, st_re);
+          ++num_registered;
+      {
+        const PipelineReprojStats st_tri =
+            compute_pipeline_reproj_stats(*store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                          *cameras, image_to_camera_index);
+        agent_log_pipeline_reproj_step("after_triangulation", sfm_iter, num_registered, st_tri);
+      }
+      LOG(INFO) << "  After resection+triangulation: registered=" << num_registered
+                << ", new_tri=" << n_new_tri << ", total_tri=" << count_tri_tracks();
+      // break;
     }
 
-    auto t_tri0 = Clock::now();
-    std::vector<int> new_track_ids;
-    int n_new_tri = run_batch_triangulation(store_out, new_registered_image_indices, *poses_R_out,
-                                            *poses_C_out, *registered_out, *cameras,
-                                            image_to_camera_index, opts.triangulation.min_angle_deg,
-                                            &new_track_ids, opts.triangulation.commit_reproj_px);
-    LOG(INFO)
-        << "[PERF] triangulation: "
-        << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
-        << "ms  new_tri=" << n_new_tri;
-
-    num_registered = 0;
-    for (bool r : *registered_out)
-      if (r)
-        ++num_registered;
-    {
-      const PipelineReprojStats st_tri = compute_pipeline_reproj_stats(
-          *store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras, image_to_camera_index);
-      agent_log_pipeline_reproj_step("after_triangulation", sfm_iter, num_registered, st_tri);
+    if (new_registered_image_indices.empty()) {
+      LOG(INFO) << "  No images could be resected this iteration, stopping";
+      break;
     }
-    LOG(INFO) << "  After resection+triangulation: registered=" << num_registered
-              << ", new_tri=" << n_new_tri << ", total_tri=" << count_tri_tracks();
-
     double rmse = 0.0;
     // Global-only phase: local BA not enabled, or not yet past switch_after_n_images.
     const bool use_global_only_phase =
@@ -2712,9 +2732,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         ba_global_only.frozen_cameras = nullptr; // opt_intr ? &frozen_early : nullptr;
         ba_global_only.huber_residual_image_filter = new_registered_image_indices;
         ba_global_only.max_outlier_rounds = opts.outlier.max_rounds;
-        run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
-                                      image_to_camera_index, cameras, anchor_image, num_registered,
-                                      opts, ba_global_only, &rmse);
+        if (!run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                           image_to_camera_index, cameras, anchor_image,
+                                           num_registered, opts, ba_global_only, &rmse)) {
+          LOG(ERROR) << "Global BA with outlier detection failed during global-only phase.";
+        }
         LOG(INFO)
             << "[PERF] global_ba (global_only_phase): "
             << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
@@ -2723,7 +2745,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         LOG(INFO) << "[PERF] global_ba: skipped (every_n=" << opts.global_ba.every_n_images
                   << ", n=" << num_registered << ")";
       }
-    } else {
+    }
+#if 0
+    else {
       // ── Two-tier BA schedule (mid-freq + low-freq recalib) during local-BA phase ──────
       if (opts.global_ba.periodic_every_n_images > 0 &&
           (num_registered - last_periodic_global_ba_registered) >=
@@ -2801,7 +2825,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
           << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
     }
-
+#endif // 0
     // Periodic re-triangulation: recover tracks that were (a) cleared by outlier
     // rejection after losing their 3D support, or (b) skippable previously but now
     // have sufficient registered observers.  Full scan but fast in practice.
