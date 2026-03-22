@@ -2399,6 +2399,7 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
                               &rmse, anchor_image, call.frozen_cameras, call.partial_intr_fix,
                               call.focal_prior_weight, ov,
                               call.optimize_intrinsics ? &per_cam_masks : nullptr);
+      
     } else {
       step_ok = run_local_ba_dispatch(opts.local_ba, anchor_image, store, poses_R, poses_C,
                                       registered, image_to_camera_index, *cameras,
@@ -2624,6 +2625,12 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
   auto pipeline_start = Clock::now();
   int sfm_iter = 0;
+  int n_registered = 0;
+  for (bool r : *registered_out) {
+    if (r) {
+      ++n_registered;
+    }
+  }
   for (;;) {
     ++sfm_iter;
     auto iter_start = Clock::now();
@@ -2645,6 +2652,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     }
     auto t_resect0 = Clock::now();
     // Try each candidate in score order; use the first that succeeds (degenerate configs, etc.).
+
     for (const ResectionCandidate& cand : resection_candidates) {
       std::vector<int> registered_images;
       const int resectin_minliers = 20;
@@ -2656,39 +2664,37 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                 << " cov=" << cand.coverage << " → " << (n > 0 ? "OK" : "FAIL");
       if (n <= 0)
         continue;
+      n_registered += n;
       new_registered_image_indices.push_back(registered_images[0]);
       LOG(INFO)
           << "[PERF] resection: "
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_resect0).count()
           << "ms  added=" << new_registered_image_indices.size();
       {
-        int nr = 0;
-        for (bool r : *registered_out)
-          if (r)
-            ++nr;
+
         const PipelineReprojStats st_re =
             compute_pipeline_reproj_stats(*store_out, *poses_R_out, *poses_C_out, *registered_out,
                                           *cameras, image_to_camera_index);
-        agent_log_pipeline_reproj_step("after_resection", sfm_iter, nr, st_re);
+        agent_log_pipeline_reproj_step("after_resection", sfm_iter, n_registered, st_re);
       }
       if (new_registered_image_indices.empty()) {
         break;
       }
       auto t_tri0 = Clock::now();
       std::vector<int> new_track_ids;
+      double triangle_error_thresh_px = opts.triangulation.commit_reproj_px;
+      // if (n_registered > 30) {
+      //   triangle_error_thresh_px = 8.0;
+      // }
       int n_new_tri = run_batch_triangulation(
           store_out, new_registered_image_indices, *poses_R_out, *poses_C_out, *registered_out,
           *cameras, image_to_camera_index, opts.triangulation.min_angle_deg, &new_track_ids,
-          opts.triangulation.commit_reproj_px);
+          triangle_error_thresh_px);
       LOG(INFO)
           << "[PERF] triangulation: "
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
           << "ms  new_tri=" << n_new_tri;
 
-      num_registered = 0;
-      for (bool r : *registered_out)
-        if (r)
-          ++num_registered;
       {
         const PipelineReprojStats st_tri =
             compute_pipeline_reproj_stats(*store_out, *poses_R_out, *poses_C_out, *registered_out,

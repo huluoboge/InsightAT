@@ -820,8 +820,8 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     } else {
       LOG(WARNING) << "global_bundle_analytic: "
                    << ceres::LinearSolverTypeToString(options.linear_solver_type) << " failed ("
-                   << summary.message << "), retrying with DENSE_NORMAL_CHOLESKY";
-      options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+                   << summary.message << "), retrying with DENSE_SCHUR";
+      options.linear_solver_type = ceres::DENSE_SCHUR;
       options.preconditioner_type = ceres::JACOBI;
     }
     ceres::Solve(options, &problem, &summary);
