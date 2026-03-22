@@ -89,7 +89,11 @@
         "valarray": "cpp",
         "variant": "cpp",
         "__nullptr": "cpp",
-        "ios": "cpp"
+        "ios": "cpp",
+        "uniform": "cpp",
+        "notify": "cpp",
+        "core": "cpp",
+        "specialfunctions": "cpp"
     },
     "C_Cpp.default.compilerPath": "/usr/bin/g++"
 }

@@ -19,6 +19,12 @@ void ViewGraph::add_pair(const PairGeoInfo& info) {
 
 void ViewGraph::reserve(size_t n_pairs) { pairs_.reserve(n_pairs); }
 
+void ViewGraph::clear() {
+  pairs_.clear();
+  image_degree_.clear();
+  degree_dirty_ = true;
+}
+
 void ViewGraph::ensure_degree_computed() const {
   if (!degree_dirty_)
     return;

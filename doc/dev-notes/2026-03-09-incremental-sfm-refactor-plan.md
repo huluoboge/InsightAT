@@ -76,7 +76,7 @@
    - 从 IDC 加载 store，校验与 project 的 num_images 一致。
    - `build_view_graph_from_geo(pairs_json, geo_dir)` → ViewGraph。
    - `run_initial_pair_loop`：候选对按 score 降序，对每对加载 geo、两视图三角化、两视图 BA、reject_outliers_two_view、filter_tracks_two_view，满足 min_tracks_for_intital_pair 且 RMSE 可接受则写出 poses/registered 并返回。
-   - Resection 循环：`choose_next_resection_batch(store, registered, k)` → `run_batch_resection` → `run_batch_triangulation`；可选每 N 张做一次 `run_local_ba`。
+   - Resection 循环：`choose_resection_candidates` → `run_batch_resection` → `run_batch_triangulation`；可选每 N 张做一次 `run_local_ba`。
    - `run_retriangulation`（needs_retriangulation 的 track 多视图 DLT 后写回 xyz 并清除标记）。
    - 可选 `run_global_ba`，写回 poses、points、以及（若开启）cameras。
 
@@ -88,7 +88,7 @@
 - **Project 加载**：`src/algorithm/tools/project_loader.h` — `ProjectData`、`load_project_data(path, out)`。
 - **Track 加载**：`src/algorithm/io/track_store_idc.h` — `load_track_store_from_idc(path, store_out, image_indices_out)`。
 - **ViewGraph**：`view_graph.h` / `view_graph_loader.h` — `PairGeoInfo`（image1_index / image2_index）、`get_candidate_pair_indices_sorted(registered)`、`build_view_graph_from_geo(pairs_json, geo_dir, out)`。
-- **Pipeline**：`incremental_sfm_pipeline.h/.cpp` — `run_initial_pair_loop`、`choose_next_resection_batch`、`run_batch_resection`、`run_batch_triangulation`、`run_retriangulation`、`run_global_ba`、`run_local_ba`、`run_incremental_sfm_pipeline`、`IncrementalSfMOptions`。
+- **Pipeline**：`incremental_sfm_pipeline.h/.cpp` — `run_initial_pair_loop`、`choose_resection_candidates`、`run_batch_resection`、`run_batch_triangulation`、`run_retriangulation`、`run_global_ba`、`run_local_ba`、`run_incremental_sfm_pipeline`、`IncrementalSfMOptions`。
 - **CLI**：`tools/isat_incremental_sfm.cpp` — 参数 `-t` tracks、`-p` project、`-m` pairs、`-g` geo_dir、`-o` output_dir；调用 pipeline，写出 `poses.json`。
 
 ---

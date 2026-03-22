@@ -17,12 +17,13 @@
 #include "view_graph_loader.h"
 
 #include <Eigen/Dense>
-#include <Eigen/SVD>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <glog/logging.h>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -136,13 +137,11 @@ IncrementalSfMOptions make_aerial_preset() {
   o.init.max_second_images = 50;
   o.init.ba_rmse_max = 8.0;
   o.init.outlier_threshold_px = 4.0;
-  o.init.min_angle_deg = 2.0;
+  o.init.min_angle_deg = 0.5;
   // Resection
   o.resection.min_inliers = 15; // 15=6 * 2.5; // 2.5× the inliers needed to accept an image, to be
                                 // more robust to early outliers before local BA can clean up.
   o.resection.min_3d2d_count = 30;
-  o.resection.batch_ratio = 0.75;
-  o.resection.batch_max = 20;
   o.resection.retry_after_cleanup = true;
   // Intrinsics schedule (4-phase progressive unlock)
   o.intrinsics.phase1_min_images = 3;
@@ -156,14 +155,13 @@ IncrementalSfMOptions make_aerial_preset() {
   o.intrinsics.freeze_stable_rounds = 2;
   o.intrinsics.recalib_every_n_periodic = 4;
   o.intrinsics.focal_prior_weight = 0.0;
-  // Local BA — COLMAP-style 2-hop
+  // Local BA (optional; default enable=false — global BA only until enabled)
   o.local_ba.switch_after_n_images = 20;
   o.local_ba.window = 20;
   o.local_ba.by_connectivity = true;
   o.local_ba.strategy = LocalBAStrategy::kColmap;
   o.local_ba.colmap_max_variable_images = 6;
   o.local_ba.neighbor_k = 5;
-  o.local_ba.skip = false;
   o.local_ba.max_iterations = 25;
   // Global BA
   o.global_ba.enabled = true;
@@ -177,26 +175,23 @@ IncrementalSfMOptions make_aerial_preset() {
   o.outlier.huber_delta_lo_px = 0.5;
   o.outlier.huber_delta_hi_px = 3.0;
   o.outlier.mad_k = 2.5;
-  o.outlier.min_angle_deg = 2.0;
+  o.outlier.min_angle_deg = 0.50;
   o.outlier.max_depth_factor = 200.0;
   o.outlier.max_rounds = 5;
   o.outlier.min_for_retry = 30;
   o.outlier.min_registered_images = 10;
   o.outlier.final_max_rounds = 10;
   // Triangulation
-  o.triangulation.min_angle_deg = 2.0;
+  o.triangulation.min_angle_deg = 0.50;
+  o.triangulation.commit_reproj_px = 6.0;
   o.triangulation.retriangulation_every_n_iters = 3;
   return o;
 }
 
 IncrementalSfMOptions make_object_scan_preset() {
   IncrementalSfMOptions o = make_aerial_preset();
-  // Skip local BA (circumferential capture)
-  o.local_ba.skip = true;
-  // Late-stage resection relaxation (dense object, high-count best candidates)
-  o.resection.late_registered_threshold = 30;
-  o.resection.late_absolute_min = 100;
-  o.resection.late_batch_max = 5;
+  // Progressive intrinsics freeze off (simpler path). local_ba.enable stays default false.
+  o.intrinsics.progressive_freeze = false;
   // Unlock all intrinsics earlier (more oblique views → better observability)
   o.intrinsics.phase3_min_images = 30;
   // Tight BA solver for large object maps
@@ -385,152 +380,12 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
   return marked;
 }
 
-/// Post-resection cleanup for newly registered images only.
-///
-/// Purpose:
-///   A successful PnP/RANSAC only guarantees a consistent inlier subset for the
-///   new camera pose. Other existing image↔track associations on that image may
-///   still be wrong. Before triangulating new tracks or running BA, drop those
-///   bad observations so they do not pollute the map.
-///
-/// Policy:
-///   - Only inspect the supplied `image_indices`.
-///   - Only inspect observations whose tracks already have triangulated XYZ.
-///   - Delete the observation if the point projects behind the camera or the
-///     pixel reprojection error exceeds `threshold_px`.
-///   - If a track loses enough support that <2 valid observations remain,
-///     clear its XYZ so later retriangulation can recover it.
-static int reject_outliers_post_resection(TrackStore* store, const std::vector<int>& image_indices,
-                                          const std::vector<Eigen::Matrix3d>& poses_R,
-                                          const std::vector<Eigen::Vector3d>& poses_C,
-                                          const std::vector<bool>& registered,
-                                          const std::vector<camera::Intrinsics>& cameras,
-                                          const std::vector<int>& image_to_camera_index,
-                                          double threshold_px) {
-  if (!store || image_indices.empty())
-    return 0;
-  const int n_images = store->num_images();
-  if (static_cast<int>(poses_R.size()) != n_images ||
-      static_cast<int>(poses_C.size()) != n_images ||
-      static_cast<int>(registered.size()) != n_images ||
-      static_cast<int>(image_to_camera_index.size()) != n_images)
-    return 0;
-
-  const double thresh_sq = threshold_px * threshold_px;
-  int marked = 0;
-  std::unordered_set<int> dirty_tracks;
-  std::vector<int> obs_ids;
-
-  for (int im : image_indices) {
-    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
-      continue;
-    obs_ids.clear();
-    store->get_image_observation_indices(im, &obs_ids);
-    const camera::Intrinsics& K =
-        cameras[static_cast<size_t>(image_to_camera_index[static_cast<size_t>(im)])];
-    const Eigen::Matrix3d& R = poses_R[static_cast<size_t>(im)];
-    const Eigen::Vector3d& C = poses_C[static_cast<size_t>(im)];
-    for (int obs_id : obs_ids) {
-      if (!store->is_obs_valid(obs_id))
-        continue;
-      const int tid = store->obs_track_id(obs_id);
-      if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
-        continue;
-
-      float tx, ty, tz;
-      store->get_track_xyz(tid, &tx, &ty, &tz);
-      const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
-                              static_cast<double>(tz));
-      const Eigen::Vector3d p = R * (X - C);
-      if (p(2) <= 1e-12) {
-        store->mark_observation_deleted(obs_id);
-        dirty_tracks.insert(tid);
-        ++marked;
-        continue;
-      }
-
-      const double xn = p(0) / p(2), yn = p(1) / p(2);
-      double xd, yd;
-      camera::apply_distortion(xn, yn, K, &xd, &yd);
-      const double u_pred = K.fx * xd + K.cx;
-      const double v_pred = K.fy * yd + K.cy;
-
-      Observation obs;
-      store->get_obs(obs_id, &obs);
-      const double du = static_cast<double>(obs.u) - u_pred;
-      const double dv = static_cast<double>(obs.v) - v_pred;
-      if (du * du + dv * dv > thresh_sq) {
-        store->mark_observation_deleted(obs_id);
-        dirty_tracks.insert(tid);
-        ++marked;
-      }
-    }
-  }
-
-  std::vector<int> track_obs_ids;
-  for (int tid : dirty_tracks) {
-    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
-      continue;
-    track_obs_ids.clear();
-    store->get_track_obs_ids(tid, &track_obs_ids);
-    if (track_obs_ids.size() < 2)
-      store->clear_track_xyz(tid);
-  }
-  return marked;
-}
-
-static int count_valid_triangulated_observations_on_image(const TrackStore& store,
-                                                          int image_index) {
-  std::vector<int> obs_ids;
-  store.get_image_observation_indices(image_index, &obs_ids);
-  int count = 0;
-  for (int obs_id : obs_ids) {
-    if (!store.is_obs_valid(obs_id))
-      continue;
-    const int tid = store.obs_track_id(obs_id);
-    if (store.is_track_valid(tid) && store.track_has_triangulated_xyz(tid))
-      ++count;
-  }
-  return count;
-}
-
-static int rollback_weak_post_resection_images(
-    const TrackStore& store, const std::vector<int>& image_indices, int min_support,
-    std::vector<Eigen::Matrix3d>* poses_R, std::vector<Eigen::Vector3d>* poses_C,
-    std::vector<bool>* registered, std::vector<int>* kept_images_out) {
-  if (kept_images_out)
-    kept_images_out->clear();
-  if (!poses_R || !poses_C || !registered)
-    return 0;
-
-  int removed = 0;
-  for (int im : image_indices) {
-    if (im < 0 || static_cast<size_t>(im) >= registered->size() ||
-        !(*registered)[static_cast<size_t>(im)])
-      continue;
-    const int support = count_valid_triangulated_observations_on_image(store, im);
-    if (support < min_support) {
-      (*registered)[static_cast<size_t>(im)] = false;
-      if (static_cast<size_t>(im) < poses_R->size())
-        (*poses_R)[static_cast<size_t>(im)] = Eigen::Matrix3d::Identity();
-      if (static_cast<size_t>(im) < poses_C->size())
-        (*poses_C)[static_cast<size_t>(im)] = Eigen::Vector3d::Zero();
-      ++removed;
-      LOG(INFO) << "  post_resection_cleanup: rollback image " << im
-                << " (remaining triangulated obs=" << support << " < " << min_support << ")";
-      continue;
-    }
-    if (kept_images_out)
-      kept_images_out->push_back(im);
-  }
-  return removed;
-}
-
 /// Mark observations whose max parallax angle (with any other view in the same track) is <
 /// min_angle_deg.  Iterates tracks (not obs) to avoid redundant get_track_observations calls.
 int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
                                     const std::vector<Eigen::Vector3d>& poses_C,
-                                    const std::vector<bool>& registered, double min_angle_deg) {
+                                    const std::vector<bool>& registered, double min_angle_deg,
+                                    double max_angle_deg) {
   if (!store || min_angle_deg <= 0)
     return 0;
   const int n_images = store->num_images();
@@ -539,7 +394,7 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
       static_cast<int>(registered.size()) != n_images)
     return 0;
   const double min_angle_rad = min_angle_deg * (3.141592653589793 / 180.0);
-  const double max_angle_rad = 60 * (3.141592653589793 / 180.0);
+  const double max_angle_rad = max_angle_deg * (3.141592653589793 / 180.0);
   int marked = 0;
   std::vector<int> obs_ids_buf;
   // Iterate triangulated tracks — each track's obs fetched once via get_track_obs_ids.
@@ -751,6 +606,99 @@ static std::vector<double> collect_reproj_errors(const TrackStore& store,
   }
   return errors;
 }
+
+/// Same projection as `collect_reproj_errors`, plus cheirality skips — for step-wise pipeline
+/// debug.
+struct PipelineReprojStats {
+  int n_obs = 0;                ///< valid observations used in sums
+  int n_skipped_behind = 0;     ///< triangulated obs skipped (depth ≤ 0)
+  double sum_euclidean = 0.0;   ///< sum of per-obs Euclidean px
+  double sum_sq_residual = 0.0; ///< sum of (du²+dv²) = sum of e²
+  double max_euclidean_px = 0.0;
+};
+
+static PipelineReprojStats compute_pipeline_reproj_stats(
+    const TrackStore& store, const std::vector<Eigen::Matrix3d>& poses_R,
+    const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
+    const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& image_to_camera_index) {
+  PipelineReprojStats s;
+  const int n_images = store.num_images();
+  if (static_cast<int>(poses_R.size()) != n_images ||
+      static_cast<int>(poses_C.size()) != n_images ||
+      static_cast<int>(registered.size()) != n_images ||
+      static_cast<int>(image_to_camera_index.size()) != n_images)
+    return s;
+  for (size_t i = 0; i < store.num_observations(); ++i) {
+    const int obs_id = static_cast<int>(i);
+    if (!store.is_obs_valid(obs_id))
+      continue;
+    Observation obs;
+    store.get_obs(obs_id, &obs);
+    const int im = static_cast<int>(obs.image_index);
+    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    const int tid = store.obs_track_id(obs_id);
+    if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+      continue;
+    float tx, ty, tz;
+    store.get_track_xyz(tid, &tx, &ty, &tz);
+    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                            static_cast<double>(tz));
+    const Eigen::Matrix3d& R = poses_R[static_cast<size_t>(im)];
+    const Eigen::Vector3d& C = poses_C[static_cast<size_t>(im)];
+    Eigen::Vector3d p = R * (X - C);
+    if (p(2) <= 1e-12) {
+      ++s.n_skipped_behind;
+      continue;
+    }
+    const int cam_ix = image_to_camera_index[static_cast<size_t>(im)];
+    if (cam_ix < 0 || cam_ix >= static_cast<int>(cameras.size()))
+      continue;
+    const camera::Intrinsics& K = cameras[static_cast<size_t>(cam_ix)];
+    const double xn = p(0) / p(2), yn = p(1) / p(2);
+    double xd, yd;
+    camera::apply_distortion(xn, yn, K, &xd, &yd);
+    const double u_pred = K.fx * xd + K.cx;
+    const double v_pred = K.fy * yd + K.cy;
+    const double du = static_cast<double>(obs.u) - u_pred;
+    const double dv = static_cast<double>(obs.v) - v_pred;
+    const double e = std::sqrt(du * du + dv * dv);
+    ++s.n_obs;
+    s.sum_euclidean += e;
+    s.sum_sq_residual += du * du + dv * dv;
+    if (e > s.max_euclidean_px)
+      s.max_euclidean_px = e;
+  }
+  return s;
+}
+
+// #region agent log
+static void agent_log_pipeline_reproj_step(const char* step, int sfm_iter, int num_registered,
+                                           const PipelineReprojStats& st) {
+  const double mean_e = (st.n_obs > 0) ? (st.sum_euclidean / static_cast<double>(st.n_obs)) : 0.0;
+  // Match Ceres bundle_adjustment_analytic: sqrt(2*cost/n_residuals) with 2 residuals per obs.
+  const double rmse_ceres_equiv =
+      (st.n_obs > 0) ? std::sqrt(st.sum_sq_residual / (2.0 * static_cast<double>(st.n_obs))) : 0.0;
+  LOG(INFO) << "[reproj_diag] step=" << step << "  sfm_iter=" << sfm_iter
+            << "  registered=" << num_registered << "  n_obs=" << st.n_obs
+            << "  n_behind=" << st.n_skipped_behind << "  mean_e_px=" << mean_e
+            << "  rmse_ceres_equiv_px=" << rmse_ceres_equiv << "  max_e_px=" << st.max_euclidean_px;
+  std::ofstream f("/home/jones/Git/01jones/InsightAT/InsightAT/.cursor/debug-2ba246.log",
+                  std::ios::app);
+  if (!f)
+    return;
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+  f << "{\"sessionId\":\"2ba246\",\"hypothesisId\":\"H_pipeline_step\",\"location\":"
+       "\"incremental_sfm_pipeline.cpp:reproj_diag\",\"message\":\"pipeline_reproj_step\","
+       "\"data\":{\"step\":\""
+    << step << "\",\"sfm_iter\":" << sfm_iter << ",\"num_registered\":" << num_registered
+    << ",\"n_obs\":" << st.n_obs << ",\"n_skipped_behind\":" << st.n_skipped_behind
+    << ",\"mean_euclidean_px\":" << mean_e << ",\"rmse_ceres_equiv_px\":" << rmse_ceres_equiv
+    << ",\"max_euclidean_px\":" << st.max_euclidean_px << "},\"timestamp\":" << ms << "}\n";
+}
+// #endregion
 
 /// Compute MAD-based adaptive threshold from a pre-collected error vector.
 /// threshold = median(e) + k_sigma * 1.4826 * MAD(e), clamped to >= floor_px.
@@ -964,11 +912,12 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
                                                const std::vector<camera::Intrinsics>& cameras,
                                                const std::vector<int>& image_to_camera_index,
                                                int min_tracks_for_intital_pair, double ba_rmse_max,
-                                               double outlier_thresh_px, double min_angle_deg) {
+                                               double outlier_thresh_px, double min_angle_deg,
+                                               double max_angle_deg) {
 
   const double kPi = 3.141592653589793;
   const double min_angle_rad_q = min_angle_deg * (kPi / 180.0);
-  const double max_angle_rad_q = 60.0 * (kPi / 180.0);
+  const double max_angle_rad_q = max_angle_deg * (kPi / 180.0);
 
   InitPairTrialResult result;
 
@@ -1041,10 +990,10 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
       continue;
 
     // Step 2 & 3: Triangulation angle must be in [min_angle_deg, 60°].
-    // Large angle (>60°) = degenerate far-field or bad match; small angle = nearly parallel rays.
+    // Large angle  = degenerate far-field or bad match; small angle = nearly parallel rays.
     {
-      const double max_angle_rad_q = 60.0 * (kPi / 180.0);
-      const double min_angle_rad_q = min_angle_deg * (kPi / 180.0);
+      // const double max_angle_rad_q = max_angle_deg * (kPi / 180.0);
+      // const double min_angle_rad_q = min_angle_deg * (kPi / 180.0);
       Eigen::Vector3d r0_dir = X.normalized();
       Eigen::Vector3d r1_dir = (X - C1).normalized();
       double cos_a = std::max(-1.0, std::min(1.0, r0_dir.dot(r1_dir)));
@@ -1369,9 +1318,10 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       const float ba_rmse_max = 10.0;
       double outlier_thresh_px = 4.0;
       double min_angle_deg = 2.0;
+      double max_angle_deg = 120.0;
       auto trial = try_initial_pair_candidate(*store, im1, im2, dir, cameras, image_to_camera_index,
                                               min_tracks_for_intital_pair, ba_rmse_max,
-                                              outlier_thresh_px, min_angle_deg);
+                                              outlier_thresh_px, min_angle_deg, max_angle_deg);
       if (!trial.success)
         continue;
 
@@ -1431,479 +1381,6 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
   LOG(ERROR) << "  No initial pair found after trying " << tried_pairs.size() << " pairs";
   LOG(INFO) << "================================================================";
   return false;
-}
-
-// ─── Multiview DLT helper (N views) ─────────────────────────────────────────
-namespace {
-Eigen::Vector3d triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_list,
-                                            const std::vector<Eigen::Vector3d>& C_list,
-                                            const std::vector<Eigen::Vector2d>& rays_n) {
-  const int N = static_cast<int>(R_list.size());
-  if (N < 2 || static_cast<int>(C_list.size()) != N || static_cast<int>(rays_n.size()) != N)
-    return Eigen::Vector3d(0, 0, 0);
-  Eigen::MatrixXd A(2 * N, 4);
-  for (int i = 0; i < N; ++i) {
-    const Eigen::Matrix3d& R = R_list[i];
-    const Eigen::Vector3d t = -R * C_list[i];
-    const double nx = rays_n[i](0), ny = rays_n[i](1);
-    A.row(2 * i) << nx * R.row(1) - ny * R.row(0), nx * t(1) - ny * t(0);
-    A.row(2 * i + 1) << nx * R.row(2) - R.row(0), nx * t(2) - t(0);
-  }
-  Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
-  const Eigen::Vector4d v = svd.matrixV().col(3);
-  if (std::fabs(v(3)) < 1e-12)
-    return Eigen::Vector3d(0, 0, 0);
-  return v.head<3>() / v(3);
-}
-
-// Check cheirality: X must have positive depth (positive camera-frame Z) in ALL cameras
-bool check_all_depths_positive(const Eigen::Vector3d& X, const std::vector<Eigen::Matrix3d>& R_list,
-                               const std::vector<Eigen::Vector3d>& C_list) {
-  for (size_t i = 0; i < R_list.size(); ++i) {
-    const Eigen::Vector3d Xc = R_list[i] * (X - C_list[i]);
-    if (Xc(2) <= 0.0)
-      return false;
-  }
-  return true;
-}
-
-// Compute maximum pairwise ray angle (degrees) between cameras looking at X.
-// A large angle means good triangulation geometry (high parallax).
-double compute_max_ray_angle_deg(const Eigen::Vector3d& X,
-                                 const std::vector<Eigen::Vector3d>& C_list) {
-  double max_angle = 0.0;
-  const int N = static_cast<int>(C_list.size());
-  for (int i = 0; i < N; ++i) {
-    const Eigen::Vector3d ri = (X - C_list[i]).normalized();
-    for (int j = i + 1; j < N; ++j) {
-      const Eigen::Vector3d rj = (X - C_list[j]).normalized();
-      double d = ri.dot(rj);
-      d = d < -1.0 ? -1.0 : (d > 1.0 ? 1.0 : d);
-      const double angle_deg = std::acos(d) * (180.0 / M_PI);
-      if (angle_deg > max_angle)
-        max_angle = angle_deg;
-    }
-  }
-  return max_angle;
-}
-
-} // namespace
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Resection candidate helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Compute the spatial coverage score [0,1] for the triangulated 3D-2D observations
-/// of a given image.  The score is the fraction of a 3×3 bounding-box grid that
-/// contains ≥1 observation.  Low values (< 0.33) indicate collinear/clustered
-/// geometry that is likely to produce a degenerate PnP solution.
-static float compute_3d2d_coverage(const TrackStore& store, int image_index) {
-  std::vector<int> track_ids;
-  std::vector<Observation> obs;
-  store.get_image_track_observations(image_index, &track_ids, &obs);
-
-  float min_u = 1e9f, max_u = -1e9f, min_v = 1e9f, max_v = -1e9f;
-  int n_tri = 0;
-  for (size_t i = 0; i < track_ids.size(); ++i) {
-    if (!store.track_has_triangulated_xyz(track_ids[i]))
-      continue;
-    min_u = std::min(min_u, obs[i].u);
-    max_u = std::max(max_u, obs[i].u);
-    min_v = std::min(min_v, obs[i].v);
-    max_v = std::max(max_v, obs[i].v);
-    ++n_tri;
-  }
-  if (n_tri < 4)
-    return 0.0f;
-
-  const float ru = max_u - min_u + 1.0f;
-  const float rv = max_v - min_v + 1.0f;
-  std::array<bool, 9> cells{};
-  for (size_t i = 0; i < track_ids.size(); ++i) {
-    if (!store.track_has_triangulated_xyz(track_ids[i]))
-      continue;
-    const int cx = std::min(2, static_cast<int>(3.0f * (obs[i].u - min_u) / ru));
-    const int cy = std::min(2, static_cast<int>(3.0f * (obs[i].v - min_v) / rv));
-    cells[static_cast<size_t>(cy * 3 + cx)] = true;
-  }
-  return static_cast<float>(std::count(cells.cbegin(), cells.cend(), true)) / 9.0f;
-}
-
-std::vector<int> choose_next_resection_batch(const TrackStore& store,
-                                             const std::vector<bool>& registered,
-                                             int min_3d2d_count, double batch_ratio, int batch_max,
-                                             int late_registered_threshold, int late_absolute_min,
-                                             int late_batch_max) {
-  using Clock = std::chrono::steady_clock;
-  const int n_images = store.num_images();
-  if (n_images == 0 || static_cast<int>(registered.size()) != n_images || batch_max <= 0)
-    return {};
-
-  // Count registered for late-stage logic.
-  const int num_registered =
-      static_cast<int>(std::count(registered.begin(), registered.end(), true));
-
-  auto t0 = Clock::now();
-  // Score every unregistered image by its number of triangulated 3D-2D correspondences.
-  std::vector<std::pair<int, int>> unreg_count; // (count, global_image_idx)
-  int total_track_obs_checked = 0;
-  for (int im = 0; im < n_images; ++im) {
-    if (registered[static_cast<size_t>(im)])
-      continue;
-    std::vector<int> track_ids;
-    store.get_image_track_observations(im, &track_ids, nullptr);
-    total_track_obs_checked += static_cast<int>(track_ids.size());
-    int count = 0;
-    for (int tid : track_ids)
-      if (store.track_has_triangulated_xyz(tid))
-        ++count;
-    if (count >= min_3d2d_count)
-      unreg_count.push_back({count, im});
-  }
-  auto t1 = Clock::now();
-
-  if (unreg_count.empty()) {
-    LOG(INFO) << "[PERF] choose_next_resection_batch: no candidates above min_3d2d="
-              << min_3d2d_count << "  total_obs_checked=" << total_track_obs_checked;
-    return {};
-  }
-
-  // Sort descending by score.
-  std::sort(unreg_count.begin(), unreg_count.end(),
-            [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
-              return a.first > b.first; // higher count first
-            });
-
-  // OpenMVG 75%-ratio threshold: include all within ratio of best.
-  const int best_count = unreg_count[0].first;
-  int ratio_floor = static_cast<int>(std::ceil(best_count * batch_ratio));
-  // Late-stage relaxation: once enough images are registered, replace the strict
-  // ratio floor with an absolute minimum, so images with e.g. 150 obs are not
-  // excluded just because the best has 300 obs (ratio_floor would be 225).
-  const bool late_mode = (late_registered_threshold > 0 && late_absolute_min > 0 &&
-                          num_registered > late_registered_threshold);
-  // In late-stage mode: relax ratio floor AND cap batch size separately.
-  const int effective_batch_cap = (late_mode && late_batch_max > 0) ? late_batch_max : batch_max;
-  if (late_mode) {
-    ratio_floor = std::min(ratio_floor, late_absolute_min);
-    LOG(INFO) << "  [late-mode] num_registered=" << num_registered
-              << " > threshold=" << late_registered_threshold << ": ratio_floor relaxed to min("
-              << static_cast<int>(std::ceil(best_count * batch_ratio)) << ", " << late_absolute_min
-              << ")=" << ratio_floor << ", batch_cap=" << effective_batch_cap;
-  }
-  std::vector<int> out;
-  for (const auto& p : unreg_count) {
-    if (p.first < ratio_floor || static_cast<int>(out.size()) >= effective_batch_cap)
-      break;
-    out.push_back(p.second);
-  }
-
-  auto ms_count = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-  LOG(INFO) << "[PERF] choose_next_resection_batch: " << unreg_count.size()
-            << " candidates (above min_3d2d=" << min_3d2d_count << "), best=" << best_count
-            << ", ratio_floor=" << ratio_floor << ", selected=" << out.size()
-            << ", total_obs_checked=" << total_track_obs_checked << ", count_loop=" << ms_count
-            << "ms";
-  for (size_t i = 0; i < std::min(unreg_count.size(), size_t(5)); ++i) {
-    LOG(INFO) << "  candidate #" << i << ": image " << unreg_count[i].second << " ("
-              << unreg_count[i].first << " 3D-2D correspondences)"
-              << (i < out.size() ? "  [selected]" : "  [below ratio]");
-  }
-  return out;
-}
-
-std::vector<ResectionCandidate>
-choose_resection_candidates(const TrackStore& store, const std::vector<bool>& registered,
-                            int min_3d2d_count, double batch_ratio, int batch_max,
-                            int max_candidates, int late_registered_threshold,
-                            int late_absolute_min, int late_batch_max) {
-  const int n_images = store.num_images();
-  if (n_images == 0 || static_cast<int>(registered.size()) != n_images || batch_max <= 0 ||
-      max_candidates <= 0)
-    return {};
-
-  const int num_registered =
-      static_cast<int>(std::count(registered.begin(), registered.end(), true));
-
-  // Score every unregistered image by triangulated 3D-2D count.
-  std::vector<std::pair<int, int>> unreg_count; // (count, image_idx)
-  for (int im = 0; im < n_images; ++im) {
-    if (registered[static_cast<size_t>(im)])
-      continue;
-    std::vector<int> track_ids;
-    store.get_image_track_observations(im, &track_ids, nullptr);
-    int count = 0;
-    for (int tid : track_ids)
-      if (store.track_has_triangulated_xyz(tid))
-        ++count;
-    if (count >= min_3d2d_count)
-      unreg_count.push_back({count, im});
-  }
-  if (unreg_count.empty())
-    return {};
-
-  std::sort(unreg_count.begin(), unreg_count.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
-
-  // Compute ratio_floor and batch_cap (same late-mode logic as choose_next_resection_batch).
-  const int best_count = unreg_count[0].first;
-  int ratio_floor = static_cast<int>(std::ceil(best_count * batch_ratio));
-  const bool late_mode = (late_registered_threshold > 0 && late_absolute_min > 0 &&
-                          num_registered > late_registered_threshold);
-  const int effective_batch_cap = (late_mode && late_batch_max > 0) ? late_batch_max : batch_max;
-  if (late_mode)
-    ratio_floor = std::min(ratio_floor, late_absolute_min);
-
-  // Build candidate list up to max_candidates; tag is_primary for the normal-batch subset.
-  std::vector<ResectionCandidate> out;
-  out.reserve(std::min(static_cast<int>(unreg_count.size()), max_candidates));
-  int primary_count = 0;
-  for (const auto& p : unreg_count) {
-    if (static_cast<int>(out.size()) >= max_candidates)
-      break;
-    const bool primary = (p.first >= ratio_floor && primary_count < effective_batch_cap);
-    ResectionCandidate c;
-    c.image_index = p.second;
-    c.num_3d2d = p.first;
-    c.coverage = compute_3d2d_coverage(store, p.second);
-    c.is_primary = primary;
-    if (primary)
-      ++primary_count;
-    out.push_back(c);
-  }
-  LOG(INFO) << "choose_resection_candidates: " << unreg_count.size()
-            << " total, selected=" << out.size() << " (primary=" << primary_count
-            << ", fallback=" << (static_cast<int>(out.size()) - primary_count) << ")"
-            << "  best=" << best_count << " ratio_floor=" << ratio_floor;
-  return out;
-}
-
-int run_batch_resection(const TrackStore& store, const std::vector<int>& image_indices,
-                        const std::vector<camera::Intrinsics>& cameras,
-                        const std::vector<int>& image_to_camera_index,
-                        std::vector<Eigen::Matrix3d>* poses_R,
-                        std::vector<Eigen::Vector3d>* poses_C, std::vector<bool>* registered,
-                        int min_inliers, std::vector<int>* registered_images_out) {
-  if (!poses_R || !poses_C || !registered)
-    return 0;
-  if (registered_images_out)
-    registered_images_out->clear();
-  int added = 0;
-  for (int im : image_indices) {
-    if (im < 0 || static_cast<size_t>(im) >= image_to_camera_index.size())
-      continue;
-    const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
-    // Count available 3D-2D correspondences for this image
-    std::vector<int> track_ids_for_log;
-    store.get_image_track_observations(im, &track_ids_for_log, nullptr);
-    int n_3d2d = 0;
-    for (int tid : track_ids_for_log) {
-      if (store.track_has_triangulated_xyz(tid))
-        ++n_3d2d;
-    }
-    Eigen::Matrix3d R;
-    Eigen::Vector3d t;
-    int inliers = 0;
-    double rmse_px = 0.0;
-    // const double ransac_thresh_px = 8.0;
-    const double ransac_thresh_px =
-        4.0; // tighter threshold since we have good initialization from tracks
-    if (!resection_single_image(K, store, im, &R, &t, min_inliers, ransac_thresh_px, &inliers,
-                                &rmse_px)) {
-      LOG(INFO) << "  resection image " << im << ": FAILED (3D-2D=" << n_3d2d
-                << ", inliers=" << inliers << ", rmse=" << rmse_px << ", need " << min_inliers
-                << ")";
-      continue;
-    }
-    Eigen::Vector3d C = -R.transpose() * t;
-    LOG(INFO) << "  resection image " << im << ": OK (3D-2D=" << n_3d2d << ", inliers=" << inliers
-              << ", rmse=" << rmse_px << ", C=[" << C(0) << "," << C(1) << "," << C(2) << "])";
-    if (static_cast<size_t>(im) >= poses_R->size())
-      poses_R->resize(static_cast<size_t>(im) + 1);
-    if (static_cast<size_t>(im) >= poses_C->size())
-      poses_C->resize(static_cast<size_t>(im) + 1);
-    if (static_cast<size_t>(im) >= registered->size())
-      registered->resize(static_cast<size_t>(im) + 1);
-    (*poses_R)[static_cast<size_t>(im)] = R;
-    (*poses_C)[static_cast<size_t>(im)] = C;
-    (*registered)[static_cast<size_t>(im)] = true;
-    if (registered_images_out)
-      registered_images_out->push_back(im);
-    ++added;
-  }
-  LOG(INFO) << "run_batch_resection: " << added << "/" << image_indices.size()
-            << " images registered";
-  return added;
-}
-
-int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_registered_image_indices,
-                            const std::vector<Eigen::Matrix3d>& poses_R,
-                            const std::vector<Eigen::Vector3d>& poses_C,
-                            const std::vector<bool>& registered,
-                            const std::vector<camera::Intrinsics>& cameras,
-                            const std::vector<int>& image_to_camera_index, double min_tri_angle_deg,
-                            std::vector<int>* new_track_ids_out) {
-  if (new_track_ids_out)
-    new_track_ids_out->clear();
-  using Clock = std::chrono::steady_clock;
-  if (!store)
-    return 0;
-  const int n_images = store->num_images();
-  if (static_cast<int>(poses_R.size()) != n_images ||
-      static_cast<int>(poses_C.size()) != n_images ||
-      static_cast<int>(registered.size()) != n_images)
-    return 0;
-  // ── Collect candidate tracks from new images' reverse index ─────────────────
-  // Visiting only new-image observations instead of all tracks reduces the scan
-  // from O(#all_tracks) to ≈ O(#new_obs).  has_new is guaranteed by construction.
-  std::unordered_set<int> candidate_set;
-  {
-    std::vector<int> tid_buf;
-    for (int new_im : new_registered_image_indices) {
-      tid_buf.clear();
-      store->get_image_track_observations(new_im, &tid_buf, nullptr);
-      for (int tid : tid_buf) {
-        if (store->is_track_valid(tid) && !store->track_has_triangulated_xyz(tid))
-          candidate_set.insert(tid);
-      }
-    }
-  }
-  int updated = 0;
-  int tracks_scanned = 0, tracks_skipped_few_views = 0;
-  int tracks_skipped_depth = 0, tracks_skipped_angle = 0;
-  auto t0 = Clock::now();
-  std::vector<Observation> obs_buf;
-  for (int track_id : candidate_set) {
-    ++tracks_scanned;
-    obs_buf.clear();
-    store->get_track_observations(track_id, &obs_buf);
-    // has_new is guaranteed: candidate was collected from a new-image reverse index.
-    std::vector<int> reg_inds;
-    std::vector<Eigen::Vector2d> rays_n;
-    for (const Observation& o : obs_buf) {
-      const int im = static_cast<int>(o.image_index);
-      if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
-        continue;
-      double u = static_cast<double>(o.u), v = static_cast<double>(o.v);
-      const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
-      if (K.has_distortion())
-        camera::undistort_point(K, u, v, &u, &v);
-      rays_n.push_back(Eigen::Vector2d((u - K.cx) / K.fx, (v - K.cy) / K.fy));
-      reg_inds.push_back(im);
-    }
-    if (static_cast<int>(reg_inds.size()) < 2) {
-      ++tracks_skipped_few_views;
-      continue;
-    }
-    std::vector<Eigen::Matrix3d> R_list;
-    std::vector<Eigen::Vector3d> C_list;
-    for (int im : reg_inds) {
-      R_list.push_back(poses_R[static_cast<size_t>(im)]);
-      C_list.push_back(poses_C[static_cast<size_t>(im)]);
-    }
-    Eigen::Vector3d X = triangulate_point_multiview(R_list, C_list, rays_n);
-    // Cheirality: positive depth in every observing camera
-    if (!check_all_depths_positive(X, R_list, C_list)) {
-      ++tracks_skipped_depth;
-      continue;
-    }
-    // Angle filter: reject degenerate (near-zero parallax) triangulations
-    if (compute_max_ray_angle_deg(X, C_list) < min_tri_angle_deg) {
-      ++tracks_skipped_angle;
-      continue;
-    }
-    store->set_track_xyz(track_id, static_cast<float>(X(0)), static_cast<float>(X(1)),
-                         static_cast<float>(X(2)));
-    ++updated;
-    if (new_track_ids_out)
-      new_track_ids_out->push_back(track_id);
-  }
-  auto t1 = std::chrono::steady_clock::now();
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-  LOG(INFO) << "[PERF] run_batch_triangulation: " << ms << "ms"
-            << "  total_tracks=" << store->num_tracks() << "  candidates=" << candidate_set.size()
-            << "  scanned=" << tracks_scanned << "  skip_few_views=" << tracks_skipped_few_views
-            << "  skip_depth=" << tracks_skipped_depth << "  skip_angle=" << tracks_skipped_angle
-            << "  newly_tri=" << updated;
-  return updated;
-}
-
-int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
-                        const std::vector<Eigen::Vector3d>& poses_C,
-                        const std::vector<bool>& registered,
-                        const std::vector<camera::Intrinsics>& cameras,
-                        const std::vector<int>& image_to_camera_index, double min_tri_angle_deg) {
-  if (!store)
-    return 0;
-  const int n_images = store->num_images();
-  if (static_cast<int>(poses_R.size()) != n_images ||
-      static_cast<int>(poses_C.size()) != n_images ||
-      static_cast<int>(registered.size()) != n_images)
-    return 0;
-  using Clock = std::chrono::steady_clock;
-  auto t0 = Clock::now();
-  // Full scan: try every track that does NOT yet have a valid 3D position.
-  // This covers two cases:
-  //   (a) tracks never triangulated (angle/depth filters previously rejected them)
-  //   (b) tracks whose XYZ was cleared by reject_outliers after losing all obs support
-  // The flag/pending mechanism is no longer used here; it is kept in TrackStore for
-  // external callers but drain_retriangulation_pending() is called here to keep the
-  // pending list tidy.
-  std::vector<int> dummy_pending;
-  store->drain_retriangulation_pending(&dummy_pending); // drain to prevent unbounded growth
-  int updated = 0;
-  int scanned = 0, skip_few = 0, skip_depth = 0, skip_angle = 0;
-  std::vector<Observation> obs_buf;
-  for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
-    const int track_id = static_cast<int>(ti);
-    if (!store->is_track_valid(track_id) || store->track_has_triangulated_xyz(track_id))
-      continue; // skip already-triangulated tracks
-    ++scanned;
-    obs_buf.clear();
-    store->get_track_observations(track_id, &obs_buf);
-    std::vector<int> reg_inds;
-    std::vector<Eigen::Vector2d> rays_n;
-    for (const Observation& o : obs_buf) {
-      const int im = static_cast<int>(o.image_index);
-      if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
-        continue;
-      double u = static_cast<double>(o.u), v = static_cast<double>(o.v);
-      const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
-      if (K.has_distortion())
-        camera::undistort_point(K, u, v, &u, &v);
-      rays_n.push_back(Eigen::Vector2d((u - K.cx) / K.fx, (v - K.cy) / K.fy));
-      reg_inds.push_back(im);
-    }
-    if (static_cast<int>(reg_inds.size()) < 2) {
-      ++skip_few;
-      continue;
-    }
-    std::vector<Eigen::Matrix3d> R_list;
-    std::vector<Eigen::Vector3d> C_list;
-    for (int im : reg_inds) {
-      R_list.push_back(poses_R[static_cast<size_t>(im)]);
-      C_list.push_back(poses_C[static_cast<size_t>(im)]);
-    }
-    Eigen::Vector3d X = triangulate_point_multiview(R_list, C_list, rays_n);
-    if (!check_all_depths_positive(X, R_list, C_list)) {
-      ++skip_depth;
-      continue;
-    }
-    if (compute_max_ray_angle_deg(X, C_list) < min_tri_angle_deg) {
-      ++skip_angle;
-      continue;
-    }
-    store->set_track_xyz(track_id, static_cast<float>(X(0)), static_cast<float>(X(1)),
-                         static_cast<float>(X(2)));
-    ++updated;
-  }
-  auto t1 = std::chrono::steady_clock::now();
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-  LOG(INFO) << "[PERF] run_retriangulation: " << ms << "ms"
-            << "  total_tracks=" << store->num_tracks() << "  scanned_untri=" << scanned
-            << "  skip_few_views=" << skip_few << "  skip_depth=" << skip_depth
-            << "  skip_angle=" << skip_angle << "  re_tri=" << updated;
-  return updated;
 }
 
 // ─── BA: build from Store, write back ────────────────────────────────────────
@@ -2290,8 +1767,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   // Fix the coordinate-system anchor: prefer the initial-pair reference camera (anchor_image).
   // Falling back to index 0 risks anchoring a newly-PnP-estimated camera instead of the true
   // origin, causing the whole reconstruction to drift/collapse.
+  int anchor_ba_idx = 0;
   {
-    int anchor_ba_idx = 0; // default: lowest registered image index
     if (anchor_image >= 0) {
       for (size_t bi = 0; bi < ba_image_index_to_global.size(); ++bi) {
         if (ba_image_index_to_global[bi] == anchor_image) {
@@ -2303,7 +1780,9 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
     ba_in.fix_pose[static_cast<size_t>(anchor_ba_idx)] = true;
   }
   LOG(INFO) << "run_global_ba: " << ba_in.poses_R.size() << " images, " << ba_in.points3d.size()
-            << " points, " << ba_in.observations.size() << " obs, max_iter=" << max_iterations;
+            << " points, " << ba_in.observations.size() << " obs, max_iter=" << max_iterations
+            << "  anchor_global_im=" << anchor_image << "  anchor_ba_idx=" << anchor_ba_idx
+            << "  ba[0]_global_im=" << ba_image_index_to_global[0];
   BAResult ba_out;
   if (!global_bundle_analytic(ba_in, &ba_out, max_iterations)) {
     LOG(WARNING) << "run_global_ba: solver failed";
@@ -2673,6 +2152,42 @@ bool run_local_ba_batch_neighbor(
   return true;
 }
 
+bool run_local_ba_dispatch(const LocalBAOptions& opts, int anchor_image, TrackStore* store,
+                           std::vector<Eigen::Matrix3d>* poses_R,
+                           std::vector<Eigen::Vector3d>* poses_C,
+                           const std::vector<bool>& registered,
+                           const std::vector<int>& image_to_camera_index,
+                           const std::vector<camera::Intrinsics>& cameras,
+                           const std::vector<int>& batch, const std::vector<int>& new_track_ids,
+                           const BASolverOverrides& ov, double* rmse_px_out) {
+  switch (opts.strategy) {
+  case LocalBAStrategy::kColmap:
+    return run_local_ba_colmap(store, poses_R, poses_C, registered, image_to_camera_index, cameras,
+                               batch, opts.colmap_max_variable_images, opts.max_iterations,
+                               rmse_px_out, ov);
+  case LocalBAStrategy::kBatchNeighbor:
+    return run_local_ba_batch_neighbor(store, poses_R, poses_C, registered, image_to_camera_index,
+                                       cameras, batch, new_track_ids, opts.neighbor_k,
+                                       opts.max_iterations, rmse_px_out, ov);
+  case LocalBAStrategy::kWindow: {
+    std::vector<int> connectivity_indices;
+    const std::vector<int>* local_indices = nullptr;
+    if (opts.by_connectivity && !batch.empty()) {
+      connectivity_indices =
+          choose_local_ba_indices_by_connectivity(*store, registered, batch, opts.window);
+      if (!connectivity_indices.empty())
+        local_indices = &connectivity_indices;
+    }
+    return run_local_ba(store, poses_R, poses_C, registered, image_to_camera_index, cameras,
+                        opts.window, opts.max_iterations, rmse_px_out, local_indices, anchor_image,
+                        ov);
+  }
+  default:
+    LOG(ERROR) << "run_local_ba_dispatch: unknown LocalBAStrategy";
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Huber δ estimation from reprojection errors via robust MAD.
 //
@@ -2700,6 +2215,286 @@ static double compute_huber_delta(const std::vector<double>& errors, double lo_p
   return std::max(lo_px, std::min(hi_px, delta));
 }
 
+namespace {
+
+/// Per-camera convergence state for progressive intrinsics freeze (see IntrinsicsSchedule).
+struct CamFreezeEntry {
+  bool frozen = false;
+  camera::Intrinsics prev;
+  int stable_rounds = 0;
+};
+
+/// Updates frozen flags after global BAs when `intr.progressive_freeze` is true; otherwise no-op.
+class ProgressiveIntrinsicsFreezeController {
+public:
+  void init(int n_cameras) { cams_.assign(static_cast<size_t>(n_cameras), CamFreezeEntry{}); }
+
+  void update_after_global_ba(const IntrinsicsSchedule& intr, int n_images,
+                              const std::vector<bool>& registered,
+                              const std::vector<int>& image_to_camera_index,
+                              std::vector<camera::Intrinsics>* cameras, bool recheck_frozen) {
+    if (!intr.progressive_freeze || !cameras)
+      return;
+    const int n_cameras = static_cast<int>(cams_.size());
+    for (int c = 0; c < n_cameras; ++c) {
+      auto& fs = cams_[static_cast<size_t>(c)];
+      const camera::Intrinsics& K = (*cameras)[static_cast<size_t>(c)];
+      if (fs.frozen) {
+        if (!recheck_frozen)
+          continue;
+        const auto d = K.delta(fs.prev);
+        if (!d.stable(intr.freeze_delta_focal, intr.freeze_delta_pp, intr.freeze_delta_dist)) {
+          fs.frozen = false;
+          fs.stable_rounds = 0;
+          LOG(INFO) << "  [freeze] camera " << c << " UNFROZEN"
+                    << " focal_rel=" << d.focal_rel << " pp_px=" << d.pp_px
+                    << " dist=" << d.distortion;
+        } else {
+          LOG(INFO) << "  [freeze] camera " << c << " still FROZEN"
+                    << " focal_rel=" << d.focal_rel << " pp_px=" << d.pp_px
+                    << " dist=" << d.distortion;
+        }
+        fs.prev = K;
+        continue;
+      }
+      int cam_reg = 0;
+      for (int i = 0; i < n_images; ++i)
+        if (registered[static_cast<size_t>(i)] &&
+            image_to_camera_index[static_cast<size_t>(i)] == c)
+          ++cam_reg;
+      if (cam_reg < intr.freeze_min_images) {
+        LOG(INFO) << "  [freeze] camera " << c << " L1-pending: reg=" << cam_reg << "/"
+                  << intr.freeze_min_images << " images (need more)";
+        fs.prev = K;
+        continue;
+      }
+      const auto d = K.delta(fs.prev);
+      if (d.stable(intr.freeze_delta_focal, intr.freeze_delta_pp, intr.freeze_delta_dist)) {
+        ++fs.stable_rounds;
+        if (fs.stable_rounds >= intr.freeze_stable_rounds) {
+          fs.frozen = true;
+          LOG(INFO) << "  [freeze] camera " << c << " FROZEN"
+                    << " focal_rel=" << d.focal_rel << " pp_px=" << d.pp_px
+                    << " dist=" << d.distortion << " reg_imgs=" << cam_reg;
+        } else {
+          LOG(INFO) << "  [freeze] camera " << c << " stable_rounds=" << fs.stable_rounds << "/"
+                    << intr.freeze_stable_rounds << " focal_rel=" << d.focal_rel
+                    << " pp_px=" << d.pp_px << " dist=" << d.distortion << " reg_imgs=" << cam_reg;
+        }
+      } else {
+        LOG(INFO) << "  [freeze] camera " << c << " not-stable → reset"
+                  << " focal_rel=" << d.focal_rel << " (thr=" << intr.freeze_delta_focal << ")"
+                  << " pp_px=" << d.pp_px << " (thr=" << intr.freeze_delta_pp << ")"
+                  << " dist=" << d.distortion << " (thr=" << intr.freeze_delta_dist << ")"
+                  << " reg_imgs=" << cam_reg;
+        fs.stable_rounds = 0;
+      }
+      fs.prev = K;
+    }
+  }
+
+  std::vector<bool> frozen_camera_mask() const {
+    std::vector<bool> v(cams_.size());
+    for (size_t c = 0; c < cams_.size(); ++c)
+      v[c] = cams_[c].frozen;
+    return v;
+  }
+
+private:
+  std::vector<CamFreezeEntry> cams_;
+};
+
+} // namespace
+
+namespace {
+
+std::vector<double> build_coarse_reproj_thresholds(const OutlierOptions& o) {
+  const int R = std::max(0, o.coarse_ba_max_rounds);
+  std::vector<double> t;
+  t.reserve(static_cast<size_t>(R));
+  for (int r = 0; r < R; ++r) {
+    if (!o.coarse_reproj_thresholds_px.empty() &&
+        r < static_cast<int>(o.coarse_reproj_thresholds_px.size()))
+      t.push_back(o.coarse_reproj_thresholds_px[static_cast<size_t>(r)]);
+    else
+      t.push_back(o.coarse_reproj_floor_px);
+  }
+  return t;
+}
+
+} // namespace
+
+bool run_coarse_outlier_rejection_global_ba(
+    TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R, std::vector<Eigen::Vector3d>* poses_C,
+    const std::vector<bool>& registered, const std::vector<int>& image_to_camera_index,
+    std::vector<camera::Intrinsics>* cameras, int anchor_image,
+    const CoarseOutlierGlobalBAOptions& coarse, double* rmse_px_out) {
+  if (!store || !poses_R || !poses_C || !cameras)
+    return false;
+  if (coarse.reproj_thresholds_px.empty())
+    return true;
+  double rmse = 0.0;
+  bool ok = true;
+  for (size_t r = 0; r < coarse.reproj_thresholds_px.size(); ++r) {
+    BASolverOverrides ov{};
+    ov.huber_loss_delta = coarse.huber_delta_px;
+    ov.function_tolerance = 1e-3;
+    ov.gradient_tolerance = 1e-4;
+    ov.max_num_iterations = coarse.max_iterations_per_pass;
+    ok = run_global_ba(store, poses_R, poses_C, registered, image_to_camera_index, *cameras,
+                       cameras, false, coarse.max_iterations_per_pass, &rmse, anchor_image, nullptr,
+                       0u, 0.0, ov, nullptr);
+    if (!ok)
+      break;
+    const double thr = coarse.reproj_thresholds_px[r];
+    const int rejected = reject_outliers_multiview(store, *poses_R, *poses_C, registered, *cameras,
+                                                   image_to_camera_index, thr);
+    LOG(INFO) << "  [coarse_outlier_global_ba] round " << r << ": reproj_thr=" << thr
+              << " px  rejected=" << rejected;
+    if (rejected < std::max(1, coarse.min_rejected_to_continue))
+      break;
+  }
+  if (rmse_px_out)
+    *rmse_px_out = rmse;
+  return ok;
+}
+
+bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                                   std::vector<Eigen::Vector3d>* poses_C,
+                                   const std::vector<bool>& registered,
+                                   const std::vector<int>& image_to_camera_index,
+                                   std::vector<camera::Intrinsics>* cameras, int anchor_image,
+                                   int num_registered, const IncrementalSfMOptions& opts,
+                                   const BaOutlierCall& call, double* rmse_px_out) {
+  using Clock = std::chrono::steady_clock;
+  double rmse = 0.0;
+  bool ok = false;
+  const bool do_reject = (num_registered >= opts.outlier.min_registered_images);
+  // const int n_fine_rounds = std::max(1, call.max_outlier_rounds);
+  int n_fine_rounds = 30;
+
+  const auto run_one_ba = [&](BASolverOverrides ov) -> bool {
+    auto t_ba = Clock::now();
+    bool step_ok = false;
+    if (call.use_global_ba) {
+      std::vector<uint32_t> per_cam_masks;
+      if (call.optimize_intrinsics)
+        per_cam_masks = opts.intrinsics.fix_masks_per_camera(registered, image_to_camera_index,
+                                                             static_cast<int>(cameras->size()));
+      step_ok = run_global_ba(store, poses_R, poses_C, registered, image_to_camera_index, *cameras,
+                              cameras, call.optimize_intrinsics, opts.global_ba.max_iterations,
+                              &rmse, anchor_image, call.frozen_cameras, call.partial_intr_fix,
+                              call.focal_prior_weight, ov,
+                              call.optimize_intrinsics ? &per_cam_masks : nullptr);
+    } else {
+      step_ok = run_local_ba_dispatch(opts.local_ba, anchor_image, store, poses_R, poses_C,
+                                      registered, image_to_camera_index, *cameras,
+                                      call.local_ba_batch, call.local_ba_new_tracks, ov, &rmse);
+    }
+    LOG(INFO) << "[PERF] ba_outlier: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba).count()
+              << "ms  RMSE=" << rmse << " px";
+    return step_ok;
+  };
+
+  const auto huber_delta_from_residuals = [&](BASolverOverrides* ov) {
+    const std::vector<int>* delta_filter =
+        (!call.huber_residual_image_filter.empty()) ? &call.huber_residual_image_filter : nullptr;
+    std::vector<double> errs_delta = collect_reproj_errors(
+        *store, *poses_R, *poses_C, registered, *cameras, image_to_camera_index, delta_filter);
+    if (errs_delta.empty())
+      errs_delta = collect_reproj_errors(*store, *poses_R, *poses_C, registered, *cameras,
+                                         image_to_camera_index, nullptr);
+    if (!errs_delta.empty()) {
+      const double delta = compute_huber_delta(errs_delta, opts.outlier.huber_delta_lo_px,
+                                               opts.outlier.huber_delta_hi_px);
+      // ov->huber_loss_delta = delta;
+      ov->huber_loss_delta = std::max(delta, 4.0);
+      LOG(INFO) << "  [ba_outlier] fine Huber \xce\xb4=" << ov->huber_loss_delta
+                << " px (MAD on reproj)" << (delta_filter ? "  (filtered images)" : "  (global)");
+    } else {
+      ov->huber_loss_delta = 4.0;
+    }
+  };
+
+  // No outlier pass: single BA (Huber δ from residuals when possible).
+  if (!do_reject) {
+    BASolverOverrides ov = opts.global_ba.solver_overrides;
+    huber_delta_from_residuals(&ov);
+    ok = run_one_ba(ov);
+    if (rmse_px_out)
+      *rmse_px_out = rmse;
+    return ok;
+  }
+
+  const bool coarse_strategy_on =
+      call.enable_coarse_outlier_rejection.value_or(opts.outlier.enable_coarse_outlier_rejection);
+  const bool run_coarse_phase = do_reject && call.use_global_ba && coarse_strategy_on &&
+                                opts.outlier.coarse_ba_max_rounds > 0;
+
+  // ── Phase 1: coarse gross-outlier pass (global BA only; intrinsics fixed regardless of
+  // call.optimize_intrinsics)
+  if (false) {
+    LOG(INFO) << "  [ba_outlier] running coarse phase";
+    CoarseOutlierGlobalBAOptions coarse;
+    coarse.reproj_thresholds_px = build_coarse_reproj_thresholds(opts.outlier);
+    coarse.huber_delta_px = opts.outlier.coarse_huber_delta_px;
+    coarse.max_iterations_per_pass = opts.outlier.coarse_ba_max_iterations_per_pass;
+    coarse.min_rejected_to_continue = opts.outlier.min_for_retry;
+    ok = run_coarse_outlier_rejection_global_ba(store, poses_R, poses_C, registered,
+                                                image_to_camera_index, cameras, anchor_image,
+                                                coarse, &rmse);
+    if (!ok) {
+      if (rmse_px_out)
+        *rmse_px_out = rmse;
+      return false;
+    }
+  }
+
+  // ── Phase 2: fine BA + MAD reproj + angle rejection (uses call.optimize_intrinsics) ────
+  for (int r = 0; r < n_fine_rounds; ++r) {
+    BASolverOverrides ov = opts.global_ba.solver_overrides;
+    huber_delta_from_residuals(&ov);
+    const BASolverOverrides& g = opts.global_ba.solver_overrides;
+    if (ov.function_tolerance == 0.0)
+      ov.function_tolerance = (g.function_tolerance > 0.0) ? g.function_tolerance : 1e-6;
+    if (ov.gradient_tolerance == 0.0)
+      ov.gradient_tolerance = (g.gradient_tolerance > 0.0) ? g.gradient_tolerance : 1e-8;
+    if (ov.parameter_tolerance == 0.0 && g.parameter_tolerance > 0.0)
+      ov.parameter_tolerance = g.parameter_tolerance;
+    if (ov.max_num_iterations == 0)
+      ov.max_num_iterations = opts.global_ba.max_iterations;
+    ok = run_one_ba(ov);
+    if (!ok)
+      break;
+
+    const std::vector<int>* delta_filter =
+        (!call.huber_residual_image_filter.empty()) ? &call.huber_residual_image_filter : nullptr;
+    std::vector<double> errs = collect_reproj_errors(*store, *poses_R, *poses_C, registered,
+                                                     *cameras, image_to_camera_index, delta_filter);
+    if (errs.empty())
+      errs = collect_reproj_errors(*store, *poses_R, *poses_C, registered, *cameras,
+                                   image_to_camera_index, nullptr);
+    const double thr =
+        compute_mad_threshold_from_errors(errs, opts.outlier.mad_k, opts.outlier.threshold_px);
+
+    double outlier_threshold = std::max(thr, 4.0);
+    int rejected = 0;
+    rejected += reject_outliers_multiview(store, *poses_R, *poses_C, registered, *cameras,
+                                          image_to_camera_index, outlier_threshold);
+    rejected +=
+        reject_outliers_angle_multiview(store, *poses_R, *poses_C, registered,
+                                        opts.outlier.min_angle_deg, opts.outlier.max_angle_deg);
+    LOG(INFO) << "  [ba_outlier] fine round " << r << ": MAD reproj_thr=" << thr
+              << " px  rejected=" << rejected;
+    if (rejected < std::max(1, opts.outlier.min_for_retry))
+      break;
+  }
+  if (rmse_px_out)
+    *rmse_px_out = rmse;
+  return ok;
+}
+
 bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                   const std::string& pairs_json_path, const std::string& geo_dir,
                                   std::vector<camera::Intrinsics>* cameras,
@@ -2711,7 +2506,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                   uint32_t* initial_im1_out) {
   if (!store_out || !poses_R_out || !poses_C_out || !registered_out || !cameras)
     return false;
-  if (!load_track_store_from_idc(tracks_idc_path, store_out, nullptr)) {
+  ViewGraph view_graph;
+  if (!load_track_store_from_idc(tracks_idc_path, store_out, nullptr, &view_graph)) {
     LOG(ERROR) << "run_incremental_sfm_pipeline: failed to load tracks from " << tracks_idc_path;
     return false;
   }
@@ -2724,10 +2520,16 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   poses_C_out->resize(static_cast<size_t>(n_images));
   registered_out->resize(static_cast<size_t>(n_images), false);
 
-  ViewGraph view_graph;
-  if (!build_view_graph_from_geo(pairs_json_path, geo_dir, &view_graph)) {
-    LOG(ERROR) << "run_incremental_sfm_pipeline: failed to build view graph";
-    return false;
+  if (view_graph.num_pairs() == 0) {
+    LOG(INFO) << "run_incremental_sfm_pipeline: no embedded view graph in tracks IDC; "
+                 "building from pairs.json + geo_dir";
+    if (!build_view_graph_from_geo(pairs_json_path, geo_dir, &view_graph)) {
+      LOG(ERROR) << "run_incremental_sfm_pipeline: failed to build view graph";
+      return false;
+    }
+  } else {
+    LOG(INFO) << "run_incremental_sfm_pipeline: using embedded view graph from tracks IDC ("
+              << view_graph.num_pairs() << " pairs)";
   }
   // Always capture anchor internally; caller's output pointers may be null.
   uint32_t local_im0 = 0, local_im1 = 0;
@@ -2784,7 +2586,6 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // All global BA calls must fix this camera to preserve that origin.
   const int anchor_image = static_cast<int>(*im0_ptr);
   LOG(INFO) << "run_incremental_sfm_pipeline: anchor_image=" << anchor_image;
-  const BASolverOverrides& ba_solver_ov = opts.global_ba.solver_overrides;
 
   // count_tri_tracks: O(1) via TrackStore counter instead of full scan.
   auto count_tri_tracks = [&]() -> int { return store_out->num_triangulated_tracks(); };
@@ -2792,264 +2593,21 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
   using Clock = std::chrono::steady_clock;
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Local BA dispatcher — selects colmap / batch-neighbor / window strategy.
-  // ─────────────────────────────────────────────────────────────────────────────
-  auto dispatch_local_ba = [&](const std::vector<int>& lba_batch,
-                               const std::vector<int>& lba_new_tracks, const BASolverOverrides& ov,
-                               double* rmse_out) -> bool {
-    if (opts.local_ba.strategy == LocalBAStrategy::kColmap) {
-      return run_local_ba_colmap(store_out, poses_R_out, poses_C_out, *registered_out,
-                                 image_to_camera_index, *cameras, lba_batch,
-                                 opts.local_ba.colmap_max_variable_images,
-                                 opts.local_ba.max_iterations, rmse_out, ov);
-    } else if (opts.local_ba.strategy == LocalBAStrategy::kBatchNeighbor) {
-      return run_local_ba_batch_neighbor(store_out, poses_R_out, poses_C_out, *registered_out,
-                                         image_to_camera_index, *cameras, lba_batch, lba_new_tracks,
-                                         opts.local_ba.neighbor_k, opts.local_ba.max_iterations,
-                                         rmse_out, ov);
-    } else {
-      const std::vector<int>* local_indices = nullptr;
-      std::vector<int> connectivity_indices;
-      if (opts.local_ba.by_connectivity && !lba_batch.empty()) {
-        connectivity_indices = choose_local_ba_indices_by_connectivity(
-            *store_out, *registered_out, lba_batch, opts.local_ba.window);
-        if (!connectivity_indices.empty())
-          local_indices = &connectivity_indices;
-      }
-      return run_local_ba(store_out, poses_R_out, poses_C_out, *registered_out,
-                          image_to_camera_index, *cameras, opts.local_ba.window,
-                          opts.local_ba.max_iterations, rmse_out, local_indices, anchor_image, ov);
-    }
-  };
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Unified BA + iterative outlier detection.
-  //
-  // Each round:
-  //   1. Collect reprojection errors → compute Huber δ via MAD.
-  //   2. Run BA (global or local) with that Huber kernel.
-  //   3. Collect post-BA errors → MAD hard-rejection threshold.
-  //   4. reject_outliers_depth + multiview + angle.
-  //   5. Repeat until convergence (rejected < min_for_retry) or max_rounds.
-  //
-  // Parameters:
-  //   use_global          – true = global BA, false = dispatch_local_ba
-  //   optimize_intrinsics – passed to run_global_ba (global BA only)
-  //   fix_mask            – partial intrinsics fix flags (global BA only)
-  //   focal_prior_weight  – focal length prior (global BA only)
-  //   frozen_ptr          – per-camera frozen flags (global BA only)
-  //   lba_batch / lba_new_tracks – for local BA
-  //   new_images          – newly registered image indices; when non-empty, Huber δ is estimated
-  //                         from THEIR residuals only (new matches are noisier than settled ones).
-  //                         MAD hard-rejection threshold still uses all registered images.
-  //   max_rounds          – max Huber-BA + reject iterations
-  //   base_ov             – base solver overrides; detection rounds tighten tolerances
-  //   rmse_out            – output: last BA RMSE (px)
-  // ─────────────────────────────────────────────────────────────────────────────
-  auto run_ba_with_outlier_detection =
-      [&](bool use_global, bool optimize_intrinsics, uint32_t fix_mask, double focal_prior_weight,
-          const std::vector<bool>* frozen_ptr, const std::vector<int>& lba_batch,
-          const std::vector<int>& lba_new_tracks, const std::vector<int>& new_images,
-          int max_rounds, const BASolverOverrides& base_ov, double* rmse_out) -> bool {
-    double rmse = 0.0;
-    bool ok = false;
-    const bool do_reject = (num_registered >= opts.outlier.min_registered_images);
-    const int n_rounds = std::max(1, max_rounds);
-    for (int r = 0; r < n_rounds; ++r) {
-      BASolverOverrides ov = base_ov;
-      if (do_reject) {
-        // Compute Huber δ from NEW images when available: they carry the freshest
-        // (and noisiest) matches and set the appropriate scale for robust BA.
-        // The already-settled global reconstruction has tiny residuals → would
-        // produce an unrealistically tight δ if used naively.
-        const std::vector<int>* delta_filter = (!new_images.empty()) ? &new_images : nullptr;
-        auto errs_delta =
-            collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                                  image_to_camera_index, delta_filter);
-        if (errs_delta.empty()) // fallback: use global if new images have no tracked points yet
-          errs_delta = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out,
-                                             *registered_out, *cameras, image_to_camera_index);
-        if (!errs_delta.empty()) {
-          const double delta = compute_huber_delta(errs_delta, opts.outlier.huber_delta_lo_px,
-                                                   opts.outlier.huber_delta_hi_px);
-          // ov.huber_loss_delta = delta;
-          ov.huber_loss_delta = 4.0;
-          LOG(INFO) << "  [ba_outlier] round " << r << ": Huber \xce\xb4=" << delta << " px"
-                    << (delta_filter
-                            ? " (from " + std::to_string(new_images.size()) + " new images, " +
-                                  std::to_string(errs_delta.size()) + " obs)"
-                            : " (global)");
-        }
-      }
-      ov.huber_loss_delta = 10.0;
-      // Detection rounds (r>0): tighten solver tolerances for speed.
-      // if (r > 0)
-      if (!optimize_intrinsics) {
-        if (ov.function_tolerance == 0.0)
-          ov.function_tolerance = 1e-3;
-        if (ov.gradient_tolerance == 0.0)
-          ov.gradient_tolerance = 1e-4;
-        if (ov.max_num_iterations == 0)
-          ov.max_num_iterations = 15;
-      }
-      auto t_ba = Clock::now();
-      use_global = true;
-      if (use_global) {
-        // Compute per-camera phase masks: each camera's unlock stage is determined by
-        // the number of its own registered images, not the total registered count.
-        std::vector<uint32_t> per_cam_masks;
-        if (optimize_intrinsics)
-          per_cam_masks = opts.intrinsics.fix_masks_per_camera(
-              *registered_out, image_to_camera_index, static_cast<int>(cameras->size()));
-        ok = run_global_ba(store_out, poses_R_out, poses_C_out, *registered_out,
-                           image_to_camera_index, *cameras, cameras, optimize_intrinsics,
-                           opts.global_ba.max_iterations, &rmse, anchor_image, frozen_ptr, fix_mask,
-                           focal_prior_weight, ov, optimize_intrinsics ? &per_cam_masks : nullptr);
-      } else {
-        ok = dispatch_local_ba(lba_batch, lba_new_tracks, ov, &rmse);
-      }
-      LOG(INFO)
-          << "[PERF] ba_outlier round " << r << ": "
-          << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba).count()
-          << "ms  RMSE=" << rmse << " px";
-      if (!ok)
-        break;
-      if (!do_reject)
-        break;
-      // auto errs = collect_reproj_errors(*store_out, *poses_R_out, *poses_C_out, *registered_out,
-      //                                   *cameras, image_to_camera_index);
-      // double thr =
-      //     compute_mad_threshold_from_errors(errs, opts.outlier.mad_k, opts.outlier.threshold_px);
-      // if (thr <= 4.0) {
-      //   thr = 4.0;
-      // }
-      double thr = 8.0;
-      if (optimize_intrinsics) {
-        thr = 4.0;
-      }
-      int rejected = 0;
-      // reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
-      //                                      opts.outlier.max_depth_factor);
-      rejected += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                            *cameras, image_to_camera_index, thr);
-      rejected += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out,
-                                                  *registered_out, opts.outlier.min_angle_deg);
-      LOG(INFO) << "  [ba_outlier] round " << r << ": MAD_thr=" << thr
-                << " px  rejected=" << rejected;
-      if (rejected < std::max(1, opts.outlier.min_for_retry))
-        break;
-    }
-    if (rmse_out)
-      *rmse_out = rmse;
-    return ok;
-  };
-
-  // ─── Per-camera intrinsics freeze state ─────────────────────────────────────
-  struct CamFreezeState {
-    bool frozen = false;
-    camera::Intrinsics prev;
-    int stable_rounds = 0;
-  };
   const int n_cameras = static_cast<int>(cameras->size());
-  std::vector<CamFreezeState> cam_freeze(static_cast<size_t>(n_cameras));
-
-  // Call after every global BA that may have updated intrinsics.
-  // recheck_frozen=false (default): skip already-frozen cameras (fast path).
-  // recheck_frozen=true: re-evaluate frozen cameras too — unfreeze if delta now exceeds
-  //   thresholds (used after periodic global BA that re-opens all intrinsics).
-  auto update_freeze_state = [&](bool recheck_frozen = false) {
-    if (!opts.intrinsics.progressive_freeze)
-      return;
-    for (int c = 0; c < n_cameras; ++c) {
-      auto& fs = cam_freeze[static_cast<size_t>(c)];
-      const camera::Intrinsics& K = (*cameras)[static_cast<size_t>(c)];
-      if (fs.frozen) {
-        if (!recheck_frozen)
-          continue;
-        // Re-evaluate: unfreeze if intrinsics drifted beyond thresholds.
-        const auto d = K.delta(fs.prev);
-        if (!d.stable(opts.intrinsics.freeze_delta_focal, opts.intrinsics.freeze_delta_pp,
-                      opts.intrinsics.freeze_delta_dist)) {
-          fs.frozen = false;
-          fs.stable_rounds = 0;
-          LOG(INFO) << "  [freeze] camera " << c << " UNFROZEN"
-                    << " focal_rel=" << d.focal_rel << " pp_px=" << d.pp_px
-                    << " dist=" << d.distortion;
-        } else {
-          LOG(INFO) << "  [freeze] camera " << c << " still FROZEN"
-                    << " focal_rel=" << d.focal_rel << " pp_px=" << d.pp_px
-                    << " dist=" << d.distortion;
-        }
-        fs.prev = K;
-        continue;
-      }
-      int cam_reg = 0;
-      for (int i = 0; i < n_images; ++i)
-        if ((*registered_out)[static_cast<size_t>(i)] &&
-            image_to_camera_index[static_cast<size_t>(i)] == c)
-          ++cam_reg;
-      if (cam_reg < opts.intrinsics.freeze_min_images) {
-        // Level-1 gate not met yet; don't count stable_rounds but still update prev.
-        LOG(INFO) << "  [freeze] camera " << c << " L1-pending: reg=" << cam_reg << "/"
-                  << opts.intrinsics.freeze_min_images << " images (need more)";
-        fs.prev = K;
-        continue;
-      }
-      const auto d = K.delta(fs.prev);
-      if (d.stable(opts.intrinsics.freeze_delta_focal, opts.intrinsics.freeze_delta_pp,
-                   opts.intrinsics.freeze_delta_dist)) {
-        ++fs.stable_rounds;
-        if (fs.stable_rounds >= opts.intrinsics.freeze_stable_rounds) {
-          fs.frozen = true;
-          LOG(INFO) << "  [freeze] camera " << c << " FROZEN"
-                    << " focal_rel=" << d.focal_rel << " pp_px=" << d.pp_px
-                    << " dist=" << d.distortion << " reg_imgs=" << cam_reg;
-        } else {
-          LOG(INFO) << "  [freeze] camera " << c << " stable_rounds=" << fs.stable_rounds << "/"
-                    << opts.intrinsics.freeze_stable_rounds << " focal_rel=" << d.focal_rel
-                    << " pp_px=" << d.pp_px << " dist=" << d.distortion << " reg_imgs=" << cam_reg;
-        }
-      } else {
-        LOG(INFO) << "  [freeze] camera " << c << " not-stable → reset"
-                  << " focal_rel=" << d.focal_rel << " (thr=" << opts.intrinsics.freeze_delta_focal
-                  << ")"
-                  << " pp_px=" << d.pp_px << " (thr=" << opts.intrinsics.freeze_delta_pp << ")"
-                  << " dist=" << d.distortion << " (thr=" << opts.intrinsics.freeze_delta_dist
-                  << ")"
-                  << " reg_imgs=" << cam_reg;
-        fs.stable_rounds = 0;
-      }
-      fs.prev = K;
-    }
-  };
-
-  // Build per-camera frozen bool vector for passing to run_global_ba.
-  auto make_frozen_vec = [&]() -> std::vector<bool> {
-    std::vector<bool> v(static_cast<size_t>(n_cameras));
-    for (int c = 0; c < n_cameras; ++c)
-      v[static_cast<size_t>(c)] = cam_freeze[static_cast<size_t>(c)].frozen;
-    return v;
-  };
+  ProgressiveIntrinsicsFreezeController freeze_ctrl;
+  freeze_ctrl.init(n_cameras);
 
   // Registered count at last periodic global BA (local-BA phase tracker).
   int last_periodic_global_ba_registered = 0;
   int periodic_ba_count = 0; // counts mid-freq BA calls; triggers recalib every N
   // ───────────────────────────────────────────────────────────────────────────────
 
-  // COLMAP strategy registers exactly one image per iteration, then immediately runs
-  // local BA on it (2-hop expansion centered on that single camera).  Batching >1
-  // violates this design: the "batch" in run_local_ba_colmap is meant to be a single
-  // newly-registered image, and its COLMAP-paper variable-set expansion only makes
-  // sense when the batch contains just one new camera.
+  // Resection: one new image per iteration; try candidates in sorted order until one succeeds.
+  // Local BA (e.g. kColmap) still expects a single new camera per iteration.
+  constexpr int kResectionCandidateListMax = 40; ///< max ranked candidates to try per iteration
+  const int resection_max_candidates = kResectionCandidateListMax;
 
-  const bool kColmapOneByOne =
-      (opts.local_ba.strategy == LocalBAStrategy::kColmap && !opts.local_ba.skip);
-  int effective_batch_max = kColmapOneByOne ? 1 : opts.resection.batch_max;
-
-  // In kColmap mode: ranked candidate list (primary + fallbacks) rebuilt each iter.
-  // The outer loop tries them one-by-one and uses the first that succeeds.
-  std::vector<ResectionCandidate> colmap_candidates;
+  std::vector<ResectionCandidate> resection_candidates;
 
   auto pipeline_start = Clock::now();
   int sfm_iter = 0;
@@ -3060,145 +2618,54 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
               << n_images << ", tri_tracks=" << count_tri_tracks() << " ════";
 
     auto t_choose0 = Clock::now();
-    std::vector<int> batch;
-    if (kColmapOneByOne) {
-      colmap_candidates = choose_resection_candidates(
-          *store_out, *registered_out, opts.resection.min_3d2d_count, opts.resection.batch_ratio,
-          /*batch_max=*/5, /*max_candidates=*/20 + opts.local_ba.colmap_fallback_n,
-          opts.resection.late_registered_threshold, opts.resection.late_absolute_min,
-          opts.resection.late_batch_max);
-      if (!colmap_candidates.empty())
-        batch = {colmap_candidates[0].image_index};
-    } else {
-      batch = choose_next_resection_batch(
-          *store_out, *registered_out, opts.resection.min_3d2d_count, opts.resection.batch_ratio,
-          effective_batch_max, opts.resection.late_registered_threshold,
-          opts.resection.late_absolute_min, opts.resection.late_batch_max);
-    }
+    std::vector<int> new_registered_image_indices;
+    resection_candidates = choose_resection_candidates(
+        *store_out, *registered_out, opts.resection.min_3d2d_count, resection_max_candidates);
     auto t_choose1 = Clock::now();
     LOG(INFO)
-        << "[PERF] choose_batch: "
+        << "[PERF] choose_resection_candidates: "
         << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
         << "ms";
-
-    if (batch.empty()) {
-      if (opts.resection.retry_after_cleanup &&
-          num_registered >= opts.outlier.min_registered_images) {
-        double rmse = 0.0;
-        // Cleanup BA: allow intrinsics only when enough cameras are registered.
-        const bool cleanup_opt_intr =
-            opts.global_ba.optimize_intrinsics &&
-            num_registered >= opts.global_ba.optimize_intrinsics_min_images;
-        const uint32_t refine_mask_c =
-            cleanup_opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
-        auto t_cba0 = Clock::now();
-        const auto frozen_cleanup = (cleanup_opt_intr && opts.intrinsics.progressive_freeze)
-                                        ? make_frozen_vec()
-                                        : std::vector<bool>{};
-        if (run_ba_with_outlier_detection(true, cleanup_opt_intr, refine_mask_c,
-                                          opts.intrinsics.focal_prior_weight,
-                                          cleanup_opt_intr ? &frozen_cleanup : nullptr, {}, {}, {},
-                                          opts.outlier.max_rounds, ba_solver_ov, &rmse)) {
-          if (cleanup_opt_intr)
-            update_freeze_state();
-          LOG(INFO) << "[PERF] cleanup_global_ba: "
-                    << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_cba0)
-                           .count()
-                    << "ms  RMSE=" << rmse;
-          if (kColmapOneByOne) {
-            colmap_candidates = choose_resection_candidates(
-                *store_out, *registered_out, opts.resection.min_3d2d_count,
-                opts.resection.batch_ratio, /*batch_max=*/5,
-                /*max_candidates=*/20 + opts.local_ba.colmap_fallback_n,
-                opts.resection.late_registered_threshold, opts.resection.late_absolute_min,
-                opts.resection.late_batch_max);
-            batch = colmap_candidates.empty() ? std::vector<int>{}
-                                              : std::vector<int>{colmap_candidates[0].image_index};
-          } else {
-            batch = choose_next_resection_batch(
-                *store_out, *registered_out, opts.resection.min_3d2d_count,
-                opts.resection.batch_ratio, effective_batch_max,
-                opts.resection.late_registered_threshold, opts.resection.late_absolute_min,
-                opts.resection.late_batch_max);
-          }
-        }
-      }
-      if (batch.empty())
-        break;
-    }
-
     auto t_resect0 = Clock::now();
-    int added = 0;
-    if (kColmapOneByOne) {
-      // Try each candidate in descending-score order; use the first that succeeds.
-      // This guards against degenerate configurations (collinear/planar points, etc.)
-      // that would cause the top-ranked image's resection to fail silently.
-      for (const ResectionCandidate& cand : colmap_candidates) {
-        std::vector<int> registered_images;
-        int resectin_minliers = 50;
-        const int n =
-            run_batch_resection(*store_out, {cand.image_index}, *cameras, image_to_camera_index,
-                                poses_R_out, poses_C_out, registered_out,
-                                static_cast<int>(resectin_minliers), &registered_images);
-        LOG(INFO) << "  [kColmap] img=" << cand.image_index << " 3d2d=" << cand.num_3d2d
-                  << " cov=" << cand.coverage << (cand.is_primary ? "" : " [fallback]") << " → "
-                  << (n > 0 ? "OK" : "FAIL");
-        if (n <= 0)
-          continue;
-        added =  1;
-        batch = {registered_images[0]}; // downstream sees only accepted new image
-
-        // const double post_resection_reproj_thr_px = std::max(6.0, opts.outlier.threshold_px * 2.0);
-        // const int n_rejected_post_resection = reject_outliers_post_resection(
-        //     store_out, registered_images, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-        //     image_to_camera_index, post_resection_reproj_thr_px);
-        // std::vector<int> kept_images;
-        // rollback_weak_post_resection_images(*store_out, registered_images,
-        //                                     static_cast<int>(opts.resection.min_inliers),
-        //                                     poses_R_out, poses_C_out, registered_out, &kept_images);
-        // LOG(INFO) << "  post_resection_cleanup: rejected=" << n_rejected_post_resection
-        //           << " obs on new images, reproj_thr=" << post_resection_reproj_thr_px
-        //           << " px, kept_images=" << kept_images.size();
-        // if (kept_images.empty())
-        //   continue;
-            
-        // added = static_cast<int>(kept_images.size());
-        // batch = kept_images; // downstream sees only accepted new images
-        break;
-      }
-    } else {
+    // Try each candidate in score order; use the first that succeeds (degenerate configs, etc.).
+    for (const ResectionCandidate& cand : resection_candidates) {
       std::vector<int> registered_images;
-      added = run_batch_resection(
-          *store_out, batch, *cameras, image_to_camera_index, poses_R_out, poses_C_out,
-          registered_out, static_cast<int>(2.5 * opts.resection.min_inliers), &registered_images);
-      const double post_resection_reproj_thr_px = std::max(6.0, opts.outlier.threshold_px * 2.0);
-      const int n_rejected_post_resection = reject_outliers_post_resection(
-          store_out, registered_images, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-          image_to_camera_index, post_resection_reproj_thr_px);
-      std::vector<int> kept_images;
-      rollback_weak_post_resection_images(*store_out, registered_images,
-                                          static_cast<int>(opts.resection.min_inliers), poses_R_out,
-                                          poses_C_out, registered_out, &kept_images);
-      LOG(INFO) << "  post_resection_cleanup: rejected=" << n_rejected_post_resection
-                << " obs on new images, reproj_thr=" << post_resection_reproj_thr_px
-                << " px, kept_images=" << kept_images.size();
-      batch = kept_images;
-      added = static_cast<int>(kept_images.size());
+      const int resectin_minliers = 50;
+      const int n =
+          run_batch_resection(*store_out, {cand.image_index}, *cameras, image_to_camera_index,
+                              poses_R_out, poses_C_out, registered_out, resectin_minliers,
+                              &registered_images, opts.resection.post_resection_reproj_thresh_px);
+      LOG(INFO) << "  [resection] img=" << cand.image_index << " 3d2d=" << cand.num_3d2d
+                << " cov=" << cand.coverage << " → " << (n > 0 ? "OK" : "FAIL");
+      if (n <= 0)
+        continue;
+      new_registered_image_indices.push_back(registered_images[0]);
+      break;
     }
     LOG(INFO)
         << "[PERF] resection: "
         << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_resect0).count()
-        << "ms  added=" << added;
-    if (added == 0) {
-      LOG(WARNING) << "  No images could be resected in this batch, stopping";
+        << "ms  added=" << new_registered_image_indices.size();
+    if (new_registered_image_indices.empty()) {
+      LOG(WARNING) << "  No images could be resected this iteration, stopping";
       break;
+    }
+    {
+      int nr = 0;
+      for (bool r : *registered_out)
+        if (r)
+          ++nr;
+      const PipelineReprojStats st_re = compute_pipeline_reproj_stats(
+          *store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras, image_to_camera_index);
+      agent_log_pipeline_reproj_step("after_resection", sfm_iter, nr, st_re);
     }
 
     auto t_tri0 = Clock::now();
     std::vector<int> new_track_ids;
-    int n_new_tri = run_batch_triangulation(store_out, batch, *poses_R_out, *poses_C_out,
-                                            *registered_out, *cameras, image_to_camera_index,
-                                            opts.triangulation.min_angle_deg, &new_track_ids);
+    int n_new_tri = run_batch_triangulation(store_out, new_registered_image_indices, *poses_R_out,
+                                            *poses_C_out, *registered_out, *cameras,
+                                            image_to_camera_index, opts.triangulation.min_angle_deg,
+                                            &new_track_ids, opts.triangulation.commit_reproj_px);
     LOG(INFO)
         << "[PERF] triangulation: "
         << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
@@ -3208,75 +2675,52 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     for (bool r : *registered_out)
       if (r)
         ++num_registered;
+    {
+      const PipelineReprojStats st_tri = compute_pipeline_reproj_stats(
+          *store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras, image_to_camera_index);
+      agent_log_pipeline_reproj_step("after_triangulation", sfm_iter, num_registered, st_tri);
+    }
     LOG(INFO) << "  After resection+triangulation: registered=" << num_registered
               << ", new_tri=" << n_new_tri << ", total_tri=" << count_tri_tracks();
 
     double rmse = 0.0;
-    // if (num_registered < opts.local_ba.switch_after_n_images)
-    if (true) {
-      // Run global BA every global_ba_every_n_images registrations, and always
-      // on the last image before switching to local BA.
+    // Global-only phase: local BA not enabled, or not yet past switch_after_n_images.
+    const bool use_global_only_phase =
+        !opts.local_ba.enable || num_registered < opts.local_ba.switch_after_n_images;
+
+    if (use_global_only_phase) {
+      LOG(INFO) << "Running global-only phase";
+      // Run global BA every global_ba.every_n_images registrations, and always on the last
+      // image before switching to the local-BA phase.
       const bool do_global_ba = (opts.global_ba.every_n_images <= 1) ||
                                 (num_registered % opts.global_ba.every_n_images == 0) ||
                                 (num_registered + 1 == opts.local_ba.switch_after_n_images);
 
-      // if (do_global_ba)
-      if (true) {
-        // const bool opt_intr = opts.global_ba.optimize_intrinsics &&
-        //                       num_registered >= opts.global_ba.optimize_intrinsics_min_images;
-        // bool opt_intr = opts.global_ba.optimize_intrinsics;
-        bool opt_intr = true;
-        // 主要由phase策略来决定内参的优化顺序
+      if (do_global_ba) {
+        const bool opt_intr = true;
         uint32_t refine_mask_e = opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
         auto t_ba0 = Clock::now();
-        auto frozen_early = (opt_intr && opts.intrinsics.progressive_freeze) ? make_frozen_vec()
-                                                                             : std::vector<bool>{};
-        run_ba_with_outlier_detection(true, opt_intr, refine_mask_e,
-                                      opts.intrinsics.focal_prior_weight,
-                                      opt_intr ? &frozen_early : nullptr, {}, {}, batch,
-                                      opts.outlier.max_rounds, ba_solver_ov, &rmse);
+        // std::vector<bool> frozen_early = (opt_intr && opts.intrinsics.progressive_freeze)
+        //                                      ? freeze_ctrl.frozen_camera_mask()
+        //                                      : std::vector<bool>{};
+        BaOutlierCall ba_global_only;
+        ba_global_only.use_global_ba = true;
+        ba_global_only.optimize_intrinsics = opt_intr;
+        ba_global_only.partial_intr_fix = refine_mask_e;
+        ba_global_only.focal_prior_weight = opts.intrinsics.focal_prior_weight;
+        ba_global_only.frozen_cameras = nullptr; // opt_intr ? &frozen_early : nullptr;
+        ba_global_only.huber_residual_image_filter = new_registered_image_indices;
+        ba_global_only.max_outlier_rounds = opts.outlier.max_rounds;
+        run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                      image_to_camera_index, cameras, anchor_image, num_registered,
+                                      opts, ba_global_only, &rmse);
         LOG(INFO)
-            << "[PERF] global_ba (early): "
-            << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
-            << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
-        // No freeze in early phase: too few images, intrinsics still converging.
-        opt_intr = true;
-        refine_mask_e = opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
-        t_ba0 = Clock::now();
-        frozen_early = (opt_intr && opts.intrinsics.progressive_freeze) ? make_frozen_vec()
-                                                                        : std::vector<bool>{};
-        run_ba_with_outlier_detection(true, opt_intr, refine_mask_e,
-                                      opts.intrinsics.focal_prior_weight,
-                                      opt_intr ? &frozen_early : nullptr, {}, {}, batch,
-                                      opts.outlier.max_rounds, ba_solver_ov, &rmse);
-        LOG(INFO)
-            << "[PERF] global_ba (early): "
+            << "[PERF] global_ba (global_only_phase): "
             << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
             << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
       } else {
         LOG(INFO) << "[PERF] global_ba: skipped (every_n=" << opts.global_ba.every_n_images
                   << ", n=" << num_registered << ")";
-      }
-    } else if (opts.local_ba.skip) {
-      // ── Object-scan mode: skip local BA, run global BA every iteration ───────────────────
-      const bool opt_skip = opts.global_ba.optimize_intrinsics &&
-                            num_registered >= opts.global_ba.optimize_intrinsics_min_images;
-      const uint32_t refine_mask_skip =
-          opt_skip ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
-      auto t_sba = Clock::now();
-      const auto frozen_skip = (opt_skip && opts.intrinsics.progressive_freeze)
-                                   ? make_frozen_vec()
-                                   : std::vector<bool>{};
-      if (run_ba_with_outlier_detection(true, opt_skip, refine_mask_skip,
-                                        opts.intrinsics.focal_prior_weight,
-                                        opt_skip ? &frozen_skip : nullptr, {}, {}, batch,
-                                        opts.outlier.max_rounds, ba_solver_ov, &rmse)) {
-        if (opt_skip)
-          update_freeze_state();
-        LOG(INFO)
-            << "[PERF] global_ba (skip_local_ba): "
-            << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_sba).count()
-            << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
       }
     } else {
       // ── Two-tier BA schedule (mid-freq + low-freq recalib) during local-BA phase ──────
@@ -3296,9 +2740,16 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         if (do_recalib) {
           auto t_pba = Clock::now();
           // Recalib BA — open all intrinsics, then re-evaluate freeze state.
-          if (run_ba_with_outlier_detection(true, true, 0u, 0.0, nullptr, {}, {}, {},
-                                            opts.outlier.max_rounds, ba_solver_ov, &rmse)) {
-            update_freeze_state(/*recheck_frozen=*/true);
+          BaOutlierCall ba_recalib;
+          ba_recalib.use_global_ba = true;
+          ba_recalib.optimize_intrinsics = true;
+          ba_recalib.partial_intr_fix = 0u;
+          ba_recalib.max_outlier_rounds = opts.outlier.max_rounds;
+          if (run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                            image_to_camera_index, cameras, anchor_image,
+                                            num_registered, opts, ba_recalib, &rmse)) {
+            freeze_ctrl.update_after_global_ba(opts.intrinsics, n_images, *registered_out,
+                                               image_to_camera_index, cameras, true);
             LOG(INFO) << "[PERF] recalib_global_ba #" << periodic_ba_count << ": "
                       << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba)
                              .count()
@@ -3310,16 +2761,23 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           const bool mid_opt_intr = opt_intr_p;
           const uint32_t refine_mask_mid =
               mid_opt_intr ? opts.intrinsics.fix_mask_for(num_registered) : 0u;
-          const auto frozen_mid = (mid_opt_intr && opts.intrinsics.progressive_freeze)
-                                      ? make_frozen_vec()
-                                      : std::vector<bool>{};
+          std::vector<bool> frozen_mid = (mid_opt_intr && opts.intrinsics.progressive_freeze)
+                                             ? freeze_ctrl.frozen_camera_mask()
+                                             : std::vector<bool>{};
           auto t_pba = Clock::now();
-          if (run_ba_with_outlier_detection(true, mid_opt_intr, refine_mask_mid,
-                                            opts.intrinsics.focal_prior_weight,
-                                            mid_opt_intr ? &frozen_mid : nullptr, {}, {}, {},
-                                            opts.outlier.max_rounds, ba_solver_ov, &rmse)) {
+          BaOutlierCall ba_periodic;
+          ba_periodic.use_global_ba = true;
+          ba_periodic.optimize_intrinsics = mid_opt_intr;
+          ba_periodic.partial_intr_fix = refine_mask_mid;
+          ba_periodic.focal_prior_weight = opts.intrinsics.focal_prior_weight;
+          ba_periodic.frozen_cameras = mid_opt_intr ? &frozen_mid : nullptr;
+          ba_periodic.max_outlier_rounds = opts.outlier.max_rounds;
+          if (run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                            image_to_camera_index, cameras, anchor_image,
+                                            num_registered, opts, ba_periodic, &rmse)) {
             if (mid_opt_intr)
-              update_freeze_state(/*recheck_frozen=*/false);
+              freeze_ctrl.update_after_global_ba(opts.intrinsics, n_images, *registered_out,
+                                                 image_to_camera_index, cameras, false);
             LOG(INFO) << "[PERF] periodic_global_ba #" << periodic_ba_count << ": "
                       << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pba)
                              .count()
@@ -3328,8 +2786,15 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         }
       }
       auto t_ba0 = Clock::now();
-      run_ba_with_outlier_detection(false, false, 0u, 0.0, nullptr, batch, new_track_ids, batch,
-                                    opts.outlier.max_rounds, BASolverOverrides{}, &rmse);
+      BaOutlierCall ba_local_phase;
+      ba_local_phase.use_global_ba = false;
+      ba_local_phase.local_ba_batch = new_registered_image_indices;
+      ba_local_phase.local_ba_new_tracks = new_track_ids;
+      ba_local_phase.huber_residual_image_filter = new_registered_image_indices;
+      ba_local_phase.max_outlier_rounds = opts.outlier.max_rounds;
+      run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                    image_to_camera_index, cameras, anchor_image, num_registered,
+                                    opts, ba_local_phase, &rmse);
       LOG(INFO)
           << "[PERF] local_ba: "
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
@@ -3368,8 +2833,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   if (opts.global_ba.enabled) {
     LOG(INFO) << "Running final global BA...";
     double rmse = 0.0;
-    run_ba_with_outlier_detection(true, opts.global_ba.optimize_intrinsics, 0u, 0.0, nullptr, {},
-                                  {}, {}, opts.outlier.final_max_rounds, ba_solver_ov, &rmse);
+    BaOutlierCall ba_final;
+    ba_final.use_global_ba = true;
+    ba_final.optimize_intrinsics = opts.global_ba.optimize_intrinsics;
+    ba_final.max_outlier_rounds = opts.outlier.final_max_rounds;
+    run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                  image_to_camera_index, cameras, anchor_image, num_registered,
+                                  opts, ba_final, &rmse);
     LOG(INFO) << "Final BA RMSE=" << rmse << " px";
   }
   return true;

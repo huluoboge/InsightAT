@@ -15,6 +15,7 @@
 #include <cmath>
 #include <glog/logging.h>
 #include <limits>
+#include <unordered_set>
 #include <vector>
 
 namespace insight {
@@ -201,12 +202,22 @@ static double compute_pose_rmse_pinhole(const std::vector<Eigen::Vector3d>& pts3
   return std::sqrt(cost / static_cast<double>(valid_count));
 }
 
+static void mark_pnp_outliers_deleted(TrackStore& store, const std::vector<int>& pnp_obs_ids,
+                                      const std::vector<char>& inlier_mask) {
+  if (pnp_obs_ids.size() != inlier_mask.size())
+    return;
+  for (size_t i = 0; i < pnp_obs_ids.size(); ++i) {
+    if (!inlier_mask[i])
+      store.mark_observation_deleted(pnp_obs_ids[static_cast<size_t>(i)]);
+  }
+}
+
 static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
                                       const std::vector<Eigen::Vector2d>& pts2d, double fx,
                                       double fy, double cx, double cy, int min_inliers,
                                       double ransac_thresh_px, Eigen::Matrix3d* R_out,
                                       Eigen::Vector3d* t_out, int* inliers_out,
-                                      double* rmse_px_out) {
+                                      double* rmse_px_out, std::vector<char>* inlier_mask_full_out) {
   if (!R_out || !t_out || pts3d.size() != pts2d.size() || pts3d.empty())
     return false;
 
@@ -284,7 +295,7 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, static_cast<int>(pts3d.size()), rmse,
-                           /*min_inlier_ratio=*/0.10,
+                           /*min_inlier_ratio=*/0.02,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
     LOG(INFO) << "[PERF] resection_single_image(poselib)"
               << "  rejected_by_stability: inlier_ratio="
@@ -294,12 +305,78 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
     return false;
   }
 
+  if (inlier_mask_full_out)
+    *inlier_mask_full_out = inlier_mask;
+
   *R_out = R_refined;
   *t_out = t_refined;
   return true;
 }
 
 } // namespace
+
+int prune_resection_observations_reprojection(TrackStore* store, int image_index,
+                                              const Eigen::Matrix3d& R, const Eigen::Vector3d& C,
+                                              const camera::Intrinsics& K, double threshold_px) {
+  if (!store || threshold_px <= 0.0)
+    return 0;
+  const int n_images = store->num_images();
+  if (image_index < 0 || image_index >= n_images)
+    return 0;
+
+  const double thresh_sq = threshold_px * threshold_px;
+  int marked = 0;
+  std::unordered_set<int> dirty_tracks;
+  std::vector<int> obs_ids;
+  store->get_image_observation_indices(image_index, &obs_ids);
+
+  for (int obs_id : obs_ids) {
+    if (!store->is_obs_valid(obs_id))
+      continue;
+    const int tid = store->obs_track_id(obs_id);
+    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+      continue;
+
+    float tx, ty, tz;
+    store->get_track_xyz(tid, &tx, &ty, &tz);
+    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                            static_cast<double>(tz));
+    const Eigen::Vector3d p = R * (X - C);
+    if (p(2) <= 1e-12) {
+      store->mark_observation_deleted(obs_id);
+      dirty_tracks.insert(tid);
+      ++marked;
+      continue;
+    }
+
+    const double xn = p(0) / p(2), yn = p(1) / p(2);
+    double xd, yd;
+    camera::apply_distortion(xn, yn, K, &xd, &yd);
+    const double u_pred = K.fx * xd + K.cx;
+    const double v_pred = K.fy * yd + K.cy;
+
+    Observation obs;
+    store->get_obs(obs_id, &obs);
+    const double du = static_cast<double>(obs.u) - u_pred;
+    const double dv = static_cast<double>(obs.v) - v_pred;
+    if (du * du + dv * dv > thresh_sq) {
+      store->mark_observation_deleted(obs_id);
+      dirty_tracks.insert(tid);
+      ++marked;
+    }
+  }
+
+  std::vector<int> track_obs_ids;
+  for (int tid : dirty_tracks) {
+    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+      continue;
+    track_obs_ids.clear();
+    store->get_track_obs_ids(tid, &track_obs_ids);
+    if (track_obs_ids.size() < 2)
+      store->clear_track_xyz(tid);
+  }
+  return marked;
+}
 
 void resection_init_gpu() {
   if (resection_backend_uses_gpu(g_resection_backend))
@@ -332,8 +409,8 @@ bool is_resection_stable(int inlier_count, int total_correspondences, double rms
   return ratio >= min_inlier_ratio && rmse_px <= max_rmse_px;
 }
 
-bool resection_single_image(const TrackStore& store, int image_index, double fx, double fy,
-                            double cx, double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
+bool resection_single_image(TrackStore& store, int image_index, double fx, double fy, double cx,
+                            double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers, double ransac_thresh_px, int* inliers_out,
                             double* rmse_px_out) {
   if (!R_out || !t_out)
@@ -342,26 +419,30 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   using Clock = std::chrono::steady_clock;
   auto t0 = Clock::now();
 
-  std::vector<int> track_ids;
-  std::vector<Observation> obs_list;
-  const int n = store.get_image_track_observations(image_index, &track_ids, &obs_list);
-  if (n < static_cast<int>(min_inliers))
+  std::vector<int> obs_ids_all;
+  const int n_obs = store.get_image_observation_indices(image_index, &obs_ids_all);
+  if (n_obs < static_cast<int>(min_inliers))
     return false;
 
+  std::vector<int> pnp_obs_ids;
   std::vector<Point3D2D> pts_pnp;
-  pts_pnp.reserve(static_cast<size_t>(n));
-  for (int i = 0; i < n; ++i) {
-    const int tid = track_ids[static_cast<size_t>(i)];
+  pnp_obs_ids.reserve(static_cast<size_t>(n_obs));
+  pts_pnp.reserve(static_cast<size_t>(n_obs));
+  for (int obs_id : obs_ids_all) {
+    const int tid = store.obs_track_id(obs_id);
     if (!store.track_has_triangulated_xyz(tid))
       continue;
+    Observation o;
+    store.get_obs(obs_id, &o);
     float x, y, z;
     store.get_track_xyz(tid, &x, &y, &z);
     Point3D2D pt;
     pt.x = x;
     pt.y = y;
     pt.z = z;
-    pt.u = obs_list[static_cast<size_t>(i)].u;
-    pt.v = obs_list[static_cast<size_t>(i)].v;
+    pt.u = o.u;
+    pt.v = o.v;
+    pnp_obs_ids.push_back(obs_id);
     pts_pnp.push_back(pt);
   }
   if (static_cast<int>(pts_pnp.size()) < min_inliers)
@@ -377,8 +458,12 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
                          static_cast<double>(pt.z));
       pts2d.emplace_back(static_cast<double>(pt.u), static_cast<double>(pt.v));
     }
-    return resection_poselib_pinhole(pts3d, pts2d, fx, fy, cx, cy, min_inliers,
-                                     ransac_thresh_px, R_out, t_out, inliers_out, rmse_px_out);
+    std::vector<char> inlier_full;
+    if (!resection_poselib_pinhole(pts3d, pts2d, fx, fy, cx, cy, min_inliers, ransac_thresh_px,
+                                   R_out, t_out, inliers_out, rmse_px_out, &inlier_full))
+      return false;
+    mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
+    return true;
   }
 
   auto t1 = Clock::now(); // after data prep
@@ -445,7 +530,7 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, num_pts, rmse,
-                           /*min_inlier_ratio=*/0.10,
+                           /*min_inlier_ratio=*/0.02,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
     LOG(INFO) << "[PERF] resection_single_image im=" << image_index
               << "  rejected_by_stability: inlier_ratio="
@@ -455,12 +540,18 @@ bool resection_single_image(const TrackStore& store, int image_index, double fx,
   }
   if (inliers_out)
     *inliers_out = n_inliers;
+  {
+    std::vector<char> mask_char(static_cast<size_t>(num_pts));
+    for (int i = 0; i < num_pts; ++i)
+      mask_char[static_cast<size_t>(i)] = inlier_mask[static_cast<size_t>(i)] ? 1 : 0;
+    mark_pnp_outliers_deleted(store, pnp_obs_ids, mask_char);
+  }
   *R_out = R_refined;
   *t_out = t_refined;
   return true;
 }
 
-bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store, int image_index,
+bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers, double ransac_thresh_px, int* inliers_out,
                             double* rmse_px_out) {
@@ -469,27 +560,27 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
                                   min_inliers, ransac_thresh_px, inliers_out, rmse_px_out);
   }
 
-  // Collect raw observations (distorted pixels) for this image.
-  std::vector<int> track_ids;
-  std::vector<Observation> obs_list;
-  const int n = store.get_image_track_observations(image_index, &track_ids, &obs_list);
+  std::vector<int> obs_ids_all;
+  const int n = store.get_image_observation_indices(image_index, &obs_ids_all);
   if (n < static_cast<int>(min_inliers))
     return false;
 
-  // Batch-undistort 2D observations → undistorted pixel coordinates.
   std::vector<float> u_raw(static_cast<size_t>(n)), v_raw(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) {
-    u_raw[static_cast<size_t>(i)] = obs_list[static_cast<size_t>(i)].u;
-    v_raw[static_cast<size_t>(i)] = obs_list[static_cast<size_t>(i)].v;
+    Observation o;
+    store.get_obs(obs_ids_all[static_cast<size_t>(i)], &o);
+    u_raw[static_cast<size_t>(i)] = o.u;
+    v_raw[static_cast<size_t>(i)] = o.v;
   }
   std::vector<float> u_und(static_cast<size_t>(n)), v_und(static_cast<size_t>(n));
   camera::undistort_points(K, u_raw.data(), v_raw.data(), u_und.data(), v_und.data(), n);
 
-  // Build 3D–2D correspondences using undistorted 2D points.
+  std::vector<int> pnp_obs_ids;
   std::vector<Point3D2D> pts_pnp;
+  pnp_obs_ids.reserve(static_cast<size_t>(n));
   pts_pnp.reserve(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) {
-    const int tid = track_ids[static_cast<size_t>(i)];
+    const int tid = store.obs_track_id(obs_ids_all[static_cast<size_t>(i)]);
     if (!store.track_has_triangulated_xyz(tid))
       continue;
     float x, y, z;
@@ -500,6 +591,7 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
     pt.z = z;
     pt.u = u_und[static_cast<size_t>(i)];
     pt.v = v_und[static_cast<size_t>(i)];
+    pnp_obs_ids.push_back(obs_ids_all[static_cast<size_t>(i)]);
     pts_pnp.push_back(pt);
   }
   if (static_cast<int>(pts_pnp.size()) < min_inliers)
@@ -515,8 +607,13 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
                          static_cast<double>(pt.z));
       pts2d.emplace_back(static_cast<double>(pt.u), static_cast<double>(pt.v));
     }
-    return resection_poselib_pinhole(pts3d, pts2d, K.fx, K.fy, K.cx, K.cy, min_inliers,
-                                     ransac_thresh_px, R_out, t_out, inliers_out, rmse_px_out);
+    std::vector<char> inlier_full;
+    if (!resection_poselib_pinhole(pts3d, pts2d, K.fx, K.fy, K.cx, K.cy, min_inliers,
+                                   ransac_thresh_px, R_out, t_out, inliers_out, rmse_px_out,
+                                   &inlier_full))
+      return false;
+    mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
+    return true;
   }
 
   const int num_pts = static_cast<int>(pts_pnp.size());
@@ -565,11 +662,17 @@ bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, num_pts, rmse,
-                           /*min_inlier_ratio=*/0.10,
+                           /*min_inlier_ratio=*/0.02,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px)))
     return false;
   if (inliers_out)
     *inliers_out = n_inliers;
+  {
+    std::vector<char> mask_char(static_cast<size_t>(num_pts));
+    for (int i = 0; i < num_pts; ++i)
+      mask_char[static_cast<size_t>(i)] = inlier_mask[static_cast<size_t>(i)] ? 1 : 0;
+    mark_pnp_outliers_deleted(store, pnp_obs_ids, mask_char);
+  }
   *R_out = R_refined;
   *t_out = t_refined;
   return true;

@@ -20,9 +20,13 @@
 
 #include "bundle_adjustment_analytic.h"
 
+#include "../camera/camera_utils.h"
+#include <chrono>
 #include <cmath>
-#include <thread>
+#include <fstream>
 #include <glog/logging.h>
+#include <sstream>
+#include <thread>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -59,6 +63,121 @@ inline void sola_dRp_dq(double px, double py, double pz,
 }
 
 } // namespace
+
+// #region agent log
+namespace {
+void agent_debug_ndjson(const char* hypothesis_id, const char* location, const char* message,
+                        const std::string& data_json) {
+  std::ofstream f("/home/jones/Git/01jones/InsightAT/InsightAT/.cursor/debug-2ba246.log",
+                    std::ios::app);
+  if (!f)
+    return;
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+  f << "{\"sessionId\":\"2ba246\",\"hypothesisId\":\"" << hypothesis_id << "\",\"location\":\""
+    << location << "\",\"message\":\"" << message << "\",\"data\":" << data_json
+    << ",\"timestamp\":" << ms << "}\n";
+}
+
+/// Same geometry as ReprojectionCostAnalytic + camera_utils distortion (matches pipeline).
+double reproj_px_pipeline(const Eigen::Matrix3d& R, const Eigen::Vector3d& C,
+                          const camera::Intrinsics& K, const Eigen::Vector3d& X, double u_obs,
+                          double v_obs, bool* zc_ok) {
+  Eigen::Vector3d p = R * (X - C);
+  if (p(2) <= 1e-12) {
+    *zc_ok = false;
+    return 1e6;
+  }
+  *zc_ok = true;
+  const double xn = p(0) / p(2), yn = p(1) / p(2);
+  double xd, yd;
+  camera::apply_distortion(xn, yn, K, &xd, &yd);
+  const double u_pred = K.fx * xd + K.cx;
+  const double v_pred = K.fy * yd + K.cy;
+  const double du = u_obs - u_pred, dv = v_obs - v_pred;
+  return std::sqrt(du * du + dv * dv);
+}
+
+void diagnose_ba_input_pre_solve(const BAInput& input, const std::vector<Eigen::Vector3d>& points3d,
+                                 int n_cams, int n_distinct) {
+  int n_obs = 0, n_behind = 0, n_huge = 0;
+  double sum_e = 0.0, max_e = 0.0;
+  std::vector<double> sum_per_cam(static_cast<size_t>(n_cams), 0.0);
+  std::vector<int> cnt_per_cam(static_cast<size_t>(n_cams), 0);
+  std::vector<double> max_per_cam(static_cast<size_t>(n_cams), 0.0);
+  int fix_pose_true = 0;
+  for (size_t i = 0; i < input.fix_pose.size(); ++i)
+    if (input.fix_pose[i])
+      ++fix_pose_true;
+
+  for (const auto& obs : input.observations) {
+    if (obs.image_index < 0 || obs.image_index >= n_cams || obs.point_index < 0 ||
+        obs.point_index >= static_cast<int>(points3d.size()))
+      continue;
+    const int cam_idx = input.image_camera_index[static_cast<size_t>(obs.image_index)];
+    if (cam_idx < 0 || cam_idx >= n_distinct)
+      continue;
+    const Eigen::Matrix3d& R = input.poses_R[static_cast<size_t>(obs.image_index)];
+    const Eigen::Vector3d& C = input.poses_C[static_cast<size_t>(obs.image_index)];
+    const Eigen::Vector3d& X = points3d[static_cast<size_t>(obs.point_index)];
+    const camera::Intrinsics& K = input.cameras[static_cast<size_t>(cam_idx)];
+    bool zc_ok = false;
+    const double e = reproj_px_pipeline(R, C, K, X, obs.u, obs.v, &zc_ok);
+    ++n_obs;
+    if (!zc_ok)
+      ++n_behind;
+    if (e >= 1e5)
+      ++n_huge;
+    sum_e += e;
+    if (e > max_e)
+      max_e = e;
+    const int bi = obs.image_index;
+    sum_per_cam[static_cast<size_t>(bi)] += e;
+    ++cnt_per_cam[static_cast<size_t>(bi)];
+    if (e > max_per_cam[static_cast<size_t>(bi)])
+      max_per_cam[static_cast<size_t>(bi)] = e;
+  }
+
+  int worst_bi = -1;
+  double worst_mean = 0.0;
+  for (int i = 0; i < n_cams; ++i) {
+    if (cnt_per_cam[static_cast<size_t>(i)] == 0)
+      continue;
+    const double m = sum_per_cam[static_cast<size_t>(i)] / static_cast<double>(cnt_per_cam[static_cast<size_t>(i)]);
+    if (m > worst_mean) {
+      worst_mean = m;
+      worst_bi = i;
+    }
+  }
+
+  const double mean_e = (n_obs > 0) ? (sum_e / static_cast<double>(n_obs)) : 0.0;
+  const double frac_behind = (n_obs > 0) ? (static_cast<double>(n_behind) / static_cast<double>(n_obs)) : 0.0;
+
+  std::ostringstream d1;
+  d1 << "{\"n_obs\":" << n_obs << ",\"n_zc_nonpositive\":" << n_behind << ",\"frac_zc_bad\":"
+     << frac_behind << ",\"n_residual_clamped_1e6\":" << n_huge << ",\"mean_reproj_px\":" << mean_e
+     << ",\"max_reproj_px\":" << max_e << ",\"worst_mean_ba_image_index\":" << worst_bi
+     << ",\"worst_mean_px\":" << worst_mean << "}";
+  agent_debug_ndjson("H10", "bundle_adjustment_analytic.cpp:diagnose", "pre_solve_reproj_stats",
+                     d1.str());
+
+  std::ostringstream d2;
+  d2 << "{\"n_ba_cameras\":" << n_cams << ",\"fix_pose_flags_set\":" << fix_pose_true
+     << ",\"huber_delta\":" << (input.huber_loss_delta > 0.0 ? input.huber_loss_delta : 4.0) << "}";
+  agent_debug_ndjson("H_fix", "bundle_adjustment_analytic.cpp:diagnose", "gauge_and_loss", d2.str());
+
+  if (worst_bi >= 0) {
+    std::ostringstream d3;
+    d3 << "{\"worst_ba_im\":" << worst_bi << ",\"mean_on_worst\":" << worst_mean
+       << ",\"max_on_worst\":" << max_per_cam[static_cast<size_t>(worst_bi)]
+       << ",\"obs_count_on_worst\":" << cnt_per_cam[static_cast<size_t>(worst_bi)] << "}";
+    agent_debug_ndjson("H12", "bundle_adjustment_analytic.cpp:diagnose", "worst_image_detail",
+                       d3.str());
+  }
+}
+} // namespace
+// #endregion
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ReprojectionCostAnalytic::Evaluate
@@ -480,12 +599,20 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
             new ceres::IdentityParameterization(3)));
   }
 
-  // Fix poses: image 0 (world origin) always fixed; optional fix_pose[i] for i > 0
+  // Fix poses: input.fix_pose[i] (gauge anchor, COLMAP constants, local-BA frozen cams).
+  // If nothing is marked fixed (e.g. COLMAP local with empty constant_set), fix ba index 0
+  // for gauge — but only in that case; do not also fix 0 when anchor_ba_idx≠0 is already set.
+  bool any_pose_fixed = false;
+  for (int i = 0; i < n_cams; ++i) {
+    if (input.fix_pose.size() > static_cast<size_t>(i) && input.fix_pose[static_cast<size_t>(i)])
+      any_pose_fixed = true;
+  }
   for (int i = 0; i < n_cams; ++i) {
     double* pp = poses_data.data() + static_cast<size_t>(i) * 7;
     if (!problem.HasParameterBlock(pp)) continue;
-    const bool fix = (i == 0) ||
+    const bool fix_from_input =
         (input.fix_pose.size() > static_cast<size_t>(i) && input.fix_pose[static_cast<size_t>(i)]);
+    const bool fix = fix_from_input || (!any_pose_fixed && i == 0);
     if (fix)
       problem.SetParameterBlockConstant(pp);
   }
@@ -596,8 +723,12 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       (input.solver_dense_schur_max_variable_cams > 0)
           ? input.solver_dense_schur_max_variable_cams : 30;
   int n_variable_cams = 0;
-  for (bool fixed : input.fix_pose)
-    if (!fixed) ++n_variable_cams;
+  for (int i = 0; i < n_cams; ++i) {
+    const bool pose_fixed =
+        (input.fix_pose.size() > static_cast<size_t>(i) && input.fix_pose[static_cast<size_t>(i)]);
+    if (!pose_fixed)
+      ++n_variable_cams;
+  }
 
   if (input.optimize_intrinsics) {
     options.linear_solver_type  = ceres::SPARSE_NORMAL_CHOLESKY;
@@ -608,12 +739,16 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     options.linear_solver_type = ceres::SPARSE_SCHUR;
   }
   options.num_threads = std::max(1, std::min(8, static_cast<int>(std::thread::hardware_concurrency())));
-  if (input.solver_gradient_tolerance > 0.0)
-    options.gradient_tolerance = input.solver_gradient_tolerance;
-  if (input.solver_function_tolerance > 0.0)
-    options.function_tolerance = input.solver_function_tolerance;
-  if (input.solver_parameter_tolerance > 0.0)
-    options.parameter_tolerance = input.solver_parameter_tolerance;
+  // if (input.solver_gradient_tolerance > 0.0)
+  //   options.gradient_tolerance = input.solver_gradient_tolerance;
+  // if (input.solver_function_tolerance > 0.0)
+  //   options.function_tolerance = input.solver_function_tolerance;
+  // if (input.solver_parameter_tolerance > 0.0)
+  //   options.parameter_tolerance = input.solver_parameter_tolerance;
+
+  // #region agent log
+  diagnose_ba_input_pre_solve(input, result->points3d, n_cams, n_distinct);
+  // #endregion
 
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);

@@ -244,5 +244,11 @@ void TrackStore::mark_observation_deleted(int obs_id) {
   obs_flags_[static_cast<size_t>(obs_id)] &= ~obs_flags::kAlive;
 }
 
+void TrackStore::mark_observation_restored(int obs_id) {
+  if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
+    return;
+  obs_flags_[static_cast<size_t>(obs_id)] |= obs_flags::kAlive;
+}
+
 } // namespace sfm
 } // namespace insight

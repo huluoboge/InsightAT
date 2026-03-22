@@ -9,10 +9,13 @@
 #pragma once
 
 #include "../camera/camera_types.h"
+#include "incremental_triangulation.h"
 #include "resection.h"
+#include "resection_batch.h"
 #include "track_store.h"
 #include "view_graph.h"
 #include <Eigen/Core>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,110 +47,6 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
                            std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
                            std::vector<bool>* registered_out);
-
-/// Per-image resection candidate returned by choose_resection_candidates().
-/// Carries quality metadata used by the kColmap per-image fallback retry loop.
-struct ResectionCandidate {
-  int   image_index = -1;
-  int   num_3d2d    = 0;    ///< Triangulated 3D-2D correspondences (primary score).
-  float coverage    = 0.0f; ///< Spatial spread of 2D observations [0,1].  Computed as the
-                            ///< fraction of a 3×3 bounding-box grid occupied by ≥1 point.
-                            ///< Values < 0.33 suggest collinear / clustered geometry.
-  bool  is_primary  = true; ///< true = within normal batch_max / ratio_floor selection.
-                            ///< false = fallback candidate (above min_3d2d_count but below
-                            ///<         ratio_floor, or beyond batch_max cap).
-};
-
-/**
- * Choose next resection batch using OpenMVG-style ratio threshold.
- *
- * Algorithm:
- *   1. Score every unregistered image by its number of 3D-2D correspondences
- *      (triangulated tracks visible from that image); discard images with
- *      fewer than min_3d2d_count correspondences.
- *   2. best_count = score of the top candidate.
- *   3. ratio_floor = ceil(best_count * batch_ratio).
- *      Late-stage relaxation (object-scan): when num_registered > late_registered_threshold
- *      and late_absolute_min > 0, ratio_floor = min(ratio_floor, late_absolute_min),
- *      allowing more candidates into the batch once the map is large enough.
- *   4. batch = all candidates with score >= ratio_floor, capped at
- *      late_batch_max (in late-stage mode) or batch_max (normal mode).
- *
- * @param min_3d2d_count            Absolute floor: images below this are never candidates.
- *                                  COLMAP uses 15; raise to 30 for high-overlap datasets.
- * @param batch_ratio               Relative threshold vs best candidate (OpenMVG default 0.75).
- * @param batch_max                 Upper cap on batch size (normal mode).
- * @param late_registered_threshold When num_registered exceeds this, switch to late-stage mode.
- *                                  0 = disabled (pure ratio mode always).
- * @param late_absolute_min         Late-stage absolute floor: ratio_floor = min(ratio_floor, this).
- *                                  0 = disabled.
- * @param late_batch_max            Hard cap on batch size in late-stage mode.  Use a lower value
- *                                  than batch_max to avoid adding too many images at once when the
- *                                  map is large (which makes global BA very expensive).
- *                                  0 = use batch_max (no separate late-stage cap).
- */
-std::vector<int> choose_next_resection_batch(const TrackStore& store,
-                                             const std::vector<bool>& registered,
-                                             int min_3d2d_count, double batch_ratio, int batch_max,
-                                             int late_registered_threshold = 0,
-                                             int late_absolute_min = 0, int late_batch_max = 0);
-
-/**
- * Rich-candidate variant of choose_next_resection_batch.
- *
- * Returns up to max_candidates images (all with score ≥ min_3d2d_count), sorted descending
- * by num_3d2d.  Each entry is tagged is_primary=true when it falls within the normal
- * batch_max / ratio_floor selection; the remainder are fallback candidates.
- *
- * Intended use: kColmap mode calls this with max_candidates = 1+colmap_fallback_n and tries
- * them one-at-a-time, falling back to the next if resection fails (degenerate geometry, etc.).
- * Coverage score helps identify likely-degenerate planar/collinear configurations.
- */
-std::vector<ResectionCandidate> choose_resection_candidates(
-    const TrackStore& store, const std::vector<bool>& registered,
-    int min_3d2d_count, double batch_ratio, int batch_max, int max_candidates,
-    int late_registered_threshold = 0, int late_absolute_min = 0, int late_batch_max = 0);
-
-/**
- * Run resection for each image in the batch; intrinsics = cameras[image_to_camera_index[im]].
- * Updates poses_R, poses_C, registered for each successful resection.
- * @return Number of images newly registered.
- */
-int run_batch_resection(const TrackStore& store, const std::vector<int>& image_indices,
-                        const std::vector<camera::Intrinsics>& cameras,
-                        const std::vector<int>& image_to_camera_index,
-                        std::vector<Eigen::Matrix3d>* poses_R,
-                        std::vector<Eigen::Vector3d>* poses_C, std::vector<bool>* registered,
-                        int min_inliers = 15,
-                        std::vector<int>* registered_images_out = nullptr);
-
-/**
- * Triangulate tracks that have observations in the given new images and in already-registered
- * images, but no triangulated xyz yet. Uses current cameras for undistortion.
- * @param min_tri_angle_deg  Minimum max pairwise ray angle (degrees); reject degenerate points.
- * @return Number of tracks newly triangulated.
- */
-int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_registered_image_indices,
-                            const std::vector<Eigen::Matrix3d>& poses_R,
-                            const std::vector<Eigen::Vector3d>& poses_C,
-                            const std::vector<bool>& registered,
-                            const std::vector<camera::Intrinsics>& cameras,
-                            const std::vector<int>& image_to_camera_index,
-                            double min_tri_angle_deg = 2.0,
-                            std::vector<int>* new_track_ids_out = nullptr);
-
-/**
- * Re-triangulate tracks with track_needs_retriangulation; clear flag. Use current cameras for
- * undistortion.
- * @param min_tri_angle_deg  Minimum max pairwise ray angle (degrees); reject degenerate points.
- * @return Number of tracks re-triangulated.
- */
-int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
-                        const std::vector<Eigen::Vector3d>& poses_C,
-                        const std::vector<bool>& registered,
-                        const std::vector<camera::Intrinsics>& cameras,
-                        const std::vector<int>& image_to_camera_index,
-                        double min_tri_angle_deg = 2.0);
 
 // ─── BA (build from Store, solve, write back) ───────────────────────────────
 
@@ -262,17 +161,14 @@ struct InitPairOptions {
   double min_angle_deg = 2.0;        ///< Min triangulation angle; max is hard-coded to 60°.
 };
 
-/// Options for the resection batch loop.
+/// Options for the incremental resection loop (one new image per iteration).
 struct ResectionOptions {
   ResectionBackend backend = ResectionBackend::kPoseLib; ///< Absolute-pose backend.
   int min_inliers = 15;               ///< Min PnP RANSAC inliers to accept resection.
-  int min_3d2d_count = 30;           ///< Min 3D-2D correspondences to consider an image.
-  double batch_ratio = 0.75;         ///< Include images with score ≥ ratio × best_score.
-  int batch_max = 20;                ///< Hard cap on batch size (normal mode).
-  int late_registered_threshold = 0; ///< Switch to late-stage mode above this count (0=off).
-  int late_absolute_min = 0;         ///< Late-stage absolute-minimum 3D-2D floor (0=off).
-  int late_batch_max = 0;            ///< Late-stage batch cap (0 = use batch_max).
+  int min_3d2d_count = 30;           ///< Min 3D-2D correspondences to list a candidate.
   bool retry_after_cleanup = true;   ///< Retry after cleanup BA+reject when batch is empty.
+  /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 = off.
+  double post_resection_reproj_thresh_px = 0.0;
 };
 
 /// Progressive intrinsics unlock schedule + freeze policy.
@@ -291,8 +187,8 @@ struct IntrinsicsSchedule {
   int phase2_min_images = 10;  ///< Also unlock k1/k2.
   int phase3_min_images = 100; ///< Unlock cx/cy + k3/p1/p2 (full intrinsics).
 
-  // ── Progressive freeze (local-BA phase) ──────────────────────────────────
-  bool progressive_freeze = true;
+  // ── Progressive freeze (per-camera “frozen intrinsics” for Schur / BA); off by default ─────
+  bool progressive_freeze = false;
   int freeze_min_images = 30;       ///< Level-1 gate: min registered images per camera.
   double freeze_delta_focal = 1e-3; ///< Relative focal convergence threshold.
   double freeze_delta_pp = 0.5;     ///< Principal-point convergence threshold (px).
@@ -323,13 +219,24 @@ struct LocalBAOptions {
   bool by_connectivity = true;    ///< Rank by co-visibility, not index.
   LocalBAStrategy strategy = LocalBAStrategy::kColmap;
   int colmap_max_variable_images = 6; ///< Max variable cameras in kColmap.
-  int colmap_fallback_n = 20;          ///< kColmap: extra candidates beyond the primary to try
-                                      ///<   if primary resection fails (degenerate, too few
-                                      ///<   inliers, etc.).  0 = no fallback (old behaviour).
   int neighbor_k = 5;                 ///< Anchor neighbors in kBatchNeighbor.
-  bool skip = false;                  ///< Skip local BA (object-scan mode).
+  /// When true, run the local-BA phase after switch_after_n_images (periodic global + local BA).
+  /// Default false: global-only loop until you opt in.
+  bool enable = false;
   int max_iterations = 25;
 };
+
+/**
+ * Dispatch one local-BA solve according to `opts.strategy` (kColmap / kBatchNeighbor / kWindow).
+ * Intrinsics are not optimised. Extend here when adding LocalBAStrategy values.
+ */
+bool run_local_ba_dispatch(const LocalBAOptions& opts, int anchor_image, TrackStore* store,
+                           std::vector<Eigen::Matrix3d>* poses_R,
+                           std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
+                           const std::vector<int>& image_to_camera_index,
+                           const std::vector<camera::Intrinsics>& cameras,
+                           const std::vector<int>& batch, const std::vector<int>& new_track_ids,
+                           const BASolverOverrides& ov, double* rmse_px_out);
 
 /// Options for global BA.
 struct GlobalBAOptions {
@@ -344,24 +251,56 @@ struct GlobalBAOptions {
 
 /// Options for outlier rejection and iterative Huber-BA-based coarse detection.
 struct OutlierOptions {
-  double threshold_px      = 4.0;   ///< Hard floor for all MAD rejection thresholds (px).
-  double huber_delta_lo_px = 0.5;   ///< Lower clip for MAD-derived Huber δ (px).
-  double huber_delta_hi_px = 3.0;   ///< Upper clip for MAD-derived Huber δ (px).
-  double mad_k             = 2.5;   ///< MAD multiplier: hard_thr = median(e) + mad_k × 1.4826 × MAD(e).
-  double min_angle_deg     = 2.0;   ///< Reject observation if max parallax angle < this.
+  double threshold_px      = 4.0;   ///< Hard floor for fine-phase MAD rejection thresholds (px).
+  double huber_delta_lo_px = 0.5;   ///< Lower clip for MAD-derived Huber δ (fine phase, px).
+  double huber_delta_hi_px = 3.0;   ///< Upper clip for MAD-derived Huber δ (fine phase, px).
+  double mad_k             = 2.5;   ///< Fine phase: hard_thr = median(e) + mad_k × 1.4826 × MAD(e).
+  double min_angle_deg     = 0.50;   ///< Reject observation if max parallax angle < this (fine phase).
+  double max_angle_deg     = 120.0; ///< Reject observation if max parallax angle > this (fine phase).
   double max_depth_factor  = 200.0; ///< Reject if depth > median_scene_depth × factor (0 = off).
-  int    max_rounds        = 5;     ///< Max Huber-BA + reject rounds per outlier-detection call.
+  int    max_rounds        = 5;     ///< Max fine Huber-BA + reject rounds per call.
   int    min_for_retry     = 30;    ///< Continue iterating when newly rejected >= this.
   int    min_registered_images = 2; ///< Minimum registered images before outlier rejection runs.
   int    final_max_rounds  = 10;    ///< Max rounds in the final global BA reject loop.
+  /// If true (and coarse_ba_max_rounds > 0, global BA), run fixed-intrinsic coarse BA before fine phase.
+  bool   enable_coarse_outlier_rejection = true;
+  /// Phase 1: fast global BA + loose reproj delete (gross outliers); intrinsics always fixed there.
+  int    coarse_ba_max_rounds   = 3;   ///< 0 = skip coarse phase when enable_coarse_outlier_rejection.
+  double coarse_huber_delta_px    = 12.0; ///< Huber loss scale during coarse BA (px).
+  double coarse_reproj_floor_px  = 16.0; ///< Hard reproj threshold to delete observations (px).
+  /// Per-pass reproj delete thresholds (px). If empty, every pass uses coarse_reproj_floor_px.
+  /// Example: {8, 6, 4} tightens the gate over coarse_ba_max_rounds passes.
+  std::vector<double> coarse_reproj_thresholds_px;
+  /// Ceres iteration cap per coarse global-BA pass (intrinsics fixed; loose tolerances).
+  int coarse_ba_max_iterations_per_pass = 500;
 };
+
+/**
+ * Fixed intrinsics: repeated global BA + hard reproj delete per reproj_thresholds_px entry.
+ * Ceres tolerances are fixed inside run_coarse_outlier_rejection_global_ba (not GlobalBAOptions).
+ */
+struct CoarseOutlierGlobalBAOptions {
+  std::vector<double> reproj_thresholds_px;
+  double huber_delta_px = 12.0;
+  int max_iterations_per_pass = 500;
+  int min_rejected_to_continue = 1;
+};
+
+bool run_coarse_outlier_rejection_global_ba(
+    TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+    std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
+    const std::vector<int>& image_to_camera_index, std::vector<camera::Intrinsics>* cameras,
+    int anchor_image, const CoarseOutlierGlobalBAOptions& coarse, double* rmse_px_out);
 
 /// Options for triangulation and periodic re-triangulation.
 struct TriangulationOptions {
-  double min_angle_deg = 2.0;  ///< Min max pairwise angle for a triangulated point.
-  double max_angle_deg = 60.0; ///< Max max pairwise angle (beyond which we assume outlier).
+  double min_angle_deg = 0.5;  ///< Min max pairwise angle for a triangulated point.
+  double max_angle_deg = 120.0; ///< Max max pairwise angle (beyond which we assume outlier).
   double min_baseline_depth_ratio = 0.01; ///< Min baseline-to-depth ratio for triangulated points.
   int retriangulation_every_n_iters = 3;  ///< Periodic re-triangulation every N SfM iterations.
+  /// After GN: reject view if reproj > this (px). Loosen if too few points pass incremental tri
+  /// (logs show many `two_reproj` / robust fails at 4px while BA RMSE is ~0.5px).
+  double commit_reproj_px = 16.0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -378,13 +317,41 @@ struct IncrementalSfMOptions {
   TriangulationOptions triangulation;
 };
 
+/// One BA + iterative outlier-rejection call (global or local). Keeps `run_incremental_sfm_pipeline`
+/// readable; fill only fields that apply (e.g. local batches when use_global_ba is false).
+/// Ceres overrides are taken from opts.global_ba.solver_overrides; coarse gross-outlier BA uses fixed
+/// tolerances inside run_coarse_outlier_rejection_global_ba.
+struct BaOutlierCall {
+  bool use_global_ba = true;
+  bool optimize_intrinsics = false;
+  uint32_t partial_intr_fix = 0;
+  double focal_prior_weight = 0.0;
+  /// Per-camera: if true, that camera's intrinsics stay fixed in global BA (progressive freeze).
+  const std::vector<bool>* frozen_cameras = nullptr;
+  std::vector<int> local_ba_batch;
+  std::vector<int> local_ba_new_tracks;
+  /// If non-empty, Huber δ is estimated from residuals on these images only; if empty, all images.
+  std::vector<int> huber_residual_image_filter;
+  int max_outlier_rounds = 1;
+  /// If set, overrides opts.outlier.enable_coarse_outlier_rejection for this call only.
+  std::optional<bool> enable_coarse_outlier_rejection;
+};
+
+bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                                   std::vector<Eigen::Vector3d>* poses_C,
+                                   const std::vector<bool>& registered,
+                                   const std::vector<int>& image_to_camera_index,
+                                   std::vector<camera::Intrinsics>* cameras, int anchor_image,
+                                   int num_registered, const IncrementalSfMOptions& opts,
+                                   const BaOutlierCall& call, double* rmse_px_out);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Preset factory functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// UAV nadir aerial photogrammetry (default local_ba_strategy = kColmap).
+/// UAV nadir aerial photogrammetry (local_ba.strategy = kColmap; local_ba.enable = false by default).
 IncrementalSfMOptions make_aerial_preset();
-/// Circumferential / object-scan captures (skip_local_ba, more aggressive BA).
+/// Circumferential / object-scan captures (local BA off by default, more aggressive BA).
 IncrementalSfMOptions make_object_scan_preset();
 /// Conservative general-purpose preset.
 IncrementalSfMOptions make_general_preset();
@@ -410,8 +377,9 @@ IncrementalSfMOptions make_general_preset();
  * cameras for all undistortion; writes back poses and optionally cameras.
  *
  * @param tracks_idc_path     Path to .isat_tracks IDC.
- * @param pairs_json_path     Path to pairs JSON for view graph.
- * @param geo_dir             Directory of .isat_geo files (index-based paths).
+ * @param pairs_json_path     Path to pairs JSON (used to build view graph only when tracks IDC has no
+ *                            embedded view_graph_pairs; schema 1.1 from isat_tracks embeds the graph).
+ * @param geo_dir             Directory of .isat_geo files (same fallback as pairs_json).
  * @param cameras             Camera intrinsics (size = num_cameras). Updated if do_global_ba &&
  * global_ba_optimize_intrinsics.
  * @param image_to_camera_index  Per-image camera index; length must match store.num_images() after

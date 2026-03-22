@@ -47,39 +47,22 @@ bool resection_backend_uses_gpu(ResectionBackend backend);
 bool is_resection_stable(int inlier_count, int total_correspondences, double rmse_px,
                          double min_inlier_ratio = 0.4, double max_rmse_px = 10.0);
 
+/// Optional: after resection, prune 3D–2D obs on this image by reprojection (threshold <= 0 skips).
+int prune_resection_observations_reprojection(TrackStore* store, int image_index,
+                                              const Eigen::Matrix3d& R, const Eigen::Vector3d& C,
+                                              const camera::Intrinsics& K, double threshold_px);
+
 /**
- * Run resection for a single unregistered image: collect 3D–2D from tracks
- * that have triangulated XYZ, run PnP RANSAC, then pose-only BA.
- *
- * @param store           Full track store (world 3D in track xyz).
- * @param image_index     Unregistered image index.
- * @param fx, fy, cx, cy  Intrinsics.
- * @param min_inliers     Minimum RANSAC inliers to accept (default 15).
- * @param ransac_thresh_px RANSAC reprojection threshold in pixels.
- * @param R_out, t_out    Output pose (world to camera).
- * @param inliers_out     Optional: number of inliers after RANSAC.
- * @return true if resection succeeded (enough inliers and BA converged).
+ * Run resection for a single unregistered image: PnP RANSAC + pose refinement.
+ * On success, RANSAC outliers among 3D–2D correspondences are marked deleted on this image.
  */
-bool resection_single_image(const TrackStore& store, int image_index, double fx, double fy,
-                            double cx, double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
+bool resection_single_image(TrackStore& store, int image_index, double fx, double fy, double cx,
+                            double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
                             int* inliers_out = nullptr, double* rmse_px_out = nullptr);
 
-/**
- * Overload: run resection with algorithm intrinsics (camera::Intrinsics).
- *
- * If K.has_distortion(), observations are batch-undistorted before PnP.
- *
- * @param K               Algorithm intrinsics (from JSON or filled at call boundary).
- * @param store           Full track store.
- * @param image_index     Unregistered image index.
- * @param min_inliers     Minimum RANSAC inliers (default 15).
- * @param ransac_thresh_px RANSAC reprojection threshold in pixels.
- * @param R_out, t_out    Output pose (world to camera).
- * @param inliers_out     Optional: number of RANSAC inliers.
- * @return true if resection succeeded.
- */
-bool resection_single_image(const camera::Intrinsics& K, const TrackStore& store, int image_index,
+/// If K.has_distortion(), observations are undistorted before PnP.
+bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
                             int* inliers_out = nullptr, double* rmse_px_out = nullptr);

@@ -5,7 +5,8 @@
  * Pipeline (two passes; both use geo F/E inliers only for consistent track quality):
  *   Phase 1  Union-Find over geo inlier matches → track equivalence classes
  *   Phase 2  Fill observations (coords + scales) from match + geo inlier masks
- * Track xyz is left for incremental SfM (no two-view 3D). Output: single .isat_tracks IDC.
+ * Track xyz is left for incremental SfM (no two-view 3D). Output: single .isat_tracks IDC
+ * (schema 1.1 embeds view_graph_pairs: PairGeoInfo per covisible edge after degree filter, from geo_dir).
  *
  * Usage:
  *   isat_tracks -i pairs.json -m match_dir/ -g geo_dir/ -l image_list.json -o tracks.isat_tracks
@@ -30,9 +31,10 @@
 #include "pair_json_utils.h"
 
 #include "../io/idc_reader.h"
-#include "../io/idc_writer.h"
 #include "../io/track_store_idc.h"
 #include "../modules/sfm/track_store.h"
+#include "../modules/sfm/view_graph.h"
+#include "../modules/sfm/view_graph_loader.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 
@@ -193,92 +195,6 @@ struct UnionFind {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Track IDC write / read
-// ─────────────────────────────────────────────────────────────────────────────
-
-static bool save_track_store_to_idc(const TrackStore& store,
-                                    const std::vector<uint32_t>& image_indices,
-                                    const std::string& path) {
-  const size_t n_tracks = store.num_tracks();
-  json meta;
-  meta["schema_version"] = "1.0";
-  meta["task_type"] = "tracks";
-  meta["num_images"] = static_cast<int>(image_indices.size());
-  meta["image_indices"] = image_indices; // slot i → global image_index
-  meta["num_tracks"] = static_cast<int>(n_tracks);
-
-  std::vector<float> track_xyz(static_cast<size_t>(n_tracks) * 3);
-  std::vector<uint8_t> track_flags(static_cast<size_t>(n_tracks));
-  for (size_t t = 0; t < n_tracks; ++t) {
-    float x, y, z;
-    store.get_track_xyz(static_cast<int>(t), &x, &y, &z);
-    track_xyz[t * 3] = x;
-    track_xyz[t * 3 + 1] = y;
-    track_xyz[t * 3 + 2] = z;
-    track_flags[static_cast<size_t>(t)] =
-        store.is_track_valid(static_cast<int>(t)) ? track_flags::kAlive : 0;
-  }
-
-  std::vector<uint32_t> track_obs_offset(static_cast<size_t>(n_tracks) + 1);
-  std::vector<uint32_t> obs_image_slot, obs_feature_id;
-  std::vector<float> obs_u, obs_v, obs_scale;
-  std::vector<uint8_t> obs_flags;
-  obs_image_slot.reserve(store.num_observations());
-  obs_feature_id.reserve(store.num_observations());
-  obs_u.reserve(store.num_observations());
-  obs_v.reserve(store.num_observations());
-  obs_scale.reserve(store.num_observations());
-  obs_flags.reserve(store.num_observations());
-
-  std::vector<Observation> obs_buf;
-  size_t offset = 0;
-  for (size_t t = 0; t < n_tracks; ++t) {
-    track_obs_offset[t] = static_cast<uint32_t>(offset);
-    obs_buf.clear();
-    store.get_track_observations(static_cast<int>(t), &obs_buf);
-    for (const auto& o : obs_buf) {
-      obs_image_slot.push_back(o.image_index); // store slot 0..n-1
-      obs_feature_id.push_back(o.feature_id);
-      obs_u.push_back(o.u);
-      obs_v.push_back(o.v);
-      obs_scale.push_back(o.scale);
-      obs_flags.push_back(obs_flags::kAlive);
-    }
-    offset += obs_buf.size();
-  }
-  track_obs_offset[n_tracks] = static_cast<uint32_t>(offset);
-  const size_t n_obs = obs_image_slot.size();
-  meta["num_observations"] = static_cast<int>(n_obs);
-
-  IDCWriter writer(path);
-  writer.set_metadata(meta);
-  writer.add_blob("track_xyz", track_xyz.data(), track_xyz.size() * sizeof(float), "float32",
-                 {static_cast<int>(n_tracks), 3});
-  writer.add_blob("track_flags", track_flags.data(), track_flags.size(), "uint8",
-                 {static_cast<int>(n_tracks)});
-  writer.add_blob("track_obs_offset", track_obs_offset.data(),
-                 track_obs_offset.size() * sizeof(uint32_t), "uint32",
-                 {static_cast<int>(n_tracks) + 1});
-  writer.add_blob("obs_image_index", obs_image_slot.data(), obs_image_slot.size() * sizeof(uint32_t),
-                 "uint32", {static_cast<int>(obs_image_slot.size())});
-  writer.add_blob("obs_feature_id", obs_feature_id.data(), obs_feature_id.size() * sizeof(uint32_t),
-                 "uint32", {static_cast<int>(obs_feature_id.size())});
-  writer.add_blob("obs_u", obs_u.data(), obs_u.size() * sizeof(float), "float32",
-                 {static_cast<int>(obs_u.size())});
-  writer.add_blob("obs_v", obs_v.data(), obs_v.size() * sizeof(float), "float32",
-                 {static_cast<int>(obs_v.size())});
-  writer.add_blob("obs_scale", obs_scale.data(), obs_scale.size() * sizeof(float), "float32",
-                 {static_cast<int>(obs_scale.size())});
-  writer.add_blob("obs_flags", obs_flags.data(), obs_flags.size(), "uint8",
-                 {static_cast<int>(obs_flags.size())});
-  if (!writer.write()) {
-    LOG(ERROR) << "Failed to write " << path;
-    return false;
-  }
-  VLOG(1) << "Wrote " << path << " (" << n_tracks << " tracks, " << n_obs << " observations)";
-  return true;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 1: Union-Find over geo inliers only (same inlier logic as Phase 2)
@@ -587,16 +503,19 @@ int main(int argc, char* argv[]) {
   if (stats_only) {
     TrackStore store;
     std::vector<uint32_t> image_indices;
-    if (!load_track_store_from_idc(output_path, &store, &image_indices))
+    ViewGraph view_graph;
+    if (!load_track_store_from_idc(output_path, &store, &image_indices, &view_graph))
       return 1;
     LOG(INFO) << "Tracks: " << store.num_tracks() << "  Observations: " << store.num_observations()
-              << "  Images: " << image_indices.size();
+              << "  Images: " << image_indices.size()
+              << "  view_graph_pairs: " << view_graph.num_pairs();
     print_event({{"type", "tracks.stats"},
                 {"ok", true},
                 {"data",
                  {{"num_tracks", static_cast<int>(store.num_tracks())},
                   {"num_observations", static_cast<int>(store.num_observations())},
-                  {"num_images", static_cast<int>(image_indices.size())}}}});
+                  {"num_images", static_cast<int>(image_indices.size())},
+                  {"view_graph_pairs", static_cast<int>(view_graph.num_pairs())}}}});
     return 0;
   }
 
@@ -670,7 +589,18 @@ int main(int argc, char* argv[]) {
     store_to_save = &filtered_store;
   }
 
-  if (!save_track_store_to_idc(*store_to_save, image_indices, output_path))
+  std::vector<std::pair<uint32_t, uint32_t>> direct_pairs;
+  direct_pairs.reserve(pairs.size());
+  for (const auto& p : pairs)
+    direct_pairs.emplace_back(p.image1_index, p.image2_index);
+
+  ViewGraph view_graph;
+  if (!build_view_graph_from_pairs_list_and_track_store(direct_pairs, geo_dir, *store_to_save,
+                                                      &view_graph)) {
+    LOG(ERROR) << "Failed to build view graph from pairs list + filtered tracks + geo_dir";
+    return 1;
+  }
+  if (!save_track_store_to_idc(*store_to_save, image_indices, output_path, &view_graph))
     return 1;
   print_event({{"type", "tracks.build"},
               {"ok", true},
@@ -678,6 +608,7 @@ int main(int argc, char* argv[]) {
                {{"output", output_path},
                 {"min_track_length", min_track_length},
                 {"num_tracks", static_cast<int>(store_to_save->num_tracks())},
-                {"num_observations", static_cast<int>(store_to_save->num_observations())}}}});
+                {"num_observations", static_cast<int>(store_to_save->num_observations())},
+                {"view_graph_pairs", static_cast<int>(view_graph.num_pairs())}}}});
   return 0;
 }

@@ -88,6 +88,10 @@ set(ALGORITHM_SOURCES
     modules/sfm/resection.cpp
     modules/sfm/incremental_sfm_pipeline.h
     modules/sfm/incremental_sfm_pipeline.cpp
+    modules/sfm/resection_batch.h
+    modules/sfm/resection_batch.cpp
+    modules/sfm/incremental_triangulation.h
+    modules/sfm/incremental_triangulation.cpp
     # Incremental SfM excluded from build (files kept); to be re-integrated after stepwise implementation
     # modules/sfm/incremental_sfm.h
     # modules/sfm/incremental_sfm.cpp
@@ -197,6 +201,20 @@ if(SUPERPOINT_AVAILABLE)
     message(STATUS "  Linking ONNX Runtime: ${onnxruntime_LIBRARIES}")
     message(STATUS "  ONNX Include: ${ONNXRUNTIME_INCLUDE_DIR}")
 endif()
+
+# ── Unit test: incremental triangulation (strategy B) ──
+add_executable(test_incremental_triangulation modules/sfm/incremental_triangulation_test.cpp)
+target_link_libraries(test_incremental_triangulation
+    PRIVATE
+        InsightATAlgorithm
+        glog::glog
+)
+target_include_directories(test_incremental_triangulation
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET test_incremental_triangulation PROPERTY FOLDER InsightAT/Tests)
 
 # ─────────────────────────────────────────────────────────────
 # CLI Tools (shared logging helper)

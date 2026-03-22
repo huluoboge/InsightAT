@@ -121,6 +121,7 @@ public:
   /// Logical delete (set flag only)
   void mark_track_deleted(int track_id);
   void mark_observation_deleted(int obs_id);
+  void mark_observation_restored(int obs_id);
 
   size_t num_tracks() const { return track_xyz_.size() / 3u; }
   size_t num_observations() const { return obs_track_id_.size(); }

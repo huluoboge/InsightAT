@@ -68,7 +68,8 @@ enum FixIntrinsicsMask : uint32_t {
 };
 
 /// BA input: N images (poses), M points, multi-camera intrinsics. Compact layout.
-/// Camera 0 is fixed (world origin). image_camera_index[i] = camera index for image i.
+/// Gauge: set fix_pose[i]=true on exactly one (or more for local BA constants) camera(s).
+/// image_camera_index[i] = camera index for image i.
 struct BAInput {
   std::vector<Eigen::Matrix3d> poses_R;
   std::vector<Eigen::Vector3d> poses_C; ///< Camera centres in world coords (C = -Rᵀ·t)

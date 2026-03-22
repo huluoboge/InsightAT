@@ -92,6 +92,7 @@ public:
 
   void add_pair(const PairGeoInfo& info);
   void reserve(size_t n_pairs);
+  void clear();
 
   size_t num_pairs() const { return pairs_.size(); }
   const PairGeoInfo& pair_at(size_t i) const { return pairs_.at(i); }
