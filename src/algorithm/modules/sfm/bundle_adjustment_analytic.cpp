@@ -619,12 +619,11 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     double* xp = result->points3d[static_cast<size_t>(obs.point_index)].data();
 
     const double scale = (obs.scale > 1e-12) ? obs.scale : 1.0;
-    // ceres::CostFunction* cost = (scale == 1.0)
-    //     ? static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v))
-    //     : static_cast<ceres::CostFunction*>(new ReprojectionCostAnalyticWeighted(obs.u, obs.v,
-    //     scale));
     ceres::CostFunction* cost =
-        static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v));
+        (scale == 1.0)
+            ? static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v))
+            : static_cast<ceres::CostFunction*>(
+                  new ReprojectionCostAnalyticWeighted(obs.u, obs.v, scale));
     problem.AddResidualBlock(cost, loss, ip, pp, xp);
   }
 
@@ -784,25 +783,31 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       ++n_variable_cams;
   }
 
-  if (input.optimize_intrinsics) {
-    options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-    options.preconditioner_type = ceres::JACOBI;
-  } else if (n_variable_cams <= 1000) {
+  options.preconditioner_type = ceres::JACOBI;
+  if (n_cams < 500) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
   } else {
     options.linear_solver_type = ceres::SPARSE_SCHUR;
   }
-  options.num_threads =
-      std::max(1, std::min(8, static_cast<int>(std::thread::hardware_concurrency())));
-  // if (input.solver_gradient_tolerance > 0.0)
-  //   options.gradient_tolerance = input.solver_gradient_tolerance;
-  // if (input.solver_function_tolerance > 0.0)
-  //   options.function_tolerance = input.solver_function_tolerance;
-  // if (input.solver_parameter_tolerance > 0.0)
-  //   options.parameter_tolerance = input.solver_parameter_tolerance;
+  options.num_threads = input.num_threads > 0
+                            ? input.num_threads
+                            : static_cast<int>(std::thread::hardware_concurrency());
+  if (options.num_threads > static_cast<int>(std::thread::hardware_concurrency())) {
+    LOG(WARNING) << "Requested num_threads=" << options.num_threads
+                 << " exceeds hardware concurrency; using max available threads instead.";
+    options.num_threads = static_cast<int>(std::thread::hardware_concurrency());
+  }
+  if (input.solver_gradient_tolerance > 0.0)
+    options.gradient_tolerance = input.solver_gradient_tolerance;
+  if (input.solver_function_tolerance > 0.0)
+    options.function_tolerance = input.solver_function_tolerance;
+  if (input.solver_parameter_tolerance > 0.0)
+    options.parameter_tolerance = input.solver_parameter_tolerance;
 
   // #region agent log
-  diagnose_ba_input_pre_solve(input, result->points3d, n_cams, n_distinct);
+  if (VLOG_IS_ON(1)) {
+    diagnose_ba_input_pre_solve(input, result->points3d, n_cams, n_distinct);
+  }
   // #endregion
 
   ceres::Solver::Summary summary;
@@ -811,26 +816,10 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // Fallback: if the chosen solver failed, retry with DENSE_SCHUR (LAPACK – most
   // numerically robust).  Not needed when we already started with DENSE_SCHUR.
   if (!summary.IsSolutionUsable()) {
-    if (!input.optimize_intrinsics && options.linear_solver_type != ceres::DENSE_SCHUR) {
-      LOG(WARNING) << "global_bundle_analytic: "
-                   << ceres::LinearSolverTypeToString(options.linear_solver_type) << " failed ("
-                   << summary.message << "), retrying with DENSE_SCHUR";
-      options.linear_solver_type = ceres::DENSE_SCHUR;
-      options.preconditioner_type = ceres::JACOBI;
-    } else {
-      LOG(WARNING) << "global_bundle_analytic: "
-                   << ceres::LinearSolverTypeToString(options.linear_solver_type) << " failed ("
-                   << summary.message << "), retrying with DENSE_SCHUR";
-      options.linear_solver_type = ceres::DENSE_SCHUR;
-      options.preconditioner_type = ceres::JACOBI;
-    }
-    ceres::Solve(options, &problem, &summary);
-  }
-
-  if (!summary.IsSolutionUsable()) {
     LOG(WARNING) << "global_bundle_analytic: " << summary.message;
     return false;
   }
+  LOG(INFO) << summary.FullReport();
 
   const double rmse_before = (summary.num_residuals > 0)
                                  ? std::sqrt(summary.initial_cost * 2.0 / summary.num_residuals)

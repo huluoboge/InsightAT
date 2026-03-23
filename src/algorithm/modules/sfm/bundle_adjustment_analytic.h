@@ -92,6 +92,7 @@ struct BAInput {
   double solver_function_tolerance     = 0.0; ///< Ceres function_tolerance.  0 = Ceres default.
   double solver_parameter_tolerance    = 0.0; ///< Ceres parameter_tolerance. 0 = Ceres default.
   int    solver_dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in default (30).
+  int num_threads = 0; ///< Ceres num_threads. 0 = auto-select based on hardware_concurrency.
 };
 
 struct BAResult {

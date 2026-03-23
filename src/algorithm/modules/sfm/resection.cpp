@@ -90,7 +90,7 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
     int used_obs = 0;
 
     for (int i = 0; i < n; ++i) {
-      const Eigen::Vector3d p = R * pts3d[i] + t;  // camera-space
+      const Eigen::Vector3d p = R * pts3d[i] + t; // camera-space
       if (p(2) < 1e-6)
         continue;
       const double inv_z = 1.0 / p(2);
@@ -116,9 +116,7 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
 
       // dp/domega = -[p]_x
       Eigen::Matrix3d skew_p;
-      skew_p <<      0.0, -p(2),  p(1),
-                  p(2),     0.0, -p(0),
-                 -p(1),  p(0),     0.0;
+      skew_p << 0.0, -p(2), p(1), p(2), 0.0, -p(0), -p(1), p(0), 0.0;
       // Jw = Jproj * (-skew_p)
       Eigen::Matrix<double, 2, 3> Jw = Jproj * (-skew_p);
       // Jt = Jproj
@@ -140,8 +138,7 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
       JtJ(d, d) *= (1.0 + lambda);
 
     // Solve
-    Eigen::Matrix<double, 6, 1> delta =
-        JtJ.ldlt().solve(-Jtr);
+    Eigen::Matrix<double, 6, 1> delta = JtJ.ldlt().solve(-Jtr);
 
     // Update pose: so3 perturbation for rotation, direct for translation
     Eigen::Vector3d omega = delta.head<3>();
@@ -178,8 +175,8 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
 
 static double compute_pose_rmse_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
                                         const std::vector<Eigen::Vector2d>& pts2d, double fx,
-                                        double fy, double cx, double cy,
-                                        const Eigen::Matrix3d& R, const Eigen::Vector3d& t) {
+                                        double fy, double cx, double cy, const Eigen::Matrix3d& R,
+                                        const Eigen::Vector3d& t) {
   if (pts3d.empty() || pts3d.size() != pts2d.size())
     return std::numeric_limits<double>::infinity();
 
@@ -216,8 +213,8 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
                                       const std::vector<Eigen::Vector2d>& pts2d, double fx,
                                       double fy, double cx, double cy, int min_inliers,
                                       double ransac_thresh_px, Eigen::Matrix3d* R_out,
-                                      Eigen::Vector3d* t_out, int* inliers_out,
-                                      double* rmse_px_out, std::vector<char>* inlier_mask_full_out) {
+                                      Eigen::Vector3d* t_out, int* inliers_out, double* rmse_px_out,
+                                      std::vector<char>* inlier_mask_full_out) {
   if (!R_out || !t_out || pts3d.size() != pts2d.size() || pts3d.empty())
     return false;
 
@@ -252,11 +249,10 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
   if (inliers_out)
     *inliers_out = n_inliers;
   if (n_inliers < min_inliers) {
-    LOG(INFO) << "[PERF] resection_single_image(poselib)"
-              << "  pts=" << pts3d.size()
-              << "  poselib="
-              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
-              << "  FAILED inliers=" << n_inliers;
+    VLOG(1) << "[PERF] resection_single_image(poselib)"
+            << "  pts=" << pts3d.size() << "  poselib="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
+            << "  FAILED inliers=" << n_inliers;
     return false;
   }
 
@@ -285,23 +281,23 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
 
   const double rmse =
       compute_pose_rmse_pinhole(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_refined, t_refined);
-  LOG(INFO) << "[PERF] resection_single_image(poselib)"
-            << "  pts=" << pts3d.size() << "  inliers=" << n_inliers
-            << "  poselib="
-            << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
-            << "  gn_refine="
-            << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
-            << "  rmse=" << rmse;
+  VLOG(1) << "[PERF] resection_single_image(poselib)"
+          << "  pts=" << pts3d.size() << "  inliers=" << n_inliers
+          << "  poselib=" << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
+          << "ms"
+          << "  gn_refine="
+          << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
+          << "  rmse=" << rmse;
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, static_cast<int>(pts3d.size()), rmse,
                            /*min_inlier_ratio=*/0.02,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
-    LOG(INFO) << "[PERF] resection_single_image(poselib)"
-              << "  rejected_by_stability: inlier_ratio="
-              << (pts3d.empty() ? 0.0
-                               : static_cast<double>(n_inliers) / static_cast<double>(pts3d.size()))
-              << "  rmse=" << rmse;
+    VLOG(1) << "[PERF] resection_single_image(poselib)"
+            << "  rejected_by_stability: inlier_ratio="
+            << (pts3d.empty() ? 0.0
+                              : static_cast<double>(n_inliers) / static_cast<double>(pts3d.size()))
+            << "  rmse=" << rmse;
     return false;
   }
 
@@ -389,10 +385,10 @@ ResectionBackend get_resection_backend() { return g_resection_backend; }
 
 const char* resection_backend_name(ResectionBackend backend) {
   switch (backend) {
-    case ResectionBackend::kGpuRansac:
-      return "gpu";
-    case ResectionBackend::kPoseLib:
-      return "poselib";
+  case ResectionBackend::kGpuRansac:
+    return "gpu";
+  case ResectionBackend::kPoseLib:
+    return "poselib";
   }
   return "unknown";
 }
@@ -489,11 +485,12 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
   if (n_inliers < min_inliers) {
     if (inliers_out)
       *inliers_out = n_inliers >= 0 ? n_inliers : 0;
-    LOG(INFO) << "[PERF] resection_single_image im=" << image_index
-              << "  pts=" << num_pts
-              << "  data_prep=" << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
-              << "  gpu_ransac=" << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
-              << "  FAILED inliers=" << n_inliers;
+    VLOG(1) << "[PERF] resection_single_image im=" << image_index << "  pts=" << num_pts
+            << "  data_prep="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
+            << "  gpu_ransac="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
+            << "  FAILED inliers=" << n_inliers;
     return false;
   }
 
@@ -518,24 +515,26 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
-  pose_refine_gn(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_eig, t_eig, &R_refined,
-                 &t_refined, &rmse, 10);
+  pose_refine_gn(inlier_pts3d, inlier_pts2d, fx, fy, cx, cy, R_eig, t_eig, &R_refined, &t_refined,
+                 &rmse, 10);
   auto t3 = Clock::now(); // after GN refinement
-  LOG(INFO) << "[PERF] resection_single_image im=" << image_index
-            << "  pts=" << num_pts << "  inliers=" << n_inliers
-            << "  data_prep=" << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
-            << "  gpu_ransac=" << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
-            << "  gn_refine=" << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count() << "ms"
-            << "  rmse=" << rmse;
+  VLOG(1) << "[PERF] resection_single_image im=" << image_index << "  pts=" << num_pts
+          << "  inliers=" << n_inliers << "  data_prep="
+          << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms"
+          << "  gpu_ransac="
+          << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << "ms"
+          << "  gn_refine="
+          << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count() << "ms"
+          << "  rmse=" << rmse;
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, num_pts, rmse,
                            /*min_inlier_ratio=*/0.02,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
-    LOG(INFO) << "[PERF] resection_single_image im=" << image_index
-              << "  rejected_by_stability: inlier_ratio="
-              << (num_pts > 0 ? static_cast<double>(n_inliers) / static_cast<double>(num_pts) : 0.0)
-              << "  rmse=" << rmse;
+    VLOG(1) << "[PERF] resection_single_image im=" << image_index
+            << "  rejected_by_stability: inlier_ratio="
+            << (num_pts > 0 ? static_cast<double>(n_inliers) / static_cast<double>(num_pts) : 0.0)
+            << "  rmse=" << rmse;
     return false;
   }
   if (inliers_out)
@@ -552,9 +551,8 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
 }
 
 bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int image_index,
-                            Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
-                            int min_inliers, double ransac_thresh_px, int* inliers_out,
-                            double* rmse_px_out) {
+                            Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out, int min_inliers,
+                            double ransac_thresh_px, int* inliers_out, double* rmse_px_out) {
   if (!K.has_distortion()) {
     return resection_single_image(store, image_index, K.fx, K.fy, K.cx, K.cy, R_out, t_out,
                                   min_inliers, ransac_thresh_px, inliers_out, rmse_px_out);
@@ -625,7 +623,7 @@ bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int 
   std::vector<unsigned char> inlier_mask(static_cast<size_t>(num_pts), 0);
 
   ensure_gpu_geo_init();
-  
+
   const int n_inliers =
       gpu_ransac_pnp(pts_pnp.data(), num_pts, K_mat, R_init, t_init, thresh_sq, inlier_mask.data());
   if (n_inliers < min_inliers) {
@@ -645,13 +643,11 @@ bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int 
   for (int i = 0; i < num_pts; ++i) {
     if (!inlier_mask[static_cast<size_t>(i)])
       continue;
-    inlier_pts3d.push_back(
-        Eigen::Vector3d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].x),
-                        static_cast<double>(pts_pnp[static_cast<size_t>(i)].y),
-                        static_cast<double>(pts_pnp[static_cast<size_t>(i)].z)));
-    inlier_pts2d.push_back(
-        Eigen::Vector2d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].u),
-                        static_cast<double>(pts_pnp[static_cast<size_t>(i)].v)));
+    inlier_pts3d.push_back(Eigen::Vector3d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].x),
+                                           static_cast<double>(pts_pnp[static_cast<size_t>(i)].y),
+                                           static_cast<double>(pts_pnp[static_cast<size_t>(i)].z)));
+    inlier_pts2d.push_back(Eigen::Vector2d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].u),
+                                           static_cast<double>(pts_pnp[static_cast<size_t>(i)].v)));
   }
 
   Eigen::Matrix3d R_refined = R_eig;

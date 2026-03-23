@@ -42,9 +42,9 @@ namespace sfm {
  */
 bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_dir,
                            TrackStore* store, const std::vector<camera::Intrinsics>& cameras,
-                           const std::vector<int>& image_to_camera_index, int min_tracks_for_intital_pair,
-                           uint32_t* initial_im0_out, uint32_t* initial_im1_out,
-                           std::vector<Eigen::Matrix3d>* poses_R_out,
+                           const std::vector<int>& image_to_camera_index,
+                           int min_tracks_for_intital_pair, uint32_t* initial_im0_out,
+                           uint32_t* initial_im1_out, std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
                            std::vector<bool>* registered_out);
 
@@ -53,12 +53,12 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
 /// Optional per-call Ceres solver overrides for run_global_ba.
 /// Zero / 0.0 fields are ignored — built-in defaults apply.
 struct BASolverOverrides {
-  double gradient_tolerance = 0.0;        ///< Ceres gradient_tolerance.  0 = Ceres default.
-  double function_tolerance = 0.0;        ///< Ceres function_tolerance.  0 = Ceres default.
-  double parameter_tolerance = 0.0;       ///< Ceres parameter_tolerance. 0 = Ceres default.
-  int dense_schur_max_variable_cams = 0;  ///< DENSE↔SPARSE Schur threshold. 0 = built-in (30).
-  int    max_num_iterations = 0;          ///< 0 = use max_iterations param of run_global_ba / local BA.
-  double huber_loss_delta   = 0.0;        ///< Huber loss δ (px). 0 = BAInput default (4.0 px).
+  double gradient_tolerance = 0.0;       ///< Ceres gradient_tolerance.  0 = Ceres default.
+  double function_tolerance = 0.0;       ///< Ceres function_tolerance.  0 = Ceres default.
+  double parameter_tolerance = 0.0;      ///< Ceres parameter_tolerance. 0 = Ceres default.
+  int dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in (30).
+  int max_num_iterations = 0;    ///< 0 = use max_iterations param of run_global_ba / local BA.
+  double huber_loss_delta = 0.0; ///< Huber loss δ (px). 0 = BAInput default (4.0 px).
 };
 
 /**
@@ -153,21 +153,21 @@ enum class LocalBAStrategy {
 
 /// Options for initial pair selection.
 struct InitPairOptions {
-  int min_tracks_for_intital_pair = 50;         ///< Min inlier tracks after MAD filter to accept pair.
-  int max_first_images = 100;        ///< Max first-image candidates to try.
-  int max_second_images = 50;        ///< Max second-image candidates per first image.
-  double ba_rmse_max = 10.0;         ///< Max BA RMSE (px) to accept pair.
-  double outlier_threshold_px = 4.0; ///< MAD floor (fallback when distribution is very narrow).
-  double min_angle_deg = 2.0;        ///< Min triangulation angle; max is hard-coded to 60°.
+  int min_tracks_for_intital_pair = 50; ///< Min inlier tracks after MAD filter to accept pair.
+  int max_first_images = 100;           ///< Max first-image candidates to try.
+  int max_second_images = 50;           ///< Max second-image candidates per first image.
+  double ba_rmse_max = 10.0;            ///< Max BA RMSE (px) to accept pair.
+  double outlier_threshold_px = 4.0;    ///< MAD floor (fallback when distribution is very narrow).
+  double min_angle_deg = 2.0;           ///< Min triangulation angle; max is hard-coded to 60°.
 };
 
 /// Options for the incremental resection loop (one new image per iteration).
 struct ResectionOptions {
   ResectionBackend backend = ResectionBackend::kPoseLib; ///< Absolute-pose backend.
-  int min_inliers = 15;               ///< Min PnP RANSAC inliers to accept resection.
-  int min_3d2d_count = 30;           ///< Min 3D-2D correspondences to list a candidate.
-  bool retry_after_cleanup = true;   ///< Retry after cleanup BA+reject when batch is empty.
-  /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 = off.
+  int min_inliers = 15;    ///< Min PnP RANSAC inliers to accept resection.
+  int min_3d2d_count = 30; ///< Min 3D-2D correspondences to list a candidate.
+  /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 =
+  /// off.
   double post_resection_reproj_thresh_px = 0.0;
 };
 
@@ -199,7 +199,7 @@ struct IntrinsicsSchedule {
   int recalib_every_n_periodic = 4; ///< Full-recalib every N mid-freq BAs (0 = disabled).
 
   // ── Focal soft prior ──────────────────────────────────────────────────────
-  double focal_prior_weight = 0.0; ///< Tikhonov weight on focal deviation (0 = disabled).
+  double focal_prior_weight = 100.0; ///< Tikhonov weight on focal deviation (0 = disabled).
 
   /// Returns the partial_intr_fix bitmask for run_global_ba() based on registration count.
   uint32_t fix_mask_for(int n_registered) const;
@@ -208,8 +208,8 @@ struct IntrinsicsSchedule {
   /// Each camera's phase is determined by its own registered image count (images of that
   /// specific camera that have been successfully registered), rather than the total.
   std::vector<uint32_t> fix_masks_per_camera(const std::vector<bool>& registered,
-                                              const std::vector<int>& image_to_camera_index,
-                                              int n_cameras) const;
+                                             const std::vector<int>& image_to_camera_index,
+                                             int n_cameras) const;
 };
 
 /// Options for local BA.
@@ -232,7 +232,8 @@ struct LocalBAOptions {
  */
 bool run_local_ba_dispatch(const LocalBAOptions& opts, int anchor_image, TrackStore* store,
                            std::vector<Eigen::Matrix3d>* poses_R,
-                           std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
+                           std::vector<Eigen::Vector3d>* poses_C,
+                           const std::vector<bool>& registered,
                            const std::vector<int>& image_to_camera_index,
                            const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& batch, const std::vector<int>& new_track_ids,
@@ -251,23 +252,23 @@ struct GlobalBAOptions {
 
 /// Options for outlier rejection and iterative Huber-BA-based coarse detection.
 struct OutlierOptions {
-  double threshold_px      = 4.0;   ///< Hard floor for fine-phase MAD rejection thresholds (px).
-  double huber_delta_lo_px = 0.5;   ///< Lower clip for MAD-derived Huber δ (fine phase, px).
-  double huber_delta_hi_px = 3.0;   ///< Upper clip for MAD-derived Huber δ (fine phase, px).
-  double mad_k             = 2.5;   ///< Fine phase: hard_thr = median(e) + mad_k × 1.4826 × MAD(e).
-  double min_angle_deg     = 0.50;   ///< Reject observation if max parallax angle < this (fine phase).
-  double max_angle_deg     = 120.0; ///< Reject observation if max parallax angle > this (fine phase).
-  double max_depth_factor  = 200.0; ///< Reject if depth > median_scene_depth × factor (0 = off).
-  int    max_rounds        = 5;     ///< Max fine Huber-BA + reject rounds per call.
-  int    min_for_retry     = 30;    ///< Continue iterating when newly rejected >= this.
-  int    min_registered_images = 2; ///< Minimum registered images before outlier rejection runs.
-  int    final_max_rounds  = 10;    ///< Max rounds in the final global BA reject loop.
-  /// If true (and coarse_ba_max_rounds > 0, global BA), run fixed-intrinsic coarse BA before fine phase.
-  bool   enable_coarse_outlier_rejection = true;
+  double threshold_px = 4.0;      ///< Hard floor for fine-phase MAD rejection thresholds (px).
+  double huber_delta_lo_px = 0.5; ///< Lower clip for MAD-derived Huber δ (fine phase, px).
+  double huber_delta_hi_px = 3.0; ///< Upper clip for MAD-derived Huber δ (fine phase, px).
+  double mad_k = 2.5;             ///< Fine phase: hard_thr = median(e) + mad_k × 1.4826 × MAD(e).
+  double min_angle_deg = 0.50;    ///< Reject observation if max parallax angle < this (fine phase).
+  double max_angle_deg = 120.0;   ///< Reject observation if max parallax angle > this (fine phase).
+  double max_depth_factor = 200.0; ///< Reject if depth > median_scene_depth × factor (0 = off).
+  int min_for_retry = 30;          ///< Continue iterating when newly rejected >= this.
+  int min_registered_images = 2;   ///< Minimum registered images before outlier rejection runs.
+  int final_max_rounds = 10;       ///< Max rounds in the final global BA reject loop.
+  /// If true (and coarse_ba_max_rounds > 0, global BA), run fixed-intrinsic coarse BA before fine
+  /// phase.
+  bool enable_coarse_outlier_rejection = true;
   /// Phase 1: fast global BA + loose reproj delete (gross outliers); intrinsics always fixed there.
-  int    coarse_ba_max_rounds   = 3;   ///< 0 = skip coarse phase when enable_coarse_outlier_rejection.
-  double coarse_huber_delta_px    = 12.0; ///< Huber loss scale during coarse BA (px).
-  double coarse_reproj_floor_px  = 16.0; ///< Hard reproj threshold to delete observations (px).
+  int coarse_ba_max_rounds = 3; ///< 0 = skip coarse phase when enable_coarse_outlier_rejection.
+  double coarse_huber_delta_px = 12.0;  ///< Huber loss scale during coarse BA (px).
+  double coarse_reproj_floor_px = 16.0; ///< Hard reproj threshold to delete observations (px).
   /// Per-pass reproj delete thresholds (px). If empty, every pass uses coarse_reproj_floor_px.
   /// Example: {8, 6, 4} tightens the gate over coarse_ba_max_rounds passes.
   std::vector<double> coarse_reproj_thresholds_px;
@@ -279,22 +280,22 @@ struct OutlierOptions {
  * Fixed intrinsics: repeated global BA + hard reproj delete per reproj_thresholds_px entry.
  * Ceres tolerances are fixed inside run_coarse_outlier_rejection_global_ba (not GlobalBAOptions).
  */
-struct CoarseOutlierGlobalBAOptions {
-  std::vector<double> reproj_thresholds_px;
-  double huber_delta_px = 12.0;
-  int max_iterations_per_pass = 500;
-  int min_rejected_to_continue = 1;
-};
+// struct CoarseOutlierGlobalBAOptions {
+//   std::vector<double> reproj_thresholds_px;
+//   double huber_delta_px = 12.0;
+//   int max_iterations_per_pass = 500;
+//   int min_rejected_to_continue = 1;
+// };
 
-bool run_coarse_outlier_rejection_global_ba(
-    TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
-    std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
-    const std::vector<int>& image_to_camera_index, std::vector<camera::Intrinsics>* cameras,
-    int anchor_image, const CoarseOutlierGlobalBAOptions& coarse, double* rmse_px_out);
+// bool run_coarse_outlier_rejection_global_ba(
+//     TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R, std::vector<Eigen::Vector3d>* poses_C,
+//     const std::vector<bool>& registered, const std::vector<int>& image_to_camera_index,
+//     std::vector<camera::Intrinsics>* cameras, int anchor_image,
+//     const CoarseOutlierGlobalBAOptions& coarse, double* rmse_px_out);
 
 /// Options for triangulation and periodic re-triangulation.
 struct TriangulationOptions {
-  double min_angle_deg = 0.5;  ///< Min max pairwise angle for a triangulated point.
+  double min_angle_deg = 0.5;   ///< Min max pairwise angle for a triangulated point.
   double max_angle_deg = 120.0; ///< Max max pairwise angle (beyond which we assume outlier).
   double min_baseline_depth_ratio = 0.01; ///< Min baseline-to-depth ratio for triangulated points.
   int retriangulation_every_n_iters = 3;  ///< Periodic re-triangulation every N SfM iterations.
@@ -317,25 +318,23 @@ struct IncrementalSfMOptions {
   TriangulationOptions triangulation;
 };
 
-/// One BA + iterative outlier-rejection call (global or local). Keeps `run_incremental_sfm_pipeline`
-/// readable; fill only fields that apply (e.g. local batches when use_global_ba is false).
-/// Ceres overrides are taken from opts.global_ba.solver_overrides; coarse gross-outlier BA uses fixed
-/// tolerances inside run_coarse_outlier_rejection_global_ba.
-struct BaOutlierCall {
-  bool use_global_ba = true;
-  bool optimize_intrinsics = false;
-  uint32_t partial_intr_fix = 0;
-  double focal_prior_weight = 0.0;
-  /// Per-camera: if true, that camera's intrinsics stay fixed in global BA (progressive freeze).
-  const std::vector<bool>* frozen_cameras = nullptr;
-  std::vector<int> local_ba_batch;
-  std::vector<int> local_ba_new_tracks;
-  /// If non-empty, Huber δ is estimated from residuals on these images only; if empty, all images.
-  std::vector<int> huber_residual_image_filter;
-  int max_outlier_rounds = 1;
-  /// If set, overrides opts.outlier.enable_coarse_outlier_rejection for this call only.
-  std::optional<bool> enable_coarse_outlier_rejection;
-};
+/// One BA + iterative outlier-rejection call (global or local). Keeps
+/// `run_incremental_sfm_pipeline` readable; fill only fields that apply (e.g. local batches when
+/// use_global_ba is false). Ceres overrides are taken from opts.global_ba.solver_overrides; coarse
+/// gross-outlier BA uses fixed tolerances inside run_coarse_outlier_rejection_global_ba.
+// struct BaOutlierCall {
+//   bool use_global_ba = true;
+//   bool optimize_intrinsics = true;
+//   // uint32_t partial_intr_fix = 0;
+//   double focal_prior_weight = 0.0;
+//   /// Per-camera: if true, that camera's intrinsics stay fixed in global BA (progressive freeze).
+//   std::vector<int> local_ba_batch;
+//   std::vector<int> local_ba_new_tracks;
+//   /// If non-empty, Huber δ is estimated from residuals on these images only; if empty, all
+//   images. std::vector<int> huber_residual_image_filter;
+//   /// If set, overrides opts.outlier.enable_coarse_outlier_rejection for this call only.
+//   std::optional<bool> enable_coarse_outlier_rejection;
+// };
 
 bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                                    std::vector<Eigen::Vector3d>* poses_C,
@@ -343,18 +342,7 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
                                    const std::vector<int>& image_to_camera_index,
                                    std::vector<camera::Intrinsics>* cameras, int anchor_image,
                                    int num_registered, const IncrementalSfMOptions& opts,
-                                   const BaOutlierCall& call, double* rmse_px_out);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Preset factory functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// UAV nadir aerial photogrammetry (local_ba.strategy = kColmap; local_ba.enable = false by default).
-IncrementalSfMOptions make_aerial_preset();
-/// Circumferential / object-scan captures (local BA off by default, more aggressive BA).
-IncrementalSfMOptions make_object_scan_preset();
-/// Conservative general-purpose preset.
-IncrementalSfMOptions make_general_preset();
+                                   double* rmse_px_out);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // (Legacy flat-struct fields — kept as a migration reference; NOT part of
@@ -377,8 +365,8 @@ IncrementalSfMOptions make_general_preset();
  * cameras for all undistortion; writes back poses and optionally cameras.
  *
  * @param tracks_idc_path     Path to .isat_tracks IDC.
- * @param pairs_json_path     Path to pairs JSON (used to build view graph only when tracks IDC has no
- *                            embedded view_graph_pairs; schema 1.1 from isat_tracks embeds the graph).
+ * @param pairs_json_path     Path to pairs JSON (used to build view graph only when tracks IDC has
+ * no embedded view_graph_pairs; schema 1.1 from isat_tracks embeds the graph).
  * @param geo_dir             Directory of .isat_geo files (same fallback as pairs_json).
  * @param cameras             Camera intrinsics (size = num_cameras). Updated if do_global_ba &&
  * global_ba_optimize_intrinsics.
@@ -394,13 +382,14 @@ IncrementalSfMOptions make_general_preset();
  * @param initial_im1_out    Optional: second image index of initial pair.
  * @return true if pipeline completed (at least initial pair + some resections or full loop).
  */
-bool run_incremental_sfm_pipeline(
-    const std::string& tracks_idc_path, const std::string& pairs_json_path,
-    const std::string& geo_dir, std::vector<camera::Intrinsics>* cameras,
-    const std::vector<int>& image_to_camera_index, const IncrementalSfMOptions& opts,
-    TrackStore* store_out, std::vector<Eigen::Matrix3d>* poses_R_out,
-    std::vector<Eigen::Vector3d>* poses_C_out, std::vector<bool>* registered_out,
-    uint32_t* initial_im0_out = nullptr, uint32_t* initial_im1_out = nullptr);
+bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
+                                  const std::string& pairs_json_path, const std::string& geo_dir,
+                                  std::vector<camera::Intrinsics>* cameras,
+                                  const std::vector<int>& image_to_camera_index,
+                                  const IncrementalSfMOptions& opts, TrackStore* store_out,
+                                  std::vector<Eigen::Matrix3d>* poses_R_out,
+                                  std::vector<Eigen::Vector3d>* poses_C_out,
+                                  std::vector<bool>* registered_out);
 
 } // namespace sfm
 } // namespace insight

@@ -132,8 +132,8 @@ std::vector<ResectionCandidate> choose_resection_candidates(const TrackStore& st
       }
     }
   }
-  LOG(INFO) << "choose_resection_candidates: " << scored.size() << " eligible → " << n_list
-            << " listed  (sort: cov>=" << min_coverage_good << " first, then 3d2d desc, cov desc)";
+  VLOG(1) << "choose_resection_candidates: " << scored.size() << " eligible → " << n_list
+          << " listed  (sort: cov>=" << min_coverage_good << " first, then 3d2d desc, cov desc)";
   return out;
 }
 
@@ -178,8 +178,8 @@ int run_batch_resection(TrackStore& store, const std::vector<int>& image_indices
       const int n_pr = prune_resection_observations_reprojection(&store, im, R, C, K,
                                                                  post_resection_reproj_thresh_px);
       if (n_pr > 0)
-        LOG(INFO) << "  post_resection_reproj: image " << im << " pruned " << n_pr
-                  << " obs (thr=" << post_resection_reproj_thresh_px << " px)";
+        VLOG(1) << "  post_resection_reproj: image " << im << " pruned " << n_pr
+                << " obs (thr=" << post_resection_reproj_thresh_px << " px)";
     }
     LOG(INFO) << "  resection image " << im << ": OK (3D-2D=" << n_3d2d << ", inliers=" << inliers
               << ", rmse=" << rmse_px << ", C=[" << C(0) << "," << C(1) << "," << C(2) << "])";

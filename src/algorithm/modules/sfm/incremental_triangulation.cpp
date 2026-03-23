@@ -400,7 +400,8 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
     // // LOG(INFO) << "[dlt_cmp] pre_gn=(" << e0 << "," << e1 << ") post_gn=(" << e0_gn << "," <<
     // // e1_gn << ")";
     // if (e0_gn > opt.ransac_inlier_px || e1_gn > opt.ransac_inlier_px) {
-    //   // LOG(INFO) << "post-GN reproj " << e0_gn << " or " << e1_gn << " > " << opt.ransac_inlier_px
+    //   // LOG(INFO) << "post-GN reproj " << e0_gn << " or " << e1_gn << " > " <<
+    //   opt.ransac_inlier_px
     //   //           << ", reject";
     //   return false;
     // }
@@ -468,7 +469,7 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
     return false;
   }
 
-  #if 0
+#if 0
   std::vector<size_t> in_idx;
   in_idx.reserve(static_cast<size_t>(best_cnt));
   for (int i = 0; i < N; ++i) {
@@ -829,11 +830,11 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   }
   auto t1 = std::chrono::steady_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-  LOG(INFO) << "[PERF] run_batch_triangulation: " << ms << "ms"
-            << "  total_tracks=" << store->num_tracks() << "  candidates=" << candidate_set.size()
-            << "  scanned=" << tracks_scanned << "  skip_few_views=" << tracks_skipped_few_views
-            << "  fail=" << tracks_skipped_fail << "  newly_tri=" << updated
-            << "  commit_reproj_px=" << commit_reproj_px;
+  VLOG(1) << "[PERF] run_batch_triangulation: " << ms << "ms"
+          << "  total_tracks=" << store->num_tracks() << "  candidates=" << candidate_set.size()
+          << "  scanned=" << tracks_scanned << "  skip_few_views=" << tracks_skipped_few_views
+          << "  fail=" << tracks_skipped_fail << "  newly_tri=" << updated
+          << "  commit_reproj_px=" << commit_reproj_px;
   if (!success_max_px.empty()) {
     std::vector<double> sorted_max = success_max_px;
     std::sort(sorted_max.begin(), sorted_max.end());
@@ -1024,8 +1025,8 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
   }
   auto t1 = std::chrono::steady_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-  LOG(INFO) << "[PERF] run_retriangulation: " << ms << "ms"
-            << "  restored_obs=" << n_observers << "  restored_tracks=" << n_track;
+  VLOG(1) << "[PERF] run_retriangulation: " << ms << "ms"
+          << "  restored_obs=" << n_observers << "  restored_tracks=" << n_track;
   return n_track;
 }
 
