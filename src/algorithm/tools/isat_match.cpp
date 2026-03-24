@@ -316,16 +316,16 @@ bool writeMatchIDC(const MatchResult& matches, const PairTask& pair,
   writer.set_metadata(metadata);
 
   writer.add_blob("indices", indices_flat.data(), indices_flat.size() * sizeof(uint16_t), "uint16",
-                 {static_cast<int>(matches.num_matches), 2});
+                  {static_cast<int>(matches.num_matches), 2});
 
   writer.add_blob("coords_pixel", coords_flat.data(), coords_flat.size() * sizeof(float), "float32",
-                 {static_cast<int>(matches.num_matches), 4});
+                  {static_cast<int>(matches.num_matches), 4});
 
   writer.add_blob("scales", scales_flat.data(), scales_flat.size() * sizeof(float), "float32",
-                 {static_cast<int>(matches.num_matches), 2});
+                  {static_cast<int>(matches.num_matches), 2});
 
   writer.add_blob("distances", matches.distances.data(), matches.distances.size() * sizeof(float),
-                 "float32", {static_cast<int>(matches.num_matches)});
+                  "float32", {static_cast<int>(matches.num_matches)});
 
   if (!writer.write()) {
     LOG(ERROR) << "Failed to write match file: " << output_file;
@@ -468,7 +468,8 @@ int main(int argc, char* argv[]) {
   });
 
   // Stage 2: GPU matching (single thread, GPU context requirement)
-  SiftMatcher matcher(10000, use_cuda_match); // Max 10000 features per image
+  SiftMatcher matcher(max_matches > 0 ? max_matches : 10000,
+                      use_cuda_match); // Max 10000 features per image
 
   if (!matcher.verify_context()) {
     LOG(FATAL) << "Failed to initialize SiftMatchGPU - OpenGL context error";
@@ -486,16 +487,16 @@ int main(int argc, char* argv[]) {
         auto start = std::chrono::high_resolution_clock::now();
 
         task.matches = matcher.match(task.features1, task.features2, match_options);
-          const size_t removed_non_unique = sanitize_matches_one_to_one(&task.matches);
+        const size_t removed_non_unique = sanitize_matches_one_to_one(&task.matches);
 
         auto end = std::chrono::high_resolution_clock::now();
         int match_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
         LOG(INFO) << "Matched pair [" << index << "/" << pair_tasks.size()
-            << "]: " << task.matches.num_matches << " matches in " << match_time << "ms"
-            << (removed_non_unique > 0 ? " (removed " + std::to_string(removed_non_unique) +
-                        " non-unique matches)"
-                      : "");
+                  << "]: " << task.matches.num_matches << " matches in " << match_time << "ms"
+                  << (removed_non_unique > 0 ? " (removed " + std::to_string(removed_non_unique) +
+                                                   " non-unique matches)"
+                                             : "");
 
         // Free feature memory
         task.features1.clear();

@@ -22,9 +22,12 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QTabWidget>
+#include <QCheckBox>
+#include <QPlainTextEdit>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <glog/logging.h>
+#include <QLabel>
 
 namespace insight {
 namespace ui {
@@ -32,8 +35,10 @@ namespace ui {
 ATTaskPanel::ATTaskPanel(ProjectDocument* document, QWidget* parent)
     : QWidget(parent), m_document(document), m_currentTaskId(""), m_tabWidget(nullptr),
       m_inputDataTab(nullptr), m_optimizationTab(nullptr), m_exportTab(nullptr),
-      m_taskNameEdit(nullptr), m_taskIdLabel(nullptr), m_parentTaskLabel(nullptr),
-      m_statusLabel(nullptr), m_exportButton(nullptr) {
+  m_taskNameEdit(nullptr), m_taskIdLabel(nullptr), m_parentTaskLabel(nullptr),
+  m_statusLabel(nullptr), m_exportButton(nullptr), m_runButton(nullptr),
+  m_chkExtract(nullptr), m_chkMatch(nullptr), m_chkIncremental(nullptr), m_logView(nullptr),
+  m_viewerWidget(nullptr), m_pendingSteps(), m_currentStepIndex(0), m_currentProcess(nullptr) {
 
   setWindowTitle("AT Task Editor");
   init_ui();
@@ -83,6 +88,20 @@ void ATTaskPanel::init_ui() {
   m_statusLabel = new QLabel("Ready");
   infoLayout->addRow("Status:", m_statusLabel);
 
+  // Run controls: checkboxes + Run button placed under Task Information
+  QHBoxLayout* runControlsLayout = new QHBoxLayout();
+  m_chkExtract = new QCheckBox("Feature Extraction");
+  m_chkMatch = new QCheckBox("Feature Matching");
+  m_chkIncremental = new QCheckBox("Incremental Reconstruction");
+  runControlsLayout->addWidget(m_chkExtract);
+  runControlsLayout->addWidget(m_chkMatch);
+  runControlsLayout->addWidget(m_chkIncremental);
+
+  m_runButton = new QPushButton("Run");
+  m_runButton->setMinimumHeight(30);
+  runControlsLayout->addWidget(m_runButton);
+  infoLayout->addRow(runControlsLayout);
+
   mainLayout->addWidget(infoGroup);
 
   // ─── 中间：Tab 部件
@@ -108,6 +127,15 @@ void ATTaskPanel::init_ui() {
   optLayout->addWidget(optPlaceholder);
   optLayout->addStretch();
   m_tabWidget->addTab(m_optimizationTab, "Optimization");
+
+  // Tab: Viewer (task-scoped viewer)
+  m_viewerWidget = new QWidget();
+  QVBoxLayout* viewerLayout = new QVBoxLayout(m_viewerWidget);
+  QLabel* viewerPlaceholder = new QLabel("3D Viewer (placeholder)");
+  viewerPlaceholder->setStyleSheet("color: gray;");
+  viewerLayout->addWidget(viewerPlaceholder);
+  viewerLayout->addStretch();
+  m_tabWidget->addTab(m_viewerWidget, "Viewer");
 
   // Tab 3: Export
   m_exportTab = new QWidget();
@@ -139,8 +167,16 @@ void ATTaskPanel::init_ui() {
 
   mainLayout->addWidget(m_tabWidget);
 
+  // Log output below tabs
+  m_logView = new QPlainTextEdit();
+  m_logView->setReadOnly(true);
+  m_logView->setMaximumHeight(200);
+  mainLayout->addWidget(m_logView);
+
   // ─── 自动保存：监听任务名称变更
   connect(m_taskNameEdit, &QLineEdit::textChanged, this, &ATTaskPanel::on_task_name_changed);
+  // Run button
+  connect(m_runButton, &QPushButton::clicked, this, &ATTaskPanel::on_run_selected_steps_clicked);
 }
 
 void ATTaskPanel::refresh_ui() {
@@ -180,6 +216,10 @@ void ATTaskPanel::refresh_ui() {
   }
 
   m_statusLabel->setText("Loaded");
+  // Update viewer placeholder (could be replaced with AT3dRenderWidget later)
+  if (m_viewerWidget) {
+    // no-op for now; real viewer refresh will be added when integrating AT3dRenderWidget
+  }
 }
 
 void ATTaskPanel::on_export_clicked() {
@@ -337,6 +377,211 @@ void ATTaskPanel::on_run_sift_gpu_clicked() {
   }
 
   LOG(INFO) << "SIFT GPU process started successfully";
+}
+
+void ATTaskPanel::on_run_selected_steps_clicked() {
+  if (m_currentTaskId.empty() || !m_document) {
+    QMessageBox::warning(this, "Warning", "No task loaded");
+    return;
+  }
+
+  m_pendingSteps.clear();
+  if (m_chkExtract && m_chkExtract->isChecked())
+    m_pendingSteps.append(0);
+  if (m_chkMatch && m_chkMatch->isChecked())
+    m_pendingSteps.append(1);
+  if (m_chkIncremental && m_chkIncremental->isChecked())
+    m_pendingSteps.append(2);
+
+  if (m_pendingSteps.isEmpty()) {
+    QMessageBox::information(this, "No steps selected", "Please select at least one step to run.");
+    return;
+  }
+
+  // Disable controls while running
+  if (m_runButton)
+    m_runButton->setEnabled(false);
+  if (m_chkExtract)
+    m_chkExtract->setEnabled(false);
+  if (m_chkMatch)
+    m_chkMatch->setEnabled(false);
+  if (m_chkIncremental)
+    m_chkIncremental->setEnabled(false);
+
+  m_currentStepIndex = 0;
+  append_log("Starting run sequence...");
+  start_next_selected_step();
+}
+
+void ATTaskPanel::start_next_selected_step() {
+  if (m_currentStepIndex >= m_pendingSteps.size()) {
+    append_log("All selected steps finished.");
+    // Re-enable controls
+    if (m_runButton)
+      m_runButton->setEnabled(true);
+    if (m_chkExtract)
+      m_chkExtract->setEnabled(true);
+    if (m_chkMatch)
+      m_chkMatch->setEnabled(true);
+    if (m_chkIncremental)
+      m_chkIncremental->setEnabled(true);
+    m_currentProcess = nullptr;
+    m_statusLabel->setText("Ready");
+    return;
+  }
+
+  int step = m_pendingSteps.at(m_currentStepIndex);
+  QString stepName;
+  switch (step) {
+    case 0:
+      stepName = "Feature Extraction";
+      break;
+    case 1:
+      stepName = "Feature Matching";
+      break;
+    case 2:
+      stepName = "Incremental Reconstruction";
+      break;
+    default:
+      stepName = "Unknown";
+  }
+
+  append_log(QString("Starting step %1 (%2)").arg(m_currentStepIndex + 1).arg(stepName));
+  launch_process_for_step(step);
+}
+
+void ATTaskPanel::launch_process_for_step(int step_index) {
+  if (m_currentTaskId.empty() || !m_document) {
+    append_log("No task loaded for running step");
+    return;
+  }
+
+  const auto* task = m_document->getATTaskById(m_currentTaskId);
+  if (!task) {
+    append_log("Task not found when launching step");
+    return;
+  }
+
+  QString workDir = QDir::homePath() + "/.insightat/tasks/" + QString::fromStdString(m_currentTaskId);
+  QDir().mkpath(workDir);
+
+  // Prepare common paths
+  QString featuresDir = workDir + "/features";
+  QString featuresForRetrievalDir = workDir + "/features_for_retrieval";
+  QDir().mkpath(featuresDir);
+  QDir().mkpath(featuresForRetrievalDir);
+
+  QString program;
+  QStringList arguments;
+
+  if (step_index == 0) {
+    // Feature extraction (reuse logic from on_run_sift_gpu_clicked)
+    QString imageListPath = workDir + "/image_list.json";
+    QJsonObject root;
+    QJsonArray images;
+    for (const auto& group : task->input_snapshot.image_groups) {
+      for (const auto& img : group.images) {
+        QJsonObject imgObj;
+        imgObj["path"] = QString::fromStdString(img.filename);
+        imgObj["camera_id"] = 1;
+        imgObj["id"] = int(img.image_id);
+        images.append(imgObj);
+      }
+    }
+    root["images"] = images;
+    QFile file(imageListPath);
+    if (file.open(QIODevice::WriteOnly)) {
+      file.write(QJsonDocument(root).toJson());
+      file.close();
+      append_log(QString("Wrote image list: %1 (%2 images)").arg(imageListPath).arg(images.size()));
+    } else {
+      append_log("Failed to write image list for extraction");
+    }
+
+    program = QCoreApplication::applicationDirPath() + "/isat_extract";
+    arguments << "-i" << imageListPath << "-o" << featuresDir << "-n" << "8000"
+              << "--output-retrieval" << featuresForRetrievalDir << "--nms" << "--uint8" << "-v";
+    m_statusLabel->setText("Extracting features...");
+  } else if (step_index == 1) {
+    // Feature matching: expects pairs.json in workDir (may be created by retrieval)
+    QString pairsPath = workDir + "/pairs.json";
+    if (!QFileInfo::exists(pairsPath)) {
+      append_log("pairs.json not found; skipping feature matching step. Consider running retrieval first.");
+      m_currentStepIndex++;
+      start_next_selected_step();
+      return;
+    }
+    QString matchDir = workDir + "/match";
+    QDir().mkpath(matchDir);
+    program = QCoreApplication::applicationDirPath() + "/isat_match";
+    arguments << "-i" << pairsPath << "-f" << featuresDir << "-o" << matchDir << "--match-backend" << "cuda";
+    m_statusLabel->setText("Matching features...");
+  } else if (step_index == 2) {
+    // Incremental SfM: expects tracks and geo/pairs produced earlier
+    QString tracksPath = workDir + "/tracks.isat_tracks";
+    QString pairsPath = workDir + "/pairs.json";
+    QString geoDir = workDir + "/geo";
+    QString outputDir = workDir + "/incremental_out";
+    if (!QFileInfo::exists(tracksPath) || !QFileInfo::exists(pairsPath) || !QFileInfo::exists(geoDir)) {
+      append_log("Missing inputs for incremental SfM (tracks/pairs/geo). Skipping incremental step.");
+      m_currentStepIndex++;
+      start_next_selected_step();
+      return;
+    }
+    QDir().mkpath(outputDir);
+    program = QCoreApplication::applicationDirPath() + "/isat_incremental_sfm";
+    arguments << "-t" << tracksPath << "-p" << m_document->filepath() << "-m" << pairsPath << "-g" << geoDir << "-o" << outputDir;
+    m_statusLabel->setText("Running incremental SfM...");
+  } else {
+    append_log("Unknown step index requested");
+    m_currentStepIndex++;
+    start_next_selected_step();
+    return;
+  }
+
+  // Start QProcess
+  QProcess* process = new QProcess(this);
+  process->setWorkingDirectory(workDir);
+  m_currentProcess = process;
+
+  connect(process, &QProcess::readyReadStandardOutput, [process, this]() {
+    QString out = process->readAllStandardOutput();
+    append_log(out);
+  });
+  connect(process, &QProcess::readyReadStandardError, [process, this]() {
+    QString err = process->readAllStandardError();
+    append_log(err);
+  });
+
+  connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+          [this, process](int exitCode, QProcess::ExitStatus status) {
+            if (status == QProcess::NormalExit && exitCode == 0) {
+              append_log(QString("Step finished successfully (exit %1)").arg(exitCode));
+            } else {
+              append_log(QString("Step failed (exit %1)").arg(exitCode));
+            }
+            process->deleteLater();
+            m_currentProcess = nullptr;
+            m_currentStepIndex++;
+            start_next_selected_step();
+          });
+
+  append_log(QString("Launching: %1 %2").arg(program).arg(arguments.join(' ')));
+  process->start(program, arguments);
+  if (!process->waitForStarted(3000)) {
+    append_log("Failed to start process: " + program);
+    process->deleteLater();
+    m_currentProcess = nullptr;
+    m_currentStepIndex++;
+    start_next_selected_step();
+    return;
+  }
+}
+
+void ATTaskPanel::append_log(const QString& text) {
+  if (!m_logView)
+    return;
+  m_logView->appendPlainText(text.trimmed());
 }
 
 void ATTaskPanel::on_task_name_changed() {

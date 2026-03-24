@@ -9,7 +9,7 @@ endif()
 SET(SIFTGPU_ENABLE_SERVER FALSE)
 SET(SIFTGPU_ENABLE_OPENCL FALSE)
 # CUDA backend for extraction (PyramidCU) and matching (SiftMatchCU). When ON, requires CUDAToolkit.
-option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA (faster extraction and matching)" OFF)
+option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA (faster extraction and matching)" ON)
 SET(SIFTGPU_ENABLE_SSE TRUE)
 SET(SIFTGPU_SSE_OPTIONS -march=core2 -mfpmath=sse)
 SET(SIFTGPU_PREFER_GLUT FALSE)

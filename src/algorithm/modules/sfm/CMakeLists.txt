@@ -59,6 +59,18 @@ target_link_libraries(test_ba_analytic
 )
 set_property(TARGET test_ba_analytic PROPERTY FOLDER InsightAT/Tests)
 
+# ── Unit test: GLOMAP-style ray + λ per track (Ceres) ─────────────────────
+add_executable(test_track_ray_lambda_ceres test_track_ray_lambda_ceres.cpp)
+target_link_libraries(test_track_ray_lambda_ceres
+    PRIVATE
+        sfm_module
+        algorithm_camera
+        Eigen3::Eigen
+        Ceres::ceres
+        glog::glog
+)
+set_property(TARGET test_track_ray_lambda_ceres PROPERTY FOLDER InsightAT/Tests)
+
 # ── Unit test: PnP resection ──────────────────────────────────────────────
 # add_executable(test_pnp_resection test_pnp_resection.cpp resection.cpp resection.h)
 # target_link_libraries(test_pnp_resection

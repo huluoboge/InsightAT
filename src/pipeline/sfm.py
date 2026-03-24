@@ -25,14 +25,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..runner import (
+from .runner import (
     ToolError,
     emit_pipeline_event,
     set_cli_log_level,
     set_log_tool_stderr_at_info,
     set_log_tool_stderr_progress_only,
 )
-from .. import project_utils as pu
+from . import project_utils as pu
 
 log = logging.getLogger(__name__)
 
@@ -76,7 +76,13 @@ def run_step_create(
             log.error("Failed to create project: %s", e)
             raise
 
-    emit_pipeline_event({"step": "create_project", "ok": True, "data": {"project": str(cfg.project_path)}})
+    emit_pipeline_event(
+        {
+            "step": "create_project",
+            "ok": True,
+            "data": {"project": str(cfg.project_path)},
+        }
+    )
 
     for name, path in groups:
         if not cfg.dry_run:
@@ -102,7 +108,9 @@ def run_step_create(
             added = -1
 
         if not cfg.dry_run and added < cfg.min_images:
-            log.warning("Group %s has %d images (min=%d), skipping", name, added, cfg.min_images)
+            log.warning(
+                "Group %s has %d images (min=%d), skipping", name, added, cfg.min_images
+            )
             skipped.append(name)
             continue
 
@@ -110,7 +118,9 @@ def run_step_create(
         log.info("Group %d '%s': %d images", gid, name, added)
 
     if not group_ids:
-        raise RuntimeError(f"No groups with >= {cfg.min_images} images (skipped: {skipped})")
+        raise RuntimeError(
+            f"No groups with >= {cfg.min_images} images (skipped: {skipped})"
+        )
 
     # Estimate camera (sensor_db=None → pipeline uses build/data/config default)
     if not cfg.dry_run:
@@ -136,7 +146,9 @@ def run_step_create(
         except ToolError as e:
             log.error("Failed to create AT task: %s", e)
             raise
-    emit_pipeline_event({"step": "create_at_task", "ok": True, "data": {"task_id": task_id}})
+    emit_pipeline_event(
+        {"step": "create_at_task", "ok": True, "data": {"task_id": task_id}}
+    )
 
     # Persist task_id for later steps (e.g. --steps extract or --steps match only)
     if not cfg.dry_run:
@@ -172,7 +184,13 @@ def run_step_extract(
         pu.export_image_list_all_groups(cfg.project_path, task_id, images_all)
         log.info("Exported image list: %s", images_all)
 
-    emit_pipeline_event({"step": "export_image_list_all", "ok": True, "data": {"output": str(images_all)}})
+    emit_pipeline_event(
+        {
+            "step": "export_image_list_all",
+            "ok": True,
+            "data": {"output": str(images_all)},
+        }
+    )
 
     if not cfg.dry_run:
         pu.extract_features_dual(
@@ -182,11 +200,16 @@ def run_step_extract(
             extract_backend=cfg.extract_backend,
             extra_args=cfg.extra_extract or None,
         )
-    emit_pipeline_event({
-        "step": "extract_features",
-        "ok": True,
-        "data": {"feat_dir": str(feat_dir), "feat_retrieval_dir": str(feat_retrieval_dir)},
-    })
+    emit_pipeline_event(
+        {
+            "step": "extract_features",
+            "ok": True,
+            "data": {
+                "feat_dir": str(feat_dir),
+                "feat_retrieval_dir": str(feat_retrieval_dir),
+            },
+        }
+    )
 
 
 def run_step_match(
@@ -221,11 +244,15 @@ def run_step_match(
             feat_retrieval_dir,
             codebook_path,
             pca_output=pca_path,
-            pca_dims=256,
-            whiten=True,
             extra_args=cfg.extra_train_vlad or None,
         )
-    emit_pipeline_event({"step": "train_vlad", "ok": True, "data": {"codebook": str(codebook_path), "pca": str(pca_path)}})
+    emit_pipeline_event(
+        {
+            "step": "train_vlad",
+            "ok": True,
+            "data": {"codebook": str(codebook_path), "pca": str(pca_path)},
+        }
+    )
 
     # Retrieve pairs (VLAD + sequential)
     if not cfg.dry_run:
@@ -241,7 +268,13 @@ def run_step_match(
             vlad_top_k=50,
             extra_args=cfg.extra_retrieve or None,
         )
-    emit_pipeline_event({"step": "retrieve_pairs", "ok": True, "data": {"pairs_json": str(pairs_retrieve)}})
+    emit_pipeline_event(
+        {
+            "step": "retrieve_pairs",
+            "ok": True,
+            "data": {"pairs_json": str(pairs_retrieve)},
+        }
+    )
 
     # Match
     if not cfg.dry_run:
@@ -252,7 +285,9 @@ def run_step_match(
             match_backend=cfg.match_backend,
             extra_args=cfg.extra_match or None,
         )
-    emit_pipeline_event({"step": "match_features", "ok": True, "data": {"match_dir": str(match_dir)}})
+    emit_pipeline_event(
+        {"step": "match_features", "ok": True, "data": {"match_dir": str(match_dir)}}
+    )
 
     # Geo (--twoview, --vis); writes geo_dir/pairs.json + geo_dir/adjacency.json
     # image_list=images_all (index-only export with embedded cameras); no separate -k
@@ -261,22 +296,20 @@ def run_step_match(
             pairs_retrieve,
             match_dir,
             geo_dir,
-            k_json=None,
             image_list=images_all,
-            estimate_h=True,
-            twoview=True,
-            vis=True,
             extra_args=cfg.extra_geo or None,
         )
-    emit_pipeline_event({
-        "step": "geo_verify",
-        "ok": True,
-        "data": {
-            "geo_dir": str(geo_dir),
-            "pairs_json": str(geo_dir / "pairs.json"),
-            "adjacency_json": str(geo_dir / "adjacency.json"),
-        },
-    })
+    emit_pipeline_event(
+        {
+            "step": "geo_verify",
+            "ok": True,
+            "data": {
+                "geo_dir": str(geo_dir),
+                "pairs_json": str(geo_dir / "pairs.json"),
+                "adjacency_json": str(geo_dir / "adjacency.json"),
+            },
+        }
+    )
 
 
 def run_step_tracks(
@@ -293,7 +326,7 @@ def run_step_tracks(
     tracks_out = cfg.work_dir / "tracks.isat_tracks"
 
     if not cfg.dry_run:
-        events = pu.run_tracks(
+        pu.run_tracks(
             pairs_json,
             match_dir,
             geo_dir,
@@ -302,11 +335,13 @@ def run_step_tracks(
             extra_args=cfg.extra_tracks or None,
         )
         log.info("tracks output: %s", tracks_out)
-    emit_pipeline_event({
-        "step": "tracks",
-        "ok": True,
-        "data": {"tracks": str(tracks_out)},
-    })
+    emit_pipeline_event(
+        {
+            "step": "tracks",
+            "ok": True,
+            "data": {"tracks": str(tracks_out)},
+        }
+    )
 
 
 def run_step_incremental_sfm(
@@ -332,7 +367,6 @@ def run_step_incremental_sfm(
             geo_dir,
             sfm_out,
             fix_intrinsics=cfg.fix_intrinsics,
-            object_scan=cfg.object_scan,
             extra_args=cfg.extra_incremental_sfm or None,
         )
         log.info("incremental_sfm output: %s | poses: %s", sfm_out, poses_json)
@@ -342,14 +376,16 @@ def run_step_incremental_sfm(
             flush=True,
         )
 
-    emit_pipeline_event({
-        "step": "incremental_sfm",
-        "ok": True,
-        "data": {
-            "output_dir": str(sfm_out),
-            "poses": str(poses_json),
-        },
-    })
+    emit_pipeline_event(
+        {
+            "step": "incremental_sfm",
+            "ok": True,
+            "data": {
+                "output_dir": str(sfm_out),
+                "poses": str(poses_json),
+            },
+        }
+    )
 
 
 def run_pipeline(cfg: "SfmConfig") -> int:
@@ -364,15 +400,17 @@ def run_pipeline(cfg: "SfmConfig") -> int:
         return 1
 
     log.info("Discovered %d group(s) under %s", len(groups), cfg.input_dir)
-    emit_pipeline_event({
-        "step": "scan_input",
-        "ok": True,
-        "data": {
-            "input_dir": str(cfg.input_dir),
-            "num_groups": len(groups),
-            "groups": [{"name": n, "path": str(p)} for n, p in groups],
-        },
-    })
+    emit_pipeline_event(
+        {
+            "step": "scan_input",
+            "ok": True,
+            "data": {
+                "input_dir": str(cfg.input_dir),
+                "num_groups": len(groups),
+                "groups": [{"name": n, "path": str(p)} for n, p in groups],
+            },
+        }
+    )
 
     group_ids: dict[str, int] = {}
     task_id = 0
@@ -397,11 +435,13 @@ def run_pipeline(cfg: "SfmConfig") -> int:
         log.info("=== Step: incremental_sfm ===")
         run_step_incremental_sfm(cfg, task_id if "create" in steps_set else None)
 
-    emit_pipeline_event({
-        "step": "pipeline_complete",
-        "ok": True,
-        "data": {"project": str(cfg.project_path), "work_dir": str(cfg.work_dir)},
-    })
+    emit_pipeline_event(
+        {
+            "step": "pipeline_complete",
+            "ok": True,
+            "data": {"project": str(cfg.project_path), "work_dir": str(cfg.work_dir)},
+        }
+    )
     return 0
 
 
@@ -427,7 +467,6 @@ class SfmConfig:
         extra_tracks: list[str] | None = None,
         extra_incremental_sfm: list[str] | None = None,
         fix_intrinsics: bool = False,
-        object_scan: bool = False,
     ) -> None:
         self.input_dir = input_dir
         self.project_path = project_path
@@ -446,9 +485,10 @@ class SfmConfig:
         self.extra_match = list(extra_match) if extra_match else []
         self.extra_geo = list(extra_geo) if extra_geo else []
         self.extra_tracks = list(extra_tracks) if extra_tracks else []
-        self.extra_incremental_sfm = list(extra_incremental_sfm) if extra_incremental_sfm else []
+        self.extra_incremental_sfm = (
+            list(extra_incremental_sfm) if extra_incremental_sfm else []
+        )
         self.fix_intrinsics: bool = fix_intrinsics
-        self.object_scan: bool = object_scan
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -460,33 +500,95 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--input", "-i", required=True, metavar="DIR", help="Root directory to scan for image subdirs.")
-    p.add_argument("--project", "-p", required=True, metavar="FILE", help="Output .iat project file.")
-    p.add_argument("--work-dir", "-w", required=True, metavar="DIR", help="Working directory for intermediates.")
+    p.add_argument(
+        "--input",
+        "-i",
+        required=True,
+        metavar="DIR",
+        help="Root directory to scan for image subdirs.",
+    )
+    p.add_argument(
+        "--project",
+        "-p",
+        required=True,
+        metavar="FILE",
+        help="Output .iat project file.",
+    )
+    p.add_argument(
+        "--work-dir",
+        "-w",
+        required=True,
+        metavar="DIR",
+        help="Working directory for intermediates.",
+    )
     p.add_argument(
         "--steps",
         metavar="LIST",
         default="create,extract,match,tracks,incremental_sfm",
         help="Comma-separated steps: create, extract, match, tracks, incremental_sfm (default: create,extract,match,tracks,incremental_sfm).",
     )
-    p.add_argument("--ext", default=".jpg,.tif,.png", help="Image extensions (default: .jpg,.tif,.png).")
-    p.add_argument("--min-images", type=int, default=5, help="Minimum images per group (default: 5).")
-    p.add_argument("--max-sample", type=int, default=5, help="Max images sampled for focal estimation (default: 5).")
-    p.add_argument("--extract-backend", choices=("cuda", "glsl"), default="cuda", help="isat_extract backend (default: cuda).")
-    p.add_argument("--match-backend", choices=("cuda", "glsl"), default="cuda", help="isat_match backend (default: cuda; use glsl if headless without EGL).")
-    p.add_argument("--fix-intrinsics", action="store_true",
+    p.add_argument(
+        "--ext",
+        default=".jpg,.tif,.png",
+        help="Image extensions (default: .jpg,.tif,.png).",
+    )
+    p.add_argument(
+        "--min-images",
+        type=int,
+        default=5,
+        help="Minimum images per group (default: 5).",
+    )
+    p.add_argument(
+        "--max-sample",
+        type=int,
+        default=5,
+        help="Max images sampled for focal estimation (default: 5).",
+    )
+    p.add_argument(
+        "--extract-backend",
+        choices=("cuda", "glsl"),
+        default="cuda",
+        help="isat_extract backend (default: cuda).",
+    )
+    p.add_argument(
+        "--match-backend",
+        choices=("cuda", "glsl"),
+        default="cuda",
+        help="isat_match backend (default: cuda; use glsl if headless without EGL).",
+    )
+    p.add_argument(
+        "--fix-intrinsics",
+        action="store_true",
         help="Hold camera intrinsics fixed during Bundle Adjustment. "
-             "Recommended for circumferential / object-centric (statue, 360°) shooting.")  # noqa: E501
-    p.add_argument("--object-scan", action="store_true",
+        "Recommended for circumferential / object-centric (statue, 360°) shooting.",
+    )  # noqa: E501
+    p.add_argument(
+        "--object-scan",
+        action="store_true",
         help="Preset for circumferential / object-centric shooting: "
-             "--no-local-ba + BA max_iter=5000 + tight Ceres tolerances. "
-             "Enables the old-algorithm strategy that proved robust for statue/360° captures.")
-    p.add_argument("--dry-run", action="store_true", help="Print what would be done without running tools.")
-    p.add_argument("--log-level", choices=("error", "warn", "info", "debug"), help="Log level (default: warn).")
-    p.add_argument("-v", "--verbose", action="store_true", help="Same as --log-level=info.")
-    p.add_argument("-q", "--quiet", action="store_true", help="Same as --log-level=error.")
+        "--no-local-ba + BA max_iter=5000 + tight Ceres tolerances. "
+        "Enables the old-algorithm strategy that proved robust for statue/360° captures.",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be done without running tools.",
+    )
+    p.add_argument(
+        "--log-level",
+        choices=("error", "warn", "info", "debug"),
+        help="Log level (default: warn).",
+    )
+    p.add_argument(
+        "-v", "--verbose", action="store_true", help="Same as --log-level=info."
+    )
+    p.add_argument(
+        "-q", "--quiet", action="store_true", help="Same as --log-level=error."
+    )
     p.add_argument("--log-file", metavar="FILE", help="Append logs to file.")
-    p.add_argument("--progress", action="store_true", help="Show only progress lines from tools.")
+    p.add_argument(
+        "--progress", action="store_true", help="Show only progress lines from tools."
+    )
     return p
 
 
@@ -495,8 +597,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Resolve log level (aligned with 05_cli_io_conventions: --log-level > -q > -v > default warn)
-    log_level = args.log_level or ("error" if args.quiet else "info" if args.verbose else "warn")
-    level_map = {"error": logging.ERROR, "warn": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG}
+    log_level = args.log_level or (
+        "error" if args.quiet else "info" if args.verbose else "warn"
+    )
+    level_map = {
+        "error": logging.ERROR,
+        "warn": logging.WARNING,
+        "info": logging.INFO,
+        "debug": logging.DEBUG,
+    }
     numeric_level = level_map[log_level]
     log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
@@ -509,20 +618,29 @@ def main(argv: list[str] | None = None) -> int:
         stderr_handler.setFormatter(logging.Formatter(log_fmt))
         log.addHandler(stderr_handler)
         log.propagate = False  # only our handler, no duplicate from root
-    logging.basicConfig(level=numeric_level, format=log_fmt, stream=sys.stderr, force=True)
+    logging.basicConfig(
+        level=numeric_level, format=log_fmt, stream=sys.stderr, force=True
+    )
 
     if args.log_file:
         fh = logging.FileHandler(args.log_file, encoding="utf-8")
         fh.setFormatter(logging.Formatter(log_fmt))
         log.addHandler(fh)
     set_cli_log_level(log_level)
-    set_log_tool_stderr_at_info(log_level in ("info", "debug") or args.progress or bool(args.log_file))
-    set_log_tool_stderr_progress_only(args.progress and log_level not in ("info", "debug"))
+    set_log_tool_stderr_at_info(
+        log_level in ("info", "debug") or args.progress or bool(args.log_file)
+    )
+    set_log_tool_stderr_progress_only(
+        args.progress and log_level not in ("info", "debug")
+    )
 
     steps = [s.strip() for s in args.steps.split(",") if s.strip()]
     for s in steps:
         if s not in ("create", "extract", "match", "tracks", "incremental_sfm"):
-            log.error("Unknown step: %s (allowed: create, extract, match, tracks, incremental_sfm)", s)
+            log.error(
+                "Unknown step: %s (allowed: create, extract, match, tracks, incremental_sfm)",
+                s,
+            )
             return 2
 
     input_dir = Path(args.input).resolve()
@@ -543,7 +661,6 @@ def main(argv: list[str] | None = None) -> int:
         extract_backend=args.extract_backend,
         match_backend=args.match_backend,
         fix_intrinsics=args.fix_intrinsics,
-        object_scan=args.object_scan,
     )
 
     try:

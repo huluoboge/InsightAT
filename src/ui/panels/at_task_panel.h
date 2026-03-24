@@ -16,12 +16,17 @@
 #include <QString>
 #include <QWidget>
 #include <memory>
+#include <QList>
+
+class QProcess;
 
 class QTabWidget;
 class QGroupBox;
 class QPushButton;
 class QLineEdit;
 class QLabel;
+class QCheckBox;
+class QPlainTextEdit;
 
 namespace insight {
 namespace ui {
@@ -59,12 +64,18 @@ public:
 public slots:
   void on_export_clicked();
   void on_run_sift_gpu_clicked();
+  void on_run_selected_steps_clicked();
   void on_task_name_changed();
 
 private:
   void init_ui();
   void refresh_ui();
   void save_task();
+
+  // Runner helpers
+  void start_next_selected_step();
+  void launch_process_for_step(int step_index);
+  void append_log(const QString& text);
 
 private:
   ProjectDocument* m_document;
@@ -85,6 +96,22 @@ private:
   // Export Tab 中的按钮
   QPushButton* m_exportButton = nullptr;
   QPushButton* m_siftGPUButton = nullptr;
+  QPushButton* m_runButton = nullptr;
+
+  // Run step checkboxes
+  QCheckBox* m_chkExtract = nullptr;   // 特征提取
+  QCheckBox* m_chkMatch = nullptr;     // 特征匹配
+  QCheckBox* m_chkIncremental = nullptr; // 增量重建
+
+  // Log output
+  QPlainTextEdit* m_logView = nullptr;
+
+  // Viewer (placeholder widget; can be replaced by AT3dRenderWidget)
+  QWidget* m_viewerWidget = nullptr;
+  // Runner state
+  QList<int> m_pendingSteps;
+  int m_currentStepIndex = 0;
+  QProcess* m_currentProcess = nullptr;
 };
 
 }  // namespace ui

@@ -196,6 +196,10 @@ def run_tool(
             cmd = [cmd[0], "--log-level", _cli_log_level] + cmd[1:]
     tool_name = Path(cmd[0]).name
     log.debug("run_tool: %s", " ".join(str(c) for c in cmd))
+    # Optional debug: print the exact command before launching subprocess when
+    # ISAT_PRINT_CMD environment variable is set. Useful for debugging binary
+    # invocation and arguments from the pipeline.
+    print("CMD:", " ".join(str(c) for c in cmd), flush=True)
     start_time = time.perf_counter()
     log.info("Running %s ...", tool_name)
 

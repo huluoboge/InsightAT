@@ -10,8 +10,8 @@
 #include <cmath>
 #include <numeric>
 
-#include <glog/logging.h>
 #include <SiftGPU/SiftGPU.h>
+#include <glog/logging.h>
 
 namespace insight {
 namespace algorithm {
@@ -29,7 +29,8 @@ SiftMatcher::SiftMatcher(int max_features, bool use_cuda) : max_features_(max_fe
       LOG(ERROR) << "SiftMatchGPU CUDA backend failed (VerifyContextGL)";
       matcher_.reset();
     } else {
-      LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features << " (CUDA backend)";
+      LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features
+                << " (CUDA backend)";
     }
     return;
   }
@@ -54,7 +55,7 @@ SiftMatcher::~SiftMatcher() {
 }
 
 bool SiftMatcher::verify_context() const {
-  return matcher_ && (matcher_->VerifyContextGL() != 0);
+  return matcher_ && (matcher_->CreateContextGL() != 0) && (matcher_->VerifyContextGL() != 0);
 }
 
 MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& features2,
@@ -75,9 +76,8 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
     std::vector<int> idx(n);
     std::iota(idx.begin(), idx.end(), 0);
     if (max_n > 0 && n > max_n) {
-      std::partial_sort(idx.begin(), idx.begin() + max_n, idx.end(), [&f](int a, int b) {
-        return f.keypoints[a][2] > f.keypoints[b][2];
-      });
+      std::partial_sort(idx.begin(), idx.begin() + max_n, idx.end(),
+                        [&f](int a, int b) { return f.keypoints[a][2] > f.keypoints[b][2]; });
       idx.resize(max_n);
     }
     return idx;
@@ -125,7 +125,7 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
   // Allocate match buffer
   int max_match = options.max_matches > 0 ? options.max_matches : std::min(n1, n2);
   std::vector<uint32_t> match_buffer_flat(max_match * 2);
-  uint32_t(*match_buffer)[2] = reinterpret_cast<uint32_t(*)[2]>(match_buffer_flat.data());
+  uint32_t (*match_buffer)[2] = reinterpret_cast<uint32_t (*)[2]>(match_buffer_flat.data());
 
   // Execute matching
   VLOG(1) << "GetSiftMatch: max=" << max_match << ", dist_max=" << options.distance_max
@@ -161,8 +161,8 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
 }
 
 MatchResult SiftMatcher::match_guided(const FeatureData& features1, const FeatureData& features2,
-                                     const Eigen::Matrix3f* F, const Eigen::Matrix3f* H,
-                                     const MatchOptions& options) {
+                                      const Eigen::Matrix3f* F, const Eigen::Matrix3f* H,
+                                      const MatchOptions& options) {
   if (!matcher_) {
     LOG(ERROR) << "SiftMatchGPU not initialized";
     return MatchResult();
@@ -214,7 +214,7 @@ MatchResult SiftMatcher::match_guided(const FeatureData& features1, const Featur
                       ? options.max_matches
                       : std::min(features1.num_features, features2.num_features);
   std::vector<uint32_t> match_buffer_flat(max_match * 2);
-  uint32_t(*match_buffer)[2] = reinterpret_cast<uint32_t(*)[2]>(match_buffer_flat.data());
+  uint32_t (*match_buffer)[2] = reinterpret_cast<uint32_t (*)[2]>(match_buffer_flat.data());
 
   // Execute guided matching
   int num_matches = matcher_->GetGuidedSiftMatch(
@@ -234,8 +234,8 @@ MatchResult SiftMatcher::match_guided(const FeatureData& features1, const Featur
 }
 
 MatchResult SiftMatcher::convert_match_result(const std::vector<uint32_t>& match_buffer,
-                                            int num_matches, const FeatureData& features1,
-                                            const FeatureData& features2) {
+                                              int num_matches, const FeatureData& features1,
+                                              const FeatureData& features2) {
   MatchResult result;
   result.reserve(num_matches);
 
@@ -271,8 +271,8 @@ MatchResult SiftMatcher::convert_match_result(const std::vector<uint32_t>& match
 }
 
 float SiftMatcher::compute_descriptor_distance(const FeatureData& features1,
-                                             const FeatureData& features2, size_t idx1,
-                                             size_t idx2) const {
+                                               const FeatureData& features2, size_t idx1,
+                                               size_t idx2) const {
   // Both features must have same descriptor type for valid comparison
   if (features1.descriptor_type != features2.descriptor_type) {
     LOG(WARNING) << "Descriptor type mismatch in distance computation";
@@ -302,6 +302,6 @@ float SiftMatcher::compute_descriptor_distance(const FeatureData& features1,
   return std::sqrt(sum);
 }
 
-}  // namespace matching
-}  // namespace algorithm
-}  // namespace insight
+} // namespace matching
+} // namespace algorithm
+} // namespace insight

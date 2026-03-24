@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _isat_project() -> str:
     return find_binary("isat_project")
 
@@ -81,6 +82,7 @@ def get_default_sensor_db_path() -> Path | None:
 # isat_project wrappers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def create_project(project_path: str | Path) -> dict[str, Any]:
     """
     isat_project create -p <project_path>
@@ -95,11 +97,16 @@ def add_group(project_path: str | Path, group_name: str) -> dict[str, Any]:
     isat_project add-group -p <project_path> -n <group_name>
     Returns the ISAT_EVENT dict (type=project.add_group).
     """
-    events = run_tool([
-        _isat_project(), "add-group",
-        "-p", str(project_path),
-        "-n", group_name,
-    ])
+    events = run_tool(
+        [
+            _isat_project(),
+            "add-group",
+            "-p",
+            str(project_path),
+            "-n",
+            group_name,
+        ]
+    )
     return _first_event(events, "add_group")
 
 
@@ -116,10 +123,14 @@ def add_images(
     Returns the ISAT_EVENT dict (type=project.add_images).
     """
     cmd = [
-        _isat_project(), "add-images",
-        "-p", str(project_path),
-        "-g", str(group_id),
-        "-i", str(directory),
+        _isat_project(),
+        "add-images",
+        "-p",
+        str(project_path),
+        "-g",
+        str(group_id),
+        "-i",
+        str(directory),
     ]
     if ext:
         cmd += ["--ext", ext]
@@ -140,12 +151,18 @@ def set_camera_from_k(
     isat_project set-camera -p <project_path> -g <group_id> --from-k <k_json>
     Returns the ISAT_EVENT dict (type=project.set_camera).
     """
-    events = run_tool([
-        _isat_project(), "set-camera",
-        "-p", str(project_path),
-        "-g", str(group_id),
-        "--from-k", str(k_json),
-    ])
+    events = run_tool(
+        [
+            _isat_project(),
+            "set-camera",
+            "-p",
+            str(project_path),
+            "-g",
+            str(group_id),
+            "--from-k",
+            str(k_json),
+        ]
+    )
     return _first_event(events, "set_camera_from_k")
 
 
@@ -161,8 +178,10 @@ def create_at_task(
     Returns the event data dict with task_id, uuid, task_name.
     """
     cmd = [
-        _isat_project(), "create-at-task",
-        "-p", str(project_path),
+        _isat_project(),
+        "create-at-task",
+        "-p",
+        str(project_path),
     ]
     if name:
         cmd += ["-n", name]
@@ -183,13 +202,20 @@ def export_image_list(
     isat_project extract -p <project_path> -g <group_id> -t <task_id> -o <output_json>
     (No ISAT_EVENT; writes file directly.)
     """
-    run_tool([
-        _isat_project(), "extract",
-        "-p", str(project_path),
-        "-g", str(group_id),
-        "-t", str(task_id),
-        "-o", str(output_json),
-    ])
+    run_tool(
+        [
+            _isat_project(),
+            "extract",
+            "-p",
+            str(project_path),
+            "-g",
+            str(group_id),
+            "-t",
+            str(task_id),
+            "-o",
+            str(output_json),
+        ]
+    )
 
 
 def export_image_list_all_groups(
@@ -201,13 +227,19 @@ def export_image_list_all_groups(
     isat_project extract -p <project_path> -t <task_id> -o <output_json> -a
     Export image list for all groups (for pipeline step: extract on all images).
     """
-    run_tool([
-        _isat_project(), "extract",
-        "-p", str(project_path),
-        "-t", str(task_id),
-        "-o", str(output_json),
-        "-a",
-    ])
+    run_tool(
+        [
+            _isat_project(),
+            "extract",
+            "-p",
+            str(project_path),
+            "-t",
+            str(task_id),
+            "-o",
+            str(output_json),
+            "-a",
+        ]
+    )
 
 
 def export_intrinsics(
@@ -220,13 +252,20 @@ def export_intrinsics(
     isat_project intrinsics -p <project_path> -g <group_id> -t <task_id> -o <output_json>
     (No ISAT_EVENT; writes file directly.)
     """
-    run_tool([
-        _isat_project(), "intrinsics",
-        "-p", str(project_path),
-        "-g", str(group_id),
-        "-t", str(task_id),
-        "-o", str(output_json),
-    ])
+    run_tool(
+        [
+            _isat_project(),
+            "intrinsics",
+            "-p",
+            str(project_path),
+            "-g",
+            str(group_id),
+            "-t",
+            str(task_id),
+            "-o",
+            str(output_json),
+        ]
+    )
 
 
 def export_intrinsics_all_groups(
@@ -238,18 +277,25 @@ def export_intrinsics_all_groups(
     isat_project intrinsics -p <project_path> -t <task_id> -o <output_json> -a
     Export multi_camera_v1 intrinsics for all groups (for use with isat_geo -k -l).
     """
-    run_tool([
-        _isat_project(), "intrinsics",
-        "-p", str(project_path),
-        "-t", str(task_id),
-        "-o", str(output_json),
-        "-a",
-    ])
+    run_tool(
+        [
+            _isat_project(),
+            "intrinsics",
+            "-p",
+            str(project_path),
+            "-t",
+            str(task_id),
+            "-o",
+            str(output_json),
+            "-a",
+        ]
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # isat_camera_estimator wrapper
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def estimate_camera(
     project_path: str | Path,
@@ -291,6 +337,7 @@ def estimate_camera(
 # Per-step wrappers (feature extraction through calibration)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _isat_train_vlad() -> str:
     return find_binary("isat_train_vlad")
 
@@ -323,15 +370,31 @@ def extract_features_dual(
     """
     cmd = [
         _isat_extract(),
-        "-i", str(image_list_json),
-        "-o", str(match_feat_dir),
-        "--output-retrieval", str(retrieval_feat_dir),
-        "--nfeatures-retrieval", str(nfeatures_retrieval),
-        "--resize-retrieval", str(resize_retrieval),
-        "--extract-backend", extract_backend,
+        "-i",
+        str(image_list_json),
+        "-o",
+        str(match_feat_dir),
+        "--output-retrieval",
+        str(retrieval_feat_dir),
+        "--nfeatures-retrieval",
+        str(nfeatures_retrieval),
+        "--resize-retrieval",
+        str(resize_retrieval),
+        "--extract-backend",
+        str(extract_backend),
+        "--nfeatures",
+        "40000",
+        "--threshold",
+        "0.02",
+        "--octaves",
+        "-1",
+        "--levels",
+        "3",
+        "--norm",
+        "l1root",
         "--no-adapt",
         "--nms",
-        "--uint8"
+        "--uint8",
     ]
     if extra_args:
         cmd += extra_args
@@ -341,9 +404,7 @@ def extract_features_dual(
 def train_vlad(
     feature_dir: str | Path,
     codebook_path: str | Path,
-    pca_output: str | Path | None = None,
-    pca_dims: int = 256,
-    whiten: bool = True,
+    pca_output: str | Path,
     num_clusters: int = 64,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
@@ -353,14 +414,17 @@ def train_vlad(
     """
     cmd = [
         _isat_train_vlad(),
-        "-f", str(feature_dir),
-        "-o", str(codebook_path),
-        "-k", str(num_clusters),
+        "-f",
+        str(feature_dir),
+        "-o",
+        str(codebook_path),
+        "-k",
+        str(num_clusters),
+        "--pca-output",
+        str(pca_output),
+        "--whiten",
+        "--scale-weighted",
     ]
-    if pca_output:
-        cmd += ["-P", str(pca_output), "-d", str(pca_dims)]
-        if whiten:
-            cmd.append("--whiten")
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)
@@ -370,7 +434,7 @@ def retrieve_pairs(
     image_list_json: str | Path,
     feat_dir: str | Path,
     output_json: str | Path,
-    strategy: str = "exhaustive",
+    strategy: str = "sequential+vlad",
     window_size: int = 10,
     vlad_codebook: str | Path | None = None,
     vlad_cache_dir: str | Path | None = None,
@@ -384,11 +448,18 @@ def retrieve_pairs(
     """
     cmd = [
         _isat_retrieve(),
-        "-i", str(image_list_json),
-        "-f", str(feat_dir),
-        "-o", str(output_json),
-        "-s", strategy,
-        "-w", str(window_size),
+        "-i",
+        str(image_list_json),
+        "-f",
+        str(feat_dir),
+        "-o",
+        str(output_json),
+        "-s",
+        strategy,
+        "-w",
+        str(window_size),
+        "--max-neighbors",
+        "50",
     ]
     if vlad_codebook:
         cmd += ["--vlad-codebook", str(vlad_codebook)]
@@ -412,10 +483,18 @@ def match_features(
     """isat_match -i <pairs> -f <feat_dir> -o <match_dir> [--match-backend cuda|glsl] [extra_args]"""
     cmd = [
         _isat_match(),
-        "-i", str(pairs_json),
-        "-f", str(feat_dir),
-        "-o", str(match_dir),
-        "--match-backend", match_backend,
+        "-i",
+        str(pairs_json),
+        "-f",
+        str(feat_dir),
+        "-o",
+        str(match_dir),
+        "--match-backend",
+        match_backend,
+        "--max-features",
+        "-1",
+        "--threads",
+        "4",
     ]
     if extra_args:
         cmd += extra_args
@@ -426,31 +505,30 @@ def geo_verify(
     pairs_json: str | Path,
     match_dir: str | Path,
     geo_dir: str | Path,
-    k_json: str | Path | None = None,
-    image_list: str | Path | None = None,
-    estimate_h: bool = True,
-    twoview: bool = False,
-    vis: bool = False,
+    image_list: str | Path,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
     """isat_geo -i <pairs> -m <match_dir> -o <geo_dir> [--estimate-h] [--twoview] [--vis] [-k -l].
-    When image_list has embedded 'cameras' (index-only export), -l alone is enough; -k optional."""
+    When image_list has embedded 'cameras' (index-only export), -l alone is enough; -k optional.
+    """
     cmd = [
         _isat_geo(),
-        "-i", str(pairs_json),
-        "-m", str(match_dir),
-        "-o", str(geo_dir),
+        "-i",
+        str(pairs_json),
+        "-m",
+        str(match_dir),
+        "-o",
+        str(geo_dir),
+        "--image-list",
+        str(image_list),
+        "--min-inliers",
+        "15",
+        "--backend",
+        "gpu",
+        "--estimate-h",
+        "--twoview",
+        "--vis",
     ]
-    if estimate_h:
-        cmd.append("--estimate-h")
-    if twoview:
-        cmd.append("--twoview")
-    if vis:
-        cmd.append("--vis")
-    if k_json:
-        cmd += ["-k", str(k_json)]
-    if image_list:
-        cmd += ["-l", str(image_list)]
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)
@@ -469,10 +547,14 @@ def twoview_reconstruct(
     When image_list has embedded 'cameras' (index-only export), -l alone is enough."""
     cmd = [
         _isat_twoview(),
-        "-i", str(pairs_json),
-        "-g", str(geo_dir),
-        "-m", str(match_dir),
-        "-o", str(twoview_dir),
+        "-i",
+        str(pairs_json),
+        "-g",
+        str(geo_dir),
+        "-m",
+        str(match_dir),
+        "-o",
+        str(twoview_dir),
     ]
     if k_json:
         cmd += ["-k", str(k_json)]
@@ -491,8 +573,10 @@ def calibrate(
     """isat_calibrate -t <twoview_dir> -o <K_refined.json>"""
     cmd = [
         _isat_calibrate(),
-        "-t", str(twoview_dir),
-        "-o", str(output_k_json),
+        "-t",
+        str(twoview_dir),
+        "-o",
+        str(output_k_json),
     ]
     if extra_args:
         cmd += extra_args
@@ -515,11 +599,18 @@ def run_tracks(
     """
     cmd = [
         _isat_tracks(),
-        "-i", str(pairs_json),
-        "-m", str(match_dir),
-        "-g", str(geo_dir),
-        "-l", str(image_list),
-        "-o", str(output_path),
+        "-i",
+        str(pairs_json),
+        "-m",
+        str(match_dir),
+        "-g",
+        str(geo_dir),
+        "-l",
+        str(image_list),
+        "-o",
+        str(output_path),
+        "--min-track-length",
+        "3",
     ]
     if extra_args:
         cmd += extra_args
@@ -532,17 +623,7 @@ def run_incremental_sfm(
     pairs_path: str | Path,
     geo_dir: str | Path,
     output_dir: str | Path,
-    *,
     fix_intrinsics: bool = False,
-    object_scan: bool = False,
-    no_local_ba: bool = False,
-    ba_max_iter: int = 0,
-    ba_grad_tol: float = 0.0,
-    ba_func_tol: float = 0.0,
-    ba_param_tol: float = 0.0,
-    ba_dense_max_cams: int = 0,
-    ba_intrinsics_min_images: int = 0,
-    resection_min_3d2d: int = 0,
     extra_args: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -553,45 +634,22 @@ def run_incremental_sfm(
 
     Args:
         fix_intrinsics:         Pass ``--fix-intrinsics`` to hold camera calibration constant.
-        object_scan:            Pass ``--object-scan`` preset (no-local-ba + 5000-iter BA + tight
-                                tols + intrinsics_min=5, resection_min_3d2d=30).
-        no_local_ba:            Pass ``--no-local-ba`` (skip per-iteration local BA).
-        ba_max_iter:            Override Ceres max iterations (0 = use default).
-        ba_grad_tol:            Override Ceres gradient_tolerance (0 = default).
-        ba_func_tol:            Override Ceres function_tolerance (0 = default).
-        ba_param_tol:           Override Ceres parameter_tolerance (0 = default).
-        ba_dense_max_cams:      Override DENSE↔SPARSE Schur threshold (0 = default).
-        ba_intrinsics_min_images: Min registered images before BA optimizes intrinsics (0 = default 10).
-        resection_min_3d2d:     Min 3D-2D correspondences for resection candidate (0 = default 15).
     """
     cmd = [
         _isat_incremental_sfm(),
-        "-t", str(tracks_path),
-        "-p", str(project_path),
-        "-m", str(pairs_path),
-        "-g", str(geo_dir),
-        "-o", str(output_dir),
+        "-t",
+        str(tracks_path),
+        "-p",
+        str(project_path),
+        "-m",
+        str(pairs_path),
+        "-g",
+        str(geo_dir),
+        "-o",
+        str(output_dir),
     ]
     if fix_intrinsics:
         cmd.append("--fix-intrinsics")
-    if object_scan:
-        cmd.append("--object-scan")
-    if no_local_ba and not object_scan:
-        cmd.append("--no-local-ba")
-    if ba_max_iter > 0:
-        cmd += ["--ba-max-iter", str(ba_max_iter)]
-    if ba_grad_tol > 0.0:
-        cmd += ["--ba-grad-tol", str(ba_grad_tol)]
-    if ba_func_tol > 0.0:
-        cmd += ["--ba-func-tol", str(ba_func_tol)]
-    if ba_param_tol > 0.0:
-        cmd += ["--ba-param-tol", str(ba_param_tol)]
-    if ba_dense_max_cams > 0:
-        cmd += ["--ba-dense-max-cams", str(ba_dense_max_cams)]
-    if ba_intrinsics_min_images > 0:
-        cmd += ["--ba-intrinsics-min", str(ba_intrinsics_min_images)]
-    if resection_min_3d2d > 0:
-        cmd += ["--resection-min-3d2d", str(resection_min_3d2d)]
     if extra_args:
         cmd += extra_args
     return run_tool(cmd)
@@ -600,6 +658,7 @@ def run_incremental_sfm(
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _first_event(events: list[dict], context: str) -> dict[str, Any]:
     if not events:

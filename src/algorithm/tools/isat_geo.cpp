@@ -827,8 +827,8 @@ int main(int argc, char* argv[]) {
       LOG(FATAL) << "Failed to initialise GPU RANSAC (EGL + OpenGL 4.3 required)";
       return 1;
     }
-    // gpu_geo_set_solver(1); // Cholesky IPI: ~1ms/pair, ~45× faster than Jacobi
     gpu_geo_set_solver(0); // Cholesky IPI: ~1ms/pair, ~45× faster than Jacobi
+    // gpu_geo_set_solver(0); // Cholesky IPI: ~1ms/pair, ~45× faster than Jacobi
   }
 
   const float thresh_f_sq = thresh_f * thresh_f;
