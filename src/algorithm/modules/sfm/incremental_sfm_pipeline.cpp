@@ -1126,7 +1126,7 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       const size_t show_n = std::min(second_candidates.size(), size_t(5));
       for (size_t si = 0; si < show_n; ++si) {
         const auto& sc = second_candidates[si];
-        LOG(INFO) << "    second #" << si << ": image " << sc.image_index << " score=" << sc.score
+        LOG(INFO) << "    second #" << si << ": image " << sc.image_index << " score_prelim=" << sc.score_prelim
                   << " F_inliers=" << sc.F_inliers << " E_ok=" << sc.E_ok
                   << " twoview_ok=" << sc.twoview_ok << " stable=" << sc.stable
                   << " n_pts=" << sc.num_valid_points;

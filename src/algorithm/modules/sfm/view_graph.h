@@ -15,6 +15,7 @@
 #include <set>
 #include <utility>
 #include <vector>
+#include "two_view_reconstruction.h"
 
 namespace insight {
 namespace sfm {
@@ -45,6 +46,13 @@ struct PairGeoInfo {
   bool twoview_ok = false;
   bool stable = false;
   int num_valid_points = 0;
+  
+  // Preliminary score and metrics produced by isat_geo early pass
+  double score_prelim = 0.0;       ///< preliminary geometric score (log/inlier based)
+  double median_pixel_disp = 0.0;  ///< median pixel displacement of inliers (px)
+
+  // Full stability metrics computed after two-view triangulation
+  StabilityMetrics stability;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,13 +74,15 @@ struct PairGeoInfo {
 struct SecondImageCandidate {
   size_t pair_index = 0;        ///< index into ViewGraph pairs
   uint32_t image_index = 0;     ///< candidate second image
-  double score = 0.0;
   // ── score components (for diagnostics) ───────────────────────────────────
   bool E_ok = false;
   bool twoview_ok = false;
   bool stable = false;
   int F_inliers = 0;
   int num_valid_points = 0;
+  double score_prelim = 0.0;
+  double median_pixel_disp = 0.0;
+  double median_parallax_deg = 0.0;
 };
 
 /**
@@ -101,7 +111,8 @@ public:
   /// Degeneracy applies a penalty. twoview stable adds a bonus when available.
   /// Weights: w_f_inliers=1.0, w_connect=0.3, w_stable=0.5 (tunable).
   double get_pair_score(size_t pair_index, double w_f_inliers = 1.0, double w_connect = 0.3,
-                        double w_stable = 0.5) const;
+                        double w_stable = 0.5, double w_prelim = 0.5,
+                        double w_par = 0.1) const;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Phase 2: Second image selection (given first image)
@@ -122,10 +133,7 @@ public:
    */
   std::vector<SecondImageCandidate>
   get_second_image_candidates_sorted(uint32_t first_image,
-                                     const std::set<uint32_t>& registered,
-                                     double w_f = 1.0, double w_e = 0.5,
-                                     double w_tv = 1.0, double w_st = 0.8,
-                                     double w_pt = 1.2) const;
+                                     const std::set<uint32_t>& registered) const;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Legacy helpers

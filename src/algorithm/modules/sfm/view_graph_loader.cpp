@@ -59,6 +59,10 @@ void pair_geo_info_from_isat_geo_metadata(const nlohmann::json& meta, PairGeoInf
       if (jE.contains("num_inliers"))
         info->E_inliers = jE["num_inliers"].get<int>();
     }
+    if (gm.contains("median_pixel_disp"))
+      info->median_pixel_disp = gm["median_pixel_disp"].get<double>();
+    if (gm.contains("score_prelim"))
+      info->score_prelim = gm["score_prelim"].get<double>();
   }
   if (meta.contains("twoview")) {
     const auto& tv = meta["twoview"];
@@ -67,6 +71,10 @@ void pair_geo_info_from_isat_geo_metadata(const nlohmann::json& meta, PairGeoInf
       info->stable = tv["stable"].get<bool>();
     if (tv.contains("num_valid_points"))
       info->num_valid_points = tv["num_valid_points"].get<int>();
+    if (tv.contains("median_parallax_deg"))
+      info->stability.median_parallax_deg = tv["median_parallax_deg"].get<double>();
+    if (tv.contains("median_depth_baseline"))
+      info->stability.median_depth_baseline = tv["median_depth_baseline"].get<double>();
   }
 }
 
@@ -184,6 +192,11 @@ nlohmann::json view_graph_pairs_to_json_array(const ViewGraph& vg) {
     o["twoview_ok"] = p.twoview_ok;
     o["stable"] = p.stable;
     o["num_valid_points"] = p.num_valid_points;
+    o["median_pixel_disp"] = p.median_pixel_disp;
+    o["score_prelim"] = p.score_prelim;
+    o["median_parallax_deg"] = p.stability.median_parallax_deg;
+    o["median_depth_baseline"] = p.stability.median_depth_baseline;
+    o["stability_is_stable"] = p.stability.is_stable;
     arr.push_back(std::move(o));
   }
   return arr;
@@ -211,6 +224,11 @@ bool view_graph_from_json_array(const nlohmann::json& arr, ViewGraph* out) {
     p.twoview_ok = el.value("twoview_ok", false);
     p.stable = el.value("stable", false);
     p.num_valid_points = el.value("num_valid_points", 0);
+    p.median_pixel_disp = el.value("median_pixel_disp", 0.0);
+    p.score_prelim = el.value("score_prelim", 0.0);
+    p.stability.median_parallax_deg = el.value("median_parallax_deg", 0.0);
+    p.stability.median_depth_baseline = el.value("median_depth_baseline", 0.0);
+    p.stability.is_stable = el.value("stability_is_stable", false);
     out->add_pair(p);
   }
   return true;
@@ -251,6 +269,16 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
     PairGeoInfo info;
     info.image1_index = idx1;
     info.image2_index = idx2;
+    // If adjacency/pairs.json contains preliminary metrics, copy them into info.
+    if (p.contains("median_pixel_disp"))
+      info.median_pixel_disp = p.value("median_pixel_disp", 0.0);
+    if (p.contains("score_prelim"))
+      info.score_prelim = p.value("score_prelim", 0.0);
+    if (p.contains("inlier_ratio"))
+      info.F_inlier_ratio = p.value("inlier_ratio", 0.0f);
+    if (p.contains("degenerate"))
+      info.is_degenerate = p.value("degenerate", false);
+    // Now augment with any detailed metadata stored in the .isat_geo IDC file.
     pair_geo_info_from_isat_geo_metadata(reader.get_metadata(), &info);
     out->add_pair(info);
     ++num_loaded;

@@ -31,6 +31,7 @@
  *   isat_geo -i pairs.json -m match_dir/ -o geo_dir/ --estimate-h
  */
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -163,6 +164,10 @@ struct GeoTask {
   int num_valid_points = 0;
   StabilityMetrics stability;
   bool twoview_ok = false;
+  // Scoring fields (preliminary score computed after F/E/H)
+  double score_prelim = 0.0;
+  double median_pixel_disp = 0.0; // median of sqrt((x2-x1)^2+(y2-y1)^2)
+  double inlier_ratio = 0.0;
 };
 
 /// Minimum inlier count to still write inlier mask to IDC for track building (degenerate pairs keep
@@ -649,10 +654,9 @@ int main(int argc, char* argv[]) {
   std::string image_list_json;
   float thresh_f = 2.0f;
   float thresh_h = 2.25f;
-  // int min_inliers = 8;
   int min_inliers = 20;
   int min_points_twoview = 50;
-  int ransac_iter = 1000;
+  int ransac_iter = 2000;
   int num_threads = 4;
   std::string backend_str = "poselib";
 
@@ -679,9 +683,9 @@ int main(int argc, char* argv[]) {
               .doc("Inlier threshold for H (forward transfer, pixels). Default: 2.25.\n"
                    "  Only used when --estimate-h is set."));
   cmd.add(make_option(0, min_inliers, "min-inliers")
-              .doc("Minimum inlier count required to write a result. Default: 8"));
+              .doc("Minimum inlier count required to write a result. Default: 20"));
   cmd.add(make_option('n', ransac_iter, "iterations")
-              .doc("RANSAC iterations per pair (GPU). Default: 1000"));
+              .doc("RANSAC iterations per pair (GPU). Default: 2000"));
   cmd.add(make_option('j', num_threads, "threads")
               .doc("CPU I/O threads for read/write stages. Default: 4"));
   cmd.add(make_option(0, backend_str, "backend")
@@ -827,8 +831,8 @@ int main(int argc, char* argv[]) {
       LOG(FATAL) << "Failed to initialise GPU RANSAC (EGL + OpenGL 4.3 required)";
       return 1;
     }
-    gpu_geo_set_solver(0); // Cholesky IPI: ~1ms/pair, ~45× faster than Jacobi
-    // gpu_geo_set_solver(0); // Cholesky IPI: ~1ms/pair, ~45× faster than Jacobi
+    gpu_geo_set_solver(0); // Jacobi slowly
+    // gpu_geo_set_solver(1); // Cholesky IPI: ~1ms/pair, ~45× faster than Jacobi
   }
 
   const float thresh_f_sq = thresh_f * thresh_f;
@@ -991,7 +995,42 @@ int main(int argc, char* argv[]) {
               << (estimate_H ? ("  H=" + std::to_string(task.H_inliers)) : "")
               << (task.degeneracy.is_degenerate ? "  [DEG]" : "") << "  " << ms << "ms";
 
-    // Keep coords for --twoview triangulation; else free
+    // Compute preliminary scoring metrics: median pixel displacement and inlier ratio
+    {
+      std::vector<float> disps;
+      disps.reserve(static_cast<size_t>(task.num_matches));
+      for (int k = 0; k < task.num_matches; ++k) {
+        float x1 = task.coords[k * 4 + 0], y1 = task.coords[k * 4 + 1];
+        float x2 = task.coords[k * 4 + 2], y2 = task.coords[k * 4 + 3];
+        float dx = x2 - x1, dy = y2 - y1;
+        disps.push_back(std::sqrt(dx * dx + dy * dy));
+      }
+      if (!disps.empty()) {
+        std::nth_element(disps.begin(), disps.begin() + disps.size() / 2, disps.end());
+        task.median_pixel_disp = disps[disps.size() / 2];
+      } else {
+        task.median_pixel_disp = 0.0;
+      }
+
+      int best_inliers = task.F_inliers;
+      if (estimate_E && task.E_inliers > best_inliers)
+        best_inliers = task.E_inliers;
+      task.inlier_ratio = static_cast<double>(best_inliers) / static_cast<double>(task.num_matches);
+
+      // Preliminary score (weights are tunable)
+      const double w_f = 1.0, w_e = 1.0, w_tv = 2.0, w_st = 1.0, w_pt = 0.5, w_par = 2.0,
+                   w_ir = 1.0;
+      double tin = std::log(1.0 + static_cast<double>(std::max(0, best_inliers)));
+      double tpt = std::log(1.0 + static_cast<double>(task.num_valid_points));
+      double tpar = std::tanh(task.median_pixel_disp / 50.0); // scale ~50px
+      double tir = std::min(1.0, task.inlier_ratio * 3.0);
+      double flag_bonus = (task.E_ok ? 1.0 : 0.0) + (task.H_ok ? 0.5 : 0.0);
+      task.score_prelim = w_f * tin + w_e * (task.E_ok ? 1.0 : 0.0) +
+                          w_tv * (task.twoview_ok ? 1.0 : 0.0) +
+                          w_st * (task.stability.is_stable ? 1.0 : 0.0) + w_pt * tpt +
+                          w_par * tpar + w_ir * tir + 0.5 * flag_bonus;
+    }
+
     if (!run_twoview) {
       task.coords.clear();
       task.coords.shrink_to_fit();
@@ -1028,9 +1067,9 @@ int main(int argc, char* argv[]) {
       loadStage.push(i);
   });
 
-  if(backend_str == "gpu") {
+  if (backend_str == "gpu") {
     geoStage->run(); // blocks until all GPU work done
-  } 
+  }
 
   push_thread.join();
   loadStage.wait();
@@ -1200,7 +1239,10 @@ int main(int argc, char* argv[]) {
                              {"F_inliers", t.F_inliers},
                              {"E_inliers", t.E_inliers},
                              {"H_inliers", t.H_inliers},
-                             {"degenerate", t.degeneracy.is_degenerate}});
+                             {"degenerate", t.degeneracy.is_degenerate},
+                             {"median_pixel_disp", t.median_pixel_disp},
+                             {"inlier_ratio", t.inlier_ratio},
+                             {"score_prelim", t.score_prelim}});
     if (t.F_ok) {
       filtered_pairs.push_back(
           {{"image1_index", t.image1_index}, {"image2_index", t.image2_index}});

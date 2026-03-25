@@ -49,7 +49,7 @@ void ViewGraph::ensure_degree_computed() const {
 }
 
 double ViewGraph::get_pair_score(size_t pair_index, double w_f_inliers, double w_connect,
-                                 double w_stable) const {
+                                 double w_stable, double w_prelim, double w_par) const {
   if (pair_index >= pairs_.size())
     return -1e9;
   ensure_degree_computed();
@@ -57,6 +57,9 @@ double ViewGraph::get_pair_score(size_t pair_index, double w_f_inliers, double w
   double s = 0.0;
   // Primary: F inliers (log scale to avoid dominance by large counts)
   s += w_f_inliers * std::log(1.0 + static_cast<double>(std::max(0, p.F_inliers)));
+  // Preliminary geometric score (from isat_geo) as soft signal
+  if (p.score_prelim > 0.0)
+    s += w_prelim * std::log(1.0 + p.score_prelim);
   // Connectivity bonus
   int d1 = 0, d2 = 0;
   if (static_cast<size_t>(p.image1_index) < image_degree_.size())
@@ -67,6 +70,11 @@ double ViewGraph::get_pair_score(size_t pair_index, double w_f_inliers, double w
   // Supplementary bonus if twoview result is stable
   if (p.twoview_ok && p.stable)
     s += w_stable;
+  // Stability-derived parallax contribution (degrees) and median pixel displacement
+  if (p.median_pixel_disp > 0.0)
+    s += w_par * std::log(1.0 + p.median_pixel_disp);
+  if (p.stability.is_stable && p.stability.median_parallax_deg > 0.0)
+    s += w_par * std::log(1.0 + p.stability.median_parallax_deg);
   // Degeneracy penalty
   if (p.is_degenerate)
     s -= 5.0;
@@ -120,15 +128,13 @@ ViewGraph::get_candidate_pair_indices_sorted(const std::set<uint32_t>& registere
 
 std::vector<SecondImageCandidate>
 ViewGraph::get_second_image_candidates_sorted(uint32_t first_image,
-                                              const std::set<uint32_t>& registered,
-                                              double w_f, double w_e, double w_tv,
-                                              double w_st, double w_pt) const {
+                                              const std::set<uint32_t>& registered) const {
   std::vector<SecondImageCandidate> result;
   for (size_t i = 0; i < pairs_.size(); ++i) {
     const PairGeoInfo& p = pairs_[i];
 
     // ── Hard filters ─────────────────────────────────────────────────────────
-    if (!p.F_ok || p.is_degenerate)
+    if (!p.F_ok || !p.E_ok || !p.twoview_ok || !p.stable || p.is_degenerate)
       continue;
 
     // Determine which endpoint is "other"
@@ -142,33 +148,28 @@ ViewGraph::get_second_image_candidates_sorted(uint32_t first_image,
 
     if (registered.count(other))
       continue;
-
-    // ── Composite score ───────────────────────────────────────────────────────
-    // w_pt (triangulated point count) carries the most weight as it directly
-    // reflects reconstruction quality.  E_ok and twoview_ok/stable are bonus
-    // signals when the twoview step was run.
-    const double score =
-        w_f  * std::log(1.0 + static_cast<double>(std::max(0, p.F_inliers)))
-      + w_e  * (p.E_ok       ? 1.0 : 0.0)
-      + w_tv * (p.twoview_ok  ? 1.0 : 0.0)
-      + w_st * (p.stable      ? 1.0 : 0.0)
-      + w_pt * std::log(1.0 + static_cast<double>(std::max(0, p.num_valid_points)));
-
     SecondImageCandidate sc;
-    sc.pair_index       = i;
-    sc.image_index      = other;
-    sc.score            = score;
-    sc.E_ok             = p.E_ok;
-    sc.twoview_ok       = p.twoview_ok;
-    sc.stable           = p.stable;
-    sc.F_inliers        = p.F_inliers;
+    sc.pair_index = i;
+    sc.image_index = other;
+    sc.E_ok = p.E_ok;
+    sc.twoview_ok = p.twoview_ok;
+    sc.stable = p.stable;
+    sc.F_inliers = p.F_inliers;
     sc.num_valid_points = p.num_valid_points;
+    sc.score_prelim = p.score_prelim;
+    sc.median_pixel_disp = p.median_pixel_disp;
+    sc.median_parallax_deg = p.stability.median_parallax_deg;
+    if (sc.median_parallax_deg < 2.0) {
+      // Parallax <2° is often too low for stable reconstruction, so we skip these pairs in
+      // second-image selection.
+      continue;
+    }
     result.push_back(sc);
   }
 
   std::stable_sort(result.begin(), result.end(),
                    [](const SecondImageCandidate& a, const SecondImageCandidate& b) {
-                     return a.score > b.score;
+                     return a.score_prelim > b.score_prelim;
                    });
   return result;
 }
