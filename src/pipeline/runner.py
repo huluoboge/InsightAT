@@ -119,6 +119,15 @@ def find_binary(name: str) -> str:
     if candidate.is_file():
         return str(candidate)
 
+    # 2b. check repo source pipeline directory (useful for Python scripts during development)
+    candidate_src = _repo_root() / "src" / "pipeline" / name
+    if candidate_src.is_file():
+        return str(candidate_src)
+    # also accept .py scripts (e.g. isat_tool.py)
+    candidate_src_py = candidate_src.with_suffix('.py')
+    if candidate_src_py.is_file():
+        return str(candidate_src_py)
+
     # 3. PATH
     import shutil
     found = shutil.which(name)
