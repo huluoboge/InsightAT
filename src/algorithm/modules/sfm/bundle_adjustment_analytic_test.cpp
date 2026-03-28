@@ -620,6 +620,110 @@ static int test_fix_pose_and_point() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Test 10 – TikhonovPoseCost: λ=0 → residuals all zero
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_tikhonov_pose_cost_lambda_zero() {
+  std::cout << "[Test 10] TikhonovPoseCost: lambda=0 → residuals all zero\n";
+
+  // Snapshot: arbitrary pose
+  double pose0[7] = {0.1, 0.2, 0.3, 0.9274, 1.0, 2.0, 3.0};
+  // Current pose differs from snapshot
+  double pose[7]  = {0.5, -0.1, 0.7, 0.8, 4.0, -1.0, 0.5};
+
+  TikhonovPoseCost cost(pose0, 0.0);
+
+  double residuals[7];
+  const double* params[1] = {pose};
+  cost.Evaluate(params, residuals, nullptr);
+
+  for (int i = 0; i < 7; ++i) {
+    if (std::abs(residuals[i]) > 1e-15) {
+      std::cerr << "  FAIL: residuals[" << i << "] = " << residuals[i]
+                << " (expected 0 for lambda=0)\n";
+      return 1;
+    }
+  }
+  std::cout << "  PASS\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 11 – TikhonovPoseCost: λ>0 → residuals = sqrt(λ) * (x - x0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_tikhonov_pose_cost_residuals() {
+  std::cout << "[Test 11] TikhonovPoseCost: lambda>0 → residuals = sqrt(lambda)*(x-x0)\n";
+
+  const double lambda = 1e-4;
+  const double sqrt_lambda = std::sqrt(lambda);
+
+  double pose0[7] = {0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0};
+  double pose[7]  = {0.1, 0.2, 0.3, 0.95, 1.0, 2.0, 3.0};
+
+  TikhonovPoseCost cost(pose0, lambda);
+
+  double residuals[7];
+  const double* params[1] = {pose};
+  cost.Evaluate(params, residuals, nullptr);
+
+  for (int i = 0; i < 7; ++i) {
+    const double expected = sqrt_lambda * (pose[i] - pose0[i]);
+    if (std::abs(residuals[i] - expected) > 1e-12) {
+      std::cerr << "  FAIL: residuals[" << i << "] = " << residuals[i]
+                << ", expected " << expected << "\n";
+      return 1;
+    }
+  }
+  std::cout << "  PASS: sqrt(lambda)=" << sqrt_lambda << "\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 12 – TikhonovPoseCost: Jacobian is diagonal with sqrt(λ) on diagonal
+// ─────────────────────────────────────────────────────────────────────────────
+
+static int test_tikhonov_pose_cost_jacobian() {
+  std::cout << "[Test 12] TikhonovPoseCost: Jacobian is diagonal with sqrt(lambda)\n";
+
+  const double lambda = 1e-2;
+  const double sqrt_lambda = std::sqrt(lambda);
+
+  double pose0[7] = {0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0};
+  double pose[7]  = {0.1, 0.2, 0.3, 0.95, 1.0, 2.0, 3.0};
+
+  TikhonovPoseCost cost(pose0, lambda);
+
+  double residuals[7];
+  double jacobian_data[7 * 7];
+  double* jacobians[1] = {jacobian_data};
+  const double* params[1] = {pose};
+  cost.Evaluate(params, residuals, jacobians);
+
+  // Check diagonal entries = sqrt_lambda, off-diagonal = 0
+  for (int row = 0; row < 7; ++row) {
+    for (int col = 0; col < 7; ++col) {
+      const double val = jacobian_data[row * 7 + col];
+      if (row == col) {
+        if (std::abs(val - sqrt_lambda) > 1e-12) {
+          std::cerr << "  FAIL: J[" << row << "][" << col << "] = " << val
+                    << ", expected " << sqrt_lambda << " (diagonal)\n";
+          return 1;
+        }
+      } else {
+        if (std::abs(val) > 1e-15) {
+          std::cerr << "  FAIL: J[" << row << "][" << col << "] = " << val
+                    << ", expected 0 (off-diagonal)\n";
+          return 1;
+        }
+      }
+    }
+  }
+  std::cout << "  PASS: 7x7 diagonal Jacobian with sqrt(lambda)=" << sqrt_lambda << "\n";
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -638,6 +742,9 @@ int main() {
   failures += test_two_view_one_camera();
   failures += test_two_view_two_cameras();
   failures += test_fix_pose_and_point();
+  failures += test_tikhonov_pose_cost_lambda_zero();
+  failures += test_tikhonov_pose_cost_residuals();
+  failures += test_tikhonov_pose_cost_jacobian();
 
   if (failures == 0) {
     std::cout << "\nAll tests PASSED.\n";

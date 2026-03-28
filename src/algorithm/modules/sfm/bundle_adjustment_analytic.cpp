@@ -544,6 +544,105 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Camera-centre distance prior — two pose[7] blocks; only C (indices 4–6) contribute.
+//
+//   residual = sqrt(w) · (‖C_a − C_b‖ − d₀) / d₀
+//
+// Adds a small positive diagonal on the Schur complement along the baseline direction when
+// paired with a fixed anchor, helping metric scale / drift without a full pose-graph.
+// ─────────────────────────────────────────────────────────────────────────────
+class CameraDistanceCostAnalytic : public ceres::SizedCostFunction<1, 7, 7> {
+public:
+  CameraDistanceCostAnalytic(double d0, double weight) : d0_(d0), sqrt_w_(std::sqrt(weight)) {}
+
+  bool Evaluate(double const* const* params, double* residuals, double** jacobians) const override {
+    const double ax = params[0][4], ay = params[0][5], az = params[0][6];
+    const double bx = params[1][4], by = params[1][5], bz = params[1][6];
+    const double dx = ax - bx, dy = ay - by, dz = az - bz;
+    const double dist_sq = dx * dx + dy * dy + dz * dz;
+    const double dist = std::sqrt(dist_sq);
+    constexpr double kEps = 1e-12;
+    if (dist < kEps) {
+      residuals[0] = 0.0;
+      if (jacobians) {
+        if (jacobians[0])
+          std::fill_n(jacobians[0], 7, 0.0);
+        if (jacobians[1])
+          std::fill_n(jacobians[1], 7, 0.0);
+      }
+      return true;
+    }
+    const double inv_d = 1.0 / dist;
+    const double nx = dx * inv_d, ny = dy * inv_d, nz = dz * inv_d;
+    const double scale = sqrt_w_ / d0_;
+    residuals[0] = scale * (dist - d0_);
+    if (jacobians) {
+      if (jacobians[0]) {
+        std::fill_n(jacobians[0], 7, 0.0);
+        jacobians[0][4] = scale * nx;
+        jacobians[0][5] = scale * ny;
+        jacobians[0][6] = scale * nz;
+      }
+      if (jacobians[1]) {
+        std::fill_n(jacobians[1], 7, 0.0);
+        jacobians[1][4] = -scale * nx;
+        jacobians[1][5] = -scale * ny;
+        jacobians[1][6] = -scale * nz;
+      }
+    }
+    return true;
+  }
+
+private:
+  double d0_;
+  double sqrt_w_;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TikhonovPoseCost — diagonal L2 regularization for a 7-DOF pose block.
+// (class declared in bundle_adjustment_analytic.h)
+// ─────────────────────────────────────────────────────────────────────────────
+TikhonovPoseCost::TikhonovPoseCost(const double* pose_snapshot, double lambda)
+    : sqrt_lambda_(std::sqrt(lambda)) {
+  std::copy(pose_snapshot, pose_snapshot + 7, pose0_);
+}
+
+bool TikhonovPoseCost::Evaluate(double const* const* params, double* residuals,
+                                double** jacobians) const {
+  const double* pose = params[0];
+  for (int i = 0; i < 7; ++i)
+    residuals[i] = sqrt_lambda_ * (pose[i] - pose0_[i]);
+  if (jacobians && jacobians[0]) {
+    std::fill_n(jacobians[0], 7 * 7, 0.0);
+    for (int i = 0; i < 7; ++i)
+      jacobians[0][i * 7 + i] = sqrt_lambda_;
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TikhonovIntrCost — diagonal L2 regularization for a kAnalyticIntrCount-DOF intrinsics block.
+// (class declared in bundle_adjustment_analytic.h)
+// ─────────────────────────────────────────────────────────────────────────────
+TikhonovIntrCost::TikhonovIntrCost(const double* intr_snapshot, double lambda)
+    : sqrt_lambda_(std::sqrt(lambda)) {
+  std::copy(intr_snapshot, intr_snapshot + kAnalyticIntrCount, intr0_);
+}
+
+bool TikhonovIntrCost::Evaluate(double const* const* params, double* residuals,
+                                double** jacobians) const {
+  const double* intr = params[0];
+  for (int i = 0; i < kAnalyticIntrCount; ++i)
+    residuals[i] = sqrt_lambda_ * (intr[i] - intr0_[i]);
+  if (jacobians && jacobians[0]) {
+    std::fill_n(jacobians[0], kAnalyticIntrCount * kAnalyticIntrCount, 0.0);
+    for (int i = 0; i < kAnalyticIntrCount; ++i)
+      jacobians[0][i * kAnalyticIntrCount + i] = sqrt_lambda_;
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // global_bundle_analytic
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -709,14 +808,16 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       // sigma = fy/fx: modern camera lenses are very close to square pixels.
       problem.SetParameterLowerBound(ip, kSigma, 0.95);
       problem.SetParameterUpperBound(ip, kSigma, 1.05);
-      // Radial distortion: prevent k2/k3 from blowing up.
-      //   k1 [-0.8, 0.8] — generous; k2 tighter, k3 tightest (6th-order correction).
-      problem.SetParameterLowerBound(ip, kK1, -0.8);
-      problem.SetParameterUpperBound(ip, kK1, 0.8);
-      problem.SetParameterLowerBound(ip, kK2, -0.5);
-      problem.SetParameterUpperBound(ip, kK2, 0.5);
-      problem.SetParameterLowerBound(ip, kK3, -0.3);
-      problem.SetParameterUpperBound(ip, kK3, 0.3);
+      // Radial distortion: tighter bounds for aerial/drone lenses where distortion is small.
+      // k1/k2/k3 are nearly collinear in the r range of aerial nadir imagery (r/r_max ≈ 0.4-0.7),
+      // so loose bounds allow the optimizer to trade them against each other and focal length.
+      // Tighter bounds prevent over-fitting and keep the Schur complement well-conditioned.
+      problem.SetParameterLowerBound(ip, kK1, -0.3);
+      problem.SetParameterUpperBound(ip, kK1, 0.3);
+      problem.SetParameterLowerBound(ip, kK2, -0.15);
+      problem.SetParameterUpperBound(ip, kK2, 0.15);
+      problem.SetParameterLowerBound(ip, kK3, -0.05);
+      problem.SetParameterUpperBound(ip, kK3, 0.05);
       // Tangential distortion: typically very small for modern drone lenses.
       problem.SetParameterLowerBound(ip, kP1, -0.05);
       problem.SetParameterUpperBound(ip, kP1, 0.05);
@@ -748,6 +849,21 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     }
   }
 
+  // ── Optional camera-centre distance priors (gauge / scale assist with fixed anchor) ──
+  for (const auto& dp : input.camera_distance_priors) {
+    if (dp.weight <= 0.0 || dp.distance_m <= 1e-12)
+      continue;
+    if (dp.image_index_a < 0 || dp.image_index_a >= n_cams || dp.image_index_b < 0 ||
+        dp.image_index_b >= n_cams || dp.image_index_a == dp.image_index_b)
+      continue;
+    double* pa = poses_data.data() + static_cast<size_t>(dp.image_index_a) * 7;
+    double* pb = poses_data.data() + static_cast<size_t>(dp.image_index_b) * 7;
+    if (!problem.HasParameterBlock(pa) || !problem.HasParameterBlock(pb))
+      continue;
+    problem.AddResidualBlock(new CameraDistanceCostAnalytic(dp.distance_m, dp.weight), nullptr, pa,
+                             pb);
+  }
+
   // Fix 3D points: optional fix_point[p]
   for (int p = 0; p < n_pts; ++p) {
     double* xp = result->points3d[static_cast<size_t>(p)].data();
@@ -755,6 +871,33 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       continue;
     if (input.fix_point.size() > static_cast<size_t>(p) && input.fix_point[static_cast<size_t>(p)])
       problem.SetParameterBlockConstant(xp);
+  }
+
+  // ── Tikhonov diagonal regularization (optional) ──────────────────────────
+  if (input.tikhonov_lambda > 0.0) {
+    if (input.tikhonov_lambda > 0.1)
+      LOG(WARNING) << "tikhonov_lambda=" << input.tikhonov_lambda
+                   << " is very high, may cause pose drift";
+
+    // Pose blocks: only non-fixed blocks
+    for (int i = 0; i < n_cams; ++i) {
+      double* pp = poses_data.data() + i * 7;
+      if (!problem.HasParameterBlock(pp)) continue;
+      if (problem.IsParameterBlockConstant(pp)) continue;
+      problem.AddResidualBlock(
+          new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
+    }
+
+    // Intrinsics blocks: only non-fixed blocks
+    for (int c = 0; c < n_distinct; ++c) {
+      double* ip = intr_params.data() + c * kAnalyticIntrCount;
+      if (!problem.HasParameterBlock(ip)) continue;
+      if (problem.IsParameterBlockConstant(ip)) continue;
+      problem.AddResidualBlock(
+          new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
+    }
+
+    // Do NOT add regularization to 3D point blocks
   }
 
   // ── Solve ─────────────────────────────────────────────────────────────────
@@ -774,7 +917,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   //   instability caused by intrinsics coupling.
   const int kDenseSchurMaxVariableCams = (input.solver_dense_schur_max_variable_cams > 0)
                                              ? input.solver_dense_schur_max_variable_cams
-                                             : 30;
+                                             : 300;
   int n_variable_cams = 0;
   for (int i = 0; i < n_cams; ++i) {
     const bool pose_fixed =
@@ -784,7 +927,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   }
 
   options.preconditioner_type = ceres::JACOBI;
-  if (n_cams < 500) {
+  if (n_cams < kDenseSchurMaxVariableCams) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
   } else {
     options.linear_solver_type = ceres::SPARSE_SCHUR;
@@ -816,6 +959,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // Fallback: if the chosen solver failed, retry with DENSE_SCHUR (LAPACK – most
   // numerically robust).  Not needed when we already started with DENSE_SCHUR.
   if (!summary.IsSolutionUsable()) {
+    LOG(INFO) << summary.FullReport();
     LOG(WARNING) << "global_bundle_analytic: " << summary.message;
     return false;
   }

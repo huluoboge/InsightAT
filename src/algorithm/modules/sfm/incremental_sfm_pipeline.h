@@ -59,6 +59,7 @@ struct BASolverOverrides {
   int dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in (30).
   int max_num_iterations = 0;    ///< 0 = use max_iterations param of run_global_ba / local BA.
   double huber_loss_delta = 0.0; ///< Huber loss δ (px). 0 = BAInput default (4.0 px).
+  double tikhonov_lambda = 0.0;  ///< Tikhonov regularization lambda. 0 = disabled. Passed to BAInput::tikhonov_lambda.
 };
 
 /**
@@ -66,8 +67,11 @@ struct BASolverOverrides {
  * points.
  * @param cameras Current intrinsics (required for BA). If cameras_in_out is non-null, optimised
  * intrinsics are written back when optimize_intrinsics is true.
- * @param anchor_image Global image index to fix as the coordinate-system anchor. If -1, the first
- * BA image (lowest registered index) is fixed.
+ * @param anchor_image Global image index to fix as the coordinate-system anchor (initial pair
+ *   first image). If -1, the first BA image (lowest registered index) is fixed.
+ * @param initial_pair_global_im1 Global index of the initial pair’s second image. If ≥ 0, adds an
+ *   internal soft prior ‖C_anchor−C_im1‖ → ‖C_anchor−C_im1‖ at BA entry (snapshot; anchor pose
+ *   fixed). -1 = off.
  */
 bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
@@ -75,9 +79,9 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    const std::vector<camera::Intrinsics>& cameras,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
                    int max_iterations, double* rmse_px_out, int anchor_image = -1,
-                   const std::vector<bool>* camera_frozen = nullptr, uint32_t partial_intr_fix = 0u,
                    double focal_prior_weight = 0.0, const BASolverOverrides& solver_overrides = {},
-                   const std::vector<uint32_t>* partial_intr_fix_per_cam = nullptr);
+                   const std::vector<uint32_t>* partial_intr_fix_per_cam = nullptr,
+                   int initial_pair_global_im1 = -1);
 
 /**
  * Run local BA: optimize a subset of images (other poses fixed). Intrinsics not optimized.
@@ -250,6 +254,16 @@ struct GlobalBAOptions {
   BASolverOverrides solver_overrides; ///< Ceres solver parameter overrides.
 };
 
+/// Median-based scene normalization (tracks + registered camera centres). Default 0 = off.
+/// When enabled, call before periodic global BA so BA runs in normalized world units; no inverse
+/// transform is applied (metric is in normalized units).
+struct SceneNormalizationOptions {
+  /// 0 = disabled. If > 0, normalize when `sfm_iter % N == 0` (see run_incremental_sfm_pipeline).
+  int normalize_scene_every_n_sfm_iters = 1;
+  /// 0 = disabled. If > 0, normalize when `num_registered >= M` and `num_registered % M == 0`.
+  int normalize_scene_every_n_registered_images = 1;
+};
+
 /// Options for outlier rejection and iterative Huber-BA-based coarse detection.
 struct OutlierOptions {
   double threshold_px = 4.0;      ///< Hard floor for fine-phase MAD rejection thresholds (px).
@@ -314,6 +328,7 @@ struct IncrementalSfMOptions {
   IntrinsicsSchedule intrinsics;
   LocalBAOptions local_ba;
   GlobalBAOptions global_ba;
+  SceneNormalizationOptions scene_normalization;
   OutlierOptions outlier;
   TriangulationOptions triangulation;
 };
@@ -342,7 +357,7 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
                                    const std::vector<int>& image_to_camera_index,
                                    std::vector<camera::Intrinsics>* cameras, int anchor_image,
                                    int num_registered, const IncrementalSfMOptions& opts,
-                                   double* rmse_px_out);
+                                   double* rmse_px_out, int initial_pair_im1_global = -1);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // (Legacy flat-struct fields — kept as a migration reference; NOT part of

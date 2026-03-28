@@ -38,6 +38,8 @@ add_library(sfm_module STATIC
     gpu_twoview_sfm.h
     track_store.cpp
     track_store.h
+    scene_normalization.cpp
+    scene_normalization.h
     view_graph.cpp
     view_graph.h
     bundle_adjustment_analytic.cpp
