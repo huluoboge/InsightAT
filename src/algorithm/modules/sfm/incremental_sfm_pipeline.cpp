@@ -1136,10 +1136,10 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       const size_t show_n = std::min(second_candidates.size(), size_t(5));
       for (size_t si = 0; si < show_n; ++si) {
         const auto& sc = second_candidates[si];
-        LOG(INFO) << "    second #" << si << ": image " << sc.image_index << " score_prelim=" << sc.score_prelim
-                  << " F_inliers=" << sc.F_inliers << " E_ok=" << sc.E_ok
-                  << " twoview_ok=" << sc.twoview_ok << " stable=" << sc.stable
-                  << " n_pts=" << sc.num_valid_points;
+        LOG(INFO) << "    second #" << si << ": image " << sc.image_index
+                  << " score_prelim=" << sc.score_prelim << " F_inliers=" << sc.F_inliers
+                  << " E_ok=" << sc.E_ok << " twoview_ok=" << sc.twoview_ok
+                  << " stable=" << sc.stable << " n_pts=" << sc.num_valid_points;
       }
       if (second_candidates.size() > show_n)
         LOG(INFO) << "    ... (" << second_candidates.size() - show_n << " more)";
@@ -1595,8 +1595,26 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   // partial_intr_fix (fallback): scalar applied to all non-frozen cameras when
   //   partial_intr_fix_per_cam is not provided.
   {
+    // Large-scene heuristic: when image count exceeds the DENSE→SPARSE Schur threshold,
+    // CHOLMOD is likely to fail if intrinsics are free (near-singular Schur complement due
+    // to cx/cy coupling and collinear radial-distortion polynomials). Auto-fix all intrinsics
+    // for stability — they should already be well-converged from earlier local-BA rounds.
+    // The threshold is reused from solver_overrides so the caller can tune both behaviours
+    // together without introducing an extra knob.
+    const int kAutoFixIntrThreshold = (solver_overrides.dense_schur_max_variable_cams > 0)
+                                          ? solver_overrides.dense_schur_max_variable_cams
+                                          : 300;
+    const bool effective_optimize_intrinsics =
+        optimize_intrinsics && (static_cast<int>(ba_in.poses_R.size()) <= kAutoFixIntrThreshold);
+    if (optimize_intrinsics && !effective_optimize_intrinsics) {
+      LOG(INFO) << "run_global_ba: auto-fixing intrinsics (" << ba_in.poses_R.size()
+                << " images > threshold " << kAutoFixIntrThreshold
+                << ") to stabilise SPARSE_SCHUR / CHOLMOD";
+      ba_in.optimize_intrinsics = false;
+    }
+
     ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(), 0u);
-    if (!optimize_intrinsics) {
+    if (!effective_optimize_intrinsics) {
       ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(),
                                         static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
     } else {
@@ -2174,7 +2192,8 @@ static void diagnose_track_structure(const TrackStore& store, const std::vector<
         reg_imgs.push_back(im);
     }
     const int len = static_cast<int>(reg_imgs.size());
-    if (len < 1) continue;
+    if (len < 1)
+      continue;
     track_len_hist[len]++;
     for (int im : reg_imgs)
       obs_per_image[static_cast<size_t>(im)]++;
@@ -2192,8 +2211,11 @@ static void diagnose_track_structure(const TrackStore& store, const std::vector<
 
   // ── Track length distribution ─────────────────────────────────────────────
   int total_tracks = 0, short_tracks = 0;
-  for (const auto& kv : track_len_hist) total_tracks += kv.second;
-  for (const auto& kv : track_len_hist) if (kv.first <= 2) short_tracks += kv.second;
+  for (const auto& kv : track_len_hist)
+    total_tracks += kv.second;
+  for (const auto& kv : track_len_hist)
+    if (kv.first <= 2)
+      short_tracks += kv.second;
 
   std::ostringstream oss;
   oss << "[track_diag] track_len_distribution (len: count):";
@@ -2207,11 +2229,14 @@ static void diagnose_track_structure(const TrackStore& store, const std::vector<
 
   // ── Per-image observation count; flag under-constrained cameras ──────────
   int n_registered = 0;
-  for (bool r : registered) if (r) ++n_registered;
+  for (bool r : registered)
+    if (r)
+      ++n_registered;
   const int kMinObsForWellConstrained = 30;
   int n_underconstrained = 0;
   for (int i = 0; i < n_images; ++i) {
-    if (!registered[static_cast<size_t>(i)]) continue;
+    if (!registered[static_cast<size_t>(i)])
+      continue;
     if (obs_per_image[static_cast<size_t>(i)] < kMinObsForWellConstrained) {
       ++n_underconstrained;
       LOG(WARNING) << "[track_diag] underconstrained image " << i
@@ -2242,28 +2267,31 @@ static void diagnose_track_structure(const TrackStore& store, const std::vector<
   int isolated_pairs = 0;
   for (const auto& kv : covis_map) {
     covis_counts.push_back(kv.second);
-    if (kv.second < 5) ++isolated_pairs;
+    if (kv.second < 5)
+      ++isolated_pairs;
   }
   std::sort(covis_counts.begin(), covis_counts.end());
   const int cp10 = covis_counts.empty() ? 0 : covis_counts[covis_counts.size() / 10];
   const int cp50 = covis_counts.empty() ? 0 : covis_counts[covis_counts.size() / 2];
   const int cp90 = covis_counts.empty() ? 0 : covis_counts[covis_counts.size() * 9 / 10];
   LOG(INFO) << "[track_diag] covis_pairs=" << n_pairs_with_covis << "/" << n_pairs_possible
-            << "  sparsity=" << (n_pairs_possible > 0
-                                     ? 100.0 * (n_pairs_possible - n_pairs_with_covis) /
-                                           n_pairs_possible
-                                     : 0.0)
+            << "  sparsity="
+            << (n_pairs_possible > 0
+                    ? 100.0 * (n_pairs_possible - n_pairs_with_covis) / n_pairs_possible
+                    : 0.0)
             << "%  covis_count p10=" << cp10 << " p50=" << cp50 << " p90=" << cp90
             << "  weak_pairs(<5)=" << isolated_pairs;
 
   // ── Per-camera summary ────────────────────────────────────────────────────
-  if (image_to_camera_index.empty()) return;
+  if (image_to_camera_index.empty())
+    return;
   const int n_cameras = static_cast<int>(
       *std::max_element(image_to_camera_index.begin(), image_to_camera_index.end()) + 1);
   std::vector<int> obs_per_camera(static_cast<size_t>(n_cameras), 0);
   std::vector<int> images_per_camera(static_cast<size_t>(n_cameras), 0);
   for (int i = 0; i < n_images; ++i) {
-    if (!registered[static_cast<size_t>(i)]) continue;
+    if (!registered[static_cast<size_t>(i)])
+      continue;
     const int c = image_to_camera_index[static_cast<size_t>(i)];
     if (c >= 0 && c < n_cameras) {
       obs_per_camera[static_cast<size_t>(c)] += obs_per_image[static_cast<size_t>(i)];
@@ -2271,7 +2299,8 @@ static void diagnose_track_structure(const TrackStore& store, const std::vector<
     }
   }
   for (int c = 0; c < n_cameras; ++c) {
-    LOG(INFO) << "[track_diag] camera " << c << ": registered_images=" << images_per_camera[static_cast<size_t>(c)]
+    LOG(INFO) << "[track_diag] camera " << c
+              << ": registered_images=" << images_per_camera[static_cast<size_t>(c)]
               << "  total_obs=" << obs_per_camera[static_cast<size_t>(c)];
   }
 }
@@ -2288,16 +2317,14 @@ static void diagnose_track_structure(const TrackStore& store, const std::vector<
 // Iterate until convergence (RMSE change < tol) or max_outer_iters reached.
 //
 // Returns true if at least one outer iteration succeeded and the final RMSE is finite.
-static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
-                               std::vector<Eigen::Vector3d>* poses_C,
-                               const std::vector<bool>& registered,
-                               const std::vector<int>& image_to_camera_index,
-                               std::vector<camera::Intrinsics>* cameras, int anchor_image,
-                               bool optimize_intrinsics,
-                               const std::vector<uint32_t>* partial_intr_fix_per_cam,
-                               double focal_prior_weight, double* rmse_px_out,
-                               int max_outer_iters = 5, int inner_iters = 100,
-                               double convergence_tol = 1e-3) {
+static bool
+run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
+                   std::vector<Eigen::Vector3d>* poses_C, const std::vector<bool>& registered,
+                   const std::vector<int>& image_to_camera_index,
+                   std::vector<camera::Intrinsics>* cameras, int anchor_image,
+                   bool optimize_intrinsics, const std::vector<uint32_t>* partial_intr_fix_per_cam,
+                   double focal_prior_weight, double* rmse_px_out, int max_outer_iters = 5,
+                   int inner_iters = 100, double convergence_tol = 1e-3) {
   if (!store || !poses_R || !poses_C || !cameras)
     return false;
 
@@ -2310,9 +2337,8 @@ static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* 
       std::vector<int> ba_image_index_to_global;
       std::vector<int> point_index_to_track_id;
       BAInput ba_in;
-      if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered,
-                                     image_to_camera_index, *cameras, nullptr,
-                                     &ba_image_index_to_global, &ba_in,
+      if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered, image_to_camera_index,
+                                     *cameras, nullptr, &ba_image_index_to_global, &ba_in,
                                      &point_index_to_track_id))
         break;
 
@@ -2356,10 +2382,11 @@ static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* 
         LOG(WARNING) << "  [alternating_ba] outer=" << outer << " step A failed";
         break;
       }
-      write_ba_result_back(ba_out, ba_image_index_to_global, point_index_to_track_id,
-                           store, poses_R, poses_C, cameras);
+      write_ba_result_back(ba_out, ba_image_index_to_global, point_index_to_track_id, store,
+                           poses_R, poses_C, cameras);
       any_success = true;
-      LOG(INFO) << "  [alternating_ba] outer=" << outer << " step A RMSE=" << ba_out.rmse_px << " px";
+      LOG(INFO) << "  [alternating_ba] outer=" << outer << " step A RMSE=" << ba_out.rmse_px
+                << " px";
     }
 
     // ── Step B: fix poses + intrinsics, optimize 3D points ───────────────
@@ -2368,9 +2395,8 @@ static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* 
       std::vector<int> ba_image_index_to_global;
       std::vector<int> point_index_to_track_id;
       BAInput ba_in;
-      if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered,
-                                     image_to_camera_index, *cameras, nullptr,
-                                     &ba_image_index_to_global, &ba_in,
+      if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered, image_to_camera_index,
+                                     *cameras, nullptr, &ba_image_index_to_global, &ba_in,
                                      &point_index_to_track_id))
         break;
 
@@ -2393,8 +2419,8 @@ static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* 
         LOG(WARNING) << "  [alternating_ba] outer=" << outer << " step B failed";
         break;
       }
-      write_ba_result_back(ba_out, ba_image_index_to_global, point_index_to_track_id,
-                           store, poses_R, poses_C, cameras);
+      write_ba_result_back(ba_out, ba_image_index_to_global, point_index_to_track_id, store,
+                           poses_R, poses_C, cameras);
       rmse_b = ba_out.rmse_px;
       LOG(INFO) << "  [alternating_ba] outer=" << outer << " step B RMSE=" << rmse_b << " px";
     }
@@ -2403,16 +2429,18 @@ static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* 
     if (prev_rmse < std::numeric_limits<double>::max()) {
       const double delta = std::abs(prev_rmse - rmse_b) / std::max(prev_rmse, 1e-6);
       if (delta < convergence_tol) {
-        LOG(INFO) << "  [alternating_ba] converged at outer=" << outer
-                  << " delta_rmse=" << delta << " rmse=" << rmse_b << " px";
-        if (rmse_px_out) *rmse_px_out = rmse_b;
+        LOG(INFO) << "  [alternating_ba] converged at outer=" << outer << " delta_rmse=" << delta
+                  << " rmse=" << rmse_b << " px";
+        if (rmse_px_out)
+          *rmse_px_out = rmse_b;
         return true;
       }
     }
     prev_rmse = rmse_b;
   }
 
-  if (rmse_px_out) *rmse_px_out = prev_rmse;
+  if (rmse_px_out)
+    *rmse_px_out = prev_rmse;
 
   log_cameras(*cameras, "run_global_ba");
   return any_success;
@@ -2436,11 +2464,10 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
     bool step_ok = false;
     std::vector<uint32_t> per_cam_masks = opts.intrinsics.fix_masks_per_camera(
         registered, image_to_camera_index, static_cast<int>(cameras->size()));
-    step_ok = run_global_ba(store, poses_R, poses_C, registered, image_to_camera_index, *cameras,
-                            cameras, opts.global_ba.optimize_intrinsics,
-                            opts.global_ba.max_iterations, &rmse, anchor_image,
-                            opts.intrinsics.focal_prior_weight, ov, &per_cam_masks,
-                            initial_pair_im1_global);
+    step_ok = run_global_ba(
+        store, poses_R, poses_C, registered, image_to_camera_index, *cameras, cameras,
+        opts.global_ba.optimize_intrinsics, opts.global_ba.max_iterations, &rmse, anchor_image,
+        opts.intrinsics.focal_prior_weight, ov, &per_cam_masks, initial_pair_im1_global);
     VLOG(1) << "[PERF] ba_outlier: "
             << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba).count()
             << "ms  RMSE=" << rmse << " px";
@@ -2823,8 +2850,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       auto t_ba0 = Clock::now();
       if (!run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
                                          image_to_camera_index, cameras, anchor_image,
-                                         num_registered, opts, &rmse,
-                                         static_cast<int>(*im1_ptr))) {
+                                         num_registered, opts, &rmse, static_cast<int>(*im1_ptr))) {
         LOG(ERROR) << "Global BA with outlier detection failed during global-only phase.";
       }
       VLOG(1) << "[PERF] global_ba (global_only_phase): "

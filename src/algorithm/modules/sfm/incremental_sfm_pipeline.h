@@ -56,7 +56,7 @@ struct BASolverOverrides {
   double gradient_tolerance = 0.0;       ///< Ceres gradient_tolerance.  0 = Ceres default.
   double function_tolerance = 0.0;       ///< Ceres function_tolerance.  0 = Ceres default.
   double parameter_tolerance = 0.0;      ///< Ceres parameter_tolerance. 0 = Ceres default.
-  int dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in (30).
+  int dense_schur_max_variable_cams = 0; ///< DENSE↔SPARSE Schur threshold. 0 = built-in (300).
   int max_num_iterations = 0;    ///< 0 = use max_iterations param of run_global_ba / local BA.
   double huber_loss_delta = 0.0; ///< Huber loss δ (px). 0 = BAInput default (4.0 px).
   double tikhonov_lambda = 0.0;  ///< Tikhonov regularization lambda. 0 = disabled. Passed to BAInput::tikhonov_lambda.

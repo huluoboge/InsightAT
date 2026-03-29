@@ -908,13 +908,31 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
 
   // Auto-select linear solver based on variable camera count.
   //
-  // DENSE_SCHUR: Schur complement is (6*n_var)×(6*n_var) dense – solved by LAPACK.
-  //   · LAPACK's pivot threshold is more permissive than CHOLMOD's strict PD check,
-  //     so it survives near-degenerate local configurations that kill SPARSE_SCHUR.
-  //   · Very fast for n_var ≤ 30 (Schur ≤ 180×180); use as first choice for local BA.
-  // SPARSE_SCHUR: better for large n_var (global BA, full-scene). Uses CHOLMOD.
-  // SPARSE_NORMAL_CHOLESKY: when intrinsics are free – avoids Schur complement
-  //   instability caused by intrinsics coupling.
+  // DENSE_SCHUR (n_cams ≤ threshold):
+  //   Schur complement is dense, solved by LAPACK. LAPACK's pivot threshold is more
+  //   permissive than CHOLMOD's strict PD check, so it survives near-degenerate
+  //   local configurations. Very fast for small Schur matrices (≤ 180×180 at n=30).
+  //
+  // ITERATIVE_SCHUR (n_cams > threshold):
+  //   Solves the Schur complement system with PCG – never calls Cholesky, so it does
+  //   NOT require the matrix to be strictly positive-definite. This is critical for
+  //   large-scene aerial BA, regardless of camera configuration:
+  //
+  //   · Oblique 5-camera systems: each "station" contributes 5 cameras with highly
+  //     correlated residuals (they share the same rigid platform). The resulting Schur
+  //     complement has block structure that CHOLMOD can mis-order, yielding extreme
+  //     condition numbers even though the scene itself is well-conditioned (oblique
+  //     cameras observe facades and have good depth variation). PCG + CLUSTER_JACOBI
+  //     exploits this cluster structure directly as the preconditioner, so convergence
+  //     is much faster than JACOBI and no Cholesky factorisation is needed.
+  //
+  //   · Nadir-only imagery: quasi-planar ground scenes; depth direction poorly
+  //     constrained; Schur condition number easily exceeds 10^12 → CHOLMOD fails.
+  //
+  //   · Any large graph (>300 cams): near-degenerate sub-graphs appear naturally
+  //     (thin corridors, weakly connected image groups) that break CHOLMOD's strict PD.
+  //
+  // (SPARSE_SCHUR / CHOLMOD removed from the large-scene path.)
   const int kDenseSchurMaxVariableCams = (input.solver_dense_schur_max_variable_cams > 0)
                                              ? input.solver_dense_schur_max_variable_cams
                                              : 300;
@@ -926,11 +944,25 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       ++n_variable_cams;
   }
 
-  options.preconditioner_type = ceres::JACOBI;
   if (n_cams < kDenseSchurMaxVariableCams) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
+    options.preconditioner_type = ceres::JACOBI;
   } else {
-    options.linear_solver_type = ceres::SPARSE_SCHUR;
+    // ITERATIVE_SCHUR + JACOBI: the only combination that is unconditionally robust
+    // for large aerial BA.
+    //
+    // CLUSTER_JACOBI was tried here but fails for oblique multi-camera systems:
+    // cameras at the same station (5-camera rig) are within centimetres of each other
+    // while flying at hundreds of metres, so the baseline inside each cluster is
+    // effectively zero. The cluster-level Schur complement is nearly singular, and
+    // CLUSTER_JACOBI's internal Cholesky factorisation fails with "Preconditioner
+    // update failed" – the same PD problem that kills SPARSE_SCHUR.
+    //
+    // Plain JACOBI uses only the diagonal of the Schur complement (= sum of squared
+    // Jacobian columns per camera DOF), which is always ≥ 0 as long as each camera
+    // has at least one observation. No factorisation → no PD requirement → always works.
+    options.linear_solver_type  = ceres::ITERATIVE_SCHUR;
+    options.preconditioner_type = ceres::JACOBI;
   }
   options.num_threads = input.num_threads > 0
                             ? input.num_threads
@@ -956,8 +988,20 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
-  // Fallback: if the chosen solver failed, retry with DENSE_SCHUR (LAPACK – most
-  // numerically robust).  Not needed when we already started with DENSE_SCHUR.
+  // Fallback: if DENSE_SCHUR failed (very rare – LAPACK pivot failure on a tiny local
+  // BA with extreme near-degeneracy), retry with ITERATIVE_SCHUR + JACOBI which is
+  // unconditionally robust (no Cholesky required).
+  // For the large-scene path (ITERATIVE_SCHUR + JACOBI), there is no further fallback
+  // since JACOBI is already the most conservative choice.
+  if (!summary.IsSolutionUsable() &&
+      options.linear_solver_type == ceres::DENSE_SCHUR) {
+    LOG(WARNING) << "global_bundle_analytic: DENSE_SCHUR failed ("
+                 << summary.message << "), retrying with ITERATIVE_SCHUR + JACOBI";
+    options.linear_solver_type  = ceres::ITERATIVE_SCHUR;
+    options.preconditioner_type = ceres::JACOBI;
+    ceres::Solve(options, &problem, &summary);
+  }
+
   if (!summary.IsSolutionUsable()) {
     LOG(INFO) << summary.FullReport();
     LOG(WARNING) << "global_bundle_analytic: " << summary.message;
