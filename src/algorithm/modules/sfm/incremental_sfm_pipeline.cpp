@@ -2413,6 +2413,8 @@ static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* 
   }
 
   if (rmse_px_out) *rmse_px_out = prev_rmse;
+
+  log_cameras(cameras, "run_global_ba");
   return any_success;
 }
 
@@ -2525,6 +2527,28 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
         LOG(INFO) << "  [ba_outlier] fine round " << r << ": BA failed; angle-rejected " << rejected
                   << " obs with angle < " << min_deg_angle << " deg";
         ok = run_one_ba(ov);
+        if (!ok) {
+          // Alternating BA: fallback when joint solver fails (degenerate geometry / near-collinear
+          // cameras). Alternate between fixing 3D points (optimize poses+intrinsics) and fixing
+          // poses+intrinsics (optimize 3D points) until convergence.
+          LOG(INFO) << "  [ba_outlier] fine round " << r
+                    << ": joint BA failed; trying alternating BA fallback";
+          std::vector<uint32_t> per_cam_masks = opts.intrinsics.fix_masks_per_camera(
+              registered, image_to_camera_index, static_cast<int>(cameras->size()));
+          ok = run_alternating_ba(store, poses_R, poses_C, registered, image_to_camera_index,
+                                  cameras, anchor_image, opts.global_ba.optimize_intrinsics,
+                                  &per_cam_masks, opts.intrinsics.focal_prior_weight, &rmse,
+                                  /*max_outer_iters=*/5, /*inner_iters=*/100,
+                                  /*convergence_tol=*/1e-3);
+          if (ok) {
+            LOG(INFO) << "  [ba_outlier] fine round " << r
+                      << ": alternating BA succeeded, RMSE=" << rmse << " px";
+            if (rmse_px_out)
+              *rmse_px_out = rmse;
+          } else {
+            LOG(WARNING) << "  [ba_outlier] fine round " << r << ": alternating BA also failed";
+          }
+        }
         if (!ok) {
           LOG(WARNING) << "  [ba_outlier] fine round " << r
                        << ": BA failed even after angle-based outlier rejection";
