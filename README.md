@@ -231,7 +231,7 @@ src/
 ```
 ### 文档
 
-- **编码规范**：[doc/design/CODING_STYLE.md](doc/design/CODING_STYLE.md)
+- **编码规范**：[doc/design/02_coding_style.md](doc/design/02_coding_style.md)
   - 命名规范、注释格式、头文件组织、CLI 工具约定、GPU 代码规范、序列化规范等
   - **CLI 工具实现文件**（`src/algorithm/tools/isat_*.cpp`）须在**文件开头**写规范的文件头注释：文件名、工具标题、功能概述、Pipeline/输出说明、Usage 示例，详见该文档 §1.3
   - 代码格式由项目根目录的 [.clang-format](.clang-format) 自动执行（`clang-format -i <file>`）

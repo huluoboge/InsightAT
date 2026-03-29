@@ -2,6 +2,8 @@
 BasedOnStyle: LLVM
 Language: Cpp
 IndentWidth: 2
+# doc/design/02_coding_style.md §6: 命名空间内容不额外缩进
+NamespaceIndentation: None
 ColumnLimit: 100
 AccessModifierOffset: -2
 AlignAfterOpenBracket: Align

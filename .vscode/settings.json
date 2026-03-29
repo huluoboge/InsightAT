@@ -95,5 +95,10 @@
         "core": "cpp",
         "specialfunctions": "cpp"
     },
-    "C_Cpp.default.compilerPath": "/usr/bin/g++"
+    "C_Cpp.default.compilerPath": "/usr/bin/g++",
+    "kiroAgent.trustedCommands": [
+        "grep *",
+        "ls *",
+        "find *"
+    ]
 }

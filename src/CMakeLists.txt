@@ -4,7 +4,7 @@ add_subdirectory(database)
 add_subdirectory(util)
 add_subdirectory(ui)
 add_subdirectory(algorithm)
-
+add_subdirectory(render)
 # ─────────────────────────────────────────────────────────────
 # 查找 Qt5 包
 # ─────────────────────────────────────────────────────────────
@@ -12,6 +12,10 @@ find_package(Qt5Widgets QUIET)
 find_package(Qt5Core QUIET)
 find_package(Qt5Gui QUIET)
 find_package(Qt5OpenGL QUIET)
+
+if(Qt5Widgets_FOUND AND Qt5Core_FOUND AND Qt5Gui_FOUND AND Qt5OpenGL_FOUND)
+  add_subdirectory(tools/at_bundler_viewer)
+endif()
 
 # ─────────────────────────────────────────────────────────────
 # 新的 InsightAT 可执行文件（使用新的 MainWindow）

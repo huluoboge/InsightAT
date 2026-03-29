@@ -2414,7 +2414,7 @@ static bool run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* 
 
   if (rmse_px_out) *rmse_px_out = prev_rmse;
 
-  log_cameras(cameras, "run_global_ba");
+  log_cameras(*cameras, "run_global_ba");
   return any_success;
 }
 

@@ -19,40 +19,46 @@
      <item>
       <widget class="QPushButton" name="pushButton_home">
        <property name="text">
-        <string>Home</string>
+        <string>Reset view</string>
        </property>
-       <property name="checkable">
-        <bool>true</bool>
+       <property name="toolTip">
+        <string>Reset camera and scene transform to default</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pushButton_showBall">
        <property name="text">
-        <string>Show rotate ball</string>
+        <string>Pivot</string>
        </property>
        <property name="checkable">
         <bool>true</bool>
+       </property>
+       <property name="toolTip">
+        <string>Show the rotation pivot (draggable ball)</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pushButton_showCamera">
        <property name="text">
-        <string>Show cameras</string>
+        <string>Cameras</string>
        </property>
        <property name="checkable">
         <bool>true</bool>
        </property>
        <property name="checked">
         <bool>true</bool>
+       </property>
+       <property name="toolTip">
+        <string>Show camera frustums</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pushButton_showVertex">
        <property name="text">
-        <string>Show vertex</string>
+        <string>Points</string>
        </property>
        <property name="checkable">
         <bool>true</bool>
@@ -60,33 +66,48 @@
        <property name="checked">
         <bool>true</bool>
        </property>
+       <property name="toolTip">
+        <string>Show sparse 3D points</string>
+       </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pushButton_cameraSmaller">
        <property name="text">
-        <string>Camera smaller</string>
+        <string>Frustums −</string>
+       </property>
+       <property name="toolTip">
+        <string>Smaller camera frustum glyphs (visualization only)</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pushButton_cameraBigger">
        <property name="text">
-        <string>Camera bigger</string>
+        <string>Frustums +</string>
+       </property>
+       <property name="toolTip">
+        <string>Larger camera frustum glyphs (visualization only)</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pushButton_vertexSmaller">
        <property name="text">
-        <string>Vertex smaller</string>
+        <string>Points −</string>
+       </property>
+       <property name="toolTip">
+        <string>Smaller point size</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pushButton_vertexBigger">
        <property name="text">
-        <string>Vertex bigger</string>
+        <string>Points +</string>
+       </property>
+       <property name="toolTip">
+        <string>Larger point size</string>
        </property>
       </widget>
      </item>

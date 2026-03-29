@@ -16,45 +16,44 @@ namespace Ui {
 class AT3dRenderWidget;
 }
 
-INSIGHT_NAME_SPACE
+namespace insight {
 
 class AT3dRenderWidget : public QWidget {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    explicit AT3dRenderWidget(QWidget* parent = nullptr);
-    ~AT3dRenderWidget();
+  explicit AT3dRenderWidget(QWidget* parent = nullptr);
+  ~AT3dRenderWidget();
 
-    void refreshDatas(const ATTask& task);
+  void refreshDatas(const ATTask& task);
 
-    void refreshDatas(const ModelTask& task);
+  void refreshDatas(const ModelTask& task);
 
 public slots:
-    void on_pushButton_cameraSmaller_clicked();
-    void on_pushButton_cameraBigger_clicked();
-    void on_pushButton_showBall_clicked(bool);
-    void on_pushButton_vertexSmaller_clicked();
-    void on_pushButton_vertexBigger_clicked();
-    void on_pushButton_showCamera_clicked(bool);
-    void on_pushButton_showVertex_clicked(bool);
-    void on_pushButton_home_clicked();
+  void on_pushButton_cameraSmaller_clicked();
+  void on_pushButton_cameraBigger_clicked();
+  void on_pushButton_showBall_clicked(bool);
+  void on_pushButton_vertexSmaller_clicked();
+  void on_pushButton_vertexBigger_clicked();
+  void on_pushButton_showCamera_clicked(bool);
+  void on_pushButton_showVertex_clicked(bool);
+  void on_pushButton_home_clicked();
 
-    void onSetGridCount(int xcount, int ycount, int zcount);
+  void onSetGridCount(int xcount, int ycount, int zcount);
 
 public:
-    void setGridCallBack(std::function<void(int, int, int)> setGridFunc)
-    {
-        _setGridFunction = setGridFunc;
-    }
+  void setGridCallBack(std::function<void(int, int, int)> setGridFunc) {
+    _setGridFunction = setGridFunc;
+  }
 
 private:
-    static void gridFunction(int, int, int) { }
-    Ui::AT3dRenderWidget* ui;
-    render::RenderWidget* _renderWidget;
-    render::RenderTracks* _tracks;
-    std::function<void(int, int, int)> _setGridFunction;
-    // std::array<double,3> _center;
+  static void gridFunction(int, int, int) {}
+  Ui::AT3dRenderWidget* ui;
+  render::RenderWidget* _renderWidget;
+  render::RenderTracks* _tracks;
+  std::function<void(int, int, int)> _setGridFunction;
+  // std::array<double,3> _center;
 };
 
-INSIGHT_NAME_SPACE_END
+} // namespace insight
 #endif // AT3DRENDERWIDGET_H
