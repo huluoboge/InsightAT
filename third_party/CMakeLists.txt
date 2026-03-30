@@ -26,6 +26,22 @@ add_subdirectory(DBow3)
 # PoseLib for alternate resection / absolute-pose backend
 add_subdirectory(PoseLib)
 
+# PBA (Parallel Bundle Adjustment, CPU-only static library)
+# We build only the three CPU source files and suppress PBA's own flags.
+find_package(Threads REQUIRED)
+add_library(pba_cpu STATIC
+    pba/src/pba/pba.cpp
+    pba/src/pba/ConfigBA.cpp
+    pba/src/pba/SparseBundleCPU.cpp
+)
+target_compile_definitions(pba_cpu PUBLIC PBA_NO_GPU)
+target_include_directories(pba_cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/pba/src)
+target_link_libraries(pba_cpu PRIVATE Threads::Threads)
+# PBA was written against C++03 and has many warnings under -Wall; suppress them
+# so they don't pollute the parent-project build output.
+target_compile_options(pba_cpu PRIVATE -w -fPIC)
+set_property(TARGET pba_cpu PROPERTY FOLDER "InsightAT/ThirdParty")
+
 list(APPEND directories cereal cmdLine progress stlplus3) 
 foreach(inDirectory ${directories})
 install(

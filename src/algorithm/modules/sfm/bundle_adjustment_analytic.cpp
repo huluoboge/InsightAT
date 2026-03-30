@@ -882,19 +882,21 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // Pose blocks: only non-fixed blocks
     for (int i = 0; i < n_cams; ++i) {
       double* pp = poses_data.data() + i * 7;
-      if (!problem.HasParameterBlock(pp)) continue;
-      if (problem.IsParameterBlockConstant(pp)) continue;
-      problem.AddResidualBlock(
-          new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
+      if (!problem.HasParameterBlock(pp))
+        continue;
+      if (problem.IsParameterBlockConstant(pp))
+        continue;
+      problem.AddResidualBlock(new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
     }
 
     // Intrinsics blocks: only non-fixed blocks
     for (int c = 0; c < n_distinct; ++c) {
       double* ip = intr_params.data() + c * kAnalyticIntrCount;
-      if (!problem.HasParameterBlock(ip)) continue;
-      if (problem.IsParameterBlockConstant(ip)) continue;
-      problem.AddResidualBlock(
-          new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
+      if (!problem.HasParameterBlock(ip))
+        continue;
+      if (problem.IsParameterBlockConstant(ip))
+        continue;
+      problem.AddResidualBlock(new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
     }
 
     // Do NOT add regularization to 3D point blocks
@@ -943,7 +945,11 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     if (!pose_fixed)
       ++n_variable_cams;
   }
-
+  options.dense_linear_algebra_library_type = ceres::EIGEN;
+  if (ceres::IsSparseLinearAlgebraLibraryTypeAvailable(ceres::SUITE_SPARSE)) {
+    options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
+    LOG(INFO) << "Using Ceres with SuiteSparse for sparse linear algebra.";
+  }
   if (n_cams < kDenseSchurMaxVariableCams) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.preconditioner_type = ceres::JACOBI;
@@ -961,8 +967,9 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // Plain JACOBI uses only the diagonal of the Schur complement (= sum of squared
     // Jacobian columns per camera DOF), which is always ≥ 0 as long as each camera
     // has at least one observation. No factorisation → no PD requirement → always works.
-    options.linear_solver_type  = ceres::ITERATIVE_SCHUR;
-    options.preconditioner_type = ceres::JACOBI;
+    options.linear_solver_type = ceres::ITERATIVE_SCHUR;
+    // options.preconditioner_type = ceres::JACOBI;
+    options.preconditioner_type = ceres::CLUSTER_TRIDIAGONAL;
   }
   options.num_threads = input.num_threads > 0
                             ? input.num_threads
@@ -993,11 +1000,10 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // unconditionally robust (no Cholesky required).
   // For the large-scene path (ITERATIVE_SCHUR + JACOBI), there is no further fallback
   // since JACOBI is already the most conservative choice.
-  if (!summary.IsSolutionUsable() &&
-      options.linear_solver_type == ceres::DENSE_SCHUR) {
-    LOG(WARNING) << "global_bundle_analytic: DENSE_SCHUR failed ("
-                 << summary.message << "), retrying with ITERATIVE_SCHUR + JACOBI";
-    options.linear_solver_type  = ceres::ITERATIVE_SCHUR;
+  if (!summary.IsSolutionUsable() && options.linear_solver_type == ceres::DENSE_SCHUR) {
+    LOG(WARNING) << "global_bundle_analytic: DENSE_SCHUR failed (" << summary.message
+                 << "), retrying with ITERATIVE_SCHUR + JACOBI";
+    options.linear_solver_type = ceres::ITERATIVE_SCHUR;
     options.preconditioner_type = ceres::JACOBI;
     ceres::Solve(options, &problem, &summary);
   }

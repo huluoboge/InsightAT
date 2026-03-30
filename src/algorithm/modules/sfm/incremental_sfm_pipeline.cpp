@@ -10,6 +10,7 @@
 #include "../camera/camera_utils.h"
 #include "../geometry/gpu_geo_ransac.h"
 #include "bundle_adjustment_analytic.h"
+#include "bundle_adjustment_pba.h"
 #include "resection.h"
 #include "scene_normalization.h"
 #include "track_store.h"
@@ -42,14 +43,14 @@ namespace sfm {
 uint32_t IntrinsicsSchedule::fix_mask_for(int n_registered) const {
   using M = FixIntrinsicsMask;
   // Phase 0: too few images — freeze everything
-  if (n_registered < 5)
+  if (n_registered < phase1_min_images)
     return static_cast<uint32_t>(M::kFixIntrAll);
   // Phase 1: only fx/fy free; fix sigma, cx, cy, all distortion
-  if (n_registered < 10)
+  if (n_registered < phase2_min_images)
     return static_cast<uint32_t>(M::kFixIntrSigma | M::kFixIntrCx | M::kFixIntrCy | M::kFixIntrK1 |
                                  M::kFixIntrK2 | M::kFixIntrK3 | M::kFixIntrP1 | M::kFixIntrP2);
   // Phase 2: fx/fy + k1/k2 free; fix sigma, cx, cy, k3, p1, p2
-  if (n_registered < 30)
+  if (n_registered < phase3_min_images)
     return static_cast<uint32_t>(M::kFixIntrSigma | M::kFixIntrCx | M::kFixIntrCy | M::kFixIntrK3 |
                                  M::kFixIntrP1 | M::kFixIntrP2);
   // Phase 3: all intrinsics free
@@ -1594,27 +1595,28 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   //   non-frozen cameras, enabling independent phase progression per camera.
   // partial_intr_fix (fallback): scalar applied to all non-frozen cameras when
   //   partial_intr_fix_per_cam is not provided.
+
+  if (false) // disable auto fix intrinsic
   {
-    // Large-scene heuristic: when image count exceeds the DENSE→SPARSE Schur threshold,
-    // CHOLMOD is likely to fail if intrinsics are free (near-singular Schur complement due
-    // to cx/cy coupling and collinear radial-distortion polynomials). Auto-fix all intrinsics
-    // for stability — they should already be well-converged from earlier local-BA rounds.
-    // The threshold is reused from solver_overrides so the caller can tune both behaviours
-    // together without introducing an extra knob.
+    // Large-scene heuristic: for the PBA-first path we keep intrinsics fixed.
+    //
+    // PBA's camera model does not support Brown-Conrady (k2/k3/p1/p2) directly.
+    // We therefore pre-undistort observations before calling PBA, and run PBA
+    // with NO distortion and fixed intrinsics. To keep Ceres fallback consistent
+    // with the same observation model, we also freeze all intrinsics in large scenes.
     const int kAutoFixIntrThreshold = (solver_overrides.dense_schur_max_variable_cams > 0)
                                           ? solver_overrides.dense_schur_max_variable_cams
                                           : 300;
-    const bool effective_optimize_intrinsics =
-        optimize_intrinsics && (static_cast<int>(ba_in.poses_R.size()) <= kAutoFixIntrThreshold);
-    if (optimize_intrinsics && !effective_optimize_intrinsics) {
-      LOG(INFO) << "run_global_ba: auto-fixing intrinsics (" << ba_in.poses_R.size()
-                << " images > threshold " << kAutoFixIntrThreshold
-                << ") to stabilise SPARSE_SCHUR / CHOLMOD";
-      ba_in.optimize_intrinsics = false;
+    const bool is_large_scene =
+        optimize_intrinsics && (static_cast<int>(ba_in.poses_R.size()) > kAutoFixIntrThreshold);
+    if (is_large_scene) {
+      LOG(INFO) << "run_global_ba: large scene (" << ba_in.poses_R.size() << " images > threshold "
+                << kAutoFixIntrThreshold
+                << "): fixing all intrinsics (PBA-first uses pre-undistorted observations)";
     }
 
     ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(), 0u);
-    if (!effective_optimize_intrinsics) {
+    if (!optimize_intrinsics) {
       ba_in.fix_intrinsics_flags.assign(ba_in.cameras.size(),
                                         static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
     } else {
@@ -1622,18 +1624,26 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
             partial_intr_fix_per_cam->size() == ba_in.cameras.size())
           << "partial_intr_fix_per_cam size must match number of cameras";
       for (size_t c = 0; c < ba_in.cameras.size(); ++c) {
-        ba_in.fix_intrinsics_flags[c] = (*partial_intr_fix_per_cam)[c];
+        if (is_large_scene) {
+          ba_in.fix_intrinsics_flags[c] = static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll);
+        } else {
+          ba_in.fix_intrinsics_flags[c] = (*partial_intr_fix_per_cam)[c];
+        }
       }
     }
     bool any_variable = false;
-    for (const uint32_t f : ba_in.fix_intrinsics_flags)
+    for (const uint32_t f : ba_in.fix_intrinsics_flags) {
       if (f != static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll)) {
         any_variable = true;
         break;
       }
+    }
     ba_in.optimize_intrinsics = any_variable;
     ba_in.focal_prior_weight = focal_prior_weight;
   }
+
+  ba_in.optimize_intrinsics = optimize_intrinsics;
+  ba_in.focal_prior_weight = focal_prior_weight;
   // Fix the coordinate-system anchor: prefer the initial-pair reference camera (anchor_image).
   // Falling back to index 0 risks anchoring a newly-PnP-estimated camera instead of the true
   // origin, causing the whole reconstruction to drift/collapse.
@@ -1679,9 +1689,44 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
             << "  anchor_global_im=" << anchor_image << "  anchor_ba_idx=" << anchor_ba_idx
             << "  ba[0]_global_im=" << ba_image_index_to_global[0];
   BAResult ba_out;
-  if (!global_bundle_analytic(ba_in, &ba_out, max_iterations)) {
-    LOG(INFO) << "run_global_ba: solver failed";
-    return false;
+
+  // Large-scene path: run PBA first (robust global step), then optionally run a
+  // short Ceres polish pass. If PBA fails, fall back to full Ceres directly.
+  const int kPbaMinImages = (solver_overrides.dense_schur_max_variable_cams > 0)
+                                ? solver_overrides.dense_schur_max_variable_cams
+                                : 300;
+  bool solved = false;
+  bool used_pba = false;
+  if (static_cast<int>(ba_in.poses_R.size()) > kPbaMinImages) {
+    LOG(INFO) << "run_global_ba: trying PBA first (" << ba_in.poses_R.size() << " images > "
+              << kPbaMinImages << ")";
+    solved = global_bundle_pba(ba_in, &ba_out, max_iterations);
+    used_pba = solved;
+    if (!solved)
+      LOG(WARNING) << "run_global_ba: PBA failed, falling back to Ceres ITERATIVE_SCHUR";
+  }
+  if (!solved) {
+    if (!global_bundle_analytic(ba_in, &ba_out, max_iterations)) {
+      LOG(INFO) << "run_global_ba: solver failed";
+      return false;
+    }
+  } else if (used_pba) {
+    // Ceres polish after successful PBA: PBA gets robust global convergence,
+    // Ceres often extracts extra loss reduction in the same basin.
+    BAInput ba_refine = ba_in;
+    ba_refine.poses_R = ba_out.poses_R;
+    ba_refine.poses_C = ba_out.poses_C;
+    ba_refine.points3d = ba_out.points3d;
+    ba_refine.cameras = ba_out.cameras;
+    BAResult ba_refined;
+    const int kPolishIters = std::max(10, std::min(80, max_iterations / 8));
+    if (global_bundle_analytic(ba_refine, &ba_refined, kPolishIters)) {
+      LOG(INFO) << "run_global_ba: Ceres polish after PBA improved RMSE " << ba_out.rmse_px
+                << " -> " << ba_refined.rmse_px << " px (iters=" << kPolishIters << ")";
+      ba_out = std::move(ba_refined);
+    } else {
+      LOG(WARNING) << "run_global_ba: Ceres polish after PBA failed, keeping PBA result";
+    }
   }
   LOG(INFO) << "run_global_ba: RMSE=" << ba_out.rmse_px << " px, success=" << ba_out.success;
   write_ba_result_back(ba_out, ba_image_index_to_global, point_index_to_track_id, store, poses_R,

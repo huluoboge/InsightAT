@@ -44,6 +44,8 @@ add_library(sfm_module STATIC
     view_graph.h
     bundle_adjustment_analytic.cpp
     bundle_adjustment_analytic.h
+    bundle_adjustment_pba.cpp
+    bundle_adjustment_pba.h
     # Incremental SfM helpers excluded (used only by incremental_sfm; files kept)
     # incremental_sfm_helpers.cpp
     # incremental_sfm_helpers.h
@@ -105,6 +107,7 @@ target_link_libraries(sfm_module
         ${GLEW_LIBRARIES}
     PRIVATE
         glog::glog
+        pba_cpu
 )
 
 target_compile_features(sfm_module PUBLIC cxx_std_17)
