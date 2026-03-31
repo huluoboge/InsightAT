@@ -930,7 +930,8 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   if (n_cams < kDenseSchurMaxVariableCams) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
   } else {
-    options.linear_solver_type = ceres::SPARSE_SCHUR;
+    // options.linear_solver_type = ceres::SPARSE_SCHUR;
+    options.linear_solver_type = ceres::ITERATIVE_SCHUR;
   }
   options.num_threads = input.num_threads > 0
                             ? input.num_threads
