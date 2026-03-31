@@ -643,6 +643,114 @@ bool TikhonovIntrCost::Evaluate(double const* const* params, double* residuals,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Angular-diversity helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Internal helper: compute max pairwise viewing angle (radians) for a set of
+/// observer camera centres looking at world point X.
+/// Returns 0.0 when fewer than 2 distinct rays are available.
+static double max_pairwise_angle_rad(const Eigen::Vector3d& X,
+                                     const std::vector<int>& observer_ba_indices,
+                                     const std::vector<Eigen::Vector3d>& poses_C,
+                                     double early_exit_rad) {
+  double max_angle = 0.0;
+  const int n = static_cast<int>(observer_ba_indices.size());
+  const int n_cams = static_cast<int>(poses_C.size());
+  for (int a = 0; a < n && max_angle < early_exit_rad; ++a) {
+    const int ia = observer_ba_indices[static_cast<size_t>(a)];
+    if (ia < 0 || ia >= n_cams)
+      continue;
+    const Eigen::Vector3d ray_a = (X - poses_C[static_cast<size_t>(ia)]).normalized();
+    for (int b = a + 1; b < n && max_angle < early_exit_rad; ++b) {
+      const int ib = observer_ba_indices[static_cast<size_t>(b)];
+      if (ib < 0 || ib >= n_cams)
+        continue;
+      const Eigen::Vector3d ray_b = (X - poses_C[static_cast<size_t>(ib)]).normalized();
+      const double dot = std::max(-1.0, std::min(1.0, ray_a.dot(ray_b)));
+      const double angle = std::acos(dot);
+      if (angle > max_angle)
+        max_angle = angle;
+    }
+  }
+  return max_angle;
+}
+
+/// Internal helper: iterate over all variable points in @p problem and call
+/// SetParameterBlockConstant on those whose observers all have a max pairwise
+/// viewing angle < threshold_rad.
+/// @return number of points newly fixed.
+static int apply_diversity_fix_to_problem(ceres::Problem& problem,
+                                          std::vector<Eigen::Vector3d>& points3d,
+                                          const BAInput& input, double threshold_rad) {
+  const int n_pts = static_cast<int>(points3d.size());
+  const int n_cams = static_cast<int>(input.poses_C.size());
+  if (n_pts == 0 || n_cams == 0 || threshold_rad <= 0.0)
+    return 0;
+
+  // Build point → [BA camera index] mapping in one O(n_obs) pass.
+  std::vector<std::vector<int>> point_observers(static_cast<size_t>(n_pts));
+  for (const auto& obs : input.observations) {
+    if (obs.point_index >= 0 && obs.point_index < n_pts && obs.image_index >= 0 &&
+        obs.image_index < n_cams)
+      point_observers[static_cast<size_t>(obs.point_index)].push_back(obs.image_index);
+  }
+
+  int n_fixed = 0;
+  for (int p = 0; p < n_pts; ++p) {
+    double* xp = points3d[static_cast<size_t>(p)].data();
+    if (!problem.HasParameterBlock(xp) || problem.IsParameterBlockConstant(xp))
+      continue;
+    const auto& obs_list = point_observers[static_cast<size_t>(p)];
+    const double max_angle = max_pairwise_angle_rad(points3d[static_cast<size_t>(p)], obs_list,
+                                                    input.poses_C, threshold_rad);
+    if (max_angle < threshold_rad) {
+      problem.SetParameterBlockConstant(xp);
+      ++n_fixed;
+    }
+  }
+  return n_fixed;
+}
+
+int fix_low_diversity_points(BAInput& ba_input, double min_angle_deg) {
+  if (min_angle_deg <= 0.0)
+    return 0;
+  const double threshold_rad = min_angle_deg * M_PI / 180.0;
+  const int n_pts = static_cast<int>(ba_input.points3d.size());
+  const int n_cams = static_cast<int>(ba_input.poses_C.size());
+  if (n_pts == 0 || n_cams == 0)
+    return 0;
+
+  // Ensure fix_point is sized correctly.
+  if (static_cast<int>(ba_input.fix_point.size()) < n_pts)
+    ba_input.fix_point.resize(static_cast<size_t>(n_pts), false);
+
+  // Build point → observer mapping.
+  std::vector<std::vector<int>> point_observers(static_cast<size_t>(n_pts));
+  for (const auto& obs : ba_input.observations) {
+    if (obs.point_index >= 0 && obs.point_index < n_pts && obs.image_index >= 0 &&
+        obs.image_index < n_cams)
+      point_observers[static_cast<size_t>(obs.point_index)].push_back(obs.image_index);
+  }
+
+  int n_fixed = 0;
+  for (int p = 0; p < n_pts; ++p) {
+    if (ba_input.fix_point[static_cast<size_t>(p)])
+      continue;
+    const auto& obs_list = point_observers[static_cast<size_t>(p)];
+    const double max_angle = max_pairwise_angle_rad(ba_input.points3d[static_cast<size_t>(p)],
+                                                    obs_list, ba_input.poses_C, threshold_rad);
+    if (max_angle < threshold_rad) {
+      ba_input.fix_point[static_cast<size_t>(p)] = true;
+      ++n_fixed;
+    }
+  }
+  if (n_fixed > 0)
+    LOG(INFO) << "fix_low_diversity_points: fixed " << n_fixed << "/" << n_pts
+              << " points (threshold=" << min_angle_deg << " deg)";
+  return n_fixed;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // global_bundle_analytic
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -882,19 +990,21 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // Pose blocks: only non-fixed blocks
     for (int i = 0; i < n_cams; ++i) {
       double* pp = poses_data.data() + i * 7;
-      if (!problem.HasParameterBlock(pp)) continue;
-      if (problem.IsParameterBlockConstant(pp)) continue;
-      problem.AddResidualBlock(
-          new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
+      if (!problem.HasParameterBlock(pp))
+        continue;
+      if (problem.IsParameterBlockConstant(pp))
+        continue;
+      problem.AddResidualBlock(new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
     }
 
     // Intrinsics blocks: only non-fixed blocks
     for (int c = 0; c < n_distinct; ++c) {
       double* ip = intr_params.data() + c * kAnalyticIntrCount;
-      if (!problem.HasParameterBlock(ip)) continue;
-      if (problem.IsParameterBlockConstant(ip)) continue;
-      problem.AddResidualBlock(
-          new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
+      if (!problem.HasParameterBlock(ip))
+        continue;
+      if (problem.IsParameterBlockConstant(ip))
+        continue;
+      problem.AddResidualBlock(new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
     }
 
     // Do NOT add regularization to 3D point blocks
@@ -926,11 +1036,87 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       ++n_variable_cams;
   }
 
+  // ── Angular-diversity fix (large-scene path only) ─────────────────────────
+  // Before selecting SPARSE_SCHUR, fix variable 3-D points whose observers are
+  // all from near-zero-baseline clusters (e.g. multi-camera rig stations).
+  // These points cause catastrophic cancellation in the Schur complement:
+  //   S_ij ≈ large − large → loss of double precision → near-singular S.
+  // Fixing them removes them from B while keeping their reprojection residuals,
+  // so cameras remain constrained and the Schur complement stays well-conditioned.
+  int n_diversity_fixed = 0;
+  if (n_cams >= kDenseSchurMaxVariableCams && input.angular_diversity_min_deg > 0.0) {
+    const double thr_rad = input.angular_diversity_min_deg * M_PI / 180.0;
+    n_diversity_fixed = apply_diversity_fix_to_problem(problem, result->points3d, input, thr_rad);
+    if (n_diversity_fixed > 0)
+      LOG(INFO) << "global_bundle_analytic: angular_diversity_fix fixed " << n_diversity_fixed
+                << "/" << n_pts
+                << " low-diversity points (threshold=" << input.angular_diversity_min_deg
+                << " deg)";
+  }
+
+  // ── Near-zero-baseline camera pair priors (large-scene path) ─────────────
+  // Near-zero-baseline camera pairs (e.g. same rig station) cause catastrophic
+  // cancellation in the Schur complement S_AB = C_AB - W_A B^{-1} W_B^T even
+  // when the 3-D points are well-triangulated by a third camera, because
+  // J_Ak ≈ J_Bk → C_AB ≈ C_AA and W_A B^{-1} W_B^T ≈ W_A B^{-1} W_A^T.
+  //
+  // Adding a soft distance prior between such pairs injects:
+  //   +ε on S_AA and S_BB  (via J_CA^T J_CA)
+  //   -ε on S_AB           (via J_CA^T J_CB, opposite signs)
+  // giving det([S_AA+ε, S_AA-ε; S_AA-ε, S_AA+ε]) = 4·S_AA·ε > 0.
+  //
+  // Threshold: baseline / median_scene_depth < 1%.
+  // Weight: 10 (dimensionless soft spring around the registered baseline).
+  if (n_cams >= kDenseSchurMaxVariableCams && !result->points3d.empty()) {
+    // Median scene depth: median ||X|| over all 3-D points.
+    // std::vector<double> pt_norms;
+    // pt_norms.reserve(result->points3d.size());
+    // for (const auto& X : result->points3d)
+    //   pt_norms.push_back(X.norm());
+    // const size_t mid = pt_norms.size() / 2;
+    // std::nth_element(pt_norms.begin(), pt_norms.begin() + static_cast<ptrdiff_t>(mid),
+    //                  pt_norms.end());
+    // const double median_depth = std::max(pt_norms[mid], 1e-3);
+
+    // constexpr double kBaselineDepthThreshold = 0.01; // 1% of scene depth
+    // constexpr double kPriorWeight = 10.0;
+
+    // int n_baseline_priors = 0;
+    // for (int i = 0; i < n_cams; ++i) {
+    //   double* pa = poses_data.data() + static_cast<size_t>(i) * 7;
+    //   if (!problem.HasParameterBlock(pa) || problem.IsParameterBlockConstant(pa))
+    //     continue;
+    //   for (int j = i + 1; j < n_cams; ++j) {
+    //     double* pb = poses_data.data() + static_cast<size_t>(j) * 7;
+    //     if (!problem.HasParameterBlock(pb) || problem.IsParameterBlockConstant(pb))
+    //       continue;
+    //     const double d =
+    //         (input.poses_C[static_cast<size_t>(i)] - input.poses_C[static_cast<size_t>(j)]).norm();
+    //     if (d / median_depth >= kBaselineDepthThreshold)
+    //       continue;
+    //     // d0: use registered baseline, clamped away from zero to keep 1/d0 finite.
+    //     const double d0 = std::max(d, median_depth * 1e-4);
+    //     problem.AddResidualBlock(new CameraDistanceCostAnalytic(d0, kPriorWeight), nullptr, pa, pb);
+    //     ++n_baseline_priors;
+    //   }
+    // }
+    // if (n_baseline_priors > 0)
+    //   LOG(INFO) << "global_bundle_analytic: added " << n_baseline_priors
+    //             << " near-zero-baseline priors"
+    //             << " (threshold=" << kBaselineDepthThreshold * 100.0 << "% * depth=" << median_depth
+    //             << ")";
+  }
+
   options.preconditioner_type = ceres::JACOBI;
   if (n_cams < kDenseSchurMaxVariableCams) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
   } else {
-    options.linear_solver_type = ceres::SPARSE_SCHUR;
+    // Large-scene path: SPARSE_SCHUR (direct Cholesky on the Schur complement,
+    // fast and accurate when the Schur complement is well-conditioned after the
+    // diversity fix above).  Falls back to ITERATIVE_SCHUR + JACOBI if CHOLMOD
+    // still finds the complement near-singular (e.g. remaining degenerate geometry).
+    // options.linear_solver_type = ceres::SPARSE_SCHUR;
+    options.linear_solver_type = ceres::ITERATIVE_SCHUR;
   }
   options.num_threads = input.num_threads > 0
                             ? input.num_threads
@@ -956,8 +1142,22 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
-  // Fallback: if the chosen solver failed, retry with DENSE_SCHUR (LAPACK – most
-  // numerically robust).  Not needed when we already started with DENSE_SCHUR.
+  // Fallback chain:
+  //   DENSE_SCHUR failure  → ITERATIVE_SCHUR + JACOBI (always PD, no Cholesky).
+  //   SPARSE_SCHUR failure → ITERATIVE_SCHUR + JACOBI (same reason).
+  // ITERATIVE_SCHUR itself has no further fallback (JACOBI is the most conservative).
+  if (!summary.IsSolutionUsable()) {
+    if (options.linear_solver_type == ceres::DENSE_SCHUR ||
+        options.linear_solver_type == ceres::SPARSE_SCHUR) {
+      const char* prev =
+          (options.linear_solver_type == ceres::DENSE_SCHUR) ? "DENSE_SCHUR" : "SPARSE_SCHUR";
+      LOG(WARNING) << "global_bundle_analytic: " << prev << " failed (" << summary.message
+                   << "), retrying with ITERATIVE_SCHUR + JACOBI";
+      options.linear_solver_type = ceres::ITERATIVE_SCHUR;
+      options.preconditioner_type = ceres::JACOBI;
+      ceres::Solve(options, &problem, &summary);
+    }
+  }
   if (!summary.IsSolutionUsable()) {
     LOG(INFO) << summary.FullReport();
     LOG(WARNING) << "global_bundle_analytic: " << summary.message;

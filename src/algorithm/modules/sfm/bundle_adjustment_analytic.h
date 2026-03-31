@@ -114,6 +114,15 @@ struct BAInput {
   /// intrinsics parameter block, ensuring Hessian positive-definiteness for CHOLMOD.
   /// Passed from BASolverOverrides::tikhonov_lambda via run_global_ba.
   double tikhonov_lambda = 0.0;
+
+  /// Angular-diversity threshold for the large-scene SPARSE_SCHUR path (degrees).
+  /// When > 0 and n_cams >= DENSE_SCHUR threshold, any variable 3-D point whose
+  /// observers all have a max pairwise viewing angle below this value is fixed before
+  /// solving.  Fixed points keep their reprojection residuals (cameras stay constrained)
+  /// but are removed from B and the Schur complement, eliminating the catastrophic
+  /// cancellation caused by near-zero-baseline camera clusters (e.g. multi-camera rig).
+  /// Recommended: 1.0 – 2.0 degrees.  0.0 = disabled.
+  double angular_diversity_min_deg = 1.5;
 };
 
 struct BAResult {
@@ -181,6 +190,29 @@ private:
   double v_obs_;
   double weight_;
 };
+
+/**
+ * Pre-processing pass: mark variable 3-D points with insufficient angular diversity as fixed.
+ *
+ * A point is "low-diversity" if the maximum pairwise viewing angle among all of its
+ * observers in @p ba_input is smaller than @p min_angle_deg.  Such points arise when all
+ * observers are from a near-zero-baseline cluster (e.g. cameras on the same rig station).
+ * They cause catastrophic cancellation in the Schur complement:
+ *   S_ij = C_ij − W_i B⁻¹ W_jᵀ  ≈  large − large  → precision loss → near-singular S.
+ *
+ * After this call, low-diversity points have fix_point[p] = true.  Their reprojection
+ * residuals remain in the BA problem (cameras are still constrained), but they no longer
+ * appear in B or the Schur complement.
+ *
+ * Typical usage: call once on a mutable BAInput before global_bundle_analytic.
+ * global_bundle_analytic also applies this automatically in its large-scene path when
+ * BAInput::angular_diversity_min_deg > 0.
+ *
+ * @param ba_input      BA input whose fix_point[] vector will be updated in-place.
+ * @param min_angle_deg Threshold in degrees (recommended 1.0–2.0).
+ * @return Number of points newly marked as fixed.
+ */
+int fix_low_diversity_points(BAInput& ba_input, double min_angle_deg = 1.5);
 
 /**
  * BA with analytic Jacobians and quaternion rotation parameterization.
