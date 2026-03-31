@@ -2803,6 +2803,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   for (;;) {
     ++sfm_iter;
     auto iter_start = Clock::now();
+    const int num_registered_before_iter = num_registered;
     LOG(INFO) << "════ SfM iter #" << sfm_iter << ": registered=" << num_registered << "/"
               << n_images << ", tri_tracks=" << count_tri_tracks() << " ════";
 
@@ -2819,6 +2820,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       break;
     }
     auto t_resect0 = Clock::now();
+    std::vector<int> iter_new_track_ids;
     // Try each candidate in score order; use the first that succeeds (degenerate configs, etc.).
     for (const ResectionCandidate& cand : resection_candidates) {
       // resection one image every time is very important, and then do triangulation
@@ -2856,6 +2858,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           store_out, new_registered_image_indices, *poses_R_out, *poses_C_out, *registered_out,
           *cameras, image_to_camera_index, opts.triangulation.min_angle_deg, &new_track_ids,
           triangle_error_thresh_px);
+      for (int tid : new_track_ids) {
+        iter_new_track_ids.push_back(tid);
+      }
       VLOG(1)
           << "[PERF] triangulation: "
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
@@ -2876,10 +2881,25 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       break;
     }
     double rmse = 0.0;
-    const bool use_global_only_phase = true;
-    LOG(INFO) << "Running global-only phase";
-    // force global BA every time for now
-    {
+    auto should_run_every_n = [&](int every_n) -> bool {
+      if (every_n <= 1)
+        return true;
+      const int prev_bucket = num_registered_before_iter / every_n;
+      const int curr_bucket = num_registered / every_n;
+      return curr_bucket > prev_bucket;
+    };
+    const bool in_local_phase =
+        opts.local_ba.enable && (num_registered >= opts.local_ba.switch_after_n_images);
+    bool run_global_this_iter = false;
+    if (opts.global_ba.enabled) {
+      if (!in_local_phase) {
+        run_global_this_iter = should_run_every_n(opts.global_ba.every_n_images);
+      } else {
+        run_global_this_iter = should_run_every_n(opts.global_ba.periodic_every_n_images);
+      }
+    }
+
+    if (run_global_this_iter) {
       const auto& sn = opts.scene_normalization;
       bool do_normalize = false;
       if (sn.normalize_scene_every_n_sfm_iters > 0 &&
@@ -2891,16 +2911,40 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         do_normalize = true;
       if (do_normalize)
         normalize_scene_median_tracks_and_poses(store_out, poses_C_out, *registered_out);
-      const bool opt_intr = true;
       auto t_ba0 = Clock::now();
       if (!run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
                                          image_to_camera_index, cameras, anchor_image,
                                          num_registered, opts, &rmse, static_cast<int>(*im1_ptr))) {
-        LOG(ERROR) << "Global BA with outlier detection failed during global-only phase.";
+        LOG(ERROR) << "Global BA with outlier detection failed in iterative phase.";
       }
-      VLOG(1) << "[PERF] global_ba (global_only_phase): "
+      VLOG(1) << "[PERF] global_ba (iterative_phase): "
               << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba0).count()
               << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+    } else if (in_local_phase) {
+      BASolverOverrides local_ov = opts.global_ba.solver_overrides;
+      if (local_ov.max_num_iterations <= 0)
+        local_ov.max_num_iterations = opts.local_ba.max_iterations;
+      auto t_lba0 = Clock::now();
+      if (!run_local_ba_dispatch(opts.local_ba, anchor_image, store_out, poses_R_out, poses_C_out,
+                                 *registered_out, image_to_camera_index, *cameras,
+                                 new_registered_image_indices, iter_new_track_ids, local_ov,
+                                 &rmse)) {
+        LOG(WARNING) << "Local BA failed (strategy="
+                     << static_cast<int>(opts.local_ba.strategy)
+                     << "); falling back to global BA this iteration.";
+        if (!run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                           image_to_camera_index, cameras, anchor_image,
+                                           num_registered, opts, &rmse,
+                                           static_cast<int>(*im1_ptr))) {
+          LOG(ERROR) << "Fallback global BA after local failure also failed.";
+        }
+      }
+      VLOG(1) << "[PERF] local_ba (iterative_phase): "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_lba0).count()
+              << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
+    } else {
+      VLOG(1) << "Skipping BA this iteration by schedule: registered=" << num_registered
+              << " local_phase=" << (in_local_phase ? 1 : 0);
     }
     // Periodic re-triangulation: recover tracks that were (a) cleared by outlier
     // rejection after losing their 3D support, or (b) skippable previously but now
@@ -2931,12 +2975,16 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   //                     image_to_camera_index, opts.triangulation.min_angle_deg);
   // LOG(INFO) << "Final retriangulation done. tri_tracks=" << count_tri_tracks();
 
-  LOG(INFO) << "Running final global BA...";
-  double rmse = 0.0;
-  run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
-                                image_to_camera_index, cameras, anchor_image, num_registered, opts,
-                                &rmse, static_cast<int>(*im1_ptr));
-  LOG(INFO) << "Final BA RMSE=" << rmse << " px";
+  if (opts.global_ba.enabled) {
+    LOG(INFO) << "Running final global BA...";
+    double rmse = 0.0;
+    run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
+                                  image_to_camera_index, cameras, anchor_image, num_registered, opts,
+                                  &rmse, static_cast<int>(*im1_ptr));
+    LOG(INFO) << "Final BA RMSE=" << rmse << " px";
+  } else {
+    LOG(INFO) << "Final global BA disabled by opts.global_ba.enabled=false";
+  }
   return true;
 }
 

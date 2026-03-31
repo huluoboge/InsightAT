@@ -968,8 +968,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // Jacobian columns per camera DOF), which is always ≥ 0 as long as each camera
     // has at least one observation. No factorisation → no PD requirement → always works.
     options.linear_solver_type = ceres::ITERATIVE_SCHUR;
-    // options.preconditioner_type = ceres::JACOBI;
-    options.preconditioner_type = ceres::CLUSTER_TRIDIAGONAL;
+    options.preconditioner_type = ceres::JACOBI;
   }
   options.num_threads = input.num_threads > 0
                             ? input.num_threads
