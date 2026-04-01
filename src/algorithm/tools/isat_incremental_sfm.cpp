@@ -251,6 +251,8 @@ int main(int argc, char* argv[]) {
   IncrementalSfMOptions opts;
   opts.global_ba.max_iterations = 500;
   opts.intrinsics.focal_prior_weight = 100.f;
+  opts.local_ba.enable = true;
+  opts.local_ba.switch_after_n_images = 300;
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";

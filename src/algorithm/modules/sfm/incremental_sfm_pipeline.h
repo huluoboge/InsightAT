@@ -218,7 +218,7 @@ struct IntrinsicsSchedule {
 
 /// Options for local BA.
 struct LocalBAOptions {
-  int switch_after_n_images = 20; ///< Switch from global to local BA.
+  int switch_after_n_images = 200; ///< Switch from global to local BA.
   int window = 20;                ///< Window size for kWindow strategy.
   bool by_connectivity = true;    ///< Rank by co-visibility, not index.
   LocalBAStrategy strategy = LocalBAStrategy::kColmap;
@@ -250,7 +250,7 @@ struct GlobalBAOptions {
   int optimize_intrinsics_min_images = 10; ///< Gate: don't touch intrinsics below this count.
   int max_iterations = 50;
   int every_n_images = 1;             ///< Early-phase: run global BA every N registrations.
-  int periodic_every_n_images = 20;   ///< Local-BA phase: mid-freq global BA every N images.
+  int periodic_every_n_images = 100;   ///< Local-BA phase: mid-freq global BA every N images.
   BASolverOverrides solver_overrides; ///< Ceres solver parameter overrides.
 };
 
