@@ -752,7 +752,8 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
                                                const std::vector<int>& image_to_camera_index,
                                                int min_tracks_for_intital_pair, double ba_rmse_max,
                                                double outlier_thresh_px, double min_angle_deg,
-                                               double max_angle_deg) {
+                                               double max_angle_deg,
+                                               double min_median_angle_deg) {
 
   const double kPi = 3.141592653589793;
   const double min_angle_rad_q = min_angle_deg * (kPi / 180.0);
@@ -1065,6 +1066,34 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
     return result;
   }
 
+  // Step 6: Median triangulation angle gate.
+  // Rejects near-degenerate forward-motion pairs (e.g. two consecutive nadir frames) whose
+  // per-point angles each pass min_angle_deg but whose MEDIAN angle is still very small,
+  // indicating poor baseline-to-depth ratio and unstable scale.
+  if (min_median_angle_deg > 0.0 && !accepted_xyz.empty()) {
+    const double kPiOver180 = 3.141592653589793 / 180.0;
+    std::vector<double> tri_angles;
+    tri_angles.reserve(accepted_xyz.size());
+    for (const auto& kv : accepted_xyz) {
+      const Eigen::Vector3d& X = kv.second;
+      Eigen::Vector3d r0 = X.normalized();
+      Eigen::Vector3d r1 = (X - C1).normalized();
+      double cos_a = std::max(-1.0, std::min(1.0, r0.dot(r1)));
+      tri_angles.push_back(std::acos(cos_a) / kPiOver180);
+    }
+    const size_t mid = tri_angles.size() / 2;
+    std::nth_element(tri_angles.begin(), tri_angles.begin() + static_cast<ptrdiff_t>(mid),
+                     tri_angles.end());
+    const double median_tri_deg = tri_angles[mid];
+    LOG(INFO) << "    pair (" << im0 << "," << im1 << "): median tri angle = " << median_tri_deg
+              << "° (min=" << min_median_angle_deg << "°)";
+    if (median_tri_deg < min_median_angle_deg) {
+      LOG(INFO) << "    pair (" << im0 << "," << im1 << "): REJECTED (median tri angle "
+                << median_tri_deg << "° < " << min_median_angle_deg << "°)";
+      return result;
+    }
+  }
+
   // All filters passed — package result (no store mutation).
   result.success = true;
   result.R1 = R;
@@ -1084,7 +1113,8 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
 bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_dir,
                            TrackStore* store, const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& image_to_camera_index,
-                           int min_tracks_for_intital_pair, uint32_t* initial_im0_out,
+                           int min_tracks_for_intital_pair, double min_median_angle_deg,
+                           uint32_t* initial_im0_out,
                            uint32_t* initial_im1_out, std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
                            std::vector<bool>* registered_out) {
@@ -1100,7 +1130,8 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       << "Initial pair selection: first image by track correspondences, second by ViewGraph score";
   LOG(INFO) << "  n_images=" << n_images << ", n_tracks=" << store->num_tracks()
             << ", n_obs=" << store->num_observations();
-  LOG(INFO) << "  min_tracks_for_intital_pair=" << min_tracks_for_intital_pair;
+  LOG(INFO) << "  min_tracks_for_intital_pair=" << min_tracks_for_intital_pair
+            << ", min_median_angle_deg=" << min_median_angle_deg;
   LOG(INFO) << "  ViewGraph pairs (informational): " << view_graph.num_pairs();
 
   // Step 1: Rank first images by total correspondence count
@@ -1160,7 +1191,8 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_d
       double max_angle_deg = 120.0;
       auto trial = try_initial_pair_candidate(*store, im1, im2, dir, cameras, image_to_camera_index,
                                               min_tracks_for_intital_pair, ba_rmse_max,
-                                              outlier_thresh_px, min_angle_deg, max_angle_deg);
+                                              outlier_thresh_px, min_angle_deg, max_angle_deg,
+                                              min_median_angle_deg);
       if (!trial.success)
         continue;
 
@@ -2833,7 +2865,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   uint32_t* im0_ptr = &local_im0;
   uint32_t* im1_ptr = &local_im1;
   if (!run_initial_pair_loop(view_graph, geo_dir, store_out, *cameras, image_to_camera_index,
-                             opts.init.min_tracks_for_intital_pair, im0_ptr, im1_ptr, poses_R_out,
+                             opts.init.min_tracks_for_intital_pair,
+                             opts.init.min_median_angle_deg, im0_ptr, im1_ptr, poses_R_out,
                              poses_C_out, registered_out)) {
     LOG(ERROR) << "run_incremental_sfm_pipeline: no initial pair succeeded";
     return false;
@@ -3070,6 +3103,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           << "[PERF] periodic_retri: "
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_retri).count()
           << "ms  re_tri=" << n_retri << "  total_tri=" << count_tri_tracks();
+    }
+
+    // Debug snapshot callback — fires every N iters if configured.
+    if (opts.debug.snapshot_every_n_iters > 0 &&
+        sfm_iter % opts.debug.snapshot_every_n_iters == 0 && opts.debug.on_snapshot) {
+      opts.debug.on_snapshot(sfm_iter, num_registered, *poses_R_out, *poses_C_out, *registered_out,
+                             *store_out);
     }
 
     VLOG(1)

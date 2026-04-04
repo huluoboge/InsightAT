@@ -15,7 +15,10 @@
  */
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -62,19 +65,40 @@ static bool write_poses_json(const std::string& path, const std::vector<Eigen::M
 // ─── Bundler output (bundle.out + list.txt) for MeshLab visualisation ────────
 // Bundler convention: t = R * (-C), y-axis flipped relative to OpenCV.
 // We apply diag(1,-1,-1) to R so cameras face the right direction in MeshLab.
+//
+// bundler_max_cameras: if > 0, uniformly subsample registered cameras to at most this many.
+//   Points are filtered to only include observations from the kept cameras (≥2 views required).
 static bool write_bundler(const std::string& out_dir, const std::vector<std::string>& image_paths,
                           const std::vector<Eigen::Matrix3d>& poses_R,
                           const std::vector<Eigen::Vector3d>& poses_C,
                           const std::vector<bool>& registered,
                           const std::vector<camera::Intrinsics>& cameras,
-                          const std::vector<int>& image_to_camera_index, const TrackStore& store) {
+                          const std::vector<int>& image_to_camera_index, const TrackStore& store,
+                          int bundler_max_cameras = -1) {
   const int n_images = static_cast<int>(registered.size());
 
   // Build list of registered image indices in order
-  std::vector<int> reg_indices;
+  std::vector<int> all_reg_indices;
   for (int i = 0; i < n_images; ++i)
     if (registered[static_cast<size_t>(i)])
-      reg_indices.push_back(i);
+      all_reg_indices.push_back(i);
+
+  // Uniformly subsample if requested
+  std::vector<int> reg_indices;
+  if (bundler_max_cameras > 0 &&
+      static_cast<int>(all_reg_indices.size()) > bundler_max_cameras) {
+    reg_indices.reserve(static_cast<size_t>(bundler_max_cameras));
+    const double step =
+        static_cast<double>(all_reg_indices.size() - 1) / (bundler_max_cameras - 1);
+    for (int k = 0; k < bundler_max_cameras; ++k) {
+      const int idx = static_cast<int>(std::round(k * step));
+      reg_indices.push_back(all_reg_indices[static_cast<size_t>(idx)]);
+    }
+    LOG(INFO) << "write_bundler: subsampled " << all_reg_indices.size() << " registered cameras → "
+              << reg_indices.size() << " for Bundler output";
+  } else {
+    reg_indices = all_reg_indices;
+  }
 
   // Map global image index → bundler camera index (only registered images)
   std::vector<int> global_to_bundler(static_cast<size_t>(n_images), -1);
@@ -194,6 +218,9 @@ int main(int argc, char* argv[]) {
   std::string geo_dir;
   std::string output_dir;
   std::string log_level;
+  std::string debug_dir;
+  int debug_interval = 1;
+  int bundler_max_cameras = -1;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -201,6 +228,12 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('g', geo_dir, "geo").doc("Directory of .isat_geo files"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
+  cmd.add(make_option(0, debug_dir, "debug-dir")
+              .doc("Directory for per-iteration Bundler snapshots (debug pose drift)"));
+  cmd.add(make_option(0, debug_interval, "debug-interval")
+              .doc("Write snapshot every N SfM iterations (default: 1, requires --debug-dir)"));
+  cmd.add(make_option(0, bundler_max_cameras, "bundler-max-cameras")
+              .doc("Subsample to at most N cameras in Bundler output (default: all)"));
   cmd.add(make_switch(0, "fix-intrinsics")
               .doc("Keep camera intrinsics fixed (do not optimize in BA). "));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
@@ -257,6 +290,37 @@ int main(int argc, char* argv[]) {
     opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
   }
+
+  // Per-iteration debug snapshots: write bundle.out + list.txt to debug_dir/iter_NNNN/
+  if (!debug_dir.empty()) {
+    std::filesystem::create_directories(debug_dir);
+    opts.debug.snapshot_every_n_iters = (debug_interval > 0) ? debug_interval : 1;
+    // Capture by value the data needed for writing (image_paths, cameras, image_to_camera_index).
+    // poses_R/C and store are passed by const-ref from the pipeline.
+    const std::vector<std::string> snap_image_paths = image_paths;
+    const std::vector<camera::Intrinsics> snap_cameras = project.cameras;
+    const std::vector<int> snap_img2cam = project.image_to_camera_index;
+    const int snap_max_cams = bundler_max_cameras;
+    const std::string snap_base = debug_dir;
+    opts.debug.on_snapshot = [snap_image_paths, snap_cameras, snap_img2cam, snap_max_cams,
+                              snap_base](int sfm_iter, int num_registered,
+                                         const std::vector<Eigen::Matrix3d>& R,
+                                         const std::vector<Eigen::Vector3d>& C,
+                                         const std::vector<bool>& reg, const TrackStore& store) {
+      std::ostringstream ss;
+      ss << snap_base << "/iter_" << std::setw(4) << std::setfill('0') << sfm_iter;
+      const std::string iter_dir = ss.str();
+      std::filesystem::create_directories(iter_dir);
+      write_bundler(iter_dir, snap_image_paths, R, C, reg, snap_cameras, snap_img2cam, store,
+                    snap_max_cams);
+      LOG(INFO) << "[debug] iter=" << sfm_iter << " n_reg=" << num_registered
+                << " snapshot → " << iter_dir;
+    };
+    LOG(INFO) << "--debug-dir=" << debug_dir << "  interval=" << opts.debug.snapshot_every_n_iters
+              << "  max_cameras=" << (bundler_max_cameras > 0 ? std::to_string(bundler_max_cameras)
+                                                               : "all");
+  }
+
   // if (cmd.used("no-local-ba")) {
   //   opts.local_ba.enable = false;
   //   LOG(INFO) << "--no-local-ba: local_ba.enable=false, global BA only until you enable local

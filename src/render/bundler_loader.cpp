@@ -15,12 +15,39 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 
 namespace insight {
 namespace render {
 
 namespace {
+
+// ── Image dimension cache ────────────────────────────────────────────────────
+// Image files don't change between SfM iterations; cache w/h so GDAL is only
+// invoked once per unique path for the lifetime of the process.
+std::mutex g_dim_cache_mutex;
+std::unordered_map<std::string, std::pair<int, int>> g_dim_cache;
+
+bool get_image_dimensions(const std::string& path, int& w, int& h) {
+  {
+    std::lock_guard<std::mutex> lk(g_dim_cache_mutex);
+    auto it = g_dim_cache.find(path);
+    if (it != g_dim_cache.end()) {
+      w = it->second.first;
+      h = it->second.second;
+      return true;
+    }
+  }
+  if (!GdalUtils::GetWidthHeightPixel(path.c_str(), w, h))
+    return false;
+  {
+    std::lock_guard<std::mutex> lk(g_dim_cache_mutex);
+    g_dim_cache[path] = {w, h};
+  }
+  return true;
+}
 
 std::string normalize_path_sep(const std::string& p) {
   std::string s = p;
@@ -250,7 +277,7 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
     int w = 640;
     int h = 480;
     const std::string& ip = scene.image_paths[i];
-    if (!GdalUtils::GetWidthHeightPixel(ip.c_str(), w, h)) {
+    if (!get_image_dimensions(ip, w, h)) {
       LOG(WARNING) << "GetWidthHeightPixel failed for " << ip << ", using defaults " << w << "x"
                    << h;
     }

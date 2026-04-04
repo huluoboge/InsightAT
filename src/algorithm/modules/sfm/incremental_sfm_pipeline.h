@@ -15,6 +15,7 @@
 #include "track_store.h"
 #include "view_graph.h"
 #include <Eigen/Core>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,7 +44,8 @@ namespace sfm {
 bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_dir,
                            TrackStore* store, const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& image_to_camera_index,
-                           int min_tracks_for_intital_pair, uint32_t* initial_im0_out,
+                           int min_tracks_for_intital_pair, double min_median_angle_deg,
+                           uint32_t* initial_im0_out,
                            uint32_t* initial_im1_out, std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
                            std::vector<bool>* registered_out);
@@ -162,7 +164,12 @@ struct InitPairOptions {
   int max_second_images = 50;           ///< Max second-image candidates per first image.
   double ba_rmse_max = 10.0;            ///< Max BA RMSE (px) to accept pair.
   double outlier_threshold_px = 4.0;    ///< MAD floor (fallback when distribution is very narrow).
-  double min_angle_deg = 2.0;           ///< Min triangulation angle; max is hard-coded to 60°.
+  double min_angle_deg = 2.0;           ///< Min triangulation angle per point; max is hard-coded to 60°.
+  /// Minimum MEDIAN triangulation angle (degrees) of accepted inlier tracks after BA.
+  /// Rejects forward-motion adjacent-frame pairs whose per-point angles individually pass
+  /// min_angle_deg but collectively form a near-degenerate narrow-baseline geometry.
+  /// Typical aerial surveys: set to 5.0°; lower for very-high-overlap data.
+  double min_median_angle_deg = 5.0;
 };
 
 /// Options for the incremental resection loop (one new image per iteration).
@@ -322,6 +329,21 @@ struct TriangulationOptions {
 // IncrementalSfMOptions — hierarchical pipeline configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Debug options: per-iteration snapshot callback for diagnosing pose drift.
+/// The callback is invoked at the end of each SfM iteration (after BA + retriangulation)
+/// when snapshot_every_n_iters > 0 and sfm_iter % snapshot_every_n_iters == 0.
+/// Signature: (sfm_iter, num_registered, poses_R, poses_C, registered, store)
+struct DebugOptions {
+  /// Invoke the snapshot callback every N SfM iterations.  0 = disabled.
+  int snapshot_every_n_iters = 0;
+  /// User-supplied callback; called on matching iterations.  May be empty (no-op).
+  std::function<void(int /*sfm_iter*/, int /*num_registered*/,
+                     const std::vector<Eigen::Matrix3d>& /*poses_R*/,
+                     const std::vector<Eigen::Vector3d>& /*poses_C*/,
+                     const std::vector<bool>& /*registered*/, const TrackStore& /*store*/)>
+      on_snapshot;
+};
+
 struct IncrementalSfMOptions {
   InitPairOptions init;
   ResectionOptions resection;
@@ -331,6 +353,7 @@ struct IncrementalSfMOptions {
   SceneNormalizationOptions scene_normalization;
   OutlierOptions outlier;
   TriangulationOptions triangulation;
+  DebugOptions debug; ///< Per-iteration debug snapshots (disabled by default).
 };
 
 /// One BA + iterative outlier-rejection call (global or local). Keeps
