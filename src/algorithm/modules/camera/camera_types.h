@@ -48,8 +48,14 @@ struct Intrinsics {
   double fy = 0.0;
   double cx = 0.0;
   double cy = 0.0;
+  /// Image size in pixels (from EXIF / project export). Used for absolute 2D coverage (e.g.
+  /// VisibilityPyramid in resection ordering). When zero, algorithms may infer size from cx/cy.
+  int width = 0;
+  int height = 0;
   double k1 = 0.0, k2 = 0.0, k3 = 0.0;
   double p1 = 0.0, p2 = 0.0;
+
+  bool has_image_size() const { return width > 0 && height > 0; }
 
   bool has_distortion() const {
     return k1 != 0.0 || k2 != 0.0 || k3 != 0.0 || p1 != 0.0 || p2 != 0.0;

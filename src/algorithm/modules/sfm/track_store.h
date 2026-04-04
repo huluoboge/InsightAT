@@ -48,6 +48,13 @@ constexpr uint8_t kHasTriangulated =
 
 namespace obs_flags {
 constexpr uint8_t kAlive = 1u << 0;
+/// Set when an observation is deleted because its reprojection error exceeded the
+/// MAD-based outlier threshold in reject_outliers_multiview.  Such observations may
+/// be restored by restore_observations_from_cameras when camera intrinsics change
+/// significantly (e.g. focal length shift during early-phase BA).
+/// Observations deleted for geometric reasons (depth ≤ 0, angle, PnP outlier) do NOT
+/// carry this flag and are never automatically restored.
+constexpr uint8_t kRestorable = 1u << 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,6 +124,11 @@ public:
   int get_image_track_observations(int image_index, std::vector<int>* track_ids_out,
                                    std::vector<Observation>* obs_out) const;
 
+  /// Like get_image_observation_indices but returns ALL observation ids for the image,
+  /// including logically-deleted ones.  Used by restore_observations_from_cameras to
+  /// find kRestorable deleted observations without a full store-wide scan.
+  int get_image_all_obs_ids(int image_index, std::vector<int>* obs_ids_out) const;
+
   /// Observation by global index
   bool is_obs_valid(int obs_id) const;
   int obs_track_id(int obs_id) const;
@@ -125,7 +137,14 @@ public:
   /// Logical delete (set flag only)
   void mark_track_deleted(int track_id);
   void mark_observation_deleted(int obs_id);
+  /// Like mark_observation_deleted but also sets obs_flags::kRestorable so that
+  /// restore_observations_from_cameras can later re-evaluate this observation when
+  /// camera intrinsics change significantly.  Use only for reproj-error outlier deletions.
+  void mark_observation_deleted_restorable(int obs_id);
   void mark_observation_restored(int obs_id);
+
+  /// True if the observation has been logically deleted AND carries obs_flags::kRestorable.
+  bool is_obs_restorable(int obs_id) const;
 
   size_t num_tracks() const { return track_xyz_.size() / 3u; }
   size_t num_observations() const { return obs_track_id_.size(); }

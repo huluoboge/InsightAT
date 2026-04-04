@@ -180,6 +180,11 @@ struct ResectionOptions {
   /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 =
   /// off.
   double post_resection_reproj_thresh_px = 0.0;
+  /// First-sort tier: prefer candidates with normalized VisibilityPyramid coverage ≥ this (see
+  /// COLMAP scene/visibility_pyramid). Typical range 0.01–0.05; legacy 3×3 bbox metric used ~0.33.
+  float min_visibility_coverage = 0.02f;
+  /// Pyramid depth (COLMAP default 6 → finest grid 2^6 per side).
+  int visibility_pyramid_levels = 6;
 };
 
 /// Progressive intrinsics unlock schedule + freeze policy.
@@ -259,6 +264,10 @@ struct GlobalBAOptions {
   int every_n_images = 1;             ///< Early-phase: run global BA every N registrations.
   int periodic_every_n_images = 100;   ///< Local-BA phase: mid-freq global BA every N images.
   BASolverOverrides solver_overrides; ///< Ceres solver parameter overrides.
+  /// Conservative early phase: limit to 1 new camera per SfM iteration (identical to local-BA
+  /// behaviour) until this many images are registered.  0 = disabled.  Improves stability when
+  /// intrinsics are still converging in the first ~100 frames.
+  int early_phase_max_cameras = 100;
 };
 
 /// Median-based scene normalization (tracks + registered camera centres). Default 0 = off.
@@ -323,6 +332,18 @@ struct TriangulationOptions {
   /// After GN: reject view if reproj > this (px). Loosen if too few points pass incremental tri
   /// (logs show many `two_reproj` / robust fails at 4px while BA RMSE is ~0.5px).
   double commit_reproj_px = 16.0;
+
+  // ── Intrinsics-change observation restoration ─────────────────────────────
+  /// When true, after each global BA where any camera's focal length changed by more than
+  /// intrinsics_change_restore_threshold, re-evaluate kRestorable deleted observations using
+  /// the updated intrinsics and restore those whose reprojection error is now ≤ restore_reproj_px.
+  bool enable_intrinsics_change_restore = true;
+  /// Relative focal-length change threshold (|Δfx/fx|) that triggers a restore pass.
+  double intrinsics_change_restore_threshold = 0.02;
+  /// Reprojection-error ceiling (px) for restoring a previously-deleted kRestorable observation.
+  /// Should match the typical BA outlier-rejection threshold (~4 px) so that observations
+  /// rejected by wrong intrinsics/distortion are given a fair second chance.
+  double restore_reproj_px = 4.0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

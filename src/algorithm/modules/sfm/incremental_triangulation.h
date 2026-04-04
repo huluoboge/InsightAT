@@ -8,6 +8,7 @@
 #include "../camera/camera_types.h"
 #include "track_store.h"
 #include <Eigen/Core>
+#include <unordered_set>
 #include <vector>
 
 namespace insight {
@@ -84,6 +85,37 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
                         const std::vector<camera::Intrinsics>& cameras,
                         const std::vector<int>& image_to_camera_index,
                         double min_tri_angle_deg = 0.50);
+
+/**
+ * Re-evaluate kRestorable deleted observations after a significant intrinsics change.
+ *
+ * For every triangulated track (track_has_triangulated_xyz == true), walks all
+ * observations — including logically-deleted ones — and restores those that
+ *   (a) carry obs_flags::kRestorable (deleted by reproj outlier rejection, not geometry), AND
+ *   (b) belong to a registered image whose camera model index is in changed_cam_model_indices, AND
+ *   (c) now have reprojection error ≤ strict_reproj_px under the current intrinsics/poses.
+ *
+ * Degenerate tracks whose XYZ has been cleared (clear_track_xyz) are skipped here; they
+ * remain the responsibility of the pending-queue run_retriangulation mechanism.
+ *
+ * Uses the pre-built per-image obs index (image_obs_ids_) inside TrackStore so that only
+ * observations belonging to the changed cameras are visited, not the full observation list.
+ *
+ * @param changed_cam_model_indices  Set of camera-model indices (into `cameras`) that changed.
+ *                                   Pass an empty set to process observations from ALL cameras.
+ * @param strict_reproj_px           Reprojection ceiling for restoration (px); should match
+ *                                   the typical BA outlier-rejection threshold (~4 px).
+ * @return Number of observations restored.
+ */
+int restore_observations_from_cameras(
+    TrackStore* store,
+    const std::vector<Eigen::Matrix3d>& poses_R,
+    const std::vector<Eigen::Vector3d>& poses_C,
+    const std::vector<bool>& registered,
+    const std::vector<camera::Intrinsics>& cameras,
+    const std::vector<int>& image_to_camera_index,
+    const std::unordered_set<int>& changed_cam_model_indices,
+    double strict_reproj_px);
 
 } // namespace sfm
 } // namespace insight

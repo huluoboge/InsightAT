@@ -13,7 +13,8 @@ Steps (controlled by --steps):
   4. tracks   – Run isat_tracks: build tracks from match + geo, output work_dir/tracks.isat_tracks
   5. incremental_sfm – Run isat_incremental_sfm: -t tracks -p project -m pairs -g geo -o work_dir/incremental_sfm; writes poses.json
 
-Project = images_all.json (index-only with cameras). Tracks from step tracks; view graph from geo_dir/pairs.json.
+Project = images_all.json (index-only with cameras: fx/fy/cx/cy plus width/height from isat_project extract).
+Tracks from step tracks; view graph from geo_dir/pairs.json.
 """
 
 from __future__ import annotations

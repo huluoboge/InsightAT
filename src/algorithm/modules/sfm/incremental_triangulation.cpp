@@ -1041,5 +1041,71 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
                              o);
 }
 
+int restore_observations_from_cameras(
+    TrackStore* store,
+    const std::vector<Eigen::Matrix3d>& poses_R,
+    const std::vector<Eigen::Vector3d>& poses_C,
+    const std::vector<bool>& registered,
+    const std::vector<camera::Intrinsics>& cameras,
+    const std::vector<int>& image_to_camera_index,
+    const std::unordered_set<int>& changed_cam_model_indices,
+    double strict_reproj_px) {
+  if (!store)
+    return 0;
+  const int n_images = store->num_images();
+  if (static_cast<int>(poses_R.size()) != n_images ||
+      static_cast<int>(poses_C.size()) != n_images ||
+      static_cast<int>(registered.size()) != n_images)
+    return 0;
+
+  const bool all_cameras = changed_cam_model_indices.empty();
+  int restored = 0;
+
+  // Build list of images that belong to changed camera models.
+  // Using the pre-built per-image obs index (image_obs_ids_) avoids scanning all observations.
+  std::vector<int> obs_ids;
+  for (int im = 0; im < n_images; ++im) {
+    if (!registered[static_cast<size_t>(im)])
+      continue;
+    const int cam_idx = image_to_camera_index[static_cast<size_t>(im)];
+    if (!all_cameras && changed_cam_model_indices.find(cam_idx) == changed_cam_model_indices.end())
+      continue;
+
+    obs_ids.clear();
+    store->get_image_all_obs_ids(im, &obs_ids);
+    // get_image_all_obs_ids returns ALL obs for the image (alive + deleted).
+    for (int oid : obs_ids) {
+      if (!store->is_obs_restorable(oid))
+        continue; // alive, or deleted for a non-reproj reason (depth, angle, PnP)
+
+      const int tid = store->obs_track_id(oid);
+      if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+        continue; // degenerate track — handled by pending-queue run_retriangulation
+
+      float tx, ty, tz;
+      store->get_track_xyz(tid, &tx, &ty, &tz);
+      const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                              static_cast<double>(tz));
+
+      Observation obs;
+      store->get_obs(oid, &obs);
+      const camera::Intrinsics& K =
+          cameras[static_cast<size_t>(image_to_camera_index[static_cast<size_t>(im)])];
+      const double e = reproj_error_px(X, poses_R[static_cast<size_t>(im)],
+                                       poses_C[static_cast<size_t>(im)], K,
+                                       static_cast<double>(obs.u), static_cast<double>(obs.v));
+      if (e <= strict_reproj_px) {
+        store->mark_observation_restored(oid);
+        ++restored;
+      }
+    }
+  }
+
+  VLOG(1) << "[restore_obs] restored=" << restored
+          << "  changed_cams=" << changed_cam_model_indices.size()
+          << "  strict_px=" << strict_reproj_px;
+  return restored;
+}
+
 } // namespace sfm
 } // namespace insight

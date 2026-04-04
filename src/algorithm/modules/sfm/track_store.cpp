@@ -191,6 +191,15 @@ int TrackStore::get_image_observation_indices(int image_index,
   return static_cast<int>(obs_indices_out->size());
 }
 
+int TrackStore::get_image_all_obs_ids(int image_index, std::vector<int>* obs_ids_out) const {
+  assert(obs_ids_out);
+  obs_ids_out->clear();
+  if (image_index < 0 || static_cast<size_t>(image_index) >= image_obs_ids_.size())
+    return 0;
+  *obs_ids_out = image_obs_ids_[static_cast<size_t>(image_index)];
+  return static_cast<int>(obs_ids_out->size());
+}
+
 int TrackStore::get_image_track_observations(int image_index, std::vector<int>* track_ids_out,
                                              std::vector<Observation>* obs_out) const {
   if (track_ids_out)
@@ -256,10 +265,26 @@ void TrackStore::mark_observation_deleted(int obs_id) {
   obs_flags_[static_cast<size_t>(obs_id)] &= ~obs_flags::kAlive;
 }
 
+void TrackStore::mark_observation_deleted_restorable(int obs_id) {
+  if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
+    return;
+  obs_flags_[static_cast<size_t>(obs_id)] =
+      (obs_flags_[static_cast<size_t>(obs_id)] & ~obs_flags::kAlive) | obs_flags::kRestorable;
+}
+
 void TrackStore::mark_observation_restored(int obs_id) {
   if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
     return;
   obs_flags_[static_cast<size_t>(obs_id)] |= obs_flags::kAlive;
+  // kRestorable is left in place; it is harmless on an alive observation and avoids
+  // the need to track "was this previously restorable" after restoration.
+}
+
+bool TrackStore::is_obs_restorable(int obs_id) const {
+  if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
+    return false;
+  const uint8_t f = obs_flags_[static_cast<size_t>(obs_id)];
+  return !(f & obs_flags::kAlive) && (f & obs_flags::kRestorable);
 }
 
 } // namespace sfm

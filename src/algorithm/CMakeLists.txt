@@ -90,6 +90,8 @@ set(ALGORITHM_SOURCES
     modules/sfm/incremental_sfm_pipeline.cpp
     modules/sfm/resection_batch.h
     modules/sfm/resection_batch.cpp
+    modules/sfm/visibility_pyramid.h
+    modules/sfm/visibility_pyramid.cpp
     modules/sfm/incremental_triangulation.h
     modules/sfm/incremental_triangulation.cpp
     # Incremental SfM excluded from build (files kept); to be re-integrated after stepwise implementation

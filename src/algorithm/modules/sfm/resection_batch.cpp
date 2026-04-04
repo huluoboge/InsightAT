@@ -6,10 +6,11 @@
 #include "resection_batch.h"
 
 #include "resection.h"
+#include "visibility_pyramid.h"
 
 #include <Eigen/Dense>
 #include <algorithm>
-#include <array>
+#include <cmath>
 #include <glog/logging.h>
 #include <vector>
 
@@ -18,40 +19,48 @@ namespace sfm {
 
 namespace {
 
-/// Compute the spatial coverage score [0,1] for the triangulated 3D-2D observations
-/// of a given image.  The score is the fraction of a 3×3 bounding-box grid that
-/// contains ≥1 observation.  Low values (< 0.33) indicate collinear/clustered
-/// geometry that is likely to produce a degenerate PnP solution.
-float compute_3d2d_coverage(const TrackStore& store, int image_index) {
-  std::vector<int> track_ids;
-  std::vector<Observation> obs;
-  store.get_image_track_observations(image_index, &track_ids, &obs);
-
-  float min_u = 1e9f, max_u = -1e9f, min_v = 1e9f, max_v = -1e9f;
-  int n_tri = 0;
-  for (size_t i = 0; i < track_ids.size(); ++i) {
-    if (!store.track_has_triangulated_xyz(track_ids[i]))
-      continue;
-    min_u = std::min(min_u, obs[i].u);
-    max_u = std::max(max_u, obs[i].u);
-    min_v = std::min(min_v, obs[i].v);
-    max_v = std::max(max_v, obs[i].v);
-    ++n_tri;
+/// Absolute image size for pyramid (pixels). Prefer Intrinsics::width/height from project export.
+static void image_size_for_pyramid(const camera::Intrinsics& K, size_t* out_w, size_t* out_h) {
+  if (K.has_image_size()) {
+    *out_w = static_cast<size_t>(K.width);
+    *out_h = static_cast<size_t>(K.height);
+    return;
   }
-  if (n_tri < 4)
+  // Fallback: assume principal point near image centre (common for estimated intrinsics).
+  const double w = std::max(2.0 * K.cx, 1.0);
+  const double h = std::max(2.0 * K.cy, 1.0);
+  *out_w = static_cast<size_t>(std::ceil(w));
+  *out_h = static_cast<size_t>(std::ceil(h));
+  VLOG(2) << "image_size_for_pyramid: missing width/height; using ceil(2*cx) x ceil(2*cy) = "
+          << *out_w << " x " << *out_h;
+}
+
+/// Build the VisibilityPyramid score from pre-fetched track_ids + obs.
+/// Returns normalized score [0,1] and sets *n_tri_out to the number of triangulated points used.
+static float build_visibility_score(const TrackStore& store,
+                                    const std::vector<int>& track_ids,
+                                    const std::vector<Observation>& obs,
+                                    const camera::Intrinsics& K, size_t num_levels,
+                                    int* n_tri_out) {
+  *n_tri_out = 0;
+  size_t W = 0, H = 0;
+  image_size_for_pyramid(K, &W, &H);
+  if (W == 0 || H == 0 || num_levels == 0)
     return 0.0f;
 
-  const float ru = max_u - min_u + 1.0f;
-  const float rv = max_v - min_v + 1.0f;
-  std::array<bool, 9> cells{};
+  VisibilityPyramid pyr(num_levels, W, H);
   for (size_t i = 0; i < track_ids.size(); ++i) {
     if (!store.track_has_triangulated_xyz(track_ids[i]))
       continue;
-    const int cx = std::min(2, static_cast<int>(3.0f * (obs[i].u - min_u) / ru));
-    const int cy = std::min(2, static_cast<int>(3.0f * (obs[i].v - min_v) / rv));
-    cells[static_cast<size_t>(cy * 3 + cx)] = true;
+    pyr.SetPoint(static_cast<double>(obs[i].u), static_cast<double>(obs[i].v));
+    ++(*n_tri_out);
   }
-  return static_cast<float>(std::count(cells.cbegin(), cells.cend(), true)) / 9.0f;
+  if (*n_tri_out < 4)
+    return 0.0f;
+  const size_t max_s = pyr.MaxScore();
+  if (max_s == 0)
+    return 0.0f;
+  return static_cast<float>(static_cast<double>(pyr.Score()) / static_cast<double>(max_s));
 }
 
 struct ScoredUnreg {
@@ -62,39 +71,84 @@ struct ScoredUnreg {
 
 } // namespace
 
-std::vector<ResectionCandidate> choose_resection_candidates(const TrackStore& store,
-                                                            const std::vector<bool>& registered,
-                                                            int min_3d2d_count, int max_candidates,
-                                                            float min_coverage_good) {
+std::vector<ResectionCandidate> choose_resection_candidates(
+    const TrackStore& store, const std::vector<bool>& registered,
+    const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& image_to_camera_index,
+    int min_3d2d_count, int max_candidates, float min_coverage_good,
+    size_t visibility_pyramid_levels, ResectionScoreCache* score_cache) {
   const int n_images = store.num_images();
   if (n_images == 0 || static_cast<int>(registered.size()) != n_images || max_candidates <= 0)
     return {};
+  if (static_cast<int>(image_to_camera_index.size()) != n_images || cameras.empty()) {
+    LOG(WARNING) << "choose_resection_candidates: cameras / image_to_camera_index mismatch";
+    return {};
+  }
+  const size_t n_levels = std::max<size_t>(1, visibility_pyramid_levels);
+
+  if (score_cache)
+    score_cache->ensure_size(n_images);
 
   int n_registed = 0;
   std::vector<ScoredUnreg> scored;
   for (int im = 0; im < n_images; ++im) {
-    if (registered[static_cast<size_t>(im)]) {
+    if (registered[static_cast<size_t>(im)])
       ++n_registed;
-    }
   }
   // cap candidates to 30% of registered views, but at least 2
   int max_count = std::max<int>(2, static_cast<int>(n_registed * 0.3));
   max_candidates = std::min(max_candidates, max_count);
+
+  int cache_hits = 0, cache_misses = 0;
+  // One get_image_track_observations call per image (shared for both n_tri count and pyramid).
+  std::vector<int> track_ids;
+  std::vector<Observation> obs;
   for (int im = 0; im < n_images; ++im) {
     if (registered[static_cast<size_t>(im)])
       continue;
-    std::vector<int> track_ids;
-    store.get_image_track_observations(im, &track_ids, nullptr);
-    int count = 0;
+
+    track_ids.clear();
+    obs.clear();
+    store.get_image_track_observations(im, &track_ids, &obs);
+
+    // Count n_tri (cheap linear scan — no Eigen allocation).
+    int n_tri = 0;
     for (int tid : track_ids)
       if (store.track_has_triangulated_xyz(tid))
-        ++count;
-    if (count < min_3d2d_count)
+        ++n_tri;
+    if (n_tri < min_3d2d_count)
       continue;
+
     ScoredUnreg row;
-    row.count = count;
+    row.count = n_tri;
     row.image_index = im;
-    row.coverage = compute_3d2d_coverage(store, im);
+
+    const int cam_idx = image_to_camera_index[static_cast<size_t>(im)];
+    if (cam_idx < 0 || cam_idx >= static_cast<int>(cameras.size())) {
+      row.coverage = 0.f;
+      scored.push_back(row);
+      continue;
+    }
+
+    // Cache lookup: reuse score when n_tri has not changed since last computation.
+    if (score_cache) {
+      auto& entry = score_cache->entries[static_cast<size_t>(im)];
+      if (entry.n_tri == n_tri) {
+        row.coverage = entry.score;
+        ++cache_hits;
+        scored.push_back(row);
+        continue;
+      }
+    }
+
+    // Cache miss (or no cache): build pyramid. obs already fetched above.
+    int n_tri_check = 0;
+    row.coverage = build_visibility_score(store, track_ids, obs,
+                                          cameras[static_cast<size_t>(cam_idx)],
+                                          n_levels, &n_tri_check);
+    if (score_cache) {
+      score_cache->entries[static_cast<size_t>(im)] = {n_tri, row.coverage};
+      ++cache_misses;
+    }
     scored.push_back(row);
   }
   if (scored.empty())
@@ -132,8 +186,15 @@ std::vector<ResectionCandidate> choose_resection_candidates(const TrackStore& st
       }
     }
   }
-  VLOG(1) << "choose_resection_candidates: " << scored.size() << " eligible → " << n_list
-          << " listed  (sort: cov>=" << min_coverage_good << " first, then 3d2d desc, cov desc)";
+  if (score_cache) {
+    VLOG(1) << "choose_resection_candidates: " << scored.size() << " eligible → " << n_list
+            << "  pyramid_cache: hits=" << cache_hits << " misses=" << cache_misses
+            << "  (L=" << n_levels << ", cov_thresh=" << min_coverage_good << ")";
+  } else {
+    VLOG(1) << "choose_resection_candidates: " << scored.size() << " eligible → " << n_list
+            << "  (VisibilityPyramid L=" << n_levels
+            << ", sort: cov>=" << min_coverage_good << " first, then 3d2d desc, cov desc)";
+  }
   return out;
 }
 

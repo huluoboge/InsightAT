@@ -227,7 +227,9 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
     const double u_obs = static_cast<double>(obs.u);
     const double v_obs = static_cast<double>(obs.v);
     if ((u_obs - u_pred) * (u_obs - u_pred) + (v_obs - v_pred) * (v_obs - v_pred) > thresh_sq) {
-      store->mark_observation_deleted(obs_id);
+      // Mark as kRestorable so restore_observations_from_cameras can recover this
+      // observation if camera intrinsics change significantly in a later BA round.
+      store->mark_observation_deleted_restorable(obs_id);
       store->set_track_retriangulation_flag(tid, true);
       dirty_tracks.insert(tid);
       ++marked;
@@ -2930,6 +2932,15 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
   std::vector<ResectionCandidate> resection_candidates;
 
+  // Per-image VisibilityPyramid score cache: avoids rebuilding the pyramid when n_tri has not
+  // changed since the previous iteration (amortizes Eigen allocation + SetPoint cost).
+  // n_tri watermark ensures automatic invalidation after triangulation without explicit bookkeeping.
+  ResectionScoreCache resection_score_cache;
+
+  // Snapshot of camera intrinsics taken just before each global BA.
+  // Used to detect significant focal-length changes that warrant re-evaluating kRestorable obs.
+  std::vector<camera::Intrinsics> ba_cameras_snapshot;
+
   auto pipeline_start = Clock::now();
   int sfm_iter = 0;
   for (;;) {
@@ -2941,7 +2952,10 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     auto t_choose0 = Clock::now();
     std::vector<int> new_registered_image_indices;
     resection_candidates = choose_resection_candidates(
-        *store_out, *registered_out, opts.resection.min_3d2d_count, resection_max_candidates);
+        *store_out, *registered_out, *cameras, image_to_camera_index, opts.resection.min_3d2d_count,
+        resection_max_candidates, opts.resection.min_visibility_coverage,
+        static_cast<size_t>(std::max(1, opts.resection.visibility_pyramid_levels)),
+        &resection_score_cache);
     auto t_choose1 = Clock::now();
     VLOG(1) << "[PERF] choose_resection_candidates: "
             << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
@@ -3012,8 +3026,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                 << ", new_tri=" << n_new_tri << ", total_tri=" << count_tri_tracks();
       // In local BA mode, process exactly one image per outer SfM iteration so that
       // each newly registered image immediately gets a local BA pass before the next
-      // candidate is attempted.  Global BA mode can batch multiple images per iteration.
+      // candidate is attempted.  Global BA mode can batch multiple images per iteration,
+      // except during the conservative early phase (early_phase_max_cameras > 0) where we
+      // also limit to one image per iteration to give intrinsics time to converge.
       if (use_local_ba)
+        break;
+      if (opts.global_ba.early_phase_max_cameras > 0 &&
+          num_registered < opts.global_ba.early_phase_max_cameras)
         break;
     }
 
@@ -3041,6 +3060,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       // ── Global-only phase ─────────────────────────────────────────────────
       LOG(INFO) << "Running global BA (n=" << num_registered << ")";
       maybe_normalize();
+      ba_cameras_snapshot = *cameras; // snapshot before BA for intrinsics-change restore
       auto t_ba0 = Clock::now();
       if (!run_ba_with_outlier_detection(store_out, poses_R_out, poses_C_out, *registered_out,
                                          image_to_camera_index, cameras, anchor_image,
@@ -3078,6 +3098,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                             num_registered % opts.global_ba.periodic_every_n_images == 0)) {
         LOG(INFO) << "Running periodic global BA (n=" << num_registered << ")";
         maybe_normalize();
+        ba_cameras_snapshot = *cameras; // snapshot before periodic BA
         auto t_gba0 = Clock::now();
         if (!run_ba_with_outlier_detection(
                 store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index,
@@ -3090,6 +3111,37 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
             << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
       }
     }
+    // Intrinsics-change observation restore: if any camera's focal length changed significantly
+    // during the global BA above, re-evaluate kRestorable deleted observations from that camera.
+    // These are observations that were rejected by reject_outliers_multiview under wrong intrinsics
+    // and may now have acceptable reprojection error under the updated intrinsics.
+    // Uses the per-image obs index so only observations from affected cameras are scanned.
+    if (opts.triangulation.enable_intrinsics_change_restore && !ba_cameras_snapshot.empty()) {
+      const int n_cam_models = static_cast<int>(cameras->size());
+      std::unordered_set<int> changed_cams;
+      for (int c = 0; c < n_cam_models && c < static_cast<int>(ba_cameras_snapshot.size()); ++c) {
+        const double prev_fx = ba_cameras_snapshot[static_cast<size_t>(c)].fx;
+        const double cur_fx = (*cameras)[static_cast<size_t>(c)].fx;
+        if (prev_fx > 1.0 &&
+            std::abs(cur_fx - prev_fx) / prev_fx >
+                opts.triangulation.intrinsics_change_restore_threshold)
+          changed_cams.insert(c);
+      }
+      if (!changed_cams.empty()) {
+        auto t_restore0 = Clock::now();
+        const int n_restored = restore_observations_from_cameras(
+            store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+            image_to_camera_index, changed_cams, opts.triangulation.restore_reproj_px);
+        LOG(INFO) << "  Intrinsics-change restore: recovered " << n_restored
+                  << " obs from " << changed_cams.size() << " changed camera(s) (thresh="
+                  << opts.triangulation.intrinsics_change_restore_threshold * 100.0 << "%)";
+        VLOG(1) << "[PERF] intrinsics_restore: "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_restore0)
+                       .count()
+                << "ms";
+      }
+    }
+
     // Periodic re-triangulation: recover tracks that were (a) cleared by outlier
     // rejection after losing their 3D support, or (b) skippable previously but now
     // have sufficient registered observers.  Full scan but fast in practice.
