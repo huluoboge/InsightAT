@@ -105,6 +105,10 @@ void TrackStore::clear_track_xyz(int track_id) {
     f &= ~track_flags::kHasTriangulated;
     --num_triangulated_;
   }
+  // run_retriangulation only drains retri_pending_ids_.  Many call sites (angle/depth/resection
+  // rejection, etc.) clear XYZ without going through set_track_retriangulation_flag — enqueue here
+  // so Branch B can re-triangulate.  Duplicates in the queue are OK (drain is periodic).
+  set_track_retriangulation_flag(track_id, true);
 }
 
 void TrackStore::set_track_retriangulation_flag(int track_id, bool value) {
@@ -170,9 +174,9 @@ int TrackStore::get_track_all_obs_ids(int track_id, std::vector<int>* obs_ids_ou
   obs_ids_out->clear();
   if (track_id < 0 || static_cast<size_t>(track_id) >= track_obs_ids_.size())
     return 0;
-  if (!is_track_valid(track_id))
-    return 0;
-  // Return ALL obs ids (alive AND deleted) stored for this track.
+  // Structural access: return every obs id for this track (alive + deleted).
+  // Callers that must ignore mark_track_deleted tracks should check is_track_valid() first.
+  // (mark_observation_deleted does NOT clear track kAlive — only mark_track_deleted does.)
   *obs_ids_out = track_obs_ids_[static_cast<size_t>(track_id)];
   return static_cast<int>(obs_ids_out->size());
 }
@@ -263,6 +267,8 @@ void TrackStore::mark_observation_deleted(int obs_id) {
   if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
     return;
   obs_flags_[static_cast<size_t>(obs_id)] &= ~obs_flags::kAlive;
+  const int tid = obs_track_id_[static_cast<size_t>(obs_id)];
+  set_track_retriangulation_flag(tid, true);
 }
 
 void TrackStore::mark_observation_deleted_restorable(int obs_id) {
@@ -270,6 +276,8 @@ void TrackStore::mark_observation_deleted_restorable(int obs_id) {
     return;
   obs_flags_[static_cast<size_t>(obs_id)] =
       (obs_flags_[static_cast<size_t>(obs_id)] & ~obs_flags::kAlive) | obs_flags::kRestorable;
+  const int tid = obs_track_id_[static_cast<size_t>(obs_id)];
+  set_track_retriangulation_flag(tid, true);
 }
 
 void TrackStore::mark_observation_restored(int obs_id) {

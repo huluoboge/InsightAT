@@ -547,13 +547,17 @@ enum class TriFailCode : int {
   kInsufficientRegisteredViews = 9, ///< <2 registered observations (initial pass only)
 };
 
-/// Rebuild registered observation arrays from store (valid obs only). reg_obs_ids[i] ∥ reg_inds[i].
+/// Rebuild registered observation arrays from store. reg_obs_ids[i] ∥ reg_inds[i].
+/// @param include_deleted_restorable  If false: only alive observations (normal incremental tri).
+///   If true: also include logically-deleted observations that carry obs_flags::kRestorable
+///   (reproj outliers), so run_retriangulation can re-triangulate after BA clears XYZ when only
+///   restorable deleted views would bring nv back to >= 2.
 static bool rebuild_registered_arrays_from_track(
     TrackStore* store, int track_id, int n_images, const std::vector<bool>& registered,
     const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& image_to_camera_index,
     std::vector<int>* reg_obs_ids, std::vector<int>* reg_inds, std::vector<Eigen::Vector2d>* rays_n,
     std::vector<double>* u_px, std::vector<double>* v_px,
-    std::vector<camera::Intrinsics>* K_per_view) {
+    std::vector<camera::Intrinsics>* K_per_view, bool include_deleted_restorable = false) {
   reg_obs_ids->clear();
   reg_inds->clear();
   rays_n->clear();
@@ -561,8 +565,16 @@ static bool rebuild_registered_arrays_from_track(
   v_px->clear();
   K_per_view->clear();
   std::vector<int> ids;
-  store->get_track_obs_ids(track_id, &ids);
+  if (!include_deleted_restorable) {
+    store->get_track_obs_ids(track_id, &ids);
+  } else {
+    store->get_track_all_obs_ids(track_id, &ids);
+  }
   for (int oid : ids) {
+    if (!store->is_obs_valid(oid)) {
+      if (!include_deleted_restorable || !store->is_obs_restorable(oid))
+        continue;
+    }
     Observation o;
     store->get_obs(oid, &o);
     const int im = static_cast<int>(o.image_index);
@@ -604,7 +616,7 @@ static bool triangulate_track_common(
     const std::vector<Eigen::Vector3d>& poses_C, int n_images, const std::vector<bool>& registered,
     const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& image_to_camera_index,
     double min_tri_angle_deg, const RobustTriangulationOptions& robust_opt,
-    TriFailCode* fail_out = nullptr) {
+    TriFailCode* fail_out = nullptr, bool include_deleted_restorable_obs = false) {
   auto set_fail = [&](TriFailCode c) {
     if (fail_out)
       *fail_out = c;
@@ -622,7 +634,7 @@ static bool triangulate_track_common(
   std::vector<camera::Intrinsics> K_per_view;
   if (!rebuild_registered_arrays_from_track(store, track_id, n_images, registered, cameras,
                                             image_to_camera_index, &reg_obs_ids, &reg_inds, &rays_n,
-                                            &u_px, &v_px, &K_per_view))
+                                            &u_px, &v_px, &K_per_view, include_deleted_restorable_obs))
     return set_fail(TriFailCode::kInsufficientRegisteredViews);
   const int nv = static_cast<int>(reg_inds.size());
   if (nv < 2)
@@ -668,6 +680,9 @@ static bool triangulate_track_common(
                           K_per_view[static_cast<size_t>(i)], u_px[static_cast<size_t>(i)],
                           v_px[static_cast<size_t>(i)]);
       CHECK_LE(e, accept_px) << "reproj error " << e << " is less than accept px " << accept_px;
+      const int oid_in = reg_obs_ids[static_cast<size_t>(i)];
+      if (!store->is_obs_valid(oid_in))
+        store->mark_observation_restored(oid_in);
       ++n_committed;
     } else {
       store->mark_observation_deleted(reg_obs_ids[static_cast<size_t>(i)]);
@@ -920,50 +935,55 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   return updated;
 }
 
-/// Restore previously-deleted observations whose reprojection error (against the current
-/// triangulated XYZ) is within strict_px.
-///
-/// Old O(T * N_obs) double-loop replaced by the per-track obs list: for each triangulated
-/// track we walk only its own obs list (alive + deleted), which is O(T * avg_obs_per_track).
-static int restore_observations_strict(TrackStore* store,
-                                       const std::vector<Eigen::Matrix3d>& poses_R,
-                                       const std::vector<Eigen::Vector3d>& poses_C,
-                                       const std::vector<bool>& registered,
-                                       const std::vector<camera::Intrinsics>& cameras,
-                                       const std::vector<int>& image_to_camera_index,
-                                       double strict_px, int n_images) {
-  int restored = 0;
-  std::vector<int> all_oids;
-  for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
-    const int track_id = static_cast<int>(ti);
-    if (!store->is_track_valid(track_id) || !store->track_has_triangulated_xyz(track_id))
+namespace {
+
+const char* retri_scope_name(RetriangulationScope s) {
+  switch (s) {
+    case RetriangulationScope::kPendingOnly:
+      return "pending";
+    case RetriangulationScope::kNewImages:
+      return "new_images";
+    case RetriangulationScope::kFullScan:
+      return "full_scan";
+    default:
+      return "?";
+  }
+}
+
+/// Branch A: restore deleted observations; if only_images is non-null, only obs on those image indices.
+static int retri_restore_deleted_obs_branch_a(
+    TrackStore* store, int track_id, int n_images, const std::vector<Eigen::Matrix3d>& poses_R,
+    const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
+    const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& image_to_camera_index,
+    double restore_strict_reproj_px, const std::unordered_set<int>* only_images) {
+  float tx, ty, tz;
+  store->get_track_xyz(track_id, &tx, &ty, &tz);
+  const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty), static_cast<double>(tz));
+  std::vector<int> obs_ids_out;
+  store->get_track_all_obs_ids(track_id, &obs_ids_out);
+  int n_restored_obs = 0;
+  for (int oid : obs_ids_out) {
+    if (store->is_obs_valid(oid))
       continue;
-    float tx, ty, tz;
-    store->get_track_xyz(track_id, &tx, &ty, &tz);
-    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
-                            static_cast<double>(tz));
-    // get_track_all_obs_ids returns alive + deleted obs for this track only.
-    store->get_track_all_obs_ids(track_id, &all_oids);
-    for (int oid : all_oids) {
-      if (store->is_obs_valid(oid))
-        continue; // already alive, skip
-      Observation obs;
-      store->get_obs(oid, &obs);
-      const int im = static_cast<int>(obs.image_index);
-      if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
-        continue;
-      const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
-      const double e =
-          reproj_error_px(X, poses_R[static_cast<size_t>(im)], poses_C[static_cast<size_t>(im)], K,
-                          static_cast<double>(obs.u), static_cast<double>(obs.v));
-      if (e <= strict_px) {
-        store->mark_observation_restored(oid);
-        ++restored;
-      }
+    Observation obs;
+    store->get_obs(oid, &obs);
+    const int im = static_cast<int>(obs.image_index);
+    if (only_images && !only_images->count(im))
+      continue;
+    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
+    const double e = reproj_error_px(X, poses_R[static_cast<size_t>(im)], poses_C[static_cast<size_t>(im)], K,
+                                     static_cast<double>(obs.u), static_cast<double>(obs.v));
+    if (e <= restore_strict_reproj_px) {
+      store->mark_observation_restored(oid);
+      ++n_restored_obs;
     }
   }
-  return restored;
+  return n_restored_obs;
 }
+
+} // namespace
 
 int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
                         const std::vector<Eigen::Vector3d>& poses_C,
@@ -981,65 +1001,153 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
   using Clock = std::chrono::steady_clock;
   auto t0 = Clock::now();
 
-  // Drain the pending queue (populated by reject_outliers_multiview when it marks obs deleted).
-  // Currently unused for the untriangulated scan, but drain so the queue stays clean.
-  std::vector<int> retri_track_ids;
-  store->drain_retriangulation_pending(&retri_track_ids);
+  const RetriangulationScope scope = opts.scope;
+  int n_restored_track = 0, n_restored_obs = 0;
+  int n_retri = 0, n_retri_fail = 0;
+  size_t input_list_size = 0;
 
-  int n_track = 0, n_observers = 0;
-  for (int track_id : retri_track_ids) {
-    if (store->is_track_valid(track_id) && store->track_has_triangulated_xyz(track_id)) {
-      continue; // already retriangulated by a previous pass, skip
+  if (scope == RetriangulationScope::kFullScan) {
+    // Empty pending queue so flags and queue stay consistent with a full pass over all tracks.
+    std::vector<int> drained;
+    store->drain_retriangulation_pending(&drained);
+    (void)drained;
+
+    RobustTriangulationOptions robust_no_xyz = opts.robust;
+    if (opts.full_scan_commit_reproj_px > 0.0)
+      robust_no_xyz.ransac_inlier_px = opts.full_scan_commit_reproj_px;
+
+    for (int track_id = 0; track_id < static_cast<int>(store->num_tracks()); ++track_id) {
+      if (!store->is_track_valid(track_id)) {
+        store->set_track_retriangulation_flag(track_id, false);
+        continue;
+      }
+      if (!store->track_has_triangulated_xyz(track_id)) {
+        TriFailCode fcode = TriFailCode::kOk;
+        if (triangulate_track_common(store, track_id, poses_R, poses_C, n_images, registered, cameras,
+                                     image_to_camera_index, robust_no_xyz.min_tri_angle_deg, robust_no_xyz,
+                                     &fcode, /*include_deleted_restorable_obs=*/true)) {
+          ++n_retri;
+        } else {
+          ++n_retri_fail;
+        }
+      } else {
+        const int n_obs_rest = retri_restore_deleted_obs_branch_a(
+            store, track_id, n_images, poses_R, poses_C, registered, cameras, image_to_camera_index,
+            opts.restore_strict_reproj_px, /*only_images=*/nullptr);
+        if (n_obs_rest > 0) {
+          n_restored_obs += n_obs_rest;
+          ++n_restored_track;
+        }
+      }
+      store->set_track_retriangulation_flag(track_id, false);
     }
-    std::vector<int> obs_ids_out;
-    store->get_track_all_obs_ids(track_id, &obs_ids_out);
-    float tx, ty, tz;
-    store->get_track_xyz(track_id, &tx, &ty, &tz);
-    bool has_valid_obs = false;
-    for (int oid : obs_ids_out) {
-      if (!store->is_obs_valid(oid)) {
-        // test reproject error
+
+    auto t1 = Clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    LOG(INFO) << "[PERF] run_retriangulation: " << ms << "ms"
+              << "  scope=" << retri_scope_name(scope)
+              << "  retri_ok=" << n_retri << "  retri_fail=" << n_retri_fail
+              << "  restored_tracks=" << n_restored_track << "  restored_obs=" << n_restored_obs;
+    return n_retri + n_restored_track;
+  }
+
+  std::vector<int> retri_track_ids;
+  std::unordered_set<int> restrict_set;
+  const std::unordered_set<int>* restrict_ptr = nullptr;
+
+  if (scope == RetriangulationScope::kPendingOnly) {
+    store->drain_retriangulation_pending(&retri_track_ids);
+    std::unordered_set<int> seen;
+    std::vector<int> uniq;
+    uniq.reserve(retri_track_ids.size());
+    for (int tid : retri_track_ids) {
+      if (seen.insert(tid).second)
+        uniq.push_back(tid);
+    }
+    retri_track_ids = std::move(uniq);
+    input_list_size = retri_track_ids.size();
+  } else if (scope == RetriangulationScope::kNewImages) {
+    for (int im : opts.restrict_image_indices)
+      restrict_set.insert(im);
+    restrict_ptr = &restrict_set;
+    if (restrict_set.empty()) {
+      LOG(WARNING) << "run_retriangulation: scope=new_images but restrict_image_indices is empty";
+      return 0;
+    }
+    std::unordered_set<int> seen_tracks;
+    for (int tid = 0; tid < static_cast<int>(store->num_tracks()); ++tid) {
+      if (!store->is_track_valid(tid))
+        continue;
+      std::vector<int> oids;
+      store->get_track_all_obs_ids(tid, &oids);
+      bool touches = false;
+      for (int oid : oids) {
         Observation obs;
         store->get_obs(oid, &obs);
         const int im = static_cast<int>(obs.image_index);
-        if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)]) {
-          continue;
-        }
-        const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
-
-        const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
-                                static_cast<double>(tz));
-        const double e =
-            reproj_error_px(X, poses_R[static_cast<size_t>(im)], poses_C[static_cast<size_t>(im)],
-                            K, static_cast<double>(obs.u), static_cast<double>(obs.v));
-        if (e <= opts.restore_strict_reproj_px) {
-          store->mark_observation_restored(oid);
-          ++n_observers;
-          has_valid_obs = true;
+        if (restrict_set.count(im)) {
+          touches = true;
+          break;
         }
       }
+      if (touches && seen_tracks.insert(tid).second)
+        retri_track_ids.push_back(tid);
     }
-    if (has_valid_obs) {
-      ++n_track;
-    }
+    input_list_size = retri_track_ids.size();
+  } else {
+    return 0;
   }
-  auto t1 = std::chrono::steady_clock::now();
+
+  for (int track_id : retri_track_ids) {
+    if (!store->is_track_valid(track_id)) {
+      store->set_track_retriangulation_flag(track_id, false);
+      continue;
+    }
+    if (store->track_has_triangulated_xyz(track_id)) {
+      const int n_obs_rest =
+          retri_restore_deleted_obs_branch_a(store, track_id, n_images, poses_R, poses_C, registered,
+                                             cameras, image_to_camera_index, opts.restore_strict_reproj_px,
+                                             restrict_ptr);
+      if (n_obs_rest > 0) {
+        n_restored_obs += n_obs_rest;
+        ++n_restored_track;
+      }
+    } else {
+      TriFailCode fcode = TriFailCode::kOk;
+      if (triangulate_track_common(store, track_id, poses_R, poses_C, n_images, registered, cameras,
+                                   image_to_camera_index, opts.robust.min_tri_angle_deg, opts.robust, &fcode,
+                                   /*include_deleted_restorable_obs=*/true)) {
+        ++n_retri;
+      } else {
+        ++n_retri_fail;
+      }
+    }
+    store->set_track_retriangulation_flag(track_id, false);
+  }
+
+  auto t1 = Clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-  VLOG(1) << "[PERF] run_retriangulation: " << ms << "ms"
-          << "  restored_obs=" << n_observers << "  restored_tracks=" << n_track;
-  return n_track;
+  LOG(INFO) << "[PERF] run_retriangulation: " << ms << "ms"
+            << "  scope=" << retri_scope_name(scope) << "  input_tracks=" << input_list_size
+            << "  retri_ok=" << n_retri << "  retri_fail=" << n_retri_fail
+            << "  restored_tracks=" << n_restored_track << "  restored_obs=" << n_restored_obs;
+  return n_retri + n_restored_track;
 }
 
-int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
-                        const std::vector<Eigen::Vector3d>& poses_C,
-                        const std::vector<bool>& registered,
-                        const std::vector<camera::Intrinsics>& cameras,
-                        const std::vector<int>& image_to_camera_index, double min_tri_angle_deg) {
+int run_full_scan_triangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
+                                const std::vector<Eigen::Vector3d>& poses_C,
+                                const std::vector<bool>& registered,
+                                const std::vector<camera::Intrinsics>& cameras,
+                                const std::vector<int>& image_to_camera_index,
+                                double min_tri_angle_deg, double commit_reproj_px) {
   IncrementalRetriangulationOptions o;
+  o.scope = RetriangulationScope::kFullScan;
   o.robust.min_tri_angle_deg = min_tri_angle_deg;
-  return run_retriangulation(store, poses_R, poses_C, registered, cameras, image_to_camera_index,
-                             o);
+  o.robust.ransac_inlier_px = commit_reproj_px;
+  o.full_scan_commit_reproj_px = commit_reproj_px;
+  return run_retriangulation(store, poses_R, poses_C, registered, cameras, image_to_camera_index, o);
 }
+
 
 int restore_observations_from_cameras(
     TrackStore* store,

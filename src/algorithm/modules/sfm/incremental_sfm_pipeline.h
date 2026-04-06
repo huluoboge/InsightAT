@@ -343,6 +343,11 @@ struct TriangulationOptions {
   /// Should match the typical BA outlier-rejection threshold (~4 px) so that observations
   /// rejected by wrong intrinsics/distortion are given a fair second chance.
   double restore_reproj_px = 4.0;
+
+  /// After successful local BA: run_retriangulation with kNewImages on new_registered_image_indices.
+  bool enable_post_local_ba_retriangulation = true;
+  /// After any global BA in the main loop: run_retriangulation with kFullScan (heavy).
+  bool enable_full_scan_after_global_ba = true;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
