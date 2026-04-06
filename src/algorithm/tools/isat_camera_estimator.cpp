@@ -138,6 +138,10 @@ struct ImageExif {
   int height = 0;
   float focal_mm = 0.0f;   ///< physical focal length (mm)
   float focal_35mm = 0.0f; ///< 35mm-equivalent focal length
+  double latitude = 0.0;   ///< WGS84 latitude  (degrees, NaN if unavailable)
+  double longitude = 0.0;  ///< WGS84 longitude (degrees, NaN if unavailable)
+  double altitude = 0.0;   ///< altitude above ellipsoid (meters, NaN if unavailable)
+  bool has_gps = false;    ///< true when GPS fields are valid
   bool valid = false;
 };
 
@@ -166,6 +170,18 @@ static ImageExif readExif(const std::string& path) {
   e.model = exif.getModel();
   e.focal_mm = exif.getFocal();
   e.focal_35mm = exif.getFocal35mm();
+
+  if (exif.doesHaveExifInfo()) {
+    const auto& geo = exif.exifInfo().GeoLocation;
+    // EasyExif sets Latitude/Longitude to 0 when absent; treat non-zero as valid.
+    // Altitude can legitimately be 0, so we only require lat/lon to be non-zero.
+    if (geo.Latitude != 0.0 || geo.Longitude != 0.0) {
+      e.latitude  = geo.Latitude;
+      e.longitude = geo.Longitude;
+      e.altitude  = geo.Altitude;
+      e.has_gps   = true;
+    }
+  }
 
   // Trim surrounding whitespace
   auto trim = [](std::string& s) {

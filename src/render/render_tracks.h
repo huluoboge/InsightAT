@@ -127,10 +127,46 @@ public:
 
   void set_render_options(const RenderOptions& opt) { render_options_ = opt; }
 
-  void set_tracks(const Tracks& t) { tracks_ = t; }
+  void set_tracks(const Tracks& t) { tracks_ = t; rebuild_cam_to_tracks(); }
   void set_photos(const Photos& p) { photos_ = p; }
   void set_gcps(const Tracks& gcp) { gcps_ = gcp; }
   void set_center(double x, double y, double z);
+
+  const Photos& photos() const { return photos_; }
+  const Tracks& tracks() const { return tracks_; }
+  const RenderOptions& render_options() const { return render_options_; }
+
+  // ── Selection / highlight ────────────────────────────────────────────────
+  void set_selected_camera(int cam_idx);
+  void set_selected_track(int track_idx);
+  void clear_selection() { set_selected_camera(-1); set_selected_track(-1); }
+
+  int selected_camera() const { return selected_camera_; }
+  int selected_track()  const { return selected_track_; }
+
+  int cam_to_tracks_size() const { return static_cast<int>(cam_to_tracks_.size()); }
+  int cam_track_count(int cam_idx) const {
+    if (cam_idx < 0 || cam_idx >= static_cast<int>(cam_to_tracks_.size())) return 0;
+    return static_cast<int>(cam_to_tracks_[cam_idx].size());
+  }
+
+  // ── Pick: unproject screen pixel to world-space ray ─────────────────────
+  /// Uses GL state captured during the last draw() call.
+  /// Returns false if draw() has never been called.
+  bool unproject_ray(int px, int py, Vec3* ray_origin, Vec3* ray_dir) const;
+
+  /// Screen-space pick: find the camera or track closest to screen pixel (px,py).
+  /// Returns index >= 0 on hit, -1 on miss. is_camera=true means camera hit.
+  /// threshold_px: max screen-space distance in pixels.
+  int pick_screen(int px, int py, bool* is_camera, double threshold_px = 12.0) const;
+
+  struct GlState {
+    double mv[16]   = {};
+    double proj[16] = {};
+    GLint  vp[4]    = {};
+    bool   valid    = false;
+  };
+  const GlState& gl_state() const { return gl_state_; }
 
   /// 相机中心与点云在当前节点坐标系下的轴对齐包围盒；无几何则返回 false。
   bool world_axis_aligned_bounds(Vec3* bmin, Vec3* bmax) const;
@@ -138,6 +174,9 @@ public:
   void clear() {
     tracks_.clear();
     photos_.clear();
+    cam_to_tracks_.clear();
+    selected_camera_ = -1;
+    selected_track_  = -1;
   }
   void photo_larger() { render_options_.photoScale *= 1.1f; }
   void photo_smaller() { render_options_.photoScale *= 0.9f; }
@@ -157,7 +196,9 @@ public:
   Grid& grid() { return grid_; }
 
 protected:
-  void render_photo(const Photo& p);
+  void render_photo(const Photo& p, bool highlighted = false);
+  void draw_highlight_overlay();
+  void rebuild_cam_to_tracks(); ///< Build cam_to_tracks_ index from tracks_.
 
 protected:
   bool show_photo_;
@@ -172,6 +213,20 @@ protected:
   RenderOptions render_options_;
 
   std::array<double, 3> center_;
+
+  // ── Selection state ──────────────────────────────────────────────────────
+  int selected_camera_ = -1;
+  int selected_track_  = -1;
+
+  /// cam_to_tracks_[cam_idx] = list of track indices that observe that camera.
+  std::vector<std::vector<int>> cam_to_tracks_;
+
+  // ── GL state captured during last draw() — used for picking ─────────────
+  mutable double last_mv_[16]   = {};
+  mutable double last_proj_[16] = {};
+  mutable GLint  last_vp_[4]    = {};
+  mutable bool   gl_state_valid_ = false;
+  mutable GlState gl_state_;
 };
 } // namespace render
 

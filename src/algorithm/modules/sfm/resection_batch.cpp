@@ -154,16 +154,24 @@ std::vector<ResectionCandidate> choose_resection_candidates(
   if (scored.empty())
     return {};
 
+  // Weighted score: coverage dominates (0~1), count provides a log-scale boost (0~0.1).
+  // This keeps coverage as the primary signal while letting count break near-ties.
+  auto resection_score = [](const ScoredUnreg& s) -> float {
+    return s.coverage +
+           0.1f * std::log1p(static_cast<float>(s.count)) / std::log1p(1000.f);
+  };
   std::sort(scored.begin(), scored.end(),
-            [min_coverage_good](const ScoredUnreg& a, const ScoredUnreg& b) {
+            [&resection_score, min_coverage_good](const ScoredUnreg& a, const ScoredUnreg& b) {
+              // Images meeting the coverage threshold always come first.
               const bool ga = a.coverage >= min_coverage_good;
               const bool gb = b.coverage >= min_coverage_good;
               if (ga != gb)
-                return ga > gb; // sufficient spread first
-              if (a.count != b.count)
-                return a.count > b.count;
-              if (a.coverage != b.coverage)
-                return a.coverage > b.coverage;
+                return ga > gb;
+              // Within the same group, rank by weighted score.
+              const float sa = resection_score(a);
+              const float sb = resection_score(b);
+              if (sa != sb)
+                return sa > sb;
               return a.image_index < b.image_index;
             });
 

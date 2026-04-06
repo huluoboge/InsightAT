@@ -28,8 +28,7 @@ namespace sfm {
  * for each try load geo, triangulate two-view tracks, two-view BA, reject/filter, check count/RMSE.
  * Uses cameras[image_to_camera_index[im]] for intrinsics; no intrinsics_per_image.
  *
- * @param view_graph       Built from pairs + geo_dir (degeneracy from geo fields).
- * @param geo_dir          Directory of .isat_geo (path: geo_dir/im0_im1.isat_geo, index-based).
+ * @param view_graph       Built from pairs (used for second-image candidate ranking).
  * @param store            Track store (from IDC); two-view tracks will be triangulated and updated.
  * @param cameras          Current camera intrinsics (may be updated by BA later).
  * @param image_to_camera_index  image_to_camera_index[i] = camera index for image i.
@@ -41,8 +40,8 @@ namespace sfm {
  * @param registered_out   Output: registered flags; only [im0],[im1] set true.
  * @return true if a pair was chosen and store/poses updated; false if none succeeded.
  */
-bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_dir,
-                           TrackStore* store, const std::vector<camera::Intrinsics>& cameras,
+bool run_initial_pair_loop(const ViewGraph& view_graph, TrackStore* store,
+                           const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& image_to_camera_index,
                            int min_tracks_for_intital_pair, double min_median_angle_deg,
                            uint32_t* initial_im0_out,

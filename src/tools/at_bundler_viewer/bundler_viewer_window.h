@@ -1,9 +1,3 @@
-/**
- * @file  bundler_viewer_window.h
- * @brief 独立 Bundler 场景查看窗口（仅依赖 render 库）。
- *        支持单目录加载和 iter_NNNN 迭代序列导航。
- *        缓存已加载的 BundlerScene，并在后台预读前后各 3 帧。
- */
 #pragma once
 
 #include <future>
@@ -17,6 +11,7 @@
 #include <QMainWindow>
 #include <QPushButton>
 #include <QSlider>
+#include <QTextEdit>
 
 namespace insight {
 namespace render {
@@ -58,6 +53,9 @@ private slots:
   void on_next_iter();
   void on_iter_slider_changed(int value);
 
+  void on_pick_mode_toggled(bool enabled);
+  void on_render_widget_clicked(int px, int py);
+
 private:
   /// Load and display the bundler data at iter_dirs_[idx].
   void load_iter_at(int idx);
@@ -74,8 +72,14 @@ private:
   /// Drain all in-flight prefetch futures (called in destructor and on series change).
   void cancel_prefetch();
 
+  /// Show pick result in the info panel.
+  void show_pick_info(const QString& text);
+
   render::RenderWidget* render_widget_ = nullptr;
   render::RenderTracks* tracks_ = nullptr;
+
+  // ── Current scene (kept for pick queries) ───────────────────────────────────
+  std::shared_ptr<render::BundlerScene> current_scene_;
 
   // ── Iteration series ────────────────────────────────────────────────────────
   std::vector<std::string> iter_dirs_; ///< Sorted list of iter_NNNN sub-directories.
@@ -96,6 +100,11 @@ private:
   QPushButton* btn_next_iter_    = nullptr;
   QSlider*     iter_slider_      = nullptr;
   QLabel*      iter_label_       = nullptr;
+
+  // Pick mode
+  QPushButton* btn_pick_mode_    = nullptr;
+  QTextEdit*   pick_info_panel_  = nullptr;
+  bool         pick_mode_active_ = false;
 };
 
 } // namespace insight

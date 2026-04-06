@@ -111,15 +111,16 @@ bool read_bundle_cameras_points(std::istream& in, int num_cameras, int num_point
       *err = "unexpected EOF while reading point " + std::to_string(i);
       return false;
     }
+    p.observations.reserve(nvis);
     for (int k = 0; k < nvis; ++k) {
-      int cam_idx = 0, key_idx = 0;
-      float u = 0, v = 0;
-      in >> cam_idx >> key_idx >> u >> v;
+      BundlerObservation obs;
+      in >> obs.cam_idx >> obs.key_idx >> obs.u >> obs.v;
       if (!in) {
         *err = "unexpected EOF while reading point " + std::to_string(i) + " view " +
                std::to_string(k);
         return false;
       }
+      p.observations.push_back(obs);
     }
   }
   return true;
@@ -335,6 +336,13 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
     t.color.x() = p.rgb.x() / 255.0;
     t.color.y() = p.rgb.y() / 255.0;
     t.color.z() = p.rgb.z() / 255.0;
+    for (const auto& o : p.observations) {
+      RenderTracks::Observe obs;
+      obs.photoId = o.cam_idx;
+      obs.featX   = o.u;
+      obs.featY   = o.v;
+      t.obs.push_back(obs);
+    }
     tracks_data.push_back(t);
   }
 

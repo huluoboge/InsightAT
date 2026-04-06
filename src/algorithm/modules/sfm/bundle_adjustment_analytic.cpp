@@ -529,11 +529,20 @@ class FocalPriorCostAnalytic : public ceres::SizedCostFunction<1, kAnalyticIntrC
 public:
   FocalPriorCostAnalytic(double fx0, double weight) : fx0_(fx0), sqrt_w_(std::sqrt(weight)) {}
 
+  // bool Evaluate(double const* const* params, double* residuals, double** jacobians) const
+  // override {
+  //   residuals[0] = sqrt_w_ * (params[0][kFx] - fx0_) / fx0_;
+  //   if (jacobians && jacobians[0]) {
+  //     std::fill_n(jacobians[0], kAnalyticIntrCount, 0.0);
+  //     jacobians[0][kFx] = sqrt_w_ / fx0_;
+  //   }
+  //   return true;
+  // }
   bool Evaluate(double const* const* params, double* residuals, double** jacobians) const override {
-    residuals[0] = sqrt_w_ * (params[0][kFx] - fx0_) / fx0_;
+    residuals[0] = sqrt_w_ * (params[0][kFx] - fx0_);
     if (jacobians && jacobians[0]) {
       std::fill_n(jacobians[0], kAnalyticIntrCount, 0.0);
-      jacobians[0][kFx] = sqrt_w_ / fx0_;
+      jacobians[0][kFx] = sqrt_w_;
     }
     return true;
   }
@@ -882,19 +891,21 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // Pose blocks: only non-fixed blocks
     for (int i = 0; i < n_cams; ++i) {
       double* pp = poses_data.data() + i * 7;
-      if (!problem.HasParameterBlock(pp)) continue;
-      if (problem.IsParameterBlockConstant(pp)) continue;
-      problem.AddResidualBlock(
-          new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
+      if (!problem.HasParameterBlock(pp))
+        continue;
+      if (problem.IsParameterBlockConstant(pp))
+        continue;
+      problem.AddResidualBlock(new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
     }
 
     // Intrinsics blocks: only non-fixed blocks
     for (int c = 0; c < n_distinct; ++c) {
       double* ip = intr_params.data() + c * kAnalyticIntrCount;
-      if (!problem.HasParameterBlock(ip)) continue;
-      if (problem.IsParameterBlockConstant(ip)) continue;
-      problem.AddResidualBlock(
-          new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
+      if (!problem.HasParameterBlock(ip))
+        continue;
+      if (problem.IsParameterBlockConstant(ip))
+        continue;
+      problem.AddResidualBlock(new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
     }
 
     // Do NOT add regularization to 3D point blocks

@@ -283,9 +283,17 @@ int main(int argc, char* argv[]) {
   std::vector<bool> registered;
   IncrementalSfMOptions opts;
   opts.global_ba.max_iterations = 500;
-  opts.intrinsics.focal_prior_weight = 100.f;
+  opts.global_ba.early_phase_max_cameras = 100;
+  opts.global_ba.periodic_every_n_images = 50; // global BA every 50 registered cameras (was 100)
+  opts.intrinsics.focal_prior_weight = 1.f;
+  // kBatchNeighbor: variable = batch cameras + newly triangulated points;
+  // constant = top-K co-visible neighbors. Historical camera observations are NEVER deleted
+  // in local BA — only global BA (with full scene context) performs outlier rejection.
+  // This prevents the cascading observation-loss that kColmap can cause.
   opts.local_ba.enable = true;
-  opts.local_ba.switch_after_n_images = 300;
+  opts.local_ba.strategy = LocalBAStrategy::kBatchNeighbor;
+  opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
+  opts.local_ba.switch_after_n_images = 100;
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";

@@ -32,6 +32,10 @@ public:
   /// 重置场景节点变换，并将相机对准当前数据包围盒（Bundler / 点云等）。
   void fit_scene_to_view();
 
+  /// 将屏幕像素坐标 (px, py) 反投影为世界空间射线。
+  /// 委托给 RenderTracks，使用其 draw() 时捕获的 GL 状态，保证完全准确。
+  bool unproject_ray(int px, int py, Vec3* ray_origin, Vec3* ray_dir) const;
+
 protected:
   // virtual void paintEvent(QPaintEvent *event);
   virtual void initializeGL();
@@ -50,7 +54,6 @@ private:
   RenderRotationTool* m_rotationTool;
   RenderPanTool* m_panTool;
   RenderZoomTool* m_zoomTool;
-  // RenderTool *m_tool;
   RenderPivot* m_pivot;
   RenderNode* m_root;
   RenderNode* data_root_;

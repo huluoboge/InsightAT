@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 #include "render/bundler_loader.h"
 #include "render/render_tracks.h"
@@ -28,9 +29,12 @@
 #include <QKeyEvent>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSplitter>
+#include <QTextEdit>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -53,6 +57,36 @@ QPushButton* make_push(const QString& text, const QString& tooltip) {
 }
 
 } // namespace
+
+/// RenderWidget subclass that emits a signal on left-click (for pick mode).
+class PickableRenderWidget : public render::RenderWidget {
+  Q_OBJECT
+public:
+  explicit PickableRenderWidget(QWidget* parent = nullptr) : render::RenderWidget(parent) {}
+
+  void set_pick_mode(bool enabled) { pick_mode_ = enabled; }
+
+signals:
+  void clicked(int px, int py);
+
+protected:
+  void mousePressEvent(QMouseEvent* event) override {
+    if (pick_mode_ && event->button() == Qt::LeftButton)
+      m_press_pos = event->pos();
+    render::RenderWidget::mousePressEvent(event);
+  }
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (pick_mode_ && event->button() == Qt::LeftButton) {
+      if ((event->pos() - m_press_pos).manhattanLength() < 8)
+        emit clicked(event->pos().x(), event->pos().y());
+    }
+    render::RenderWidget::mouseReleaseEvent(event);
+  }
+
+private:
+  QPoint m_press_pos;
+  bool   pick_mode_ = false;
+};
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
@@ -104,9 +138,14 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QMainWindow(parent) 
   bar->addWidget(btn_pt_minus);
   bar->addWidget(btn_pt_plus);
 
+  bar->addSpacing(12);
+
+  btn_pick_mode_ = make_toggle(tr("Pick"), tr("Enable pick mode: click a camera to see its name, click a 3D point to see its track observations."), false);
+  connect(btn_pick_mode_, &QPushButton::toggled, this, &BundlerViewerWindow::on_pick_mode_toggled);
+  bar->addWidget(btn_pick_mode_);
+
   bar->addStretch(1);
   outer->addLayout(bar);
-
   // ── Iteration navigation bar (hidden until a series is loaded) ─────────────
   iter_bar_widget_ = new QWidget(central);
   auto* iter_bar   = new QHBoxLayout(iter_bar_widget_);
@@ -137,9 +176,26 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QMainWindow(parent) 
   iter_bar_widget_->setVisible(false);
   outer->addWidget(iter_bar_widget_);
 
-  // ── 3D view ─────────────────────────────────────────────────────────────────
-  render_widget_ = new render::RenderWidget(central);
-  outer->addWidget(render_widget_, 1);
+  // ── 3D view + pick info panel ────────────────────────────────────────────────
+  auto* splitter = new QSplitter(Qt::Horizontal, central);
+
+  auto* pickable = new PickableRenderWidget(splitter);
+  render_widget_ = pickable;
+  connect(pickable, &PickableRenderWidget::clicked,
+          this, &BundlerViewerWindow::on_render_widget_clicked);
+  splitter->addWidget(render_widget_);
+
+  pick_info_panel_ = new QTextEdit(splitter);
+  pick_info_panel_->setReadOnly(true);
+  pick_info_panel_->setPlaceholderText(tr("Enable Pick mode and click a camera or 3D point."));
+  pick_info_panel_->setMinimumWidth(220);
+  pick_info_panel_->setMaximumWidth(400);
+  pick_info_panel_->setVisible(false);
+  splitter->addWidget(pick_info_panel_);
+  splitter->setStretchFactor(0, 1);
+  splitter->setStretchFactor(1, 0);
+
+  outer->addWidget(splitter, 1);
 
   tracks_ = new render::RenderTracks;
   render_widget_->data_root()->render_objects().push_back(tracks_);
@@ -210,6 +266,9 @@ void BundlerViewerWindow::open_bundler_directory() {
   current_iter_idx_ = -1;
   dims_warmed_ = true;
   iter_bar_widget_->setVisible(false);
+
+  // Keep a copy of the scene for pick queries
+  current_scene_ = std::make_shared<render::BundlerScene>(std::move(scene));
 
   render_widget_->fit_scene_to_view();
   render_widget_->updateGL();
@@ -409,6 +468,8 @@ void BundlerViewerWindow::load_iter_at(int idx) {
   const bool do_fit = !dims_warmed_;
   dims_warmed_ = true;
   current_iter_idx_ = idx;
+  current_scene_ = scene;
+  tracks_->clear_selection();
   update_iter_controls();
 
   if (do_fit)
@@ -461,6 +522,10 @@ void BundlerViewerWindow::on_iter_slider_changed(int value) {
 // ── Keyboard shortcuts ──────────────────────────────────────────────────────
 
 void BundlerViewerWindow::keyPressEvent(QKeyEvent* event) {
+  if (event->key() == Qt::Key_Escape && pick_mode_active_) {
+    btn_pick_mode_->setChecked(false); // triggers on_pick_mode_toggled(false)
+    return;
+  }
   if (!iter_dirs_.empty()) {
     if (event->key() == Qt::Key_Left) {
       on_prev_iter();
@@ -516,4 +581,87 @@ void BundlerViewerWindow::on_point_size_larger() {
   render_widget_->updateGL();
 }
 
+// ── Pick mode ───────────────────────────────────────────────────────────────
+
+void BundlerViewerWindow::on_pick_mode_toggled(bool enabled) {
+  pick_mode_active_ = enabled;
+  static_cast<PickableRenderWidget*>(render_widget_)->set_pick_mode(enabled);
+  pick_info_panel_->setVisible(enabled);
+  if (enabled) {
+    pick_info_panel_->setPlainText(tr("Click a camera frustum or 3D point to inspect it."));
+  } else {
+    tracks_->clear_selection();
+    render_widget_->updateGL();
+  }
+}
+
+void BundlerViewerWindow::show_pick_info(const QString& text) {
+  pick_info_panel_->setPlainText(text);
+}
+
+void BundlerViewerWindow::on_render_widget_clicked(int px, int py) {
+  if (!pick_mode_active_ || !current_scene_)
+    return;
+
+  const render::RenderTracks::Photos& photos    = tracks_->photos();
+  const render::RenderTracks::Tracks& track_list = tracks_->tracks();
+
+  bool is_camera = false;
+  int idx = tracks_->pick_screen(px, py, &is_camera);
+
+  if (idx < 0) {
+    tracks_->clear_selection();
+    render_widget_->updateGL();
+    show_pick_info(tr("Nothing picked. Try clicking closer to a camera or point."));
+    return;
+  }
+
+  if (is_camera) {
+    const auto& ph = photos[idx];
+    QString full_path = ph.name;
+    QString fname = full_path;
+    int slash = full_path.lastIndexOf('/');
+    if (slash < 0) slash = full_path.lastIndexOf('\\');
+    if (slash >= 0) fname = full_path.mid(slash + 1);
+
+    int n_obs = 0;
+    if (idx < static_cast<int>(tracks_->cam_to_tracks_size()))
+      n_obs = static_cast<int>(tracks_->cam_track_count(idx));
+
+    show_pick_info(tr("Camera #%1\nName: %2\nObserved 3D points: %3\nFull path:\n%4")
+                       .arg(idx).arg(fname).arg(n_obs).arg(full_path));
+    tracks_->set_selected_camera(idx);
+  } else {
+    const auto& tk = track_list[idx];
+    QString info = tr("3D Point #%1\nXYZ: (%2, %3, %4)\nObservations: %5\n")
+                       .arg(tk.trackId)
+                       .arg(tk.x, 0, 'f', 3)
+                       .arg(tk.y, 0, 'f', 3)
+                       .arg(tk.z, 0, 'f', 3)
+                       .arg(tk.obs.size());
+    for (size_t k = 0; k < tk.obs.size(); ++k) {
+      const auto& ob = tk.obs[k];
+      QString cam_name;
+      if (ob.photoId >= 0 && ob.photoId < static_cast<int>(photos.size())) {
+        QString full = photos[ob.photoId].name;
+        int sl = full.lastIndexOf('/');
+        if (sl < 0) sl = full.lastIndexOf('\\');
+        cam_name = sl >= 0 ? full.mid(sl + 1) : full;
+      } else {
+        cam_name = tr("cam%1").arg(ob.photoId);
+      }
+      info += tr("  [%1] cam=%2  uv=(%3, %4)\n")
+                  .arg(k).arg(cam_name)
+                  .arg(ob.featX, 0, 'f', 1)
+                  .arg(ob.featY, 0, 'f', 1);
+    }
+    show_pick_info(info);
+    tracks_->set_selected_track(idx);
+  }
+
+  render_widget_->updateGL();
+}
+
 } // namespace insight
+
+#include "bundler_viewer_window.moc"

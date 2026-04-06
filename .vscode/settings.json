@@ -99,6 +99,13 @@
     "kiroAgent.trustedCommands": [
         "grep *",
         "ls *",
-        "find *"
+        "find *",
+        "cmake *",
+        "wc *",
+        "cat *",
+        "sed *",
+        "python3 *",
+        "xrandr *",
+        "touch *"
     ]
 }
