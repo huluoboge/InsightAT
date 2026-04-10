@@ -32,8 +32,8 @@ namespace sfm {
 
 namespace {
 
-// #region tri_diag — verbose per-failure triangulation logs for diagnosis. Set false after fix.
-static constexpr bool kTriangulationDiagLog = true;
+// #region tri_diag — verbose per-failure triangulation logs for diagnosis. Set true to enable.
+static constexpr bool kTriangulationDiagLog = false;
 
 static std::string tri_diag_format_depths(const Eigen::Vector3d& X,
                                           const std::vector<Eigen::Matrix3d>& R_list,
@@ -137,64 +137,6 @@ Eigen::Vector3d triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& 
 // OpenMVG-style DLT (HZ 12.2 p.312): projection matrix P = K * [R | t] with undistorted pixel
 // coordinates.  rays_n[i] = ((u_undist-cx)/fx, (v_undist-cy)/fy), so undistorted pixels are
 // recovered as  u_undist = rays_n[i](0)*fx + cx.  Mathematically equivalent to
-// triangulate_point_multiview but operates in pixel space (different row scaling of A).
-Eigen::Vector3d triangulate_point_dlt_openmvg(const std::vector<Eigen::Matrix3d>& R_list,
-                                              const std::vector<Eigen::Vector3d>& C_list,
-                                              const std::vector<Eigen::Vector2d>& rays_n,
-                                              const std::vector<camera::Intrinsics>& K_list) {
-  const int N = static_cast<int>(R_list.size());
-  if (N < 2 || static_cast<int>(C_list.size()) != N || static_cast<int>(rays_n.size()) != N ||
-      static_cast<int>(K_list.size()) != N)
-    return Eigen::Vector3d(0, 0, 0);
-  Eigen::MatrixXd A(2 * N, 4);
-  for (int i = 0; i < N; ++i) {
-    const camera::Intrinsics& K = K_list[i];
-    const Eigen::Vector3d t = -R_list[i] * C_list[i];
-    // Build 3x4 pixel-space projection matrix P = K * [R | t].
-    Eigen::Matrix<double, 3, 4> Rt;
-    Rt.leftCols<3>() = R_list[i];
-    Rt.col(3) = t;
-    Eigen::Matrix3d Km;
-    Km << K.fx, 0.0, K.cx, 0.0, K.fy, K.cy, 0.0, 0.0, 1.0;
-    const Eigen::Matrix<double, 3, 4> P = Km * Rt;
-    // Recover undistorted pixel coordinates from normalised ray.
-    const double u = rays_n[i](0) * K.fx + K.cx;
-    const double v = rays_n[i](1) * K.fy + K.cy;
-    A.row(2 * i) = u * P.row(2) - P.row(0);
-    A.row(2 * i + 1) = v * P.row(2) - P.row(1);
-  }
-  Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
-  const Eigen::Vector4d v = svd.matrixV().col(3);
-  if (std::fabs(v(3)) < 1e-12)
-    return Eigen::Vector3d(0, 0, 0);
-  return v.head<3>() / v(3);
-}
-
-void P_From_KRt(const Mat3& K, const Mat3& R, const Vec3& t, Mat34* P) { *P = K * HStack(R, t); }
-
-void HomogeneousToEuclidean(const Vec4& H, Vec3* X) {
-  double w = H(3);
-  *X << H(0) / w, H(1) / w, H(2) / w;
-}
-
-void TriangulateDLT(const Mat34& P1, const Vec2& x1, const Mat34& P2, const Vec2& x2,
-                    Vec4* X_homogeneous) {
-  Mat4 design;
-  for (int i = 0; i < 4; ++i) {
-    design(0, i) = x1[0] * P1(2, i) - P1(0, i);
-    design(1, i) = x1[1] * P1(2, i) - P1(1, i);
-    design(2, i) = x2[0] * P2(2, i) - P2(0, i);
-    design(3, i) = x2[1] * P2(2, i) - P2(1, i);
-  }
-  Nullspace(&design, X_homogeneous);
-}
-
-void TriangulateDLT(const Mat34& P1, const Vec2& x1, const Mat34& P2, const Vec2& x2,
-                    Vec3* X_euclidean) {
-  Vec4 X_homogeneous;
-  TriangulateDLT(P1, x1, P2, x2, &X_homogeneous);
-  HomogeneousToEuclidean(X_homogeneous, X_euclidean);
-}
 
 bool check_all_depths_positive(const Eigen::Vector3d& X, const std::vector<Eigen::Matrix3d>& R_list,
                                const std::vector<Eigen::Vector3d>& C_list) {
@@ -370,27 +312,26 @@ struct RobustTriDiag {
 static thread_local RobustTriDiag s_rtd;
 void reset_robust_tri_diag() { s_rtd = {}; }
 void log_robust_tri_diag() {
-  LOG(INFO) << "[DIAG] robust_tri N=2: total=" << s_rtd.n2_total
-            << " dlt_fail=" << s_rtd.n2_dlt_fail << " depth=" << s_rtd.n2_depth
-            << " angle=" << s_rtd.n2_angle << " reproj=" << s_rtd.n2_reproj
-            << " ok=" << s_rtd.n2_ok;
-  LOG(INFO) << "[DIAG] robust_tri N>=3: total=" << s_rtd.n3p_total
-            << " no_inliers=" << s_rtd.n3p_no_inliers << " ok=" << s_rtd.n3p_ok;
-  LOG(INFO) << "[DIAG] N>=3 fail best_cnt hist: <0(no_valid_pair)=" << s_rtd.n3p_best_cnt_hist[0]
-            << " 0=" << s_rtd.n3p_best_cnt_hist[1] << " 1=" << s_rtd.n3p_best_cnt_hist[2]
-            << " >=2=" << s_rtd.n3p_best_cnt_hist[3];
-  LOG(INFO) << "[DIAG] N>=3 fail pair pre-checks: total_pairs=" << s_rtd.n3p_pair_total
-            << " dlt_fail=" << s_rtd.n3p_pair_dlt_fail << " depth=" << s_rtd.n3p_pair_depth
-            << " angle=" << s_rtd.n3p_pair_angle << " passed=" << s_rtd.n3p_pair_passed;
+  VLOG(1) << "[DIAG] robust_tri N=2: total=" << s_rtd.n2_total << " dlt_fail=" << s_rtd.n2_dlt_fail
+          << " depth=" << s_rtd.n2_depth << " angle=" << s_rtd.n2_angle
+          << " reproj=" << s_rtd.n2_reproj << " ok=" << s_rtd.n2_ok;
+  VLOG(1) << "[DIAG] robust_tri N>=3: total=" << s_rtd.n3p_total
+          << " no_inliers=" << s_rtd.n3p_no_inliers << " ok=" << s_rtd.n3p_ok;
+  VLOG(1) << "[DIAG] N>=3 fail best_cnt hist: <0(no_valid_pair)=" << s_rtd.n3p_best_cnt_hist[0]
+          << " 0=" << s_rtd.n3p_best_cnt_hist[1] << " 1=" << s_rtd.n3p_best_cnt_hist[2]
+          << " >=2=" << s_rtd.n3p_best_cnt_hist[3];
+  VLOG(1) << "[DIAG] N>=3 fail pair pre-checks: total_pairs=" << s_rtd.n3p_pair_total
+          << " dlt_fail=" << s_rtd.n3p_pair_dlt_fail << " depth=" << s_rtd.n3p_pair_depth
+          << " angle=" << s_rtd.n3p_pair_angle << " passed=" << s_rtd.n3p_pair_passed;
   const double avg_seed_capped =
       s_rtd.n3p_seed_reproj_cnt > 0
           ? s_rtd.n3p_seed_reproj_sum_capped / static_cast<double>(s_rtd.n3p_seed_reproj_cnt)
           : 0.0;
-  LOG(INFO) << "[DIAG] N>=3 fail seed-pair reproj (cap=1000px for avg): n="
-            << s_rtd.n3p_seed_reproj_cnt << " avg_capped=" << avg_seed_capped
-            << " <=16px=" << s_rtd.n3p_seed_reproj_le16 << " <=20px=" << s_rtd.n3p_seed_reproj_le20
-            << " <=30px=" << s_rtd.n3p_seed_reproj_le30 << " <=40px=" << s_rtd.n3p_seed_reproj_le40
-            << " <=50px=" << s_rtd.n3p_seed_reproj_le50;
+  VLOG(1) << "[DIAG] N>=3 fail seed-pair reproj (cap=1000px for avg): n="
+          << s_rtd.n3p_seed_reproj_cnt << " avg_capped=" << avg_seed_capped
+          << " <=16px=" << s_rtd.n3p_seed_reproj_le16 << " <=20px=" << s_rtd.n3p_seed_reproj_le20
+          << " <=30px=" << s_rtd.n3p_seed_reproj_le30 << " <=40px=" << s_rtd.n3p_seed_reproj_le40
+          << " <=50px=" << s_rtd.n3p_seed_reproj_le50;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -409,29 +350,13 @@ constexpr bool kTriDLTUndistPx = true;
 /// Dispatch triangulation for a single view-pair.
 /// @param ray1 / ray2  Undistorted normalised coordinates (= K⁻¹ × undist_pixel).
 /// @param K1 / K2      Per-view intrinsics.
-static Eigen::Vector3d triangulate_pair(
-    const Eigen::Matrix3d& R1, const Eigen::Vector3d& C1,
-    const Eigen::Vector2d& ray1, const camera::Intrinsics& K1,
-    const Eigen::Matrix3d& R2, const Eigen::Vector3d& C2,
-    const Eigen::Vector2d& ray2, const camera::Intrinsics& K2) {
-  if constexpr (kTriDLTUndistPx) {
-    // Build projection matrices P = K * [R | t], t = -R*C.
-    Mat3 Km1, Km2;
-    Km1 << K1.fx, 0.0, K1.cx, 0.0, K1.fy, K1.cy, 0.0, 0.0, 1.0;
-    Km2 << K2.fx, 0.0, K2.cx, 0.0, K2.fy, K2.cy, 0.0, 0.0, 1.0;
-    Mat34 P1, P2;
-    P_From_KRt(Km1, R1, -R1 * C1, &P1);
-    P_From_KRt(Km2, R2, -R2 * C2, &P2);
-    // Undistorted pixel coords from normalised ray (lossless linear conversion).
-    const Vec2 x1(ray1(0) * K1.fx + K1.cx, ray1(1) * K1.fy + K1.cy);
-    const Vec2 x2(ray2(0) * K2.fx + K2.cx, ray2(1) * K2.fy + K2.cy);
-    Vec3 X;
-    TriangulateDLT(P1, x1, P2, x2, &X);
-    return X;
-  } else {
-    return triangulate_point_dlt_openmvg(
-        {R1, R2}, {C1, C2}, {ray1, ray2}, {K1, K2});
-  }
+static Eigen::Vector3d triangulate_pair(const Eigen::Matrix3d& R1, const Eigen::Vector3d& C1,
+                                        const Eigen::Vector2d& ray1,
+                                        const camera::Intrinsics& /*K1*/, const Eigen::Matrix3d& R2,
+                                        const Eigen::Vector3d& C2, const Eigen::Vector2d& ray2,
+                                        const camera::Intrinsics& /*K2*/) {
+  // DLT in normalised coords: P = [R | -R*C], input = undistorted normalised ray.
+  return triangulate_point_multiview({R1, R2}, {C1, C2}, {ray1, ray2});
 }
 
 } // namespace
@@ -472,9 +397,8 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
     std::vector<Eigen::Matrix3d> R2 = {R_list[0], R_list[1]};
     std::vector<Eigen::Vector3d> C2 = {C_list[0], C_list[1]};
 
-    Eigen::Vector3d X = triangulate_pair(
-        R_list[0], C_list[0], rays_n[0], cameras_per_view[0],
-        R_list[1], C_list[1], rays_n[1], cameras_per_view[1]);
+    Eigen::Vector3d X = triangulate_pair(R_list[0], C_list[0], rays_n[0], cameras_per_view[0],
+                                         R_list[1], C_list[1], rays_n[1], cameras_per_view[1]);
     if (!X.allFinite() || X.norm() < 1e-12) {
       ++s_rtd.n2_dlt_fail;
       return false;
@@ -528,16 +452,15 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
       pairs.push_back({a, b});
 
   std::mt19937 rng(42u);
-  // if (static_cast<int>(pairs.size()) > opt.ransac_max_pair_samples) {
-  //   std::shuffle(pairs.begin(), pairs.end(), rng);
-  //   pairs.resize(static_cast<size_t>(opt.ransac_max_pair_samples));
-  // }
+  if (static_cast<int>(pairs.size()) > opt.ransac_max_pair_samples) {
+    std::shuffle(pairs.begin(), pairs.end(), rng);
+    pairs.resize(static_cast<size_t>(opt.ransac_max_pair_samples));
+  }
 
   // Allow at most one outlier view: for N==min_inlier_views the strict threshold
   // would demand 100% agreement, leaving no tolerance. Clamp so there is always room
   // for one bad view; the outer reproj-filtering loop will delete it.
-  // const int effective_min_inliers = std::max(2, std::min(opt.min_inlier_views, N - 1));
-  const int effective_min_inliers = 2;
+  const int effective_min_inliers = std::max(2, std::min(opt.min_inlier_views, N - 1));
   int best_cnt = -1;
   double best_mean = 1e20;
   Eigen::Vector3d best_X = Eigen::Vector3d::Zero();
@@ -557,9 +480,8 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
     const int a = ab.first, b = ab.second;
     ++local_pair_total;
     const std::vector<Eigen::Vector3d> C2 = {C_list[a], C_list[b]};
-    Eigen::Vector3d X = triangulate_pair(
-        R_list[a], C_list[a], rays_n[a], cameras_per_view[a],
-        R_list[b], C_list[b], rays_n[b], cameras_per_view[b]);
+    Eigen::Vector3d X = triangulate_pair(R_list[a], C_list[a], rays_n[a], cameras_per_view[a],
+                                         R_list[b], C_list[b], rays_n[b], cameras_per_view[b]);
     if (!X.allFinite() || X.norm() < 1e-12) {
       ++local_pair_dlt;
       continue;
@@ -638,67 +560,8 @@ bool robust_triangulate_point_multiview(const std::vector<Eigen::Matrix3d>& R_li
   }
 
   ++s_rtd.n3p_ok;
-  // log_robust_tri_diag();
-#if 0
-  std::vector<size_t> in_idx;
-  in_idx.reserve(static_cast<size_t>(best_cnt));
-  for (int i = 0; i < N; ++i) {
-    if (best_mask[static_cast<size_t>(i)])
-      in_idx.push_back(static_cast<size_t>(i));
-  }
-  if (static_cast<int>(in_idx.size()) < opt.min_inlier_views)
-    return false;
-
-  std::vector<Eigen::Matrix3d> R_in;
-  std::vector<Eigen::Vector3d> C_in;
-  std::vector<Eigen::Vector2d> ray_in;
-  R_in.reserve(in_idx.size());
-  C_in.reserve(in_idx.size());
-  ray_in.reserve(in_idx.size());
-  for (size_t i : in_idx) {
-    R_in.push_back(R_list[i]);
-    C_in.push_back(C_list[i]);
-    ray_in.push_back(rays_n[i]);
-  }
-  Eigen::Vector3d X = triangulate_point_multiview(R_in, C_in, ray_in);
-  if (!X.allFinite() || !check_all_depths_positive(X, R_in, C_in)) {
-    CHECK(false) << "X is not finite or all depths are not positive,but should not happen "
-                 << X.transpose();
-    return false;
-  }
-
-  Eigen::Vector3d X_gn = refine_point_multiview_gn(X, R_list, C_list, cameras_per_view, u_px, v_px,
-                                                   in_idx, opt.gn_max_iterations, opt.gn_tolerance);
-
-  std::vector<Eigen::Vector3d> C_ang;
-  C_ang.reserve(in_idx.size());
-  for (size_t i : in_idx)
-    C_ang.push_back(C_list[i]);
-  const double ang = compute_max_ray_angle_deg(X_gn, C_ang);
-  if (ang < opt.min_tri_angle_deg || ang > opt.max_tri_angle_deg) {
-    LOG(INFO) << "[confused!]:angle " << ang << " is not in the range [" << opt.min_tri_angle_deg
-              << "," << opt.max_tri_angle_deg << "]";
-    LOG(INFO) << "X: " << X.transpose() << " X_gn: " << X_gn.transpose();
-    return false;
-  }
-
-  int final_inliers = 0;
-  double final_mean = 0.0;
-  count_inliers_and_mask(X, R_list, C_list, cameras_per_view, u_px, v_px, opt.ransac_inlier_px,
-                         &out->inlier_mask, &final_inliers, &final_mean);
-  if (final_inliers < effective_min_inliers) {
-    LOG(INFO) << "[confused!]:final inliers " << final_inliers
-              << " is less than effective min inliers " << effective_min_inliers;
-
-    LOG(INFO) << "X: " << X.transpose() << " X_gn: " << X_gn.transpose();
-    LOG(INFO) << "inlier count befor GN is : " << best_cnt;
-    return false;
-  }
-  // out->X = X;
-#else
   out->inlier_mask = std::move(best_mask);
   out->X = best_X;
-#endif
   out->success = true;
   return true;
 }
@@ -830,13 +693,6 @@ static bool triangulate_track_common(
                          rr.success;
 
   if (!robust_ok) {
-    // nv >= 3 and robust failed
-    // if (kTriangulationDiagLog) {
-    //   LOG(INFO) << "[tri_diag] robust_multiview_failed tid=" << track_id << " nv=" << nv
-    //             << " min_inlier_views=" << opt.min_inlier_views
-    //             << " ransac_inlier_px=" << opt.ransac_inlier_px << " reg_inds=["
-    //             << tri_diag_format_reg_inds(reg_inds) << "]";
-    // }
     return set_fail(TriFailCode::kRobustMultiviewFailed);
   }
 
@@ -870,12 +726,6 @@ static bool triangulate_track_common(
       // being triangulated).  Marking as kRestorable lets retri_restore_deleted_obs_branch_a and
       // subsequent kFullScan passes reconsider the observation once poses have been refined by BA.
       store->mark_observation_deleted_restorable(reg_obs_ids[static_cast<size_t>(i)]);
-      // if (kTriangulationDiagLog) {
-      //   LOG(INFO) << "[tri_diag] obs_delete reason="
-      //             << (is_robust_inlier ? "inlier_reproj_mismatch" : "robust_outlier")
-      //             << " tid=" << track_id << " obs_id=" << reg_obs_ids[static_cast<size_t>(i)]
-      //             << " del_image=" << reg_inds[static_cast<size_t>(i)];
-      // }
     }
   }
 

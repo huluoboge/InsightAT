@@ -52,13 +52,11 @@ void apply_distortion(double u_n, double v_n, const Intrinsics& K,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// undistort_point  (distorted pixel → undistorted pixel)
+// undistort_point  (distorted pixel → undistorted normalised coords, returned as pixel)
 //
-// Pixel-space fixed-point iteration:
-//   u_{n+1} = u_n − ( distort_px(u_n) − u_observed )
-// Tolerance and corrections are measured in pixels, which is physically
-// meaningful and avoids normalised-space ill-conditioning near image corners
-// where k3·r^6 can be large.
+// Normalised-space fixed-point iteration:
+//   xn_{n+1} = xn_n − ( distort_n(xn_n) − xn_observed )
+// Converges in ~5 iterations for typical lens distortion.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void undistort_point(const Intrinsics& K, double u_px_in, double v_px_in,
@@ -71,27 +69,26 @@ void undistort_point(const Intrinsics& K, double u_px_in, double v_px_in,
     return;
   }
 
-  const double fx = K.fx, fy = K.fy, cx = K.cx, cy = K.cy;
+  // Observed normalised coords (distorted).
+  const double xn_obs = (u_px_in - K.cx) / K.fx;
+  const double yn_obs = (v_px_in - K.cy) / K.fy;
 
-  // Initial guess: distorted pixel (error ≈ distortion magnitude, ~tens of px).
-  double u = u_px_in, v = v_px_in;
-  int max_iter = 100000;
-  double tol_px = 1e-3;  // 0.001 px — well below sub-pixel
-  for (int i = 0; i < max_iter; ++i) {
-    // Current estimate → normalised → apply distortion → back to pixel.
-    const double xn = (u - cx) / fx;
-    const double yn = (v - cy) / fy;
+  // Iterate in normalised space: xn_{n+1} = xn_n - (distort(xn_n) - xn_obs)
+  constexpr double kTol = 1e-6;   // normalised units (~1e-6 ≈ 0.004 px for f≈4000)
+  constexpr int    kMaxIt = 20;
+  double xn = xn_obs, yn = yn_obs;
+  for (int i = 0; i < kMaxIt; ++i) {
     double xd, yd;
     distort_normalised(xn, yn, K.k1, K.k2, K.k3, K.p1, K.p2, &xd, &yd);
-    const double du = (fx * xd + cx) - u_px_in;
-    const double dv = (fy * yd + cy) - v_px_in;
-    u -= du;
-    v -= dv;
-    if (std::abs(du) < tol_px && std::abs(dv) < tol_px)
+    const double dxn = xd - xn_obs;
+    const double dyn = yd - yn_obs;
+    xn -= dxn;
+    yn -= dyn;
+    if (std::abs(dxn) < kTol && std::abs(dyn) < kTol)
       break;
   }
-  *u_px_out = u;
-  *v_px_out = v;
+  *u_px_out = K.fx * xn + K.cx;
+  *v_px_out = K.fy * yn + K.cy;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,29 +111,27 @@ void undistort_points(const Intrinsics& K,
 
   const double fx = K.fx, fy = K.fy, cx = K.cx, cy = K.cy;
 
-  constexpr double tol_px = 1e-3;  // 0.001 px — well below sub-pixel
-  constexpr int max_iter = 100;
+  constexpr double kTol = 1e-6;   // normalised units
+  constexpr int max_iter = 20;
 
   for (int i = 0; i < n; ++i) {
-    const double u_obs = static_cast<double>(u_in[i]);
-    const double v_obs = static_cast<double>(v_in[i]);
+    const double xn_obs = (static_cast<double>(u_in[i]) - cx) / fx;
+    const double yn_obs = (static_cast<double>(v_in[i]) - cy) / fy;
 
-    double u = u_obs, v = v_obs;  // initial guess = distorted pixel
+    double xn = xn_obs, yn = yn_obs;
     for (int it = 0; it < max_iter; ++it) {
-      const double xn = (u - cx) / fx;
-      const double yn = (v - cy) / fy;
       double xd, yd;
       distort_normalised(xn, yn, K.k1, K.k2, K.k3, K.p1, K.p2, &xd, &yd);
-      const double du = (fx * xd + cx) - u_obs;
-      const double dv = (fy * yd + cy) - v_obs;
-      u -= du;
-      v -= dv;
-      if (std::abs(du) < tol_px && std::abs(dv) < tol_px)
+      const double dxn = xd - xn_obs;
+      const double dyn = yd - yn_obs;
+      xn -= dxn;
+      yn -= dyn;
+      if (std::abs(dxn) < kTol && std::abs(dyn) < kTol)
         break;
     }
 
-    u_out[i] = static_cast<float>(u);
-    v_out[i] = static_cast<float>(v);
+    u_out[i] = static_cast<float>(fx * xn + cx);
+    v_out[i] = static_cast<float>(fy * yn + cy);
   }
 }
 
