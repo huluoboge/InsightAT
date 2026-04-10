@@ -320,7 +320,11 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
           max_angle = angle;
       }
       if (max_angle < min_angle_rad || max_angle > max_angle_rad) {
-        store->mark_observation_deleted(reg[i].obs_id);
+        // Angle violations are geometry-context-dependent: small angle means poor baseline
+        // *right now* but may recover as more cameras register and poses refine; large angle
+        // (> max_angle_deg) is unusual in aerial but still re-evaluatable after re-triangulation.
+        // BA ignores kRestorable obs, so this is safe; kFullScan can restore if angle improves.
+        store->mark_observation_deleted_restorable(reg[i].obs_id);
         ++marked;
       }
     }
@@ -405,8 +409,15 @@ int reject_outliers_depth(TrackStore* store, const std::vector<Eigen::Matrix3d>&
                             static_cast<double>(tz));
     const double depth =
         (poses_R[static_cast<size_t>(im)] * (X - poses_C[static_cast<size_t>(im)]))(2);
-    if (depth <= 0.0 || depth > max_depth) {
+    if (depth <= 0.0) {
+      // Cheirality violation: point behind camera — geometric impossibility, permanent.
       store->mark_observation_deleted(obs_id);
+      dirty_tracks.insert(tid);
+      ++marked;
+    } else if (depth > max_depth) {
+      // Statistical depth outlier (median × factor): threshold is approximate and shifts as
+      // more cameras join.  Mark restorable so kFullScan can recover if depth normalises.
+      store->mark_observation_deleted_restorable(obs_id);
       dirty_tracks.insert(tid);
       ++marked;
     }
@@ -754,8 +765,7 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
                                                const std::vector<int>& image_to_camera_index,
                                                int min_tracks_for_intital_pair, double ba_rmse_max,
                                                double outlier_thresh_px, double min_angle_deg,
-                                               double max_angle_deg,
-                                               double min_median_angle_deg) {
+                                               double max_angle_deg, double min_median_angle_deg) {
 
   const double kPi = 3.141592653589793;
   const double min_angle_rad_q = min_angle_deg * (kPi / 180.0);
@@ -1161,8 +1171,8 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, TrackStore* store,
                            const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& image_to_camera_index,
                            int min_tracks_for_intital_pair, double min_median_angle_deg,
-                           uint32_t* initial_im0_out,
-                           uint32_t* initial_im1_out, std::vector<Eigen::Matrix3d>* poses_R_out,
+                           uint32_t* initial_im0_out, uint32_t* initial_im1_out,
+                           std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
                            std::vector<bool>* registered_out) {
   if (!store || !poses_R_out || !poses_C_out || !registered_out || cameras.empty())
@@ -1233,10 +1243,9 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, TrackStore* store,
       double outlier_thresh_px = 4.0;
       double min_angle_deg = 2.0;
       double max_angle_deg = 120.0;
-      auto trial = try_initial_pair_candidate(*store, im1, im2, cameras, image_to_camera_index,
-                                              min_tracks_for_intital_pair, ba_rmse_max,
-                                              outlier_thresh_px, min_angle_deg, max_angle_deg,
-                                              min_median_angle_deg);
+      auto trial = try_initial_pair_candidate(
+          *store, im1, im2, cameras, image_to_camera_index, min_tracks_for_intital_pair,
+          ba_rmse_max, outlier_thresh_px, min_angle_deg, max_angle_deg, min_median_angle_deg);
       if (!trial.success)
         continue;
 
@@ -1952,8 +1961,7 @@ static int reject_outliers_local_colmap(
       if (batch_global_set.count(g))
         continue; // batch cameras don't need this protection
       const int ba_local = kv.second;
-      if (ba_local < static_cast<int>(fix_pose.size()) &&
-          fix_pose[static_cast<size_t>(ba_local)])
+      if (ba_local < static_cast<int>(fix_pose.size()) && fix_pose[static_cast<size_t>(ba_local)])
         continue; // constant cameras are already protected
       img_obs_ids.clear();
       store->get_image_observation_indices(g, &img_obs_ids);
@@ -2010,7 +2018,20 @@ static int reject_outliers_local_colmap(
         if (cnt_it != cam_valid_obs.end() && cnt_it->second <= kMinObsProtect)
           continue; // protected: let global BA handle this camera
       }
-      store->mark_observation_deleted(obs_id); // enqueues track for run_retriangulation
+      // Mark as kRestorable (not permanently deleted) so that kPendingOnly/kFullScan
+      // retriangulation can still use this observation via include_deleted_restorable_obs=true.
+      //
+      // Why: local-BA reproj errors can be inflated by a poor initial focal-length estimate —
+      // observations rejected here might be geometrically correct but show up as outliers
+      // only because intrinsics haven't converged yet.  Permanently deleting them cuts off the
+      // observation chain for unregistered images whose tracks rely on these registered views,
+      // causing those images to be missed by choose_resection_candidates and never registered.
+      //
+      // With kRestorable the observation is excluded from BA (deleted) but is still used
+      // by triangulate_track_common(include_deleted_restorable=true), allowing kPendingOnly
+      // to re-triangulate the track once better poses/intrinsics are available.  Truly bad
+      // matches will still fail the robust triangulation angle/reproj test.
+      store->mark_observation_deleted_restorable(obs_id);
       // Track remaining valid obs count for the protection check above.
       if (!is_batch) {
         auto cnt_it = cam_valid_obs.find(g);
@@ -3010,9 +3031,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   uint32_t* im0_ptr = &local_im0;
   uint32_t* im1_ptr = &local_im1;
   if (!run_initial_pair_loop(view_graph, store_out, *cameras, image_to_camera_index,
-                             opts.init.min_tracks_for_intital_pair,
-                             opts.init.min_median_angle_deg, im0_ptr, im1_ptr, poses_R_out,
-                             poses_C_out, registered_out)) {
+                             opts.init.min_tracks_for_intital_pair, opts.init.min_median_angle_deg,
+                             im0_ptr, im1_ptr, poses_R_out, poses_C_out, registered_out)) {
     LOG(ERROR) << "run_incremental_sfm_pipeline: no initial pair succeeded";
     return false;
   }
@@ -3077,7 +3097,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
   // Per-image VisibilityPyramid score cache: avoids rebuilding the pyramid when n_tri has not
   // changed since the previous iteration (amortizes Eigen allocation + SetPoint cost).
-  // n_tri watermark ensures automatic invalidation after triangulation without explicit bookkeeping.
+  // n_tri watermark ensures automatic invalidation after triangulation without explicit
+  // bookkeeping.
   ResectionScoreCache resection_score_cache;
 
   // Snapshot of camera intrinsics taken just before each global BA.
@@ -3086,6 +3107,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
   auto pipeline_start = Clock::now();
   int sfm_iter = 0;
+  // How many consecutive iterations ended with zero resection candidates.
+  // On each such iteration we run a global BA + kFullScan triangulation pass before retrying.
+  // Only give up when we fail twice in a row with no improvement.
+  int no_candidate_consecutive = 0;
+  constexpr int kMaxNoCandidateRetries = 2;
   for (;;) {
     ++sfm_iter;
     auto iter_start = Clock::now();
@@ -3104,9 +3130,91 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
             << std::chrono::duration_cast<std::chrono::milliseconds>(t_choose1 - t_choose0).count()
             << "ms";
     if (resection_candidates.empty()) {
-      LOG(INFO) << "  No resection candidates found, stopping";
-      break;
+      if (no_candidate_consecutive >= kMaxNoCandidateRetries) {
+        LOG(INFO) << "  No resection candidates after " << no_candidate_consecutive
+                  << " consecutive BA+triangulation retries, stopping";
+        break;
+      }
+      ++no_candidate_consecutive;
+      LOG(INFO) << "  No resection candidates (retry " << no_candidate_consecutive << "/"
+                << kMaxNoCandidateRetries
+                << "): running global BA + kFullScan triangulation to unlock new candidates";
+
+      // ── Retry BA ─────────────────────────────────────────────────────────
+      double rmse_retry = 0.0;
+      auto t_retry_ba = Clock::now();
+      if (!run_ba_with_outlier_detection(
+              store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index, cameras,
+              anchor_image, num_registered, opts, &rmse_retry, static_cast<int>(*im1_ptr))) {
+        LOG(WARNING) << "  [no_cand_retry] BA failed (RMSE=" << rmse_retry << " px)";
+      } else {
+        LOG(INFO) << "  [no_cand_retry] BA ok (RMSE=" << rmse_retry << " px); "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                                           t_retry_ba)
+                         .count()
+                  << "ms";
+      }
+
+      // ── Retry kFullScan triangulation ─────────────────────────────────────
+      // Use a more permissive min_tri_angle (0.5°) than the normal threshold (2.0°).
+      // Late-stage unregistered images are typically covered only by weak-baseline tracks
+      // (overlap strips at low elevation or far range). These tracks pass angle=0.5° but fail
+      // angle=2.0°, which is why the normal post-BA full scan added only +200 tracks while
+      // a diagnostic re-triangulation at 0.5° recovers ~25,000 tracks.
+      {
+        auto t_retry_fs = Clock::now();
+        IncrementalRetriangulationOptions fs_retry;
+        fs_retry.scope = RetriangulationScope::kFullScan;
+        fs_retry.robust.min_tri_angle_deg = 0.5; // rescue mode: permissive angle
+        fs_retry.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
+        fs_retry.full_scan_commit_reproj_px = opts.triangulation.commit_reproj_px;
+        fs_retry.restore_strict_reproj_px = opts.triangulation.restore_reproj_px;
+        const int n_retry_fs =
+            run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+                                image_to_camera_index, fs_retry);
+        LOG(INFO) << "  [no_cand_retry] kFullScan: score=" << n_retry_fs
+                  << "  total_tri=" << count_tri_tracks() << "  "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                                           t_retry_fs)
+                         .count()
+                  << "ms";
+      }
+
+      // Invalidate score cache so choose_resection_candidates re-evaluates all images.
+      resection_score_cache.invalidate_all();
+
+      // ── Retry with relaxed min_3d2d_count ────────────────────────────────────
+      // If BA + kFullScan still can't produce candidates at the normal threshold (30),
+      // try immediately with a halved threshold using the same resection_score_cache.
+      // This handles the common late-stage case where a few remaining images have
+      // 15-29 3D-2D correspondences — enough to PnP-RANSAC successfully (min_inliers=15)
+      // but not enough to pass the stricter candidate filter.
+      {
+        const int relaxed_min =
+            std::max(opts.resection.min_inliers, opts.resection.min_3d2d_count / 2);
+        if (relaxed_min < opts.resection.min_3d2d_count) {
+          auto relaxed_candidates = choose_resection_candidates(
+              *store_out, *registered_out, *cameras, image_to_camera_index, relaxed_min,
+              resection_max_candidates, opts.resection.min_visibility_coverage,
+              static_cast<size_t>(std::max(1, opts.resection.visibility_pyramid_levels)),
+              &resection_score_cache);
+          if (!relaxed_candidates.empty()) {
+            LOG(INFO) << "  [no_cand_retry] relaxed min_3d2d=" << relaxed_min << " unlocked "
+                      << relaxed_candidates.size() << " candidates"
+                      << " (best: im=" << relaxed_candidates[0].image_index
+                      << " 3d2d=" << relaxed_candidates[0].num_3d2d << ")";
+            // Swap into resection_candidates and fall through to normal processing.
+            resection_candidates = std::move(relaxed_candidates);
+            no_candidate_consecutive = 0;
+            // Don't continue — fall through to the rest of the loop (BA, tri, etc.).
+            goto has_candidates;
+          }
+        }
+      }
+      continue; // re-run choose_resection_candidates next iteration
     }
+    no_candidate_consecutive = 0; // reset on successful candidate selection
+  has_candidates:
     // Determine whether to use local BA for this iteration BEFORE the resection loop,
     // because local BA mode processes one image at a time (breaks after first success).
     const bool use_local_ba =
@@ -3217,7 +3325,12 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
               << "ms  n=" << num_registered << "  RMSE=" << rmse << " px";
     } else {
       // ── Local BA phase ────────────────────────────────────────────────────
-      LOG(INFO) << "Running local BA (strategy=kColmap, n=" << num_registered << ")";
+      LOG(INFO) << "Running local BA ( n=" << num_registered << ")";
+      if (opts.local_ba.strategy == LocalBAStrategy::kColmap) {
+        LOG(INFO) << "  Local BA strategy: COLMAP-style local window optimization";
+      } else if (opts.local_ba.strategy == LocalBAStrategy::kBatchNeighbor) {
+        LOG(INFO) << "  Local BA strategy: batch neighbor optimization (all registered images)";
+      }
       auto t_lba0 = Clock::now();
       BASolverOverrides local_ov{}; // default overrides for local BA
       const bool local_ba_ok =
@@ -3249,12 +3362,12 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         rni.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
         rni.robust.ransac_inlier_px = opts.triangulation.commit_reproj_px;
         rni.restore_strict_reproj_px = opts.triangulation.restore_reproj_px;
-        const int n_rn =
-            run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                                image_to_camera_index, rni);
-        VLOG(1) << "[PERF] post_local_retri: "
-                << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_rni).count()
-                << "ms  score=" << n_rn << "  total_tri=" << count_tri_tracks();
+        const int n_rn = run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                             *cameras, image_to_camera_index, rni);
+        VLOG(1)
+            << "[PERF] post_local_retri: "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_rni).count()
+            << "ms  score=" << n_rn << "  total_tri=" << count_tri_tracks();
       }
 
       // Periodic global BA in the local-BA phase
@@ -3288,18 +3401,17 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       for (int c = 0; c < n_cam_models && c < static_cast<int>(ba_cameras_snapshot.size()); ++c) {
         const double prev_fx = ba_cameras_snapshot[static_cast<size_t>(c)].fx;
         const double cur_fx = (*cameras)[static_cast<size_t>(c)].fx;
-        if (prev_fx > 1.0 &&
-            std::abs(cur_fx - prev_fx) / prev_fx >
-                opts.triangulation.intrinsics_change_restore_threshold)
+        if (prev_fx > 1.0 && std::abs(cur_fx - prev_fx) / prev_fx >
+                                 opts.triangulation.intrinsics_change_restore_threshold)
           changed_cams.insert(c);
       }
       if (!changed_cams.empty()) {
         auto t_restore0 = Clock::now();
         const int n_restored = restore_observations_from_cameras(
-            store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-            image_to_camera_index, changed_cams, opts.triangulation.restore_reproj_px);
-        LOG(INFO) << "  Intrinsics-change restore: recovered " << n_restored
-                  << " obs from " << changed_cams.size() << " changed camera(s) (thresh="
+            store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras, image_to_camera_index,
+            changed_cams, opts.triangulation.restore_reproj_px);
+        LOG(INFO) << "  Intrinsics-change restore: recovered " << n_restored << " obs from "
+                  << changed_cams.size() << " changed camera(s) (thresh="
                   << opts.triangulation.intrinsics_change_restore_threshold * 100.0 << "%)";
         VLOG(1) << "[PERF] intrinsics_restore: "
                 << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_restore0)
@@ -3316,9 +3428,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       fs_opts.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
       fs_opts.full_scan_commit_reproj_px = opts.triangulation.commit_reproj_px;
       fs_opts.restore_strict_reproj_px = opts.triangulation.restore_reproj_px;
-      const int n_fs =
-          run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                              image_to_camera_index, fs_opts);
+      const int n_fs = run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                           *cameras, image_to_camera_index, fs_opts);
       LOG(INFO) << "  Post-global-BA retriangulation (full_scan): score=" << n_fs
                 << "  total_tri=" << count_tri_tracks();
       VLOG(1) << "[PERF] post_global_full_scan_retri: "
@@ -3327,8 +3438,10 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     }
 
     // Periodic re-triangulation: recover tracks flagged by outlier rejection.
-    // run_retriangulation drains the pending queue.  For tracks whose XYZ was cleared it now
-    // calls triangulate_track_common to compute fresh XYZ from the improved poses.
+    // ── Periodic kPendingOnly re-triangulation ────────────────────────────────
+    // Drains the pending queue (tracks flagged when BA outlier rejection deleted observations).
+    // After Fix-2 (mark_observation_deleted_restorable), these tracks retain their observations
+    // as kRestorable so triangulate_track_common(include_deleted_restorable=true) can succeed.
     if (num_registered > 3 && opts.triangulation.retriangulation_every_n_iters > 0 &&
         sfm_iter % opts.triangulation.retriangulation_every_n_iters == 0) {
       auto t_retri = Clock::now();
@@ -3338,13 +3451,38 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       retri_opts.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
       retri_opts.restore_strict_reproj_px = 4.0;
 
-      int n_retri =
-          run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                              image_to_camera_index, retri_opts);
+      int n_retri = run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                        *cameras, image_to_camera_index, retri_opts);
       LOG(INFO)
           << "[PERF] periodic_retri: "
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_retri).count()
           << "ms  re_tri=" << n_retri << "  total_tri=" << count_tri_tracks();
+    }
+
+    // ── Periodic kFullScan re-triangulation ───────────────────────────────────
+    // Independent of global BA frequency.  Catches lag tracks: tracks visible in multiple
+    // recently-registered cameras that couldn't be triangulated when those cameras were first
+    // added (not enough views yet), but are now triangulable with the current pose set.
+    //
+    // Skip if we already ran a full_scan via enable_full_scan_after_global_ba this iteration,
+    // to avoid doing two consecutive full scans in the same iter.
+    if (!ran_global_ba_this_iter && opts.triangulation.full_scan_every_n_iters > 0 &&
+        num_registered > 3 && sfm_iter % opts.triangulation.full_scan_every_n_iters == 0) {
+      auto t_pfs2 = Clock::now();
+      IncrementalRetriangulationOptions fs2_opts;
+      fs2_opts.scope = RetriangulationScope::kFullScan;
+      fs2_opts.robust.min_tri_angle_deg = opts.triangulation.min_angle_deg;
+      fs2_opts.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
+      fs2_opts.full_scan_commit_reproj_px = opts.triangulation.commit_reproj_px;
+      fs2_opts.restore_strict_reproj_px = opts.triangulation.restore_reproj_px;
+      const int n_fs2 = run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                            *cameras, image_to_camera_index, fs2_opts);
+      LOG(INFO) << "  Periodic full_scan retriangulation: score=" << n_fs2
+                << "  total_tri=" << count_tri_tracks();
+      VLOG(1)
+          << "[PERF] periodic_full_scan_retri: "
+          << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pfs2).count()
+          << "ms";
     }
 
     // Debug snapshot callback — fires every N iters if configured.

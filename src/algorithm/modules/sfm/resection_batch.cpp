@@ -115,7 +115,7 @@ std::vector<ResectionCandidate> choose_resection_candidates(
     for (int tid : track_ids)
       if (store.track_has_triangulated_xyz(tid))
         ++n_tri;
-    if (n_tri < min_3d2d_count)
+    if (n_tri < min_3d2d_count) 
       continue;
 
     ScoredUnreg row;
@@ -151,7 +151,7 @@ std::vector<ResectionCandidate> choose_resection_candidates(
     }
     scored.push_back(row);
   }
-  if (scored.empty())
+  if (scored.empty()) 
     return {};
 
   // Weighted score: coverage dominates (0~1), count provides a log-scale boost (0~0.1).
@@ -186,7 +186,7 @@ std::vector<ResectionCandidate> choose_resection_candidates(
     c.coverage = p.coverage;
     out.push_back(c);
   }
-  if (out.size() > 1) {
+   if (out.size() > 1) {
     for (int i = 1; i < out.size(); ++i) {
       if (out[i].num_3d2d < 100) {
         out.resize(i);
@@ -194,6 +194,12 @@ std::vector<ResectionCandidate> choose_resection_candidates(
       }
     }
   }
+  // NOTE: The old hard-coded `num_3d2d < 100` truncation was removed.
+  // It incorrectly dropped valid late-stage candidates that met min_3d2d_count but had
+  // fewer than 100 triangulated correspondences — a situation that commonly arises when
+  // the triangulation pipeline has lagged (observation deletions from local-BA outlier
+  // rejection temporarily starve some images of 3D-2D pairs).  The minimum is already
+  // enforced by the `if (n_tri < min_3d2d_count) continue;` guard above.
   if (score_cache) {
     VLOG(1) << "choose_resection_candidates: " << scored.size() << " eligible → " << n_list
             << "  pyramid_cache: hits=" << cache_hits << " misses=" << cache_misses

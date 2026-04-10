@@ -327,7 +327,16 @@ struct TriangulationOptions {
   double min_angle_deg = 0.5;   ///< Min max pairwise angle for a triangulated point.
   double max_angle_deg = 120.0; ///< Max max pairwise angle (beyond which we assume outlier).
   double min_baseline_depth_ratio = 0.01; ///< Min baseline-to-depth ratio for triangulated points.
-  int retriangulation_every_n_iters = 3;  ///< Periodic re-triangulation every N SfM iterations.
+  int retriangulation_every_n_iters = 3;  ///< Periodic kPendingOnly re-triangulation every N SfM iterations.
+
+  /// Periodic kFullScan re-triangulation every N SfM iterations, independent of global BA.
+  /// kFullScan visits ALL unresolved tracks and can recover tracks whose supporting cameras
+  /// were registered in recent iterations but whose cross-image tracks were not yet
+  /// triangulable at the time of the last full scan.  Set to 0 to disable.
+  /// Typical cost: ~20 ms at 200 registered images, ~600 ms at 600 registered images.
+  /// Setting = 10 adds ~30 s overhead for a 700-image dataset; setting = 5 adds ~60 s.
+  int full_scan_every_n_iters = 10;
+
   /// After GN: reject view if reproj > this (px). Loosen if too few points pass incremental tri
   /// (logs show many `two_reproj` / robust fails at 4px while BA RMSE is ~0.5px).
   double commit_reproj_px = 16.0;

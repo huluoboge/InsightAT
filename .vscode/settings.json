@@ -106,6 +106,7 @@
         "sed *",
         "python3 *",
         "xrandr *",
-        "touch *"
+        "touch *",
+        "head *"
     ]
 }

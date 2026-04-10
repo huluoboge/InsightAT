@@ -38,10 +38,28 @@ using namespace insight;
 using namespace insight::sfm;
 using namespace insight::tools;
 
+static json intrinsics_to_json(const camera::Intrinsics& K) {
+  json j;
+  j["fx"] = K.fx;
+  j["fy"] = K.fy;
+  j["cx"] = K.cx;
+  j["cy"] = K.cy;
+  j["width"] = K.width;
+  j["height"] = K.height;
+  j["k1"] = K.k1;
+  j["k2"] = K.k2;
+  j["k3"] = K.k3;
+  j["p1"] = K.p1;
+  j["p2"] = K.p2;
+  return j;
+}
+
 static bool write_poses_json(const std::string& path, const std::vector<Eigen::Matrix3d>& poses_R,
                              const std::vector<Eigen::Vector3d>& poses_C,
-                             const std::vector<bool>& registered) {
-  json j = json::array();
+                             const std::vector<bool>& registered,
+                             const std::vector<camera::Intrinsics>& cameras,
+                             const std::vector<int>& image_to_camera_index) {
+  json poses = json::array();
   for (size_t i = 0; i < registered.size(); ++i) {
     if (!registered[i])
       continue;
@@ -51,14 +69,25 @@ static bool write_poses_json(const std::string& path, const std::vector<Eigen::M
                                     poses_R[i](1, 0), poses_R[i](1, 1), poses_R[i](1, 2),
                                     poses_R[i](2, 0), poses_R[i](2, 1), poses_R[i](2, 2)};
     pose["C"] = std::vector<double>{poses_C[i](0), poses_C[i](1), poses_C[i](2)};
-    j.push_back(std::move(pose));
+    poses.push_back(std::move(pose));
   }
+
+  json cameras_json = json::array();
+  for (const auto& K : cameras)
+    cameras_json.push_back(intrinsics_to_json(K));
+
+  json root;
+  root["format"] = "isat_incremental_sfm_pose_bundle_v2";
+  root["poses"] = std::move(poses);
+  root["cameras"] = std::move(cameras_json);
+  root["image_to_camera_index"] = image_to_camera_index;
+
   std::ofstream f(path);
   if (!f.is_open()) {
     LOG(ERROR) << "Cannot write " << path;
     return false;
   }
-  f << j.dump(2);
+  f << root.dump(2);
   return true;
 }
 
@@ -362,7 +391,8 @@ int main(int argc, char* argv[]) {
   if (!out_path.empty() && out_path.back() != '/')
     out_path += '/';
   out_path += "poses.json";
-  if (!write_poses_json(out_path, poses_R, poses_C, registered)) {
+  if (!write_poses_json(out_path, poses_R, poses_C, registered, project.cameras,
+                        project.image_to_camera_index)) {
     LOG(ERROR) << "Failed to write poses";
     return 1;
   }
@@ -370,6 +400,23 @@ int main(int argc, char* argv[]) {
 
   write_bundler(output_dir, image_paths, poses_R, poses_C, registered, project.cameras,
                 project.image_to_camera_index, store);
+
+  // ── Save TrackStore (3-D points + observation flags) to bundle dir ────────
+  // Saved as tracks.isat_tracks in the same output directory so downstream
+  // tools (test_sfm_diag2, isat_incremental_sfm re-run, …) can load it.
+  {
+    const int n_imgs = project.num_images();
+    std::vector<uint32_t> img_indices(static_cast<size_t>(n_imgs));
+    for (int i = 0; i < n_imgs; ++i)
+      img_indices[static_cast<size_t>(i)] = static_cast<uint32_t>(i);
+
+    const std::string tracks_out = output_dir + "/tracks.isat_tracks";
+    if (save_track_store_to_idc(store, img_indices, tracks_out)) {
+      LOG(INFO) << "Saved TrackStore → " << tracks_out;
+    } else {
+      LOG(ERROR) << "Failed to save TrackStore to " << tracks_out;
+    }
+  }
 
   return 0;
 }

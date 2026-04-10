@@ -2,8 +2,8 @@
  * @file  camera_utils.cpp
  * @brief Camera distortion utilities – Bentley-compatible 5-parameter Brown-Conrady model.
  *
- * Implements apply_distortion, remove_distortion, undistort_point, undistort_points.
- * See camera_utils.h for the mathematical description.
+ * Implements apply_distortion, undistort_point, undistort_points.
+ * Undistortion uses pixel-space fixed-point iteration; see camera_utils.h for details.
  */
 
 #include "camera_utils.h"
@@ -52,40 +52,13 @@ void apply_distortion(double u_n, double v_n, const Intrinsics& K,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// remove_distortion  (fixed-point iteration with early termination)
-// ─────────────────────────────────────────────────────────────────────────────
-
-void remove_distortion(double u_d, double v_d, const Intrinsics& K,
-                      double* u_n, double* v_n, int max_iter, double tol) {
-  if (!u_n || !v_n)
-    return;
-  if (!K.has_distortion()) {
-    *u_n = u_d;
-    *v_n = v_d;
-    return;
-  }
-
-  const double k1 = K.k1, k2 = K.k2, k3 = K.k3;
-  const double p1 = K.p1, p2 = K.p2;
-
-  double u = u_d;
-  double v = v_d;
-  for (int i = 0; i < max_iter; ++i) {
-    double ud, vd;
-    distort_normalised(u, v, k1, k2, k3, p1, p2, &ud, &vd);
-    const double du = ud - u_d;
-    const double dv = vd - v_d;
-    if (std::abs(du) < tol && std::abs(dv) < tol)
-      break;
-    u = u_d - du;
-    v = v_d - dv;
-  }
-  *u_n = u;
-  *v_n = v;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // undistort_point  (distorted pixel → undistorted pixel)
+//
+// Pixel-space fixed-point iteration:
+//   u_{n+1} = u_n − ( distort_px(u_n) − u_observed )
+// Tolerance and corrections are measured in pixels, which is physically
+// meaningful and avoids normalised-space ill-conditioning near image corners
+// where k3·r^6 can be large.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void undistort_point(const Intrinsics& K, double u_px_in, double v_px_in,
@@ -99,15 +72,26 @@ void undistort_point(const Intrinsics& K, double u_px_in, double v_px_in,
   }
 
   const double fx = K.fx, fy = K.fy, cx = K.cx, cy = K.cy;
-  const double u_d = (u_px_in - cx) / fx;
-  const double v_d = (v_px_in - cy) / fy;
 
-  double u_n, v_n;
-  remove_distortion(u_d, v_d, K, &u_n, &v_n);
-
-  // undistorted normalised → pixel
-  *u_px_out = fx * u_n + cx;
-  *v_px_out = fy * v_n + cy;
+  // Initial guess: distorted pixel (error ≈ distortion magnitude, ~tens of px).
+  double u = u_px_in, v = v_px_in;
+  int max_iter = 100000;
+  double tol_px = 1e-3;  // 0.001 px — well below sub-pixel
+  for (int i = 0; i < max_iter; ++i) {
+    // Current estimate → normalised → apply distortion → back to pixel.
+    const double xn = (u - cx) / fx;
+    const double yn = (v - cy) / fy;
+    double xd, yd;
+    distort_normalised(xn, yn, K.k1, K.k2, K.k3, K.p1, K.p2, &xd, &yd);
+    const double du = (fx * xd + cx) - u_px_in;
+    const double dv = (fy * yd + cy) - v_px_in;
+    u -= du;
+    v -= dv;
+    if (std::abs(du) < tol_px && std::abs(dv) < tol_px)
+      break;
+  }
+  *u_px_out = u;
+  *v_px_out = v;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,29 +113,30 @@ void undistort_points(const Intrinsics& K,
   }
 
   const double fx = K.fx, fy = K.fy, cx = K.cx, cy = K.cy;
-  const double k1 = K.k1, k2 = K.k2, k3 = K.k3, p1 = K.p1, p2 = K.p2;
 
-  constexpr double tol = 1e-8;
-  constexpr int max_iter = 20;
+  constexpr double tol_px = 1e-3;  // 0.001 px — well below sub-pixel
+  constexpr int max_iter = 100;
 
   for (int i = 0; i < n; ++i) {
-    const double u_d = (static_cast<double>(u_in[i]) - cx) / fx;
-    const double v_d = (static_cast<double>(v_in[i]) - cy) / fy;
+    const double u_obs = static_cast<double>(u_in[i]);
+    const double v_obs = static_cast<double>(v_in[i]);
 
-    double u = u_d, v = v_d;
+    double u = u_obs, v = v_obs;  // initial guess = distorted pixel
     for (int it = 0; it < max_iter; ++it) {
-      double ud, vd;
-      distort_normalised(u, v, k1, k2, k3, p1, p2, &ud, &vd);
-      const double du = ud - u_d;
-      const double dv = vd - v_d;
-      if (std::abs(du) < tol && std::abs(dv) < tol)
+      const double xn = (u - cx) / fx;
+      const double yn = (v - cy) / fy;
+      double xd, yd;
+      distort_normalised(xn, yn, K.k1, K.k2, K.k3, K.p1, K.p2, &xd, &yd);
+      const double du = (fx * xd + cx) - u_obs;
+      const double dv = (fy * yd + cy) - v_obs;
+      u -= du;
+      v -= dv;
+      if (std::abs(du) < tol_px && std::abs(dv) < tol_px)
         break;
-      u = u_d - du;
-      v = v_d - dv;
     }
 
-    u_out[i] = static_cast<float>(fx * u + cx);
-    v_out[i] = static_cast<float>(fy * v + cy);
+    u_out[i] = static_cast<float>(u);
+    v_out[i] = static_cast<float>(v);
   }
 }
 
