@@ -1051,6 +1051,9 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     K.k3 = ip[kK3];
     K.p1 = ip[kP1];
     K.p2 = ip[kP2];
+    // Preserve width/height from input (not optimised by BA).
+    K.width  = input.cameras[static_cast<size_t>(c)].width;
+    K.height = input.cameras[static_cast<size_t>(c)].height;
   }
 
   // points are already in result->points3d (optimised in-place)
