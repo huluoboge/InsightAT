@@ -323,6 +323,7 @@ int main(int argc, char* argv[]) {
   opts.local_ba.strategy = LocalBAStrategy::kBatchNeighbor;
   opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
   opts.local_ba.switch_after_n_images = 100;
+  opts.resection.backend = ResectionBackend::kPoseLib;
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
@@ -358,22 +359,6 @@ int main(int argc, char* argv[]) {
                                                                : "all");
   }
 
-  // if (cmd.used("no-local-ba")) {
-  //   opts.local_ba.enable = false;
-  //   LOG(INFO) << "--no-local-ba: local_ba.enable=false, global BA only until you enable local
-  //   BA.";
-  // }
-  // if (!resection_backend.empty()) {
-  //   if (resection_backend == "gpu") {
-  //     opts.resection.backend = ResectionBackend::kGpuRansac;
-  //   } else if (resection_backend == "poselib") {
-  //     opts.resection.backend = ResectionBackend::kPoseLib;
-  //   } else {
-  //     LOG(ERROR) << "Unknown --resection-backend='" << resection_backend
-  //                << "' (expected gpu or poselib)";
-  //     return 1;
-  //   }
-  // }
   if (!run_incremental_sfm_pipeline(tracks_path, pairs_path, geo_dir, &project.cameras,
                                     project.image_to_camera_index, opts, &store, &poses_R, &poses_C,
                                     &registered)) {

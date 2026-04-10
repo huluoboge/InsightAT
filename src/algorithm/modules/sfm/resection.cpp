@@ -173,6 +173,134 @@ static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
   return true;
 }
 
+/// Pose-only LM refinement with full Brown-Conrady distortion model.
+/// Observations pts2d are in *distorted* pixel space (original observations).
+/// Jacobian chain: d(u,v)/d(omega,t) = d(u,v)/d(xd,yd) * d(xd,yd)/d(xn,yn) * d(xn,yn)/d(Xc) * d(Xc)/d(omega,t)
+static bool pose_refine_gn(const std::vector<Eigen::Vector3d>& pts3d,
+                           const std::vector<Eigen::Vector2d>& pts2d,
+                           const camera::Intrinsics& K,
+                           const Eigen::Matrix3d& R_in, const Eigen::Vector3d& t_in,
+                           Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
+                           double* rmse_px, int max_iterations) {
+  if (!R_out || !t_out || pts3d.size() != pts2d.size() || pts3d.empty())
+    return false;
+
+  const double fx = K.fx, fy = K.fy, cx = K.cx, cy = K.cy;
+  const double k1 = K.k1, k2 = K.k2, k3 = K.k3, p1 = K.p1, p2 = K.p2;
+
+  // Project with distortion, return residual. Returns false if behind camera.
+  auto project = [&](const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+                     const Eigen::Vector3d& X, double& u_proj, double& v_proj) -> bool {
+    const Eigen::Vector3d p = R * X + t;
+    if (p(2) < 1e-6) return false;
+    const double inv_z = 1.0 / p(2);
+    const double xn = p(0) * inv_z, yn = p(1) * inv_z;
+    const double r2 = xn*xn + yn*yn, r4 = r2*r2, r6 = r4*r2;
+    const double rad = 1.0 + k1*r2 + k2*r4 + k3*r6;
+    const double xd = xn*rad + 2.0*p2*xn*yn + p1*(r2 + 2.0*xn*xn);
+    const double yd = yn*rad + 2.0*p1*xn*yn + p2*(r2 + 2.0*yn*yn);
+    u_proj = fx*xd + cx;
+    v_proj = fy*yd + cy;
+    return true;
+  };
+
+  auto evaluate_cost = [&](const Eigen::Matrix3d& R, const Eigen::Vector3d& t,
+                           int* valid_out) -> double {
+    double cost = 0.0; int valid = 0;
+    for (int i = 0; i < static_cast<int>(pts3d.size()); ++i) {
+      double u, v;
+      if (!project(R, t, pts3d[i], u, v)) continue;
+      const double ru = u - pts2d[i](0), rv = v - pts2d[i](1);
+      cost += ru*ru + rv*rv; ++valid;
+    }
+    if (valid_out) *valid_out = valid;
+    return cost;
+  };
+
+  Eigen::Matrix3d R = R_in;
+  Eigen::Vector3d t = t_in;
+  double lambda = 1e-3;
+  int valid_count = 0;
+  double prev_cost = evaluate_cost(R, t, &valid_count);
+
+  for (int iter = 0; iter < max_iterations; ++iter) {
+    Eigen::Matrix<double, 6, 6> JtJ = Eigen::Matrix<double, 6, 6>::Zero();
+    Eigen::Matrix<double, 6, 1> Jtr = Eigen::Matrix<double, 6, 1>::Zero();
+    int used = 0;
+
+    for (int i = 0; i < static_cast<int>(pts3d.size()); ++i) {
+      const Eigen::Vector3d p = R * pts3d[i] + t;
+      if (p(2) < 1e-6) continue;
+      const double inv_z = 1.0 / p(2), inv_z2 = inv_z * inv_z;
+      const double xn = p(0)*inv_z, yn = p(1)*inv_z;
+      const double r2 = xn*xn + yn*yn, r4 = r2*r2, r6 = r4*r2;
+      const double rad = 1.0 + k1*r2 + k2*r4 + k3*r6;
+      const double xd = xn*rad + 2.0*p2*xn*yn + p1*(r2 + 2.0*xn*xn);
+      const double yd = yn*rad + 2.0*p1*xn*yn + p2*(r2 + 2.0*yn*yn);
+      const double ru = fx*xd + cx - pts2d[i](0);
+      const double rv = fy*yd + cy - pts2d[i](1);
+      ++used;
+
+      // d(xd,yd)/d(xn,yn) — 2×2 distortion Jacobian
+      const double drad_dr2 = k1 + 2.0*k2*r2 + 3.0*k3*r4;
+      // dxd/dxn = rad + xn*(2*xn*drad_dr2) + 2*p2*yn + p1*6*xn
+      //         = rad + 2*xn^2*drad_dr2 + 2*p2*yn + 6*p1*xn
+      const double dxd_dxn = rad + 2.0*xn*xn*drad_dr2 + 2.0*p2*yn + 6.0*p1*xn;
+      const double dxd_dyn = 2.0*xn*yn*drad_dr2 + 2.0*p2*xn + 2.0*p1*yn;
+      const double dyd_dxn = 2.0*xn*yn*drad_dr2 + 2.0*p1*yn + 2.0*p2*xn;
+      const double dyd_dyn = rad + 2.0*yn*yn*drad_dr2 + 2.0*p1*xn + 6.0*p2*yn;
+
+      // d(u,v)/d(xn,yn) = diag(fx,fy) * [[dxd_dxn, dxd_dyn],[dyd_dxn, dyd_dyn]]
+      Eigen::Matrix<double, 2, 2> Jdist;
+      Jdist(0,0) = fx*dxd_dxn; Jdist(0,1) = fx*dxd_dyn;
+      Jdist(1,0) = fy*dyd_dxn; Jdist(1,1) = fy*dyd_dyn;
+
+      // d(xn,yn)/d(Xc): xn=px/pz, yn=py/pz
+      Eigen::Matrix<double, 2, 3> Jnorm;
+      Jnorm(0,0) = inv_z;  Jnorm(0,1) = 0.0;    Jnorm(0,2) = -p(0)*inv_z2;
+      Jnorm(1,0) = 0.0;    Jnorm(1,1) = inv_z;  Jnorm(1,2) = -p(1)*inv_z2;
+
+      // d(u,v)/d(Xc)
+      const Eigen::Matrix<double, 2, 3> Jpc = Jdist * Jnorm;
+
+      // d(Xc)/d(omega,t): Xc = R*X + t, so d(Xc)/dt = I, d(Xc)/domega = -[Xc]_x
+      Eigen::Matrix3d skew;
+      skew << 0.0, -p(2), p(1), p(2), 0.0, -p(0), -p(1), p(0), 0.0;
+      Eigen::Matrix<double, 2, 6> J;
+      J.leftCols<3>() = Jpc * (-skew);
+      J.rightCols<3>() = Jpc;
+
+      Eigen::Vector2d r(ru, rv);
+      JtJ += J.transpose() * J;
+      Jtr += J.transpose() * r;
+    }
+
+    if (used <= 0) break;
+    for (int d = 0; d < 6; ++d) JtJ(d,d) *= (1.0 + lambda);
+    const Eigen::Matrix<double, 6, 1> delta = JtJ.ldlt().solve(-Jtr);
+
+    Eigen::Matrix3d R_new = R;
+    const Eigen::Vector3d omega = delta.head<3>();
+    const double angle = omega.norm();
+    if (angle > 1e-10)
+      R_new = Eigen::AngleAxisd(angle, omega/angle).toRotationMatrix() * R;
+    const Eigen::Vector3d t_new = t + delta.tail<3>();
+
+    int new_valid = 0;
+    const double new_cost = evaluate_cost(R_new, t_new, &new_valid);
+    if (new_valid > 0 && new_cost < prev_cost) {
+      R = R_new; t = t_new; lambda *= 0.5; prev_cost = new_cost; valid_count = new_valid;
+    } else {
+      lambda *= 2.0;
+    }
+    if (lambda > 1e8 || delta.norm() < 1e-10) break;
+  }
+
+  *R_out = R; *t_out = t;
+  if (rmse_px) *rmse_px = std::sqrt(prev_cost / std::max(valid_count, 1));
+  return true;
+}
+
 static double compute_pose_rmse_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
                                         const std::vector<Eigen::Vector2d>& pts2d, double fx,
                                         double fy, double cx, double cy, const Eigen::Matrix3d& R,
@@ -637,24 +765,27 @@ bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int 
   float_rt_to_eigen(R_init, t_init, &R_eig, &t_eig);
 
   std::vector<Eigen::Vector3d> inlier_pts3d;
-  std::vector<Eigen::Vector2d> inlier_pts2d;
+  std::vector<Eigen::Vector2d> inlier_pts2d_raw;
   inlier_pts3d.reserve(static_cast<size_t>(n_inliers));
-  inlier_pts2d.reserve(static_cast<size_t>(n_inliers));
+  inlier_pts2d_raw.reserve(static_cast<size_t>(n_inliers));
   for (int i = 0; i < num_pts; ++i) {
     if (!inlier_mask[static_cast<size_t>(i)])
       continue;
     inlier_pts3d.push_back(Eigen::Vector3d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].x),
                                            static_cast<double>(pts_pnp[static_cast<size_t>(i)].y),
                                            static_cast<double>(pts_pnp[static_cast<size_t>(i)].z)));
-    inlier_pts2d.push_back(Eigen::Vector2d(static_cast<double>(pts_pnp[static_cast<size_t>(i)].u),
-                                           static_cast<double>(pts_pnp[static_cast<size_t>(i)].v)));
+    // Use original distorted pixel obs for distortion-aware refinement.
+    // pts_pnp is built in the same order as pnp_obs_ids / u_raw / v_raw.
+    inlier_pts2d_raw.push_back(Eigen::Vector2d(
+        static_cast<double>(u_raw[static_cast<size_t>(i)]),
+        static_cast<double>(v_raw[static_cast<size_t>(i)])));
   }
 
   Eigen::Matrix3d R_refined = R_eig;
   Eigen::Vector3d t_refined = t_eig;
   double rmse = 0.0;
-  pose_refine_gn(inlier_pts3d, inlier_pts2d, K.fx, K.fy, K.cx, K.cy, R_eig, t_eig, &R_refined,
-                 &t_refined, &rmse, 10);
+  pose_refine_gn(inlier_pts3d, inlier_pts2d_raw, K, R_eig, t_eig, &R_refined, &t_refined,
+                 &rmse, 20);
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, num_pts, rmse,

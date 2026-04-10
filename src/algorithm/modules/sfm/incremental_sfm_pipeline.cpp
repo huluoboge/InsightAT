@@ -3184,11 +3184,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       resection_score_cache.invalidate_all();
 
       // ── Retry with relaxed min_3d2d_count ────────────────────────────────────
-      // If BA + kFullScan still can't produce candidates at the normal threshold (30),
+      // If BA + kFullScan still can't produce candidates at the normal threshold,
       // try immediately with a halved threshold using the same resection_score_cache.
-      // This handles the common late-stage case where a few remaining images have
-      // 15-29 3D-2D correspondences — enough to PnP-RANSAC successfully (min_inliers=15)
-      // but not enough to pass the stricter candidate filter.
+      // This handles the late-stage case where a few remaining images have fewer
+      // 3D-2D correspondences — enough to PnP-RANSAC successfully but not enough
+      // to pass the stricter candidate filter.
       {
         const int relaxed_min =
             std::max(opts.resection.min_inliers, opts.resection.min_3d2d_count / 2);

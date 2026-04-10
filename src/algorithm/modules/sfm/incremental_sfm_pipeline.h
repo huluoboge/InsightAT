@@ -174,8 +174,8 @@ struct InitPairOptions {
 /// Options for the incremental resection loop (one new image per iteration).
 struct ResectionOptions {
   ResectionBackend backend = ResectionBackend::kPoseLib; ///< Absolute-pose backend.
-  int min_inliers = 15;    ///< Min PnP RANSAC inliers to accept resection.
-  int min_3d2d_count = 30; ///< Min 3D-2D correspondences to list a candidate.
+  int min_inliers = 9;     ///< Min PnP RANSAC inliers to accept resection (3× P3P min-sample).
+  int min_3d2d_count = 15; ///< Min 3D-2D correspondences to list a candidate.
   /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 =
   /// off.
   double post_resection_reproj_thresh_px = 0.0;
