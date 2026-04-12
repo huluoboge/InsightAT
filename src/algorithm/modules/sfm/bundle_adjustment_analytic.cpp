@@ -972,15 +972,20 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     options.preconditioner_type = ceres::JACOBI;
     // Ceres ≥ 2.2: CUDA-accelerate the dense Schur complement solve (cuSOLVER),
     // but only if Ceres was actually built with CUDA support.
+    // Fallback priority: CUDA > LAPACK > EIGEN.
 #if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
     if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
       options.dense_linear_algebra_library_type = ceres::CUDA;
-      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with CUDA dense algebra (Ceres "
-                << CERES_VERSION_STRING << ")";
-    } else {
-      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with LAPACK (Ceres built without CUDA)";
-    }
+      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with CUDA (Ceres " << CERES_VERSION_STRING << ")";
+    } else
 #endif
+    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::LAPACK)) {
+      options.dense_linear_algebra_library_type = ceres::LAPACK;
+      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with LAPACK";
+    } else {
+      options.dense_linear_algebra_library_type = ceres::EIGEN;
+      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with Eigen (no LAPACK)";
+    }
   } else {
     options.linear_solver_type = ceres::ITERATIVE_SCHUR;
     // JACOBI preconditioner: uses only the scalar diagonal of JᵀJ.
@@ -997,19 +1002,19 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     options.max_linear_solver_iterations = 500;
     options.eta = 0.01; // inexact Newton forcing sequence
     // Ceres ≥ 2.2: CUDA-accelerate ITERATIVE_SCHUR, if available.
+    // Fallback priority: CUDA > LAPACK > EIGEN.
 #if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
     if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
       options.dense_linear_algebra_library_type = ceres::CUDA;
-      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR with CUDA acceleration (Ceres "
-                << CERES_VERSION_STRING << ")";
-    } else {
-      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI (CPU, Ceres "
-                << CERES_VERSION_STRING << ", no CUDA)";
-    }
-#else
-    LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI (CPU, Ceres "
-              << CERES_VERSION_STRING << ")";
+      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR with CUDA (Ceres " << CERES_VERSION_STRING << ")";
+    } else
 #endif
+    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::LAPACK)) {
+      options.dense_linear_algebra_library_type = ceres::LAPACK;
+      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI with LAPACK";
+    } else {
+      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI with Eigen";
+    }
   }
   options.num_threads = input.num_threads > 0
                             ? input.num_threads
