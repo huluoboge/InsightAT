@@ -48,6 +48,13 @@ constexpr uint8_t kHasTriangulated =
 
 namespace obs_flags {
 constexpr uint8_t kAlive = 1u << 0;
+/// Set when an observation is deleted because its reprojection error exceeded the
+/// MAD-based outlier threshold in reject_outliers_multiview.  Such observations may
+/// be restored by restore_observations_from_cameras when camera intrinsics change
+/// significantly (e.g. focal length shift during early-phase BA).
+/// Observations deleted for geometric reasons (depth ≤ 0, angle, PnP outlier) do NOT
+/// carry this flag and are never automatically restored.
+constexpr uint8_t kRestorable = 1u << 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,6 +100,7 @@ public:
   /// Clear the triangulated-XYZ flag (e.g. after all supporting observations
   /// are rejected).  Decrements num_triangulated_; the stale XYZ value is left
   /// in-place and will be overwritten on the next successful triangulation.
+  /// Also enqueues this track for run_retriangulation (same as set_track_retriangulation_flag).
   void clear_track_xyz(int track_id);
   void set_track_retriangulation_flag(int track_id, bool value);
   bool track_needs_retriangulation(int track_id) const;
@@ -109,13 +117,20 @@ public:
   int get_track_obs_ids(int track_id, std::vector<int>* obs_ids_out) const;
 
   /// Get ALL global observation-ids for a track, including logically-deleted ones.
-  /// Used by run_retriangulation to check whether a deleted obs can be restored.
+  /// Does not require is_track_valid: only checks track_id in range. Callers that must ignore
+  /// mark_track_deleted tracks should filter with is_track_valid() first.
+  /// Used by run_retriangulation / restore paths.
   int get_track_all_obs_ids(int track_id, std::vector<int>* obs_ids_out) const;
 
   /// Iterate valid observations for an image (obs indices and optionally Observation structs).
   int get_image_observation_indices(int image_index, std::vector<int>* obs_indices_out) const;
   int get_image_track_observations(int image_index, std::vector<int>* track_ids_out,
                                    std::vector<Observation>* obs_out) const;
+
+  /// Like get_image_observation_indices but returns ALL observation ids for the image,
+  /// including logically-deleted ones.  Used by restore_observations_from_cameras to
+  /// find kRestorable deleted observations without a full store-wide scan.
+  int get_image_all_obs_ids(int image_index, std::vector<int>* obs_ids_out) const;
 
   /// Observation by global index
   bool is_obs_valid(int obs_id) const;
@@ -124,8 +139,18 @@ public:
 
   /// Logical delete (set flag only)
   void mark_track_deleted(int track_id);
+  /// Logically delete one observation; also enqueues the parent track for run_retriangulation
+  /// (restore deleted views when XYZ is still valid, or re-triangulate after clear_track_xyz).
   void mark_observation_deleted(int obs_id);
+  /// Like mark_observation_deleted but also sets obs_flags::kRestorable so that
+  /// restore_observations_from_cameras can later re-evaluate this observation when
+  /// camera intrinsics change significantly.  Use only for reproj-error outlier deletions.
+  /// Also enqueues the parent track for run_retriangulation (same as mark_observation_deleted).
+  void mark_observation_deleted_restorable(int obs_id);
   void mark_observation_restored(int obs_id);
+
+  /// True if the observation has been logically deleted AND carries obs_flags::kRestorable.
+  bool is_obs_restorable(int obs_id) const;
 
   size_t num_tracks() const { return track_xyz_.size() / 3u; }
   size_t num_observations() const { return obs_track_id_.size(); }

@@ -4,4 +4,4 @@ build_*
 .vscode/launch.json
 .cursor
 .kiro
-__pycache__
+__pycache__/

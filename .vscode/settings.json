@@ -100,7 +100,15 @@
         "grep *",
         "ls *",
         "find *",
-        "nvcc *"
+        "nvcc *",
+        "cmake *",
+        "wc *",
+        "cat *",
+        "sed *",
+        "python3 *",
+        "xrandr *",
+        "touch *",
+        "head *"
     ],
     "kiroAgent.configureMCP": "Disabled"
 }

@@ -78,8 +78,7 @@ void RenderWidget::initializeGL() {
 }
 
 void RenderWidget::paintGL() {
-  glEnable(GL_DEPTH_TEST); // �����ڻ���֮ǰָ������������Ч
-  // glDepthFunc(GL_LESS);
+  glEnable(GL_DEPTH_TEST);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   m_camera->update_gl_matrix();
   render_context_->clear();
@@ -139,6 +138,16 @@ void RenderWidget::wheelEvent(QWheelEvent* event) {
   //     m_tool->wheelEvent(event);
   // }
   update();
+}
+
+bool RenderWidget::unproject_ray(int px, int py, Vec3* ray_origin, Vec3* ray_dir) const {
+  // Delegate to RenderTracks which captures GL state during draw().
+  for (RenderObject* o : data_root_->render_objects()) {
+    auto* tracks = dynamic_cast<RenderTracks*>(o);
+    if (tracks)
+      return tracks->unproject_ray(px, py, ray_origin, ray_dir);
+  }
+  return false;
 }
 
 void RenderWidget::fit_scene_to_view() {

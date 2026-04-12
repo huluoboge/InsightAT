@@ -29,9 +29,17 @@ struct BundlerCamera {
   Eigen::Vector3d t = Eigen::Vector3d::Zero();
 };
 
+struct BundlerObservation {
+  int cam_idx = 0;
+  int key_idx = 0;
+  float u = 0;
+  float v = 0;
+};
+
 struct BundlerPoint {
   Eigen::Vector3d xyz = Eigen::Vector3d::Zero();
   Eigen::Vector3d rgb = Eigen::Vector3d::Zero(); // 0–255
+  std::vector<BundlerObservation> observations;
 };
 
 struct BundlerScene {

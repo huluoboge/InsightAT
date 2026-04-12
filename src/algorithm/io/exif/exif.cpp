@@ -410,29 +410,53 @@ int EXIFInfo::parseFrom(const unsigned char* buf, unsigned len) {
 
   clear();
 
-  // Scan for EXIF header (bytes 0xFF 0xE1) and do a sanity check by
-  // looking for bytes "Exif\0\0". The marker length data is in Motorola
-  // byte order, which results in the 'false' parameter to parse16().
-  // The marker has to contain at least the TIFF header, otherwise the
-  // EXIF data is corrupt. So the minimum length specified here has to be:
-  //   2 bytes: section size
-  //   6 bytes: "Exif\0\0" string
-  //   2 bytes: TIFF header (either "II" or "MM" string)
-  //   2 bytes: TIFF magic (short 0x2a00 in Motorola byte order)
-  //   4 bytes: Offset to first IFD
-  // =========
-  //  16 bytes
-  unsigned offs = 0; // current offset into buffer
-  for (offs = 0; offs < len - 1; offs++)
-    if (buf[offs] == 0xFF && buf[offs + 1] == 0xE1)
-      break;
-  if (offs + 4 > len)
+  // Walk JPEG markers properly (skip each segment by its declared length) to
+  // locate the APP1/EXIF segment.  A naive linear byte scan would misfire on
+  // cameras (e.g. DJI) that embed large proprietary APP2/APP7/APP8 segments
+  // whose payload happens to contain the byte sequence 0xFF 0xE1, causing
+  // EasyExif to parse garbage and return an error even though a valid EXIF
+  // APP1 exists later in the file.
+  //
+  // Minimum valid APP1+EXIF size:
+  //   2 bytes: section size field
+  //   6 bytes: "Exif\0\0"
+  //   2 bytes: TIFF byte-order mark ("II" or "MM")
+  //   2 bytes: TIFF magic (0x002A)
+  //   4 bytes: offset to first IFD
+  // = 16 bytes total
+  unsigned offs = 2; // skip SOI (0xFFD8)
+  unsigned exif_offs = 0;
+  while (offs + 4 <= len) {
+    if (buf[offs] != 0xFF)
+      break; // malformed JPEG
+    uint8_t marker = buf[offs + 1];
+    // Stand-alone markers (no length field)
+    if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD9)) {
+      offs += 2;
+      continue;
+    }
+    unsigned short seg_len = parse_value<uint16_t>(buf + offs + 2, false);
+    if (seg_len < 2 || offs + 2 + seg_len > len)
+      break; // truncated / corrupt
+    if (marker == 0xE1) { // APP1
+      // Check for "Exif\0\0" identifier
+      if (seg_len >= 8 && buf[offs + 4] == 'E' && buf[offs + 5] == 'x' &&
+          buf[offs + 6] == 'i' && buf[offs + 7] == 'f' &&
+          buf[offs + 8] == 0x00 && buf[offs + 9] == 0x00) {
+        exif_offs = offs;
+        break;
+      }
+    }
+    offs += 2 + seg_len;
+  }
+  if (exif_offs == 0)
     return PARSE_EXIF_ERROR_NO_EXIF;
-  offs += 2;
+
+  offs = exif_offs + 2; // point at section_length field
   unsigned short section_length = parse_value<uint16_t>(buf + offs, false);
   if (offs + section_length > len || section_length < 16)
     return PARSE_EXIF_ERROR_CORRUPT;
-  offs += 2;
+  offs += 2; // skip section_length, now at "Exif\0\0..."
 
   return parseFromEXIFSegment(buf + offs, len - offs);
 }

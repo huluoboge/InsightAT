@@ -38,7 +38,8 @@ struct ProjectData {
 /**
  * Load project from a single JSON (images + cameras).
  * Expected format: { "images": [ { "camera_index": 0, "path": "..." }, ... ],
- *                    "cameras": [ { "fx", "fy", "cx", "cy", "k1", "k2", ... }, ... ] }
+ *                    "cameras": [ { "fx", "fy", "cx", "cy", "width", "height", "k1", "k2", ... }, ... ] }
+ * width/height come from isat_project extract (camera model resolution).
  * @return true if loaded successfully and at least one image; false on error.
  */
 inline bool load_project_data(const std::string& path, ProjectData* out) {
@@ -79,6 +80,8 @@ inline bool load_project_data(const std::string& path, ProjectData* out) {
     K.k3 = cam.value("k3", 0.0);
     K.p1 = cam.value("p1", 0.0);
     K.p2 = cam.value("p2", 0.0);
+    K.width = cam.value("width", 0);
+    K.height = cam.value("height", 0);
     out->cameras.push_back(K);
   }
 

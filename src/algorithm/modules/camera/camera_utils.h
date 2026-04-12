@@ -13,9 +13,15 @@
  *   u_dist = (1 + k1·r² + k2·r⁴ + k3·r⁶)·u  +  2·p2·u·v + p1·(r² + 2·u²)
  *   v_dist = (1 + k1·r² + k2·r⁴ + k3·r⁶)·v  +  2·p1·u·v + p2·(r² + 2·v²)
  *
+ * Undistortion is solved by fixed-point iteration directly in pixel space:
+ *   u_{n+1} = u_n − (distort_px(u_n) − u_observed)
+ * Iterating in pixel space ensures the convergence tolerance is physically
+ * meaningful (pixels) and avoids the ill-conditioning that occurs when k3
+ * drives large normalised-space residuals near the sensor boundary.
+ *
  * Usage
  * ─────
- *   insight::camera::Intrinsics K = ...;  // from JSON or filled at call boundary
+ *   insight::camera::Intrinsics K = ...;
  *   insight::camera::undistort_point(K, u_px, v_px, &u_out, &v_out);
  *   insight::camera::undistort_points(K, u_in, v_in, u_out, v_out, n);
  */
@@ -37,25 +43,10 @@ void apply_distortion(double u_n, double v_n, const Intrinsics& K,
                       double* u_d, double* v_d);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Inverse distortion: distorted normalised → undistorted normalised
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Inverse distortion via fixed-point iteration.
- *
- * @param u_d, v_d  Distorted normalised coordinates (K⁻¹ * pixel).
- * @param K         Intrinsics with distortion params.
- * @param u_n, v_n  Output: undistorted normalised coordinates.
- * @param max_iter  Safety cap (default 20). Typical convergence in 3–10 iters.
- * @param tol       Convergence tolerance in normalised coords (default 1e-8).
- *                  Terminates early when |residual| < tol (sub-pixel accuracy).
- */
-void remove_distortion(double u_d, double v_d, const Intrinsics& K,
-                       double* u_n, double* v_n, int max_iter = 20,
-                       double tol = 1e-8);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Convenience: distorted pixel → undistorted pixel (single / batch)
+// Undistortion: distorted pixel → undistorted pixel (single / batch)
+//
+// Iterates in pixel space until |du|,|dv| < tol_px (default 1e-3 px).
+// Typical convergence in 5–15 iterations; max_iter=100 is a safety cap only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void undistort_point(const Intrinsics& K, double u_px_in, double v_px_in,

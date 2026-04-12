@@ -491,6 +491,9 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
   gm["degeneracy"]["model_preferred"] = task.degeneracy.model_preferred;
   gm["degeneracy"]["h_over_f_ratio"] = task.degeneracy.h_over_f_ratio;
 
+  gm["score_prelim"] = task.score_prelim;
+  gm["median_pixel_disp"] = task.median_pixel_disp;
+
   if (task.twoview_ok) {
     auto& tv = meta["twoview"];
     tv["stable"] = task.stability.is_stable;
@@ -1228,6 +1231,32 @@ int main(int argc, char* argv[]) {
     for (const auto& t : tasks)
       if (t.twoview_ok)
         pairs_tv++;
+
+    // Recompute score_prelim now that two-view fields (twoview_ok, stability, num_valid_points)
+    // are populated. The first computation in estimate_function runs before the two-view batch,
+    // so those terms are always 0 there.
+    const double w_f = 1.0, w_e = 1.0, w_tv = 2.0, w_st = 1.0, w_pt = 0.5, w_par = 2.0,
+                 w_ir = 1.0;
+    for (auto& t : tasks) {
+      int best_inliers = t.F_inliers;
+      if (t.E_ok && t.E_inliers > best_inliers)
+        best_inliers = t.E_inliers;
+      double tin = std::log(1.0 + static_cast<double>(std::max(0, best_inliers)));
+      double tpt = std::log(1.0 + static_cast<double>(t.num_valid_points));
+      // Use median_parallax_deg (true triangulation angle) when twoview succeeded.
+      // median_pixel_disp is a poor proxy for forward-motion pairs: adjacent nadir frames
+      // can have large pixel displacement (~500px) yet tiny parallax angle (~2°).
+      // Reference angle 5° → tanh(1)=0.76 at 5°; tanh(2)=0.96 at 10°; saturates near 20°.
+      double tpar = (t.twoview_ok && t.stability.median_parallax_deg > 0.0)
+                        ? std::tanh(t.stability.median_parallax_deg / 5.0)
+                        : std::tanh(t.median_pixel_disp / 200.0);
+      double tir = std::min(1.0, t.inlier_ratio * 3.0);
+      double flag_bonus = (t.E_ok ? 1.0 : 0.0) + (t.H_ok ? 0.5 : 0.0);
+      t.score_prelim = w_f * tin + w_e * (t.E_ok ? 1.0 : 0.0) +
+                       w_tv * (t.twoview_ok ? 1.0 : 0.0) +
+                       w_st * (t.stability.is_stable ? 1.0 : 0.0) + w_pt * tpt +
+                       w_par * tpar + w_ir * tir + 0.5 * flag_bonus;
+    }
   }
 
   // ── Output adjacency summary JSON and geometry-filtered pairs.json ───────

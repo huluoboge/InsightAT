@@ -15,6 +15,7 @@
 #include "track_store.h"
 #include "view_graph.h"
 #include <Eigen/Core>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -27,8 +28,7 @@ namespace sfm {
  * for each try load geo, triangulate two-view tracks, two-view BA, reject/filter, check count/RMSE.
  * Uses cameras[image_to_camera_index[im]] for intrinsics; no intrinsics_per_image.
  *
- * @param view_graph       Built from pairs + geo_dir (degeneracy from geo fields).
- * @param geo_dir          Directory of .isat_geo (path: geo_dir/im0_im1.isat_geo, index-based).
+ * @param view_graph       Built from pairs (used for second-image candidate ranking).
  * @param store            Track store (from IDC); two-view tracks will be triangulated and updated.
  * @param cameras          Current camera intrinsics (may be updated by BA later).
  * @param image_to_camera_index  image_to_camera_index[i] = camera index for image i.
@@ -40,10 +40,11 @@ namespace sfm {
  * @param registered_out   Output: registered flags; only [im0],[im1] set true.
  * @return true if a pair was chosen and store/poses updated; false if none succeeded.
  */
-bool run_initial_pair_loop(const ViewGraph& view_graph, const std::string& geo_dir,
-                           TrackStore* store, const std::vector<camera::Intrinsics>& cameras,
+bool run_initial_pair_loop(const ViewGraph& view_graph, TrackStore* store,
+                           const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& image_to_camera_index,
-                           int min_tracks_for_intital_pair, uint32_t* initial_im0_out,
+                           int min_tracks_for_intital_pair, double min_median_angle_deg,
+                           uint32_t* initial_im0_out,
                            uint32_t* initial_im1_out, std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
                            std::vector<bool>* registered_out);
@@ -162,17 +163,27 @@ struct InitPairOptions {
   int max_second_images = 50;           ///< Max second-image candidates per first image.
   double ba_rmse_max = 10.0;            ///< Max BA RMSE (px) to accept pair.
   double outlier_threshold_px = 4.0;    ///< MAD floor (fallback when distribution is very narrow).
-  double min_angle_deg = 2.0;           ///< Min triangulation angle; max is hard-coded to 60°.
+  double min_angle_deg = 2.0;           ///< Min triangulation angle per point; max is hard-coded to 60°.
+  /// Minimum MEDIAN triangulation angle (degrees) of accepted inlier tracks after BA.
+  /// Rejects forward-motion adjacent-frame pairs whose per-point angles individually pass
+  /// min_angle_deg but collectively form a near-degenerate narrow-baseline geometry.
+  /// Typical aerial surveys: set to 5.0°; lower for very-high-overlap data.
+  double min_median_angle_deg = 5.0;
 };
 
 /// Options for the incremental resection loop (one new image per iteration).
 struct ResectionOptions {
   ResectionBackend backend = ResectionBackend::kPoseLib; ///< Absolute-pose backend.
-  int min_inliers = 15;    ///< Min PnP RANSAC inliers to accept resection.
-  int min_3d2d_count = 30; ///< Min 3D-2D correspondences to list a candidate.
+  int min_inliers = 9;     ///< Min PnP RANSAC inliers to accept resection (3× P3P min-sample).
+  int min_3d2d_count = 15; ///< Min 3D-2D correspondences to list a candidate.
   /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 =
   /// off.
   double post_resection_reproj_thresh_px = 0.0;
+  /// First-sort tier: prefer candidates with normalized VisibilityPyramid coverage ≥ this (see
+  /// COLMAP scene/visibility_pyramid). Typical range 0.01–0.05; legacy 3×3 bbox metric used ~0.33.
+  float min_visibility_coverage = 0.02f;
+  /// Pyramid depth (COLMAP default 6 → finest grid 2^6 per side).
+  int visibility_pyramid_levels = 6;
 };
 
 /// Progressive intrinsics unlock schedule + freeze policy.
@@ -218,7 +229,7 @@ struct IntrinsicsSchedule {
 
 /// Options for local BA.
 struct LocalBAOptions {
-  int switch_after_n_images = 20; ///< Switch from global to local BA.
+  int switch_after_n_images = 200; ///< Switch from global to local BA.
   int window = 20;                ///< Window size for kWindow strategy.
   bool by_connectivity = true;    ///< Rank by co-visibility, not index.
   LocalBAStrategy strategy = LocalBAStrategy::kColmap;
@@ -250,8 +261,12 @@ struct GlobalBAOptions {
   int optimize_intrinsics_min_images = 10; ///< Gate: don't touch intrinsics below this count.
   int max_iterations = 50;
   int every_n_images = 1;             ///< Early-phase: run global BA every N registrations.
-  int periodic_every_n_images = 20;   ///< Local-BA phase: mid-freq global BA every N images.
+  int periodic_every_n_images = 100;   ///< Local-BA phase: mid-freq global BA every N images.
   BASolverOverrides solver_overrides; ///< Ceres solver parameter overrides.
+  /// Conservative early phase: limit to 1 new camera per SfM iteration (identical to local-BA
+  /// behaviour) until this many images are registered.  0 = disabled.  Improves stability when
+  /// intrinsics are still converging in the first ~100 frames.
+  int early_phase_max_cameras = 100;
 };
 
 /// Median-based scene normalization (tracks + registered camera centres). Default 0 = off.
@@ -312,15 +327,56 @@ struct TriangulationOptions {
   double min_angle_deg = 0.5;   ///< Min max pairwise angle for a triangulated point.
   double max_angle_deg = 120.0; ///< Max max pairwise angle (beyond which we assume outlier).
   double min_baseline_depth_ratio = 0.01; ///< Min baseline-to-depth ratio for triangulated points.
-  int retriangulation_every_n_iters = 3;  ///< Periodic re-triangulation every N SfM iterations.
+  int retriangulation_every_n_iters = 3;  ///< Periodic kPendingOnly re-triangulation every N SfM iterations.
+
+  /// Periodic kFullScan re-triangulation every N SfM iterations, independent of global BA.
+  /// kFullScan visits ALL unresolved tracks and can recover tracks whose supporting cameras
+  /// were registered in recent iterations but whose cross-image tracks were not yet
+  /// triangulable at the time of the last full scan.  Set to 0 to disable.
+  /// Typical cost: ~20 ms at 200 registered images, ~600 ms at 600 registered images.
+  /// Setting = 10 adds ~30 s overhead for a 700-image dataset; setting = 5 adds ~60 s.
+  int full_scan_every_n_iters = 10;
+
   /// After GN: reject view if reproj > this (px). Loosen if too few points pass incremental tri
   /// (logs show many `two_reproj` / robust fails at 4px while BA RMSE is ~0.5px).
   double commit_reproj_px = 16.0;
+
+  // ── Intrinsics-change observation restoration ─────────────────────────────
+  /// When true, after each global BA where any camera's focal length changed by more than
+  /// intrinsics_change_restore_threshold, re-evaluate kRestorable deleted observations using
+  /// the updated intrinsics and restore those whose reprojection error is now ≤ restore_reproj_px.
+  bool enable_intrinsics_change_restore = true;
+  /// Relative focal-length change threshold (|Δfx/fx|) that triggers a restore pass.
+  double intrinsics_change_restore_threshold = 0.02;
+  /// Reprojection-error ceiling (px) for restoring a previously-deleted kRestorable observation.
+  /// Should match the typical BA outlier-rejection threshold (~4 px) so that observations
+  /// rejected by wrong intrinsics/distortion are given a fair second chance.
+  double restore_reproj_px = 4.0;
+
+  /// After successful local BA: run_retriangulation with kNewImages on new_registered_image_indices.
+  bool enable_post_local_ba_retriangulation = true;
+  /// After any global BA in the main loop: run_retriangulation with kFullScan (heavy).
+  bool enable_full_scan_after_global_ba = true;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IncrementalSfMOptions — hierarchical pipeline configuration
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Debug options: per-iteration snapshot callback for diagnosing pose drift.
+/// The callback is invoked at the end of each SfM iteration (after BA + retriangulation)
+/// when snapshot_every_n_iters > 0 and sfm_iter % snapshot_every_n_iters == 0.
+/// Signature: (sfm_iter, num_registered, poses_R, poses_C, registered, store)
+struct DebugOptions {
+  /// Invoke the snapshot callback every N SfM iterations.  0 = disabled.
+  int snapshot_every_n_iters = 0;
+  /// User-supplied callback; called on matching iterations.  May be empty (no-op).
+  std::function<void(int /*sfm_iter*/, int /*num_registered*/,
+                     const std::vector<Eigen::Matrix3d>& /*poses_R*/,
+                     const std::vector<Eigen::Vector3d>& /*poses_C*/,
+                     const std::vector<bool>& /*registered*/, const TrackStore& /*store*/)>
+      on_snapshot;
+};
 
 struct IncrementalSfMOptions {
   InitPairOptions init;
@@ -331,6 +387,7 @@ struct IncrementalSfMOptions {
   SceneNormalizationOptions scene_normalization;
   OutlierOptions outlier;
   TriangulationOptions triangulation;
+  DebugOptions debug; ///< Per-iteration debug snapshots (disabled by default).
 };
 
 /// One BA + iterative outlier-rejection call (global or local). Keeps

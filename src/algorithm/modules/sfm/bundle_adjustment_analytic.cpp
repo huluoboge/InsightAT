@@ -540,11 +540,20 @@ class FocalPriorCostAnalytic : public ceres::SizedCostFunction<1, kAnalyticIntrC
 public:
   FocalPriorCostAnalytic(double fx0, double weight) : fx0_(fx0), sqrt_w_(std::sqrt(weight)) {}
 
+  // bool Evaluate(double const* const* params, double* residuals, double** jacobians) const
+  // override {
+  //   residuals[0] = sqrt_w_ * (params[0][kFx] - fx0_) / fx0_;
+  //   if (jacobians && jacobians[0]) {
+  //     std::fill_n(jacobians[0], kAnalyticIntrCount, 0.0);
+  //     jacobians[0][kFx] = sqrt_w_ / fx0_;
+  //   }
+  //   return true;
+  // }
   bool Evaluate(double const* const* params, double* residuals, double** jacobians) const override {
-    residuals[0] = sqrt_w_ * (params[0][kFx] - fx0_) / fx0_;
+    residuals[0] = sqrt_w_ * (params[0][kFx] - fx0_);
     if (jacobians && jacobians[0]) {
       std::fill_n(jacobians[0], kAnalyticIntrCount, 0.0);
-      jacobians[0][kFx] = sqrt_w_ / fx0_;
+      jacobians[0][kFx] = sqrt_w_;
     }
     return true;
   }
@@ -903,19 +912,21 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // Pose blocks: only non-fixed blocks
     for (int i = 0; i < n_cams; ++i) {
       double* pp = poses_data.data() + i * 7;
-      if (!problem.HasParameterBlock(pp)) continue;
-      if (problem.IsParameterBlockConstant(pp)) continue;
-      problem.AddResidualBlock(
-          new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
+      if (!problem.HasParameterBlock(pp))
+        continue;
+      if (problem.IsParameterBlockConstant(pp))
+        continue;
+      problem.AddResidualBlock(new TikhonovPoseCost(pp, input.tikhonov_lambda), nullptr, pp);
     }
 
     // Intrinsics blocks: only non-fixed blocks
     for (int c = 0; c < n_distinct; ++c) {
       double* ip = intr_params.data() + c * kAnalyticIntrCount;
-      if (!problem.HasParameterBlock(ip)) continue;
-      if (problem.IsParameterBlockConstant(ip)) continue;
-      problem.AddResidualBlock(
-          new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
+      if (!problem.HasParameterBlock(ip))
+        continue;
+      if (problem.IsParameterBlockConstant(ip))
+        continue;
+      problem.AddResidualBlock(new TikhonovIntrCost(ip, input.tikhonov_lambda), nullptr, ip);
     }
 
     // Do NOT add regularization to 3D point blocks
@@ -932,10 +943,19 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   // DENSE_SCHUR: Schur complement is (6*n_var)×(6*n_var) dense – solved by LAPACK.
   //   · LAPACK's pivot threshold is more permissive than CHOLMOD's strict PD check,
   //     so it survives near-degenerate local configurations that kill SPARSE_SCHUR.
-  //   · Very fast for n_var ≤ 30 (Schur ≤ 180×180); use as first choice for local BA.
-  // SPARSE_SCHUR: better for large n_var (global BA, full-scene). Uses CHOLMOD.
-  // SPARSE_NORMAL_CHOLESKY: when intrinsics are free – avoids Schur complement
-  //   instability caused by intrinsics coupling.
+  //   · Very fast for n_var ≤ 300 (Schur ≤ 2700×2700); use as first choice for local BA.
+  //
+  // ITERATIVE_SCHUR + SCHUR_JACOBI: preferred for large problems.
+  //   · No explicit Schur complement factorization — uses PCG (Preconditioned Conjugate
+  //     Gradients) with implicit S·v products.  No CHOLMOD PD requirement.
+  //   · SCHUR_JACOBI preconditioner uses block-diagonal of S — better conditioned than
+  //     plain JACOBI for BA structure, especially when optimizing intrinsics.
+  //   · Ceres ≥ 2.2 can accelerate this path with CUDA (cuSPARSE/cuSOLVER).
+  //
+  // Why NOT SPARSE_SCHUR: it uses CHOLMOD direct Cholesky, which requires the Schur
+  //   complement to be strictly positive definite. When optimizing intrinsics (fx, sigma,
+  //   k1-k3), the near-collinearity of radial polynomial terms at aerial nadir r-ranges
+  //   (0.4–0.7·r_max) makes S indefinite → CHOLMOD fails. ITERATIVE_SCHUR avoids this.
   const int kDenseSchurMaxVariableCams = (input.solver_dense_schur_max_variable_cams > 0)
                                              ? input.solver_dense_schur_max_variable_cams
                                              : 300;
@@ -947,12 +967,43 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       ++n_variable_cams;
   }
 
-  options.preconditioner_type = ceres::JACOBI;
   if (n_cams < kDenseSchurMaxVariableCams) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
+    options.preconditioner_type = ceres::JACOBI;
+    // Ceres ≥ 2.2: CUDA-accelerate the dense Schur complement solve (cuSOLVER).
+    // For ≤300 cameras the Schur complement is ≤2700×2700 — LAPACK is already fast,
+    // but CUDA can still help when there are many observations (Jacobian evaluation).
+#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
+    options.dense_linear_algebra_library_type = ceres::CUDA;
+    LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with CUDA dense algebra (Ceres "
+              << CERES_VERSION_STRING << ")";
+#endif
   } else {
-    // options.linear_solver_type = ceres::SPARSE_SCHUR;
     options.linear_solver_type = ceres::ITERATIVE_SCHUR;
+    // JACOBI preconditioner: uses only the scalar diagonal of JᵀJ.
+    //
+    // Why NOT SCHUR_JACOBI:  SCHUR_JACOBI inverts the block-diagonal of the Schur
+    // complement S.  Each block S_ii corresponds to one camera's (pose+intrinsics)
+    // contribution.  When optimizing intrinsics, the fx/sigma/k1/k2/k3 columns of S_ii
+    // are near-collinear (radial polynomial terms at aerial nadir r-range 0.4–0.7·r_max)
+    // → S_ii becomes indefinite → block inversion fails → PCG diverges or Ceres errors.
+    // JACOBI avoids this: scalar diagonals are always ≥ 0 with observations present.
+    // Trade-off: ~1.5–2× more CG iterations, but each iteration is cheaper and robust.
+    options.preconditioner_type = ceres::JACOBI;
+    // PCG inner-loop tuning for large problems.
+    options.max_linear_solver_iterations = 500;
+    options.eta = 0.01; // inexact Newton forcing sequence
+    // Ceres ≥ 2.2: CUDA-accelerate ITERATIVE_SCHUR.
+    //   · The implicit Schur complement matrix-vector products (core of PCG)
+    //     are GPU-accelerated via Ceres's internal CUDA kernels.
+#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
+    options.dense_linear_algebra_library_type = ceres::CUDA;
+    LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR with CUDA acceleration (Ceres "
+              << CERES_VERSION_STRING << ")";
+#else
+    LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI (CPU, Ceres "
+              << CERES_VERSION_STRING << ")";
+#endif
   }
   options.num_threads = input.num_threads > 0
                             ? input.num_threads
@@ -1020,6 +1071,9 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     K.k3 = ip[kK3];
     K.p1 = ip[kP1];
     K.p2 = ip[kP2];
+    // Preserve width/height from input (not optimised by BA).
+    K.width  = input.cameras[static_cast<size_t>(c)].width;
+    K.height = input.cameras[static_cast<size_t>(c)].height;
   }
 
   // points are already in result->points3d (optimised in-place)

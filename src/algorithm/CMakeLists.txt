@@ -94,6 +94,8 @@ set(ALGORITHM_SOURCES
     modules/sfm/incremental_sfm_pipeline.cpp
     modules/sfm/resection_batch.h
     modules/sfm/resection_batch.cpp
+    modules/sfm/visibility_pyramid.h
+    modules/sfm/visibility_pyramid.cpp
     modules/sfm/incremental_triangulation.h
     modules/sfm/incremental_triangulation.cpp
     # Incremental SfM excluded from build (files kept); to be re-integrated after stepwise implementation
@@ -187,6 +189,36 @@ target_include_directories(test_incremental_triangulation
         ${CMAKE_SOURCE_DIR}/third_party
 )
 set_property(TARGET test_incremental_triangulation PROPERTY FOLDER InsightAT/Tests)
+
+# ── SfM diagnosis tool: analyze unregistered images after a SfM run ─────────
+add_executable(test_sfm_diagnosis modules/sfm/test_sfm_diagnosis.cpp)
+target_link_libraries(test_sfm_diagnosis
+    PRIVATE
+        InsightATAlgorithm
+        PoseLib
+        glog::glog
+)
+target_include_directories(test_sfm_diagnosis
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET test_sfm_diagnosis PROPERTY FOLDER InsightAT/Tests)
+
+# ── SfM diagnosis – clean from-scratch triangulation (no incremental_triangulation dependency) ──
+add_executable(test_sfm_diag2 modules/sfm/test_sfm_diag2.cpp)
+target_link_libraries(test_sfm_diag2
+    PRIVATE
+        InsightATAlgorithm
+        PoseLib
+        glog::glog
+)
+target_include_directories(test_sfm_diag2
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET test_sfm_diag2 PROPERTY FOLDER InsightAT/Tests)
 
 # ─────────────────────────────────────────────────────────────
 # CLI Tools (shared logging helper)

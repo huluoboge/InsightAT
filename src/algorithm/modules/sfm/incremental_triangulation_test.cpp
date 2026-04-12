@@ -31,6 +31,8 @@ void project_pinhole(const Eigen::Matrix3d& R, const Eigen::Vector3d& C,
 insight::camera::Intrinsics make_default_K() {
   insight::camera::Intrinsics K{};
   K.fx = K.fy = 500.0;
+  K.width = 800;
+  K.height = 600;
   K.cx = 320.0;
   K.cy = 240.0;
   return K;

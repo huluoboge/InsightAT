@@ -610,7 +610,7 @@ def run_tracks(
         "-o",
         str(output_path),
         "--min-track-length",
-        "3",
+        "2",
     ]
     if extra_args:
         cmd += extra_args
