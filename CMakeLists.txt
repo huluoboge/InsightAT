@@ -31,7 +31,7 @@ endif ()
 # INSIGHTAT build options
 # ==============================================================================
 option(INSIGHTAT_BUILD_SOFTWARES "Build softwares" OFF)
-option(INSIGHTAT_ENABLE_SUPERPOINT "Enable SuperPoint feature extraction (requires ONNXRuntime)" ON)
+option(INSIGHTAT_ENABLE_SUPERPOINT "Enable SuperPoint feature extraction (requires ONNXRuntime)" OFF)
 
 # Set build path
 set(EXECUTABLE_OUTPUT_PATH "${PROJECT_BINARY_DIR}")

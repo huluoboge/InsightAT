@@ -20,16 +20,13 @@
 //
 ////////////////////////////////////////////////////////////////////////////
 
-
 #ifndef CU_TEX_IMAGE_H
 #define CU_TEX_IMAGE_H
 
 class GLTexImage;
 struct cudaArray;
-struct textureReference;
 
-//using texture2D from linear memory
-
+// Use texture2D from linear memory (pitch2D resource)
 #define SIFTGPU_ENABLE_LINEAR_TEX2D
 
 class CuTexImage
@@ -38,7 +35,7 @@ protected:
 	void*		_cuData;
 	cudaArray*	_cuData2D;
 	int			_numChannel;
-	size_t			_numBytes;
+	size_t		_numBytes;
 	int			_imgWidth;
 	int			_imgHeight;
 	int			_texWidth;
@@ -48,8 +45,6 @@ public:
 	virtual void SetImageSize(int width, int height);
 	virtual bool InitTexture(int width, int height, int nchannel = 1);
 	void InitTexture2D();
-	inline void BindTexture(textureReference& texRef);
-	inline void BindTexture2D(textureReference& texRef);
 	void CopyToTexture2D();
 	void CopyToHost(void* buf);
 	void CopyToHost(void* buf, int stream);
@@ -61,6 +56,16 @@ public:
 	inline int GetImgWidth(){return _imgWidth;}
 	inline int GetImgHeight(){return _imgHeight;}
 	inline int GetDataSize(){return _numBytes;}
+// Texture object methods are only available when CUDA runtime headers are included.
+// In .cu files __CUDACC__ is defined; in .cpp files that include <cuda_runtime_api.h>
+// the type cudaTextureObject_t is available via __CUDA_RUNTIME_H__.
+#if defined(__CUDACC__) || defined(__CUDA_RUNTIME_H__)
+	// Create a cuda texture object for the current image buffer (1D linear).
+	inline cudaTextureObject_t CreateTextureObject();
+	// Create a 2D texture object (for tex2D<> in kernels). Uses pitch2D or CUDA array.
+	inline cudaTextureObject_t CreateTextureObject2D();
+	inline void DestroyTextureObject(cudaTextureObject_t obj);
+#endif
 public:
 	CuTexImage();
 	CuTexImage(int width, int height, int nchannel, GLuint pbo);
@@ -69,8 +74,4 @@ public:
 	friend class PyramidCU;
 };
 
-//////////////////////////////////////////////////
-//transfer OpenGL Texture to PBO, then to CUDA vector
-//#endif
 #endif // !defined(CU_TEX_IMAGE_H)
-

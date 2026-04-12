@@ -34,6 +34,11 @@ using namespace std;
 #include <cuda_runtime_api.h>
 #include <cuda_gl_interop.h>
 
+// CUDA 12.x removed the legacy GL interop helpers (cudaGLRegisterBufferObject, etc.).
+// We use the modern cudaGraphicsGLRegisterBuffer / Map / Unmap API on CUDA ≥10.0,
+// and fall back to the legacy API on older toolkits.
+#define USE_MODERN_GL_INTEROP (CUDA_VERSION >= 10000)
+
 #include "GlobalUtil.h"
 #include "GLTexImage.h"
 #include "CuTexImage.h"
@@ -69,10 +74,20 @@ CuTexImage::CuTexImage(int width, int height, int nchannel, GLuint pbo)
 	glBindBuffer(GL_PIXEL_PACK_BUFFER_ARB, 0);
 	if(bsize >=esize)
 	{
-
+#if USE_MODERN_GL_INTEROP
+		cudaGraphicsResource_t res = nullptr;
+		cudaGraphicsGLRegisterBuffer(&res, pbo, cudaGraphicsMapFlagsNone);
+		size_t mappedSize = 0;
+		cudaGraphicsMapResources(1, &res, 0);
+		cudaGraphicsResourceGetMappedPointer(&_cuData, &mappedSize, res);
+		ProgramCU::CheckErrorCUDA("cudaGraphicsResourceGetMappedPointer");
+		cudaGraphicsUnmapResources(1, &res, 0);
+		cudaGraphicsUnregisterResource(res);
+#else
 		cudaGLRegisterBufferObject(pbo);
 		cudaGLMapBufferObject(&_cuData, pbo);
 		ProgramCU::CheckErrorCUDA("cudaGLMapBufferObject");
+#endif
 		_fromPBO = pbo;
 	}else
 	{
@@ -100,12 +115,13 @@ CuTexImage::CuTexImage(int width, int height, int nchannel, GLuint pbo)
 
 CuTexImage::~CuTexImage()
 {
-
-
 	if(_fromPBO)
 	{
+#if !USE_MODERN_GL_INTEROP
 		cudaGLUnmapBufferObject(_fromPBO);
 		cudaGLUnregisterBufferObject(_fromPBO);
+#endif
+		// Modern API: unmap+unregister done eagerly in constructor; nothing to do here.
 	}else if(_cuData)
 	{
 		cudaFree(_cuData);
@@ -236,20 +252,29 @@ int CuTexImage::DebugCopyToTexture2D()
 
 void CuTexImage::CopyFromPBO(int width, int height, GLuint pbo)
 {
-	void* pbuf =NULL;
+	void* pbuf = NULL;
 	GLint esize = width * height * sizeof(float);
+#if USE_MODERN_GL_INTEROP
+	cudaGraphicsResource_t res = nullptr;
+	cudaGraphicsGLRegisterBuffer(&res, pbo, cudaGraphicsMapFlagsReadOnly);
+	size_t mappedSize = 0;
+	cudaGraphicsMapResources(1, &res, 0);
+	cudaGraphicsResourceGetMappedPointer(&pbuf, &mappedSize, res);
+	cudaMemcpy(_cuData, pbuf, esize, cudaMemcpyDeviceToDevice);
+	cudaGraphicsUnmapResources(1, &res, 0);
+	cudaGraphicsUnregisterResource(res);
+#else
 	cudaGLRegisterBufferObject(pbo);
 	cudaGLMapBufferObject(&pbuf, pbo);
-
 	cudaMemcpy(_cuData, pbuf, esize, cudaMemcpyDeviceToDevice);
-
 	cudaGLUnmapBufferObject(pbo);
 	cudaGLUnregisterBufferObject(pbo);
+#endif
 }
 
 int CuTexImage::CopyToPBO(GLuint pbo)
 {
-	void* pbuf =NULL;
+	void* pbuf = NULL;
 	GLint bsize, esize = _imgWidth * _imgHeight * sizeof(float) * _numChannel;
 	glBindBuffer(GL_PIXEL_PACK_BUFFER_ARB, pbo);
 	glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_ARB, GL_BUFFER_SIZE, &bsize);
@@ -262,11 +287,22 @@ int CuTexImage::CopyToPBO(GLuint pbo)
 
 	if(bsize >= esize)
 	{
+#if USE_MODERN_GL_INTEROP
+		cudaGraphicsResource_t res = nullptr;
+		cudaGraphicsGLRegisterBuffer(&res, pbo, cudaGraphicsMapFlagsWriteDiscard);
+		size_t mappedSize = 0;
+		cudaGraphicsMapResources(1, &res, 0);
+		cudaGraphicsResourceGetMappedPointer(&pbuf, &mappedSize, res);
+		cudaMemcpy(pbuf, _cuData, esize, cudaMemcpyDeviceToDevice);
+		cudaGraphicsUnmapResources(1, &res, 0);
+		cudaGraphicsUnregisterResource(res);
+#else
 		cudaGLRegisterBufferObject(pbo);
 		cudaGLMapBufferObject(&pbuf, pbo);
 		cudaMemcpy(pbuf, _cuData, esize, cudaMemcpyDeviceToDevice);
 		cudaGLUnmapBufferObject(pbo);
 		cudaGLUnregisterBufferObject(pbo);
+#endif
 		return 1;
 	}else
 	{

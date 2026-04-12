@@ -4,7 +4,8 @@
  *
  * Camera model: fx + sigma (fy = sigma·fx), Brown-Conrady k1/k2/k3 + p1/p2 (Bentley).
  * Rotation: quaternion [qx,qy,qz,qw] + camera center C.
- * EigenQuaternionParameterization × IdentityParameterization(3) applied to pose[7].
+ * EigenQuaternionManifold × EuclideanManifold<3> applied to pose[7] (Ceres ≥2.1),
+ * or EigenQuaternionParameterization × IdentityParameterization(3) on older Ceres.
  *
  * Performance
  * ───────────
@@ -31,6 +32,16 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <ceres/ceres.h>
+#include <ceres/version.h>
+
+// Ceres 2.1+ introduced the Manifold API; the old *Parameterization classes
+// were deprecated in 2.1 and removed in 2.2+.
+// We use a compile-time check so the same source builds with both old and new Ceres.
+#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 1)
+  #define CERES_HAS_MANIFOLD 1
+#else
+  #define CERES_HAS_MANIFOLD 0
+#endif
 
 namespace insight {
 namespace sfm {
@@ -731,9 +742,15 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     double* pp = poses_data.data() + static_cast<size_t>(i) * 7;
     if (!problem.HasParameterBlock(pp))
       continue;
+    // Quaternion + translation parameterisation for the 7-element pose block
+#if CERES_HAS_MANIFOLD
+    problem.SetManifold(
+        pp, new ceres::ProductManifold<ceres::EigenQuaternionManifold, ceres::EuclideanManifold<3>>{});
+#else
     problem.SetParameterization(
         pp, new ceres::ProductParameterization(new ceres::EigenQuaternionParameterization(),
                                                new ceres::IdentityParameterization(3)));
+#endif
   }
 
   // Fix poses: input.fix_pose[i] (gauge anchor, COLMAP constants, local-BA frozen cams).
@@ -774,7 +791,11 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     if (fixed.size() >= static_cast<size_t>(kAnalyticIntrCount))
       problem.SetParameterBlockConstant(ip);
     else if (!fixed.empty())
+#if CERES_HAS_MANIFOLD
+      problem.SetManifold(ip, new ceres::SubsetManifold(kAnalyticIntrCount, fixed));
+#else
       problem.SetParameterization(ip, new ceres::SubsetParameterization(kAnalyticIntrCount, fixed));
+#endif
   }
 
   // ── Intrinsics parameter bounds (prevent radial-polynomial degeneracy) ────────────────

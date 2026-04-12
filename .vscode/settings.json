@@ -99,6 +99,8 @@
     "kiroAgent.trustedCommands": [
         "grep *",
         "ls *",
-        "find *"
-    ]
+        "find *",
+        "nvcc *"
+    ],
+    "kiroAgent.configureMCP": "Disabled"
 }

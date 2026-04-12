@@ -1,8 +1,8 @@
 # ----------------------------------------------------------------------------
 #   Basic Configuration
 # ----------------------------------------------------------------------------
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
-
+# CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.5...3.30)
 set(CMAKE_CXX_STANDARD 17)
 
 PROJECT(DBoW3)
