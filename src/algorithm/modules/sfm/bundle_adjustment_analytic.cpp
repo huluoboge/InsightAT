@@ -970,13 +970,16 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   if (n_cams < kDenseSchurMaxVariableCams) {
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.preconditioner_type = ceres::JACOBI;
-    // Ceres ≥ 2.2: CUDA-accelerate the dense Schur complement solve (cuSOLVER).
-    // For ≤300 cameras the Schur complement is ≤2700×2700 — LAPACK is already fast,
-    // but CUDA can still help when there are many observations (Jacobian evaluation).
+    // Ceres ≥ 2.2: CUDA-accelerate the dense Schur complement solve (cuSOLVER),
+    // but only if Ceres was actually built with CUDA support.
 #if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
-    options.dense_linear_algebra_library_type = ceres::CUDA;
-    LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with CUDA dense algebra (Ceres "
-              << CERES_VERSION_STRING << ")";
+    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
+      options.dense_linear_algebra_library_type = ceres::CUDA;
+      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with CUDA dense algebra (Ceres "
+                << CERES_VERSION_STRING << ")";
+    } else {
+      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with LAPACK (Ceres built without CUDA)";
+    }
 #endif
   } else {
     options.linear_solver_type = ceres::ITERATIVE_SCHUR;
@@ -993,13 +996,16 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // PCG inner-loop tuning for large problems.
     options.max_linear_solver_iterations = 500;
     options.eta = 0.01; // inexact Newton forcing sequence
-    // Ceres ≥ 2.2: CUDA-accelerate ITERATIVE_SCHUR.
-    //   · The implicit Schur complement matrix-vector products (core of PCG)
-    //     are GPU-accelerated via Ceres's internal CUDA kernels.
+    // Ceres ≥ 2.2: CUDA-accelerate ITERATIVE_SCHUR, if available.
 #if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
-    options.dense_linear_algebra_library_type = ceres::CUDA;
-    LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR with CUDA acceleration (Ceres "
-              << CERES_VERSION_STRING << ")";
+    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
+      options.dense_linear_algebra_library_type = ceres::CUDA;
+      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR with CUDA acceleration (Ceres "
+                << CERES_VERSION_STRING << ")";
+    } else {
+      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI (CPU, Ceres "
+                << CERES_VERSION_STRING << ", no CUDA)";
+    }
 #else
     LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI (CPU, Ceres "
               << CERES_VERSION_STRING << ")";
