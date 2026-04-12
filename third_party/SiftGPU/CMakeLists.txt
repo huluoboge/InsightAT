@@ -158,3 +158,22 @@ target_link_libraries(sift_gpu
 if(SIFTGPU_USE_EGL AND EGL_FOUND)
     target_link_libraries(sift_gpu ${EGL_LIBRARY})
 endif()
+
+# ── Unit test: texture object API (CUDA 12.x migration validation) ────────
+if(CUDA_ENABLED)
+    add_executable(test_siftgpu_texture
+        test_texture_object.cu
+        CuTexImage.cpp
+    )
+    target_link_libraries(test_siftgpu_texture
+        CUDA::cudart
+        ${GLEW_LIBRARIES}
+        ${OPENGL_LIBRARIES}
+        GLEW::GLEW
+    )
+    if(SIFTGPU_USE_EGL AND EGL_FOUND)
+        target_link_libraries(test_siftgpu_texture ${EGL_LIBRARY})
+    endif()
+    target_compile_definitions(test_siftgpu_texture PRIVATE CUDA_SIFTGPU_ENABLED)
+    set_property(TARGET test_siftgpu_texture PROPERTY FOLDER InsightAT/Tests)
+endif()

@@ -2,11 +2,11 @@
  * isat_retrieve.cpp
  * InsightAT Image Retrieval Tool – generate candidate pairs for matching
  *
- * Reads .isat_feat (or VLAD/DBoW aggregated descriptors), runs retrieval
- * (VLAD, vocabulary tree, exhaustive, sequential, or GPS-based) to score
+ * Reads .isat_feat (or VLAD aggregated descriptors), runs retrieval
+ * (VLAD, exhaustive, sequential, or GPS-based) to score
  * image pairs, and writes a pairs JSON for downstream isat_match / isat_geo.
  *
- * Strategies: exhaustive, sequential, gps, vlad, vocab_tree (with optional PCA).
+ * Strategies: exhaustive, sequential, gps, vlad (with optional PCA).
  * Output: JSON with "pairs" array of {image1_id, image2_id, score, ...}.
  *
  * Usage:
@@ -29,7 +29,6 @@
 #include "../modules/retrieval/retrieval_types.h"
 #include "../modules/retrieval/spatial_retrieval.h"
 #include "../modules/retrieval/vlad_retrieval.h"
-#include "../modules/retrieval/vocab_tree_retrieval.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "stlplus3/filesystemSimplified/file_system.hpp"
@@ -431,11 +430,6 @@ int main(int argc, char* argv[]) {
   float target_scale = 4.0f;
   float scale_sigma = 2.0f;
 
-  // Vocabulary tree retrieval options
-  std::string vocab_file;
-  std::string vocab_cache_dir;
-  int vocab_top_k = 20;
-
   // Required arguments
   cmd.add(make_option('f', feature_dir, "features")
               .doc("Feature directory containing .isat_feat files"));
@@ -474,14 +468,6 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, scale_sigma, "vlad-scale-sigma")
               .doc("Gaussian sigma for VLAD scale weighting (default: 2.0)"));
   cmd.add(make_switch(0, "vlad-scale-weighted").doc("Enable scale-weighted VLAD encoding"));
-
-  // Vocabulary tree retrieval options
-  cmd.add(make_option(0, vocab_file, "vocab-file")
-              .doc("DBoW3 vocabulary file (.dbow3 format) for visual retrieval"));
-  cmd.add(make_option(0, vocab_cache_dir, "vocab-cache")
-              .doc("Directory for vocabulary tree query cache"));
-  cmd.add(make_option(0, vocab_top_k, "vocab-top-k")
-              .doc("Top-k most similar images per query for vocab tree (default: 20)"));
 
   // Logging options
   std::string log_level;
@@ -555,9 +541,8 @@ int main(int argc, char* argv[]) {
   options.max_pairs = max_pairs;
   options.verbose = cmd.used('v');
 
-  // Check if VLAD or vocab tree strategies are used
+  // Check if VLAD strategy is used
   bool vlad_enabled = (strategy.find("vlad") != std::string::npos);
-  bool vocab_enabled = (strategy.find("vocab") != std::string::npos);
 
   // Load VLAD centroids if needed
   std::vector<float> vlad_centroids;
@@ -593,23 +578,7 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // Validate vocabulary tree file if needed
-  if (vocab_enabled) {
-    if (vocab_file.empty()) {
-      LOG(ERROR) << "Vocab tree strategy requires --vocab-file parameter";
-      return 1;
-    }
-
-    if (!fs::exists(vocab_file)) {
-      LOG(ERROR) << "Vocabulary file not found: " << vocab_file;
-      return 1;
-    }
-
-    LOG(INFO) << "Using DBoW3 vocabulary: " << vocab_file;
-    options.top_k = vocab_top_k;
-  }
-
-  // Create dynamic strategy registry (extends static STRATEGIES with VLAD/vocab tree)
+  // Create dynamic strategy registry (extends static STRATEGIES with VLAD)
   auto strategies = STRATEGIES; // Copy static registry
   if (vlad_enabled) {
     // Only pass cache_dir if it's not empty (avoid cache write errors)
@@ -631,20 +600,6 @@ int main(int argc, char* argv[]) {
                             target_scale, scale_sigma);
     };
   }
-  if (vocab_enabled) {
-    strategies["vocab"] =
-        [&vocab_file, &vocab_cache_dir](const std::vector<ImageInfo>& imgs,
-                                        const RetrievalOptions& opts) -> std::vector<ImagePair> {
-      return retrieve_by_vocab_tree(imgs, opts, vocab_file, vocab_cache_dir);
-    };
-  }
-  if (vocab_enabled) {
-    strategies["vocab"] =
-        [&vocab_file, &vocab_cache_dir](const std::vector<ImageInfo>& imgs,
-                                        const RetrievalOptions& opts) -> std::vector<ImagePair> {
-      return retrieve_by_vocab_tree(imgs, opts, vocab_file, vocab_cache_dir);
-    };
-  }
 
   // Execute retrieval strategy
   std::vector<ImagePair> pairs;
@@ -657,11 +612,11 @@ int main(int argc, char* argv[]) {
     auto it = strategies.find(strategy_names[0]);
     if (it == strategies.end()) {
       LOG(ERROR) << "Unknown strategy: " << strategy_names[0];
-      LOG(ERROR) << "Available strategies: exhaustive, sequential, gps, vlad, vocab";
+      LOG(ERROR) << "Available strategies: exhaustive, sequential, gps, vlad";
       return 1;
     }
     pairs = it->second(images, options);
-    // Deduplicate pairs (VLAD/vocab may produce A->B and B->A)
+    // Deduplicate pairs (VLAD may produce A->B and B->A)
     pairs = combine_pairs({pairs}, true);
   } else {
     // Combined strategies

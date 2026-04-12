@@ -3,7 +3,7 @@
  * InsightAT Feature Matching Tool – GPU-accelerated SIFT matching
  *
  * Reads a pairs JSON and .isat_feat files from a feature directory, runs
- * GPU-accelerated matching (SiftGPU or SuperPoint matcher), and writes
+ * GPU-accelerated matching (SiftGPU), and writes
  * .isat_match files (pixel correspondences in IDC format).
  *
  * Pipeline (Stage/chain):

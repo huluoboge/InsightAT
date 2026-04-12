@@ -728,7 +728,7 @@ void ProgramCU::ReduceHistogram(CuTexImage*hist1, CuTexImage* hist2)
 	int wd = hist2->GetImgWidth(), hd = hist2->GetImgHeight();
 	int temp = (int)floor(logf(float(wd * 2/ 3)) / logf(2.0f));
 	const int wi = min(7, max(temp , 0));
-	cudaTextureObject_t texHistI4 = hist1->CreateTextureObject();
+	cudaTextureObject_t texHistI4 = hist1->CreateTextureObjectUint();
 	const int BW = 1 << wi, BH = 1 << (7 - wi);
 	dim3 grid((wd + BW - 1)/ BW, (hd + BH -1) / BH);
 	dim3 block(BW, BH);
@@ -767,8 +767,8 @@ void __global__ ListGen_Kernel(int4* d_list, int list_len, int width,
 void ProgramCU::GenerateList(CuTexImage* list, CuTexImage* hist)
 {
 	int len = list->GetImgWidth();
-	cudaTextureObject_t texListObj = list->CreateTextureObject();
-	cudaTextureObject_t texHistI4 = hist->CreateTextureObject();
+	cudaTextureObject_t texListObj = list->CreateTextureObjectUint();
+	cudaTextureObject_t texHistI4 = hist->CreateTextureObjectUint();
 	dim3 grid((len + LISTGEN_BLOCK_DIM -1) /LISTGEN_BLOCK_DIM);
 	dim3 block(LISTGEN_BLOCK_DIM);
 	ListGen_Kernel<<<grid, block>>>((int4*)list->_cuData, len, hist->GetImgWidth(), texListObj, texHistI4);
@@ -950,10 +950,10 @@ void ProgramCU::ComputeOrientation(CuTexImage* list, CuTexImage* got, CuTexImage
 	cudaTextureObject_t texListObj = 0;
 	if(existing_keypoint)
 	{
-		texF4Obj = list->CreateTextureObject();
+		texF4Obj = list->CreateTextureObject();  // float4 keypoints
 	}else
 	{
-		texListObj = list->CreateTextureObject();
+		texListObj = list->CreateTextureObjectUint();  // int4 list indices
 		if(GlobalUtil::_SubpixelLocalization) texF4Obj = key->CreateTextureObject();
 	}
 	cudaTextureObject_t texF2Obj = got->CreateTextureObject2D();
@@ -1403,6 +1403,39 @@ inline cudaTextureObject_t CuTexImage::CreateTextureObject()
 	return texObj;
 }
 
+// Create a texture object with unsigned-int channels (for descriptor matching: uint4 data)
+inline cudaTextureObject_t CuTexImage::CreateTextureObjectUint()
+{
+	cudaResourceDesc resDesc;
+	memset(&resDesc, 0, sizeof(resDesc));
+	cudaChannelFormatDesc chDesc;
+	if(_numChannel == 1)
+		chDesc = cudaCreateChannelDesc(32,0,0,0,cudaChannelFormatKindUnsigned);
+	else if(_numChannel == 2)
+		chDesc = cudaCreateChannelDesc(32,32,0,0,cudaChannelFormatKindUnsigned);
+	else if(_numChannel == 4)
+		chDesc = cudaCreateChannelDesc(32,32,32,32,cudaChannelFormatKindUnsigned);
+	else
+		chDesc = cudaCreateChannelDesc(32,0,0,0,cudaChannelFormatKindUnsigned);
+
+	resDesc.resType = cudaResourceTypeLinear;
+	resDesc.res.linear.devPtr = _cuData;
+	resDesc.res.linear.desc = chDesc;
+	resDesc.res.linear.sizeInBytes = _numBytes;
+
+	cudaTextureDesc texDesc;
+	memset(&texDesc, 0, sizeof(texDesc));
+	texDesc.addressMode[0] = cudaAddressModeClamp;
+	texDesc.addressMode[1] = cudaAddressModeClamp;
+	texDesc.filterMode = cudaFilterModePoint;
+	texDesc.readMode = cudaReadModeElementType;
+	texDesc.normalizedCoords = 0;
+
+	cudaTextureObject_t texObj = 0;
+	cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL);
+	return texObj;
+}
+
 // Create a 2D texture object backed by a CUDA array (for tex2D<> in kernels)
 inline cudaTextureObject_t CuTexImage::CreateTextureObject2D()
 {
@@ -1599,8 +1632,8 @@ void ProgramCU::MultiplyDescriptor(CuTexImage* des1, CuTexImage* des2, CuTexImag
 	dim3 block(MULT_TBLOCK_DIMX, MULT_TBLOCK_DIMY);
 	texDot->InitTexture(num2, num1);
 	if(texCRT) texCRT->InitTexture(num2, (num1 + MULT_BLOCK_DIMY - 1)/MULT_BLOCK_DIMY, 32);
-	cudaTextureObject_t texDes1Obj = des1->CreateTextureObject();
-	cudaTextureObject_t texDes2Obj = des2->CreateTextureObject();
+	cudaTextureObject_t texDes1Obj = des1->CreateTextureObjectUint();
+	cudaTextureObject_t texDes2Obj = des2->CreateTextureObjectUint();
 	MultiplyDescriptor_Kernel<<<grid, block>>>((int*)texDot->_cuData, num1, num2,
 		(texCRT? (int3*)texCRT->_cuData : NULL), texDes1Obj, texDes2Obj);
 	des1->DestroyTextureObject(texDes1Obj);
@@ -1758,8 +1791,8 @@ void ProgramCU::MultiplyDescriptorG(CuTexImage* des1, CuTexImage* des2,
 	if(texCRT) texCRT->InitTexture(num2, (num1 + MULT_BLOCK_DIMY - 1)/MULT_BLOCK_DIMY, 3);
 	cudaTextureObject_t texLoc1Obj = loc1->CreateTextureObject();
 	cudaTextureObject_t texLoc2Obj = loc2->CreateTextureObject();
-	cudaTextureObject_t texDes1Obj = des1->CreateTextureObject();
-	cudaTextureObject_t texDes2Obj = des2->CreateTextureObject();
+	cudaTextureObject_t texDes1Obj = des1->CreateTextureObjectUint();
+	cudaTextureObject_t texDes2Obj = des2->CreateTextureObjectUint();
 	MultiplyDescriptorG_Kernel<<<grid, block>>>((int*)texDot->_cuData, num1, num2,
 		(texCRT? (int3*)texCRT->_cuData : NULL),
 		MatH, hdistmax, MatF, fdistmax,

@@ -1,14 +1,14 @@
 /**
  * isat_extract.cpp
- * InsightAT Feature Extractor – GPU-accelerated SIFT or SuperPoint extraction
+ * InsightAT Feature Extractor – GPU-accelerated SIFT extraction
  *
- * Reads an image list, extracts local features per image (SIFT via SiftGPU,
- * or SuperPoint via ONNX), optionally outputs both matching and retrieval
- * features (dual-output), and writes .isat_feat files (IDC format).
+ * Reads an image list, extracts SIFT features per image (via SiftGPU),
+ * optionally outputs both matching and retrieval features (dual-output),
+ * and writes .isat_feat files (IDC format).
  *
  * Pipeline (Stage/chain):
  *   Stage 1  [multi-thread I/O]   Load images (and resize for retrieval if dual-output)
- *   Stage 2  [main thread, GPU]   Extract SIFT or SuperPoint features
+ *   Stage 2  [main thread, GPU]   Extract SIFT features
  *   Stage 3  [multi-thread]      Post-process (normalization, NMS, uint8)
  *   Stage 4  [multi-thread I/O]  Write .isat_feat
  *
@@ -18,8 +18,6 @@
  * Usage:
  *   isat_extract -i image_list.txt -o feat_dir/
  *   isat_extract -i image_list.txt -o feat_dir/ --output-retrieval retrieval_dir/
- *   isat_extract -i image_list.txt -o feat_dir/ --feature-type superpoint --superpoint-model
- * model.onnx
  */
 
 #include <chrono>
@@ -34,9 +32,6 @@
 
 #include "../io/idc_writer.h"
 #include "../modules/extraction/sift_gpu_extractor.h"
-#ifdef INSIGHTAT_HAS_SUPERPOINT
-#include "../modules/extraction/superpoint_extractor.h"
-#endif
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"
@@ -72,15 +67,6 @@ struct ImageTask {
   std::vector<SiftGPU::SiftKeypoint> keypoints_retrieval;
   std::vector<float> descriptors_retrieval;
   std::vector<unsigned char> descriptors_uchar_retrieval;
-
-  // SuperPoint features (256-dim, float32 only)
-  std::vector<cv::KeyPoint> sp_keypoints;
-  cv::Mat sp_descriptors; // N x 256, CV_32F
-  std::vector<float> sp_scores;
-
-  std::vector<cv::KeyPoint> sp_keypoints_retrieval;
-  cv::Mat sp_descriptors_retrieval;
-  std::vector<float> sp_scores_retrieval;
 };
 
 std::vector<ImageTask> loadImageList(const std::string& json_path) {
@@ -121,10 +107,7 @@ int main(int argc, char* argv[]) {
 
   // Define command line options with documentation
   CmdLine cmd(
-      "InsightAT Feature Extractor - GPU-accelerated feature extraction with SIFT or SuperPoint");
-
-  // Feature backend selection
-  std::string feature_type = "sift"; // "sift" or "superpoint"
+      "InsightAT Feature Extractor - GPU-accelerated SIFT feature extraction");
 
   // Common options
   std::string input_file;
@@ -141,20 +124,9 @@ int main(int argc, char* argv[]) {
   std::string normalization = "l1root";
   float nms_radius = 3.0f;
 
-  // SuperPoint-specific options
-  std::string superpoint_model_path;
-  std::string superpoint_provider = "cpu"; // "cpu" or "cuda"
-  float superpoint_threshold = 0.005f;
-  int superpoint_nms_radius = 4;
-  int superpoint_max_keypoints = 1024;
-
   // ================================================================
-  // Backend selection
-  // ================================================================
-  cmd.add(make_option(0, feature_type, "feature-type")
-              .doc("Feature backend: sift or superpoint (default: sift)"));
-
   // Required arguments
+  // ================================================================
   cmd.add(make_option('i', input_file, "input").doc("Input image list (JSON format)"));
   cmd.add(
       make_option('o', output_dir, "output").doc("Output directory for matching .isat_feat files"));
@@ -195,20 +167,6 @@ int main(int argc, char* argv[]) {
   cmd.add(make_switch(0, "nms-no-orient")
               .doc("[SIFT] NMS ignores orientation (removes multi-orientation)"));
 
-  // ================================================================
-  // SuperPoint-specific parameters
-  // ================================================================
-  cmd.add(make_option(0, superpoint_model_path, "superpoint-model")
-              .doc("[SuperPoint] Path to ONNX model file (required if feature-type=superpoint)"));
-  cmd.add(make_option(0, superpoint_provider, "superpoint-provider")
-              .doc("[SuperPoint] ONNX Runtime provider: cpu or cuda (default: cpu)"));
-  cmd.add(make_option(0, superpoint_threshold, "superpoint-threshold")
-              .doc("[SuperPoint] Detection confidence threshold (default: 0.005)"));
-  cmd.add(make_option(0, superpoint_nms_radius, "superpoint-nms-radius")
-              .doc("[SuperPoint] NMS radius in pixels (default: 4)"));
-  cmd.add(make_option(0, superpoint_max_keypoints, "superpoint-max-keypoints")
-              .doc("[SuperPoint] Maximum keypoints to keep (default: 1024)"));
-
   // Logging options
   std::string log_level;
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
@@ -237,41 +195,6 @@ int main(int argc, char* argv[]) {
     std::cerr << "Error: -i/--input and -o/--output are required\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
-  }
-
-  // Validate feature_type
-  if (feature_type != "sift" && feature_type != "superpoint") {
-    std::cerr << "Error: --feature-type must be 'sift' or 'superpoint'\n\n";
-    cmd.printHelp(std::cerr, argv[0]);
-    return 1;
-  }
-
-  // Check SuperPoint availability
-  if (feature_type == "superpoint") {
-#ifndef INSIGHTAT_HAS_SUPERPOINT
-    std::cerr << "Error: SuperPoint not compiled in.\n";
-    std::cerr << "To enable SuperPoint:\n";
-    std::cerr << "  1. Install ONNXRuntime\n";
-    std::cerr << "  2. Rebuild with: cmake -DINSIGHTAT_ENABLE_SUPERPOINT=ON ..\n";
-    return 1;
-#else
-    // Validate SuperPoint-specific requirements
-    if (superpoint_model_path.empty()) {
-      std::cerr << "Error: --superpoint-model is required when feature-type=superpoint\n\n";
-      cmd.printHelp(std::cerr, argv[0]);
-      return 1;
-    }
-
-    if (!fs::exists(superpoint_model_path)) {
-      std::cerr << "Error: SuperPoint model file not found: " << superpoint_model_path << "\n";
-      return 1;
-    }
-
-    if (superpoint_provider != "cpu" && superpoint_provider != "cuda") {
-      std::cerr << "Error: --superpoint-provider must be 'cpu' or 'cuda'\n";
-      return 1;
-    }
-#endif
   }
 
   // Process dual-output options
@@ -320,31 +243,19 @@ int main(int argc, char* argv[]) {
 
   // Log configuration
   LOG(INFO) << "Feature extraction configuration:";
-  LOG(INFO) << "  Feature type: " << feature_type;
-  if (feature_type == "superpoint") {
-#ifdef INSIGHTAT_HAS_SUPERPOINT
-    LOG(INFO) << "  SuperPoint model: " << superpoint_model_path;
-    LOG(INFO) << "  Provider: " << superpoint_provider;
-    LOG(INFO) << "  Threshold: " << superpoint_threshold;
-    LOG(INFO) << "  NMS radius: " << superpoint_nms_radius;
-    LOG(INFO) << "  Max keypoints: " << superpoint_max_keypoints;
-#endif
-  } else {
-    LOG(INFO) << "  SIFT extract backend: " << (use_cuda_extract ? "cuda" : "glsl");
-    LOG(INFO) << "  SIFT threshold: " << threshold;
-    LOG(INFO) << "  Normalization: " << normalization;
-    LOG(INFO) << "  uint8 format: " << (use_uint8 ? "yes" : "no");
-    LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
-    if (enable_nms) {
-      LOG(INFO) << "    NMS radius: " << nms_radius;
-      LOG(INFO) << "    Keep orientations: " << (nms_keep_orientation ? "yes" : "no");
-    }
+  LOG(INFO) << "  SIFT extract backend: " << (use_cuda_extract ? "cuda" : "glsl");
+  LOG(INFO) << "  SIFT threshold: " << threshold;
+  LOG(INFO) << "  Normalization: " << normalization;
+  LOG(INFO) << "  uint8 format: " << (use_uint8 ? "yes" : "no");
+  LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
+  if (enable_nms) {
+    LOG(INFO) << "    NMS radius: " << nms_radius;
+    LOG(INFO) << "    Keep orientations: " << (nms_keep_orientation ? "yes" : "no");
   }
 
   if (process_matching) {
     LOG(INFO) << "  Matching features:";
-    LOG(INFO) << "    Max features: "
-              << (feature_type == "superpoint" ? superpoint_max_keypoints : nfeatures);
+    LOG(INFO) << "    Max features: " << nfeatures;
     LOG(INFO) << "    Output: " << output_dir;
   }
   if (process_retrieval) {
@@ -412,9 +323,8 @@ int main(int argc, char* argv[]) {
                        });
 
   // Stage 2: Feature extraction (GPU/CPU, backend-specific)
-  if (feature_type == "sift") {
-    // SIFT GPU extraction (single GPU, use reconfigure for dual-output)
-    // NOTE: SiftGPU uses global state, so we use ONE extractor and reconfigure parameters
+  // SIFT GPU extraction
+  {
     insight::modules::SiftGPUExtractor extractor(sift_params);
     if (!extractor.initialize()) {
       LOG(FATAL) << "Failed to initialize SiftGPU";

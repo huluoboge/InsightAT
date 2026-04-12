@@ -184,7 +184,7 @@ void CuTexImage::CopyToHost(void * buf)
 void CuTexImage::CopyToHost(void * buf, int stream)
 {
 	if(_cuData == NULL) return;
-	cudaMemcpyAsync(buf, _cuData, _imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyDeviceToHost, (cudaStream_t)stream);
+	cudaMemcpyAsync(buf, _cuData, _imgWidth * _imgHeight * _numChannel * sizeof(float), cudaMemcpyDeviceToHost, (cudaStream_t)(intptr_t)stream);
 }
 
 void CuTexImage::InitTexture2D()

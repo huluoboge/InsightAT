@@ -68,7 +68,7 @@ CEREAL_CLASS_VERSION(MyType, 1);
 | 工具 | 功能 | GPU | 输出 |
 |------|------|-----|------|
 | `isat_project` | 项目管理（创建/分组/导入图像/设相机/导出） | — | `.iat` |
-| `isat_extract` | 特征提取（SIFT/SuperPoint） | ✅ | `.isat_feat` |
+| `isat_extract` | 特征提取（SIFT） | ✅ | `.isat_feat` |
 | `isat_retrieve` | 图像检索（GNSS/VLAD/BoW/Sequence） | CPU 为主 | `.json` |
 | `isat_match` | 特征匹配 | ✅ | `.isat_match` |
 | `isat_geo` | 几何验证（F/E/H RANSAC） | ✅ | `.isat_geo` |

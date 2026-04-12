@@ -18,7 +18,7 @@ The design vision and architecture are described in [doc/design/](doc/design/) a
 
 - **CLI 工具链**：`isat_extract`（特征提取）、`isat_match`（匹配）、`isat_retrieve`（检索）、`isat_geo`（几何验证）、`isat_train_vlad` / `isat_train_vocab`、`isat_project`、`isat_twoview`、`isat_tracks`、`isat_calibrate`、`isat_camera_estimator`；独立进程 `CameraEstimator`。
 - **数据层**：`database` 模块（`database_types.h`）提供 CoordinateSystem、InputPose、Measurement、ATTask、Project、ImageGroup、CameraModel 等，Cereal 序列化与版本控制。
-- **算法模块**：特征提取（SIFT GPU、SuperPoint 可选）、检索（VLAD、词汇树、GNSS、Sequence）、匹配、几何（GPU RANSAC）、两视图重建与焦距优化、track 构建。
+- **算法模块**：特征提取（SIFT GPU）、检索（VLAD、Sequence）、匹配、几何（GPU RANSAC）、两视图重建与焦距优化、track 构建。
 - **UI**：Qt 主窗口、项目/任务/坐标系配置、相机参数与图像组管理、与 ProjectDocument 绑定；无 3D 渲染依赖。
 - **规范**：CLI I/O 约定（stdout/stderr、`ISAT_EVENT`）、编码风格与 IDC 格式见 [doc/design/](doc/design/)。
 

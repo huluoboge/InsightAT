@@ -16,7 +16,7 @@ namespace io {
  * Schema version 1.1: Adds explicit descriptor metadata
  */
 struct DescriptorSchema {
-  std::string feature_type;           // "sift", "superpoint", etc.
+  std::string feature_type;           // "sift", etc.
   int descriptor_dim;                 // 128, 256, etc.
   std::string descriptor_dtype;       // "uint8", "float32"
   std::string normalization;          // "l2", "none"

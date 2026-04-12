@@ -37,9 +37,6 @@ public:
 	
 	bool IsOpen() const;
 
-    /**
-     * @brief �ر���
-     */
 	void Close();
 
 	bool ReadRange (int nLevel,int nFileSX,int nFileSY,int nFileXSize,int nFileYSize,

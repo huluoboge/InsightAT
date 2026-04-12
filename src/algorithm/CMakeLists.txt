@@ -86,8 +86,6 @@ set(ALGORITHM_SOURCES
     modules/retrieval/vlad_retrieval.cpp
     modules/retrieval/pca_whitening.h
     modules/retrieval/pca_whitening.cpp
-    modules/retrieval/vocab_tree_retrieval.h
-    modules/retrieval/vocab_tree_retrieval.cpp
     modules/sfm/view_graph_loader.h
     modules/sfm/view_graph_loader.cpp
     modules/sfm/resection.h
@@ -125,14 +123,6 @@ target_include_directories(algorithm_camera
 target_link_libraries(algorithm_camera PUBLIC Eigen3::Eigen)
 set_property(TARGET algorithm_camera PROPERTY FOLDER InsightAT/Modules)
 
-# Add SuperPoint sources if available
-if(SUPERPOINT_AVAILABLE)
-    list(APPEND ALGORITHM_SOURCES
-        modules/extraction/superpoint_extractor.h
-        modules/extraction/superpoint_extractor.cpp
-    )
-endif()
-
 # Add CUDA PCA source when CUDA toolkit is available
 if(INSIGHTAT_USE_CUDA_PCA)
     list(APPEND ALGORITHM_SOURCES
@@ -160,8 +150,7 @@ target_include_directories(InsightATAlgorithm
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/..
         ${CMAKE_SOURCE_DIR}/third_party
-    ${CMAKE_SOURCE_DIR}/third_party/PoseLib
-        ${CMAKE_SOURCE_DIR}/third_party/DBow3/src
+        ${CMAKE_SOURCE_DIR}/third_party/PoseLib
 )
 
 target_link_libraries(InsightATAlgorithm
@@ -174,7 +163,6 @@ target_link_libraries(InsightATAlgorithm
         PoseLib
         PoseLib::PoseLib
         ${OpenCV_LIBS}
-        DBoW3
         sift_gpu
         ${GLEW_LIBRARIES}
         ${OPENGL_LIBRARIES}
@@ -184,28 +172,6 @@ target_link_libraries(InsightATAlgorithm
 if(INSIGHTAT_USE_CUDA_PCA)
     target_compile_definitions(InsightATAlgorithm PUBLIC INSIGHTAT_USE_CUDA_PCA)
     target_link_libraries(InsightATAlgorithm PUBLIC ${CUDA_PCA_LIBS})
-endif()
-
-# Link ONNXRuntime if SuperPoint is enabled
-if(SUPERPOINT_AVAILABLE)
-    target_link_libraries(InsightATAlgorithm
-        PUBLIC
-            ${onnxruntime_LIBRARIES}
-            cudart
-            cudnn
-    )
-    target_include_directories(InsightATAlgorithm
-        PUBLIC
-            ${ONNXRUNTIME_INCLUDE_DIR}
-            ${CUDA_INCLUDE_DIRS}
-    )
-    target_compile_definitions(InsightATAlgorithm
-        PUBLIC
-            INSIGHTAT_HAS_SUPERPOINT
-    )
-    message(STATUS "InsightATAlgorithm: SuperPoint support enabled")
-    message(STATUS "  Linking ONNX Runtime: ${onnxruntime_LIBRARIES}")
-    message(STATUS "  ONNX Include: ${ONNXRUNTIME_INCLUDE_DIR}")
 endif()
 
 # ── Unit test: incremental triangulation (strategy B) ──
@@ -315,26 +281,6 @@ target_include_directories(isat_train_vlad
 )
 
 set_property(TARGET isat_train_vlad PROPERTY FOLDER InsightAT/Tools)
-
-# isat_train_vocab - DBoW3 vocabulary tree training tool
-add_executable(isat_train_vocab tools/isat_train_vocab.cpp)
-
-target_link_libraries(isat_train_vocab
-    PRIVATE
-        insightat_tools_logging
-        InsightATAlgorithm
-        glog::glog
-        ${OpenCV_LIBS}
-        DBoW3
-)
-
-target_include_directories(isat_train_vocab
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/..
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
-)
-
-set_property(TARGET isat_train_vocab PROPERTY FOLDER InsightAT/Tools)
 
 # isat_geo - Two-view geometry estimation (F / E / H) using GPU RANSAC
 add_executable(isat_geo tools/isat_geo.cpp)
@@ -473,6 +419,33 @@ target_include_directories(isat_camera_estimator
 
 set_property(TARGET isat_camera_estimator PROPERTY FOLDER InsightAT/Tools)
 
+# isat_sfm - End-to-end SfM pipeline driver (invokes sibling tools as subprocesses)
+add_executable(isat_sfm tools/isat_sfm.cpp)
+target_link_libraries(isat_sfm
+    PRIVATE
+        insightat_tools_logging
+        glog::glog
+)
+target_include_directories(isat_sfm
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+set_property(TARGET isat_sfm PROPERTY FOLDER InsightAT/Tools)
+
+# isat_retrieval_match - Discover image pairs via exhaustive low-res matching + F verification
+add_executable(isat_retrieval_match tools/isat_retrieval_match.cpp)
+target_link_libraries(isat_retrieval_match
+    PRIVATE
+        insightat_tools_logging
+        glog::glog
+)
+target_include_directories(isat_retrieval_match
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+set_property(TARGET isat_retrieval_match PROPERTY FOLDER InsightAT/Tools)
 
 # ─────────────────────────────────────────────────────────────
 # CameraEstimator 独立进程工具

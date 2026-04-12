@@ -60,8 +60,10 @@ public:
 // In .cu files __CUDACC__ is defined; in .cpp files that include <cuda_runtime_api.h>
 // the type cudaTextureObject_t is available via __CUDA_RUNTIME_H__.
 #if defined(__CUDACC__) || defined(__CUDA_RUNTIME_H__)
-	// Create a cuda texture object for the current image buffer (1D linear).
+	// Create a cuda texture object for the current image buffer (1D linear, float channels).
 	inline cudaTextureObject_t CreateTextureObject();
+	// Create a cuda texture object with unsigned-int channels (for descriptor matching).
+	inline cudaTextureObject_t CreateTextureObjectUint();
 	// Create a 2D texture object (for tex2D<> in kernels). Uses pitch2D or CUDA array.
 	inline cudaTextureObject_t CreateTextureObject2D();
 	inline void DestroyTextureObject(cudaTextureObject_t obj);

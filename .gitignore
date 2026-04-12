@@ -1,5 +1,7 @@
 build
 build-*
+build_*
 .vscode/launch.json
 .cursor
 .kiro
+__pycache__

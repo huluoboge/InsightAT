@@ -75,7 +75,7 @@ struct ImagePair {
   int image1_idx = -1;
   int image2_idx = -1;
   double score = 0.0; ///< Similarity score [0, 1], higher = more similar
-  std::string method; ///< "gps" | "vlad" | "vocab_tree" | "sequential" | "exhaustive"
+  std::string method; ///< "gps" | "vlad" | "sequential" | "exhaustive"
 
   // Optional metadata
   std::optional<double> spatial_distance;  ///< Euclidean distance in meters
