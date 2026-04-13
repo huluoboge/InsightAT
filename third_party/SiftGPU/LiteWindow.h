@@ -7,7 +7,10 @@
 
 // EGL headless rendering (Linux default, Docker-friendly)
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <iostream>
+#include <cstring>
+#include <vector>
 
 class LiteWindow
 {
@@ -43,8 +46,50 @@ public:
     void Create(int x = 0, int y = 0, const char* display = NULL) {
         if (eglDisplay != EGL_NO_DISPLAY) return;
         
-        // Get default EGL display
-        eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        // ── Level 1: EGL_EXT_device_enumeration ─────────────────────────────────
+        auto eglQueryDevicesEXT_ =
+            (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+        auto eglGetPlatformDisplayEXT_ =
+            (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+        auto eglQueryDeviceStringEXT_ =
+            (PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
+        if (eglQueryDevicesEXT_ && eglGetPlatformDisplayEXT_) {
+            EGLint num_dev = 0;
+            eglQueryDevicesEXT_(0, nullptr, &num_dev);
+            if (num_dev > 0) {
+                std::vector<EGLDeviceEXT> devs(num_dev);
+                eglQueryDevicesEXT_(num_dev, devs.data(), &num_dev);
+                int nvidia_idx = -1;
+                for (int i = 0; i < num_dev && eglQueryDeviceStringEXT_; ++i) {
+                    const char* exts = eglQueryDeviceStringEXT_(devs[i], EGL_EXTENSIONS);
+                    if (exts && std::strstr(exts, "EGL_NV_")) {
+                        nvidia_idx = i;
+                        break;
+                    }
+                }
+                int idx = (nvidia_idx >= 0) ? nvidia_idx : 0;
+                EGLDisplay d = eglGetPlatformDisplayEXT_(
+                    EGL_PLATFORM_DEVICE_EXT, devs[idx], nullptr);
+                if (d != EGL_NO_DISPLAY) {
+                    eglDisplay = d;
+                    if (nvidia_idx >= 0)
+                        std::cerr << "[SiftGPU EGL] selected NVIDIA device " << nvidia_idx << "\n";
+                    else
+                        std::cerr << "[SiftGPU EGL] selected device 0 (no NVIDIA found)\n";
+                }
+            }
+        }
+        // ── Level 2: EGL_MESA_platform_surfaceless ───────────────────────────────
+        if (eglDisplay == EGL_NO_DISPLAY && eglGetPlatformDisplayEXT_) {
+            eglDisplay = eglGetPlatformDisplayEXT_(
+                EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr);
+            if (eglDisplay != EGL_NO_DISPLAY)
+                std::cerr << "[SiftGPU EGL] using MESA surfaceless\n";
+        }
+        // ── Level 3: fallback ────────────────────────────────────────────────────
+        if (eglDisplay == EGL_NO_DISPLAY) {
+            eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        }
         if (eglDisplay == EGL_NO_DISPLAY) {
             std::cerr << "ERROR: eglGetDisplay failed\n";
             return;

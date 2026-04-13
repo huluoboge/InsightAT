@@ -387,33 +387,110 @@ static void downloadBuf(GLuint buf, void* data, GLsizeiptr bytes) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 int gpu_twoview_init(void) {
-  /* ── EGL ──────────────────────────────────────────────────────────────── */
-  s_egl_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  /* ── EGL display ──────────────────────────────────────────────────────────
+   * Fallback order (same as gpu_geo_ransac):
+   *   1. EGL_EXT_device_enumeration → prefer NVIDIA device
+   *   2. EGL_MESA_platform_surfaceless
+   *   3. eglGetDisplay(EGL_DEFAULT_DISPLAY)
+   * This ensures correct operation in Docker/headless environments where the
+   * default display may return a Mesa software renderer without OpenGL support.
+   */
+
+  // ── 1. EGL device enumeration → prefer NVIDIA ────────────────────────────
+  {
+    typedef EGLBoolean (*PFNEGLQUERYDEVICESEXTPROC)(EGLint, EGLDeviceEXT*, EGLint*);
+    typedef EGLDisplay (*PFNEGLGETPLATFORMDISPLAYEXTFN)(EGLenum, void*, const EGLAttrib*);
+    typedef const char* (*PFNEGLQUERYDEVICESTRINGEXTPROC)(EGLDeviceEXT, EGLint);
+
+    const char* client_exts = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    bool has_dev_enum = client_exts &&
+        std::string(client_exts).find("EGL_EXT_device_enumeration") != std::string::npos;
+    bool has_dev_plat = client_exts &&
+        std::string(client_exts).find("EGL_EXT_platform_device") != std::string::npos;
+
+    if (has_dev_enum && has_dev_plat) {
+      auto queryDevices =
+          (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+      auto getPlatformDisplay =
+          (PFNEGLGETPLATFORMDISPLAYEXTFN)eglGetProcAddress("eglGetPlatformDisplayEXT");
+      auto queryDeviceStr =
+          (PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
+
+      if (queryDevices && getPlatformDisplay && queryDeviceStr) {
+        EGLint num_devs = 0;
+        queryDevices(0, NULL, &num_devs);
+        std::vector<EGLDeviceEXT> devs(num_devs);
+        queryDevices(num_devs, devs.data(), &num_devs);
+
+        for (int di = 0; di < num_devs && s_egl_dpy == EGL_NO_DISPLAY; ++di) {
+          const char* dev_str = queryDeviceStr(devs[di], EGL_EXTENSIONS);
+          bool is_nvidia = dev_str &&
+              (std::string(dev_str).find("EGL_NV_") != std::string::npos ||
+               std::string(dev_str).find("nvidia") != std::string::npos ||
+               std::string(dev_str).find("NVIDIA") != std::string::npos);
+          if (!is_nvidia && num_devs > 1) continue;
+
+          EGLDisplay dpy = getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, devs[di], NULL);
+          if (dpy != EGL_NO_DISPLAY) {
+            EGLint major, minor;
+            if (eglInitialize(dpy, &major, &minor)) {
+              const char* vendor = eglQueryString(dpy, EGL_VENDOR);
+              fprintf(stderr, "[gpu_twoview_sfm] EGL device %d vendor: %s\n", di,
+                      vendor ? vendor : "(unknown)");
+              s_egl_dpy = dpy;
+            } else {
+              eglGetError();
+            }
+          }
+        }
+        // fallback to first device if no NVIDIA found
+        if (s_egl_dpy == EGL_NO_DISPLAY && num_devs > 0) {
+          EGLDisplay dpy = getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, devs[0], NULL);
+          if (dpy != EGL_NO_DISPLAY && eglInitialize(dpy, NULL, NULL))
+            s_egl_dpy = dpy;
+          else
+            eglGetError();
+        }
+      }
+    }
+  }
+
+  // ── 2. Mesa surfaceless ───────────────────────────────────────────────────
   if (s_egl_dpy == EGL_NO_DISPLAY) {
-    fprintf(stderr, "[gpu_twoview_sfm] eglGetDisplay failed\n");
+    const char* egl_exts = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    bool has_surfaceless = egl_exts &&
+        std::string(egl_exts).find("EGL_MESA_platform_surfaceless") != std::string::npos;
+    if (has_surfaceless) {
+      typedef EGLDisplay (*PFNEGLGETPLATFORMDISPLAYEXTPROC)(EGLenum, void*, const EGLAttrib*);
+      auto getPlatformDisplay =
+          (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+      if (getPlatformDisplay)
+        s_egl_dpy = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+    }
+  }
+
+  // ── 3. Default display fallback ───────────────────────────────────────────
+  if (s_egl_dpy == EGL_NO_DISPLAY)
+    s_egl_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+
+  if (s_egl_dpy == EGL_NO_DISPLAY) {
+    fprintf(stderr, "[gpu_twoview_sfm] Cannot get EGL display\n");
     return -1;
   }
-  EGLint major, minor;
-  if (!eglInitialize(s_egl_dpy, &major, &minor)) {
+
+  if (!eglInitialize(s_egl_dpy, NULL, NULL)) {
     fprintf(stderr, "[gpu_twoview_sfm] eglInitialize failed\n");
     return -1;
   }
 
-  /* Bind OpenGL (not OpenGL ES) */
   if (!eglBindAPI(EGL_OPENGL_API)) {
     fprintf(stderr, "[gpu_twoview_sfm] eglBindAPI(EGL_OPENGL_API) failed\n");
     return -1;
   }
 
-  /* Try surfaceless context (EGL_KHR_surfaceless_context) */
-  bool surfaceless = false;
-  {
-    const char* exts = eglQueryString(s_egl_dpy, EGL_EXTENSIONS);
-    if (exts && strstr(exts, "EGL_KHR_surfaceless_context"))
-      surfaceless = true;
-  }
-
-  static const EGLint cfg_attr[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE};
+  // ── Config ────────────────────────────────────────────────────────────────
+  static const EGLint cfg_attr[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+                                    EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE};
   EGLConfig cfg;
   EGLint ncfg = 0;
   if (!eglChooseConfig(s_egl_dpy, cfg_attr, &cfg, 1, &ncfg) || ncfg < 1) {
@@ -421,7 +498,11 @@ int gpu_twoview_init(void) {
     return -1;
   }
 
-  static const EGLint ctx_attr[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 3,
+  // ── Context ───────────────────────────────────────────────────────────────
+  static const EGLint ctx_attr[] = {EGL_CONTEXT_MAJOR_VERSION, 4,
+                                    EGL_CONTEXT_MINOR_VERSION, 3,
+                                    EGL_CONTEXT_OPENGL_PROFILE_MASK,
+                                    EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
                                     EGL_NONE};
   s_egl_ctx = eglCreateContext(s_egl_dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
   if (s_egl_ctx == EGL_NO_CONTEXT) {
@@ -429,20 +510,16 @@ int gpu_twoview_init(void) {
     return -1;
   }
 
-  if (surfaceless) {
-    s_egl_surf = EGL_NO_SURFACE;
-    if (!eglMakeCurrent(s_egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, s_egl_ctx)) {
-      surfaceless = false;
-    }
-  }
-  if (!surfaceless) {
-    static const EGLint pb_attr[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
-    s_egl_surf = eglCreatePbufferSurface(s_egl_dpy, cfg, pb_attr);
-    if (s_egl_surf == EGL_NO_SURFACE ||
-        !eglMakeCurrent(s_egl_dpy, s_egl_surf, s_egl_surf, s_egl_ctx)) {
-      fprintf(stderr, "[gpu_twoview_sfm] eglMakeCurrent failed\n");
-      return -1;
-    }
+  // ── Surface: 1×1 pbuffer ──────────────────────────────────────────────────
+  static const EGLint pb_attr[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+  s_egl_surf = eglCreatePbufferSurface(s_egl_dpy, cfg, pb_attr);
+  if (s_egl_surf == EGL_NO_SURFACE)
+    eglGetError(); // surfaceless OK
+
+  EGLSurface draw_surf = (s_egl_surf != EGL_NO_SURFACE) ? s_egl_surf : EGL_NO_SURFACE;
+  if (!eglMakeCurrent(s_egl_dpy, draw_surf, draw_surf, s_egl_ctx)) {
+    fprintf(stderr, "[gpu_twoview_sfm] eglMakeCurrent failed\n");
+    return -1;
   }
 
   /* ── GLEW ─────────────────────────────────────────────────────────────── */

@@ -213,7 +213,7 @@ static std::vector<std::pair<std::string, fs::path>> scan_groups(const fs::path&
   }
   std::sort(groups.begin(), groups.end());
   if (groups.empty() && has_images(root, exts))
-    groups.emplace_back(root.filename().string(), root);
+    groups.emplace_back(root.lexically_normal().filename().string(), root);
   return groups;
 }
 
@@ -457,7 +457,7 @@ int main(int argc, char* argv[]) {
        "-g", geo_dir.string(),
        "-l", images_all.string(),
        "-o", tracks_path.string(),
-       "--min-track-length", "3"});
+       "--min-track-length", "2"});
   }
 
   // ════════════════════════════════════════════════════════════════════════

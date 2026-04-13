@@ -727,6 +727,7 @@ int main(int argc, char* argv[]) {
   if (cmd.checkHelp(argv[0]))
     return 0;
 
+  cmd.print(std::cerr);
   // ── Validate required arguments ──────────────────────────────────────────
   if (pairs_json.empty() || match_dir.empty() || output_dir.empty()) {
     std::cerr << "Error: -i/--input, -m/--match-dir and -o/--output are required\n\n";
@@ -1076,14 +1077,20 @@ int main(int argc, char* argv[]) {
 
   push_thread.join();
   loadStage.wait();
+  if (backend_str == "gpu") {
 
+  } else {
+    cpuGeoStage->wait();
+  }
   // ── Two-view batch (when --twoview): E→R,t, GPU triangulate, stability ───
   if (run_twoview) {
+    LOG(INFO) << "Running two-view reconstruction for " << total << " pairs (GPU) ...";
     if (need_gpu_geo)
       gpu_geo_shutdown();
 
     if (gpu_twoview_init() != 0) {
       LOG(ERROR) << "gpu_twoview_init failed, skipping two-view reconstruction";
+      exit(1);
     } else {
       for (int i = 0; i < total; ++i) {
         GeoTask& task = tasks[i];
@@ -1103,8 +1110,11 @@ int main(int argc, char* argv[]) {
           pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
           pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
         }
-        if (!pK1 || !pK2)
+        if (!pK1 || !pK2) {
+          LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "-" << task.image2_index
+                       << ": cannot find K, skipping two-view reconstruction";
           continue;
+        }
 
         const insight::camera::Intrinsics& K1 = *pK1;
         const insight::camera::Intrinsics& K2 = *pK2;
@@ -1235,8 +1245,7 @@ int main(int argc, char* argv[]) {
     // Recompute score_prelim now that two-view fields (twoview_ok, stability, num_valid_points)
     // are populated. The first computation in estimate_function runs before the two-view batch,
     // so those terms are always 0 there.
-    const double w_f = 1.0, w_e = 1.0, w_tv = 2.0, w_st = 1.0, w_pt = 0.5, w_par = 2.0,
-                 w_ir = 1.0;
+    const double w_f = 1.0, w_e = 1.0, w_tv = 2.0, w_st = 1.0, w_pt = 0.5, w_par = 2.0, w_ir = 1.0;
     for (auto& t : tasks) {
       int best_inliers = t.F_inliers;
       if (t.E_ok && t.E_inliers > best_inliers)
@@ -1252,10 +1261,9 @@ int main(int argc, char* argv[]) {
                         : std::tanh(t.median_pixel_disp / 200.0);
       double tir = std::min(1.0, t.inlier_ratio * 3.0);
       double flag_bonus = (t.E_ok ? 1.0 : 0.0) + (t.H_ok ? 0.5 : 0.0);
-      t.score_prelim = w_f * tin + w_e * (t.E_ok ? 1.0 : 0.0) +
-                       w_tv * (t.twoview_ok ? 1.0 : 0.0) +
-                       w_st * (t.stability.is_stable ? 1.0 : 0.0) + w_pt * tpt +
-                       w_par * tpar + w_ir * tir + 0.5 * flag_bonus;
+      t.score_prelim = w_f * tin + w_e * (t.E_ok ? 1.0 : 0.0) + w_tv * (t.twoview_ok ? 1.0 : 0.0) +
+                       w_st * (t.stability.is_stable ? 1.0 : 0.0) + w_pt * tpt + w_par * tpar +
+                       w_ir * tir + 0.5 * flag_bonus;
     }
   }
 
