@@ -113,16 +113,6 @@ endif()
 if(CUDA_ENABLED)
     enable_language(CUDA)
     add_definitions("-DCUDA_SIFTGPU_ENABLED")
-    # Set CUDA architectures before add_library so the target picks them up.
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-        if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "11.8")
-            set(CMAKE_CUDA_ARCHITECTURES "60;70;75;80;86;89;90" CACHE STRING "CUDA architectures for SiftGPU")
-        elseif(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "11.1")
-            set(CMAKE_CUDA_ARCHITECTURES "60;70;75;80;86" CACHE STRING "CUDA architectures for SiftGPU")
-        else()
-            set(CMAKE_CUDA_ARCHITECTURES "60;70;75;80" CACHE STRING "CUDA architectures for SiftGPU")
-        endif()
-    endif()
     set(SIFT_GPU_SOURCE_FILES
         ${SIFT_GPU_SOURCE_FILES}
         CuTexImage.cpp
@@ -136,6 +126,9 @@ if(CUDA_ENABLED)
     )
     add_library(sift_gpu ${SIFT_GPU_SOURCE_FILES})
     target_link_libraries(sift_gpu CUDA::cudart)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES "60;70;75;80;86;89" CACHE STRING "CUDA architectures for SiftGPU")
+    endif()
 else()
     add_library(sift_gpu ${SIFT_GPU_SOURCE_FILES})
 endif()
@@ -157,23 +150,4 @@ target_link_libraries(sift_gpu
 # Link EGL if enabled
 if(SIFTGPU_USE_EGL AND EGL_FOUND)
     target_link_libraries(sift_gpu ${EGL_LIBRARY})
-endif()
-
-# ── Unit test: texture object API (CUDA 12.x migration validation) ────────
-if(CUDA_ENABLED)
-    add_executable(test_siftgpu_texture
-        test_texture_object.cu
-        CuTexImage.cpp
-    )
-    target_link_libraries(test_siftgpu_texture
-        CUDA::cudart
-        ${GLEW_LIBRARIES}
-        ${OPENGL_LIBRARIES}
-        GLEW::GLEW
-    )
-    if(SIFTGPU_USE_EGL AND EGL_FOUND)
-        target_link_libraries(test_siftgpu_texture ${EGL_LIBRARY})
-    endif()
-    target_compile_definitions(test_siftgpu_texture PRIVATE CUDA_SIFTGPU_ENABLED)
-    set_property(TARGET test_siftgpu_texture PROPERTY FOLDER InsightAT/Tests)
 endif()

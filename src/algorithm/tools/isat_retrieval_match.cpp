@@ -236,7 +236,7 @@ int main(int argc, char* argv[]) {
      "-f", feat_dir,
      "-o", match_dir.string(),
      "--match-backend", match_backend,
-     "--max-features", "-1",
+     "--max-features", std::to_string(max_features),
      "--threads", std::to_string(match_threads)});
 
   // ── Step 3: Geometric verification (F only, lenient) ─────────────────────
