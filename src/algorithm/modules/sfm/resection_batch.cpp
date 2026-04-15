@@ -186,15 +186,7 @@ std::vector<ResectionCandidate> choose_resection_candidates(
     c.coverage = p.coverage;
     out.push_back(c);
   }
-   if (out.size() > 1) {
-    for (int i = 1; i < out.size(); ++i) {
-      if (out[i].num_3d2d < 100) {
-        out.resize(i);
-        break;
-      }
-    }
-  }
-  // NOTE: The old hard-coded `num_3d2d < 100` truncation was removed.
+  // NOTE: the old hard-coded `num_3d2d < 100` list truncation has been removed.
   // It incorrectly dropped valid late-stage candidates that met min_3d2d_count but had
   // fewer than 100 triangulated correspondences — a situation that commonly arises when
   // the triangulation pipeline has lagged (observation deletions from local-BA outlier

@@ -200,8 +200,13 @@ static bool has_images(const fs::path& dir, const std::string& exts) {
   return false;
 }
 
-static std::vector<std::pair<std::string, fs::path>> scan_groups(const fs::path& root,
+static std::vector<std::pair<std::string, fs::path>> scan_groups(const fs::path& root_in,
                                                                   const std::string& exts) {
+  // Strip trailing separator at string level (lexically_normal() is unreliable on some GCC builds)
+  std::string root_str = root_in.string();
+  while (!root_str.empty() && (root_str.back() == '/' || root_str.back() == '\\'))
+    root_str.pop_back();
+  const fs::path root(root_str);
   std::vector<std::pair<std::string, fs::path>> groups;
   for (const auto& entry : fs::recursive_directory_iterator(root)) {
     if (entry.is_directory() && has_images(entry.path(), exts)) {
@@ -280,8 +285,15 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "Active steps: " << active_list;
   }
 
-  fs::path input_path = fs::absolute(input_dir);
-  fs::path work_path  = fs::absolute(work_dir);
+  // Strip trailing directory separators before constructing paths.
+  // lexically_normal() does not reliably remove trailing '/' on all GCC/libstdc++ versions.
+  auto strip_trailing_sep = [](std::string s) -> std::string {
+    while (!s.empty() && (s.back() == '/' || s.back() == '\\'))
+      s.pop_back();
+    return s;
+  };
+  fs::path input_path = fs::absolute(strip_trailing_sep(input_dir));
+  fs::path work_path  = fs::absolute(strip_trailing_sep(work_dir));
   if (!fs::is_directory(input_path)) {
     LOG(ERROR) << "Input directory does not exist: " << input_path;
     return 1;

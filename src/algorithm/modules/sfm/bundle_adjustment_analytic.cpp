@@ -979,13 +979,13 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with CUDA (Ceres " << CERES_VERSION_STRING << ")";
     } else
 #endif
-    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::LAPACK)) {
-      options.dense_linear_algebra_library_type = ceres::LAPACK;
-      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with LAPACK";
-    } else {
+    // if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::LAPACK)) {
+    //   options.dense_linear_algebra_library_type = ceres::LAPACK;
+    //   LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with LAPACK";
+    // } else {
       options.dense_linear_algebra_library_type = ceres::EIGEN;
       LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with Eigen (no LAPACK)";
-    }
+    // }
   } else {
     options.linear_solver_type = ceres::ITERATIVE_SCHUR;
     // JACOBI preconditioner: uses only the scalar diagonal of JᵀJ.

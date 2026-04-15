@@ -523,7 +523,7 @@ int main(int argc, char* argv[]) {
 
         // Progress reporting
         float progress = static_cast<float>(index + 1) / pair_tasks.size();
-        std::cerr << "PROGRESS: " << progress << "\n";
+        // std::cerr << "PROGRESS: " << progress << "\n";
       });
 
   // Chain stages

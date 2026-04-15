@@ -873,7 +873,7 @@ int main(int argc, char* argv[]) {
     VLOG(2) << "  [write] pair " << i << "  " << ms << "ms";
 
     float prog = static_cast<float>(i + 1) / total;
-    std::cerr << "PROGRESS: " << prog << "\n";
+    // std::cerr << "PROGRESS: " << prog << "\n";
   });
 
   // ── Stage 2: GPU RANSAC (single thread = main thread, EGL context) ───────

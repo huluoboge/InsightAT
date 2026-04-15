@@ -546,7 +546,7 @@ int main(int argc, char* argv[]) {
           }
 
           // Progress reporting
-          std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
+          // std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
 
           // Clear memory
           task = ImageTask(); // release all memory
