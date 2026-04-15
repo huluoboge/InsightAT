@@ -71,16 +71,70 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
     return MatchResult();
   }
 
-  auto top_n_by_scale = [](const FeatureData& f, int max_n) -> std::vector<int> {
+  // Spatially stratified feature selection.
+  // Divides the keypoint bounding box into (grid_rows × grid_cols) cells, sorts each
+  // cell by scale descending, then picks features round-robin across cells until max_n
+  // is reached.  This prevents large-scale features (e.g. tree canopy) from monopolising
+  // the GPU upload budget and ensures building corners / other small-scale structures are
+  // represented.
+  auto top_n_spatial = [](const FeatureData& f, int max_n,
+                          int grid_rows, int grid_cols) -> std::vector<int> {
     int n = static_cast<int>(f.num_features);
-    std::vector<int> idx(n);
-    std::iota(idx.begin(), idx.end(), 0);
-    if (max_n > 0 && n > max_n) {
-      std::partial_sort(idx.begin(), idx.begin() + max_n, idx.end(),
-                        [&f](int a, int b) { return f.keypoints[a][2] > f.keypoints[b][2]; });
-      idx.resize(max_n);
+    if (n == 0) return {};
+
+    // If no cap is requested, return all in original order.
+    if (max_n <= 0 || n <= max_n) {
+      std::vector<int> idx(n);
+      std::iota(idx.begin(), idx.end(), 0);
+      return idx;
     }
-    return idx;
+
+    // Compute bounding box of keypoints.
+    float xmin = f.keypoints[0][0], xmax = xmin;
+    float ymin = f.keypoints[0][1], ymax = ymin;
+    for (int i = 1; i < n; ++i) {
+      xmin = std::min(xmin, f.keypoints[i][0]);
+      xmax = std::max(xmax, f.keypoints[i][0]);
+      ymin = std::min(ymin, f.keypoints[i][1]);
+      ymax = std::max(ymax, f.keypoints[i][1]);
+    }
+    float cell_w = (xmax - xmin + 1.0f) / grid_cols;
+    float cell_h = (ymax - ymin + 1.0f) / grid_rows;
+
+    // Assign each feature to its cell.
+    int n_cells = grid_rows * grid_cols;
+    std::vector<std::vector<int>> cells(n_cells);
+    for (int i = 0; i < n; ++i) {
+      int cx = static_cast<int>((f.keypoints[i][0] - xmin) / cell_w);
+      int cy = static_cast<int>((f.keypoints[i][1] - ymin) / cell_h);
+      cx = std::min(cx, grid_cols - 1);
+      cy = std::min(cy, grid_rows - 1);
+      cells[cy * grid_cols + cx].push_back(i);
+    }
+
+    // Sort each cell by scale descending.
+    for (auto& cell : cells) {
+      std::sort(cell.begin(), cell.end(),
+                [&f](int a, int b) { return f.keypoints[a][2] > f.keypoints[b][2]; });
+    }
+
+    // Round-robin pick across cells until max_n is reached.
+    std::vector<int> result;
+    result.reserve(max_n);
+    std::vector<int> cell_pos(n_cells, 0);
+    int picked = 0;
+    while (picked < max_n) {
+      bool any = false;
+      for (int c = 0; c < n_cells && picked < max_n; ++c) {
+        if (cell_pos[c] < static_cast<int>(cells[c].size())) {
+          result.push_back(cells[c][cell_pos[c]++]);
+          ++picked;
+          any = true;
+        }
+      }
+      if (!any) break; // all cells exhausted
+    }
+    return result;
   };
 
   auto upload_descriptors = [&](int slot, const FeatureData& f, const std::vector<int>& idx) {
@@ -109,13 +163,15 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
   };
 
   int cap = options.max_features_per_image;
-  auto idx1 = top_n_by_scale(features1, cap);
-  auto idx2 = top_n_by_scale(features2, cap);
+  int grow = options.spatial_grid_rows > 0 ? options.spatial_grid_rows : 4;
+  int gcol = options.spatial_grid_cols > 0 ? options.spatial_grid_cols : 4;
+  auto idx1 = top_n_spatial(features1, cap, grow, gcol);
+  auto idx2 = top_n_spatial(features2, cap, grow, gcol);
   int n1 = static_cast<int>(idx1.size());
   int n2 = static_cast<int>(idx2.size());
 
-  VLOG(1) << "Uploading descriptors: " << n1 << "/" << features1.num_features << " and " << n2
-          << "/" << features2.num_features
+  VLOG(1) << "Uploading descriptors (spatial " << grow << "x" << gcol << " grid): " << n1 << "/"
+          << features1.num_features << " and " << n2 << "/" << features2.num_features
           << " (type=" << (features1.descriptor_type == DescriptorType::kFloat32 ? "f32" : "u8")
           << ")";
 

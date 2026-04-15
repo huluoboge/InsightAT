@@ -108,9 +108,17 @@ struct MatchOptions {
   bool mutual_best_match = true;
 
   // Maximum features per image uploaded to GPU (-1 = all).
-  // Features are selected by descending scale (largest = most distinctive).
-  // Strongly recommended: 4096 or less to keep GPU time < 20ms/pair.
+  // Features are selected via spatial grid stratification (see spatial_grid_rows/cols):
+  // the image is divided into a grid and each cell contributes features round-robin,
+  // ensuring uniform spatial coverage rather than concentrating on large-scale regions.
   int max_features_per_image = -1;
+
+  // Spatial stratification grid for feature subsampling.
+  // The image keypoint bounding box is divided into (grid_rows × grid_cols) cells;
+  // within each cell features are ranked by scale descending, then selected round-robin
+  // until max_features_per_image is reached.  Default 4×4.
+  int spatial_grid_rows = 4;
+  int spatial_grid_cols = 4;
 
   // Guided matching parameters (optional)
   bool use_guided_matching = false;

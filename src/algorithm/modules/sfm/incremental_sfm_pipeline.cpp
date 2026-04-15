@@ -3179,7 +3179,6 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                          .count()
                   << "ms";
       }
-
       // Invalidate score cache so choose_resection_candidates re-evaluates all images.
       resection_score_cache.invalidate_all();
 
@@ -3288,9 +3287,60 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     }
 
     if (new_registered_image_indices.empty()) {
-      LOG(INFO) << "  No images could be resected this iteration, stopping";
-      break;
+      // All candidates were found but every one failed PnP-RANSAC.
+      // Apply the same BA + kFullScan rescue as the "no candidates" path so that
+      // freshly registered cameras improve 3D coverage and unlock these images.
+      LOG(INFO) << "  [resection_fail] All " << resection_candidates.size()
+                << " candidate(s) failed PnP-RANSAC (iter=" << sfm_iter << ")";
+      if (no_candidate_consecutive >= kMaxNoCandidateRetries) {
+        LOG(INFO) << "  No progress after " << no_candidate_consecutive
+                  << " consecutive retry(s), stopping";
+        break;
+      }
+      ++no_candidate_consecutive;
+      LOG(INFO) << "  [resection_fail] retry " << no_candidate_consecutive << "/"
+                << kMaxNoCandidateRetries << ": running BA + kFullScan to rescue remaining images";
+
+      // ── Retry BA ─────────────────────────────────────────────────────────
+      double rmse_rescue = 0.0;
+      auto t_rescue_ba = Clock::now();
+      if (!run_ba_with_outlier_detection(
+              store_out, poses_R_out, poses_C_out, *registered_out, image_to_camera_index, cameras,
+              anchor_image, num_registered, opts, &rmse_rescue, static_cast<int>(*im1_ptr))) {
+        LOG(WARNING) << "  [resection_fail_retry] BA failed (RMSE=" << rmse_rescue << " px)";
+      } else {
+        LOG(INFO) << "  [resection_fail_retry] BA ok (RMSE=" << rmse_rescue << " px), "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                                           t_rescue_ba)
+                         .count()
+                  << "ms";
+      }
+
+      // ── Retry kFullScan triangulation (permissive angle) ─────────────────
+      {
+        auto t_rescue_fs = Clock::now();
+        IncrementalRetriangulationOptions fs_rescue;
+        fs_rescue.scope = RetriangulationScope::kFullScan;
+        fs_rescue.robust.min_tri_angle_deg = 0.5;  // rescue mode: permissive angle
+        fs_rescue.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
+        fs_rescue.full_scan_commit_reproj_px = opts.triangulation.commit_reproj_px;
+        fs_rescue.restore_strict_reproj_px = opts.triangulation.restore_reproj_px;
+        const int n_rescue_fs =
+            run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+                                image_to_camera_index, fs_rescue);
+        LOG(INFO) << "  [resection_fail_retry] kFullScan: score=" << n_rescue_fs
+                  << "  total_tri=" << count_tri_tracks() << "  "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                                           t_rescue_fs)
+                         .count()
+                  << "ms";
+      }
+
+      // Invalidate score cache so choose_resection_candidates re-evaluates all images.
+      resection_score_cache.invalidate_all();
+      continue;  // re-run choose_resection_candidates next iteration
     }
+    no_candidate_consecutive = 0;  // reset on successful resection
     double rmse = 0.0;
     // Scene normalization helper (shared between both branches).
     auto maybe_normalize = [&]() {
@@ -3532,6 +3582,84 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
                       image_to_camera_index, retri_opts_post);
   LOG(INFO) << "Post-final-BA retriangulation done. total_tri=" << count_tri_tracks();
+
+  // ── Diagnostic: report unregistered images ───────────────────────────────
+  // For each image that was never registered, log:
+  //   - 3D-2D match count (how many triangulated tracks it observes)
+  //   - All ViewGraph pairs it has, with both neighbors' registration status,
+  //     F/E/twoview quality so we can judge if the root cause is bad matches.
+  {
+    // Compute 3D-2D count for every image from TrackStore (raw obs scan).
+    // We use a minimal pass: for each unregistered image, count observations
+    // whose track has triangulated XYZ.
+    const int n_total = store_out->num_images();
+    std::vector<int> match_3d2d(static_cast<size_t>(n_total), 0);
+    {
+      const int n_tracks = static_cast<int>(store_out->num_tracks());
+      for (int t = 0; t < n_tracks; ++t) {
+        if (!store_out->is_track_valid(t) || !store_out->track_has_triangulated_xyz(t))
+          continue;
+        std::vector<Observation> obs;
+        store_out->get_track_observations(t, &obs);
+        for (const auto& o : obs) {
+          if (static_cast<int>(o.image_index) < n_total)
+            match_3d2d[o.image_index]++;
+        }
+      }
+    }
+
+    // Summarise unregistered images.
+    std::vector<int> unregistered_imgs;
+    for (int i = 0; i < n_total; ++i)
+      if (!(*registered_out)[static_cast<size_t>(i)])
+        unregistered_imgs.push_back(i);
+
+    if (unregistered_imgs.empty()) {
+      LOG(INFO) << "[unregistered_diag] All " << n_total << " images registered.";
+    } else {
+      LOG(INFO) << "[unregistered_diag] " << unregistered_imgs.size() << "/" << n_total
+                << " images NOT registered — investigating via ViewGraph pairs:";
+      for (int im : unregistered_imgs) {
+        LOG(INFO) << "  img=" << im << "  3d2d_obs=" << match_3d2d[static_cast<size_t>(im)];
+        // Scan ViewGraph for all pairs containing this image.
+        int n_pairs = 0;
+        int n_F_ok = 0, n_E_ok = 0, n_twoview_ok = 0, n_stable = 0;
+        int max_F_inliers = 0, max_valid_pts = 0;
+        for (size_t pi = 0; pi < view_graph.num_pairs(); ++pi) {
+          const PairGeoInfo& pg = view_graph.pair_at(pi);
+          const int other =
+              (static_cast<int>(pg.image1_index) == im) ? static_cast<int>(pg.image2_index)
+                                                        : (static_cast<int>(pg.image2_index) == im
+                                                               ? static_cast<int>(pg.image1_index)
+                                                               : -1);
+          if (other < 0)
+            continue;
+          ++n_pairs;
+          if (pg.F_ok) ++n_F_ok;
+          if (pg.E_ok) ++n_E_ok;
+          if (pg.twoview_ok) ++n_twoview_ok;
+          if (pg.stable) ++n_stable;
+          max_F_inliers = std::max(max_F_inliers, pg.F_inliers);
+          max_valid_pts = std::max(max_valid_pts, pg.num_valid_points);
+          const bool other_registered =
+              other < n_total && (*registered_out)[static_cast<size_t>(other)];
+          LOG(INFO) << "    pair(" << im << "," << other << ")"
+                    << "  F_ok=" << pg.F_ok << "  F_inliers=" << pg.F_inliers
+                    << "  E_ok=" << pg.E_ok << "  twoview_ok=" << pg.twoview_ok
+                    << "  stable=" << pg.stable
+                    << "  valid_pts=" << pg.num_valid_points
+                    << "  degenerate=" << pg.is_degenerate
+                    << "  other_registered=" << other_registered;
+        }
+        LOG(INFO) << "  img=" << im << "  summary: pairs=" << n_pairs
+                  << "  F_ok=" << n_F_ok << "  E_ok=" << n_E_ok
+                  << "  twoview_ok=" << n_twoview_ok << "  stable=" << n_stable
+                  << "  max_F_inliers=" << max_F_inliers
+                  << "  max_valid_pts=" << max_valid_pts;
+      }
+    }
+  }
+
   return true;
 }
 

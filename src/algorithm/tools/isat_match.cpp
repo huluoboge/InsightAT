@@ -350,7 +350,9 @@ int main(int argc, char* argv[]) {
   std::string feature_dir;
   float ratio_test = 0.8f;
   int max_matches = -1;
-  int max_features = 10000; // cap per image before GPU upload
+  int max_features = -1;   // -1 = keep all; positive = spatial grid cap
+  int grid_rows = 4;        // spatial stratification grid rows
+  int grid_cols = 4;        // spatial stratification grid cols
   int num_threads = 4;
 
   // Required arguments
@@ -367,8 +369,14 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, max_matches, "max-matches")
               .doc("Max matches per pair, -1=unlimited (default: -1)"));
   cmd.add(make_option(0, max_features, "max-features")
-              .doc("Max features per image uploaded to GPU; top-N selected by scale. "
-                   "-1=all (default: 4096). Reducing this cuts GPU time quadratically."));
+              .doc("Max features per image uploaded to GPU.  -1=all (default).  "
+                   "When a positive value is given, features are selected via spatial "
+                   "grid stratification (--grid-rows x --grid-cols cells, round-robin "
+                   "by scale) to ensure uniform spatial coverage."));
+  cmd.add(make_option(0, grid_rows, "grid-rows")
+              .doc("Spatial stratification grid rows (default: 4)"));
+  cmd.add(make_option(0, grid_cols, "grid-cols")
+              .doc("Spatial stratification grid cols (default: 4)"));
 
   // Performance options
   cmd.add(
@@ -414,7 +422,10 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  Feature dir: " << (feature_dir.empty() ? "(from pairs JSON)" : feature_dir);
   LOG(INFO) << "  Ratio test: " << ratio_test;
   LOG(INFO) << "  Max features/image: "
-            << (max_features > 0 ? std::to_string(max_features) : "unlimited");
+            << (max_features > 0 ? std::to_string(max_features) + " (spatial "
+                                       + std::to_string(grid_rows) + "x"
+                                       + std::to_string(grid_cols) + " grid)"
+                                 : "unlimited (all features)");
   LOG(INFO) << "  Max matches: " << (max_matches > 0 ? std::to_string(max_matches) : "unlimited");
   LOG(INFO) << "  CPU threads: " << num_threads;
   bool use_cuda_match = (match_backend == "cuda");
@@ -443,6 +454,9 @@ int main(int argc, char* argv[]) {
   MatchOptions match_options;
   match_options.ratio_test = ratio_test;
   match_options.max_matches = max_matches;
+  match_options.max_features_per_image = max_features;  // wire CLI value
+  match_options.spatial_grid_rows = grid_rows;
+  match_options.spatial_grid_cols = grid_cols;
   match_options.mutual_best_match = true;
 
   // Create pipeline stages
@@ -468,8 +482,10 @@ int main(int argc, char* argv[]) {
   });
 
   // Stage 2: GPU matching (single thread, GPU context requirement)
-  SiftMatcher matcher(max_matches > 0 ? max_matches : 10000,
-                      use_cuda_match); // Max 10000 features per image
+  // GPU buffer must cover the actual number of features uploaded.
+  // When cap is -1 (all features), use a large safe upper bound (32768 ≈ typical SIFT max).
+  int gpu_buf = max_features > 0 ? max_features : 32768;
+  SiftMatcher matcher(gpu_buf, use_cuda_match);
 
   if (!matcher.verify_context()) {
     LOG(FATAL) << "Failed to initialize SiftMatchGPU - OpenGL context error";
