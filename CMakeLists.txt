@@ -31,6 +31,9 @@ endif ()
 # INSIGHTAT build options
 # ==============================================================================
 option(INSIGHTAT_BUILD_SOFTWARES "Build softwares" OFF)
+option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" OFF)
+
+message(STATUS "Top-level: SIFTGPU_ENABLE_CUDA=${SIFTGPU_ENABLE_CUDA}")
 
 # Set build path
 set(EXECUTABLE_OUTPUT_PATH "${PROJECT_BINARY_DIR}")
@@ -164,6 +167,11 @@ find_package(Glew REQUIRED)
 include_directories(third_party)
 include_directories(third_party/PoseLib)
 include_directories(src)
+
+# Allow top-level control over whether SiftGPU builds with CUDA.
+# If you want to enable the CUDA backend for SiftGPU from the top-level
+# configure step, set `-DSIFTGPU_ENABLE_CUDA=ON` when running CMake.
+
 
 add_subdirectory(third_party)
 add_subdirectory(src)

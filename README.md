@@ -121,7 +121,14 @@ sudo apt install -y \
 ```bash
 git clone https://github.com/your-org/InsightAT.git
 cd InsightAT
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+# To control whether SiftGPU builds with the CUDA backend from the top-level
+# CMake configure step, pass the `SIFTGPU_ENABLE_CUDA` cache variable.
+# Enable CUDA backend:
+cmake -S . -B build -DSIFTGPU_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Disable CUDA backend (force GLSL/EGL-only build):
+cmake -S . -B build -DSIFTGPU_ENABLE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
