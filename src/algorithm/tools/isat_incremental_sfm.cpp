@@ -265,6 +265,8 @@ int main(int argc, char* argv[]) {
               .doc("Subsample to at most N cameras in Bundler output (default: all)"));
   cmd.add(make_switch(0, "fix-intrinsics")
               .doc("Keep camera intrinsics fixed (do not optimize in BA). "));
+  cmd.add(make_switch(0, "skip-2degree-tracks")
+              .doc("Skip stable 2-view tracks from global BA points (faster, experimental)."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -327,6 +329,10 @@ int main(int argc, char* argv[]) {
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
+  }
+  if (cmd.used("skip-2degree-tracks")) {
+    opts.global_ba.skip_2degree_tracks = true;
+    LOG(INFO) << "--skip-2degree-tracks: stable 2-view tracks will be excluded from global BA.";
   }
 
   // Per-iteration debug snapshots: write bundle.out + list.txt to debug_dir/iter_NNNN/

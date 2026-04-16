@@ -267,6 +267,21 @@ struct GlobalBAOptions {
   /// behaviour) until this many images are registered.  0 = disabled.  Improves stability when
   /// intrinsics are still converging in the first ~100 frames.
   int early_phase_max_cameras = 100;
+
+  // ── 2-degree track pruning in global BA ──────────────────────────────────────────────────────
+  /// If true, 2-view tracks (visible in exactly 2 registered images) whose both observing images
+  /// are already "stable" and whose parallax angle is good are excluded from BA points/obs.
+  /// They remain in TrackStore and are re-triangulated by the normal kFullScan pass after BA.
+  /// Default false (off) so existing behaviour is preserved until explicitly enabled.
+  bool skip_2degree_tracks = false;
+  /// Minimum sin²(parallax_angle) for a 2-degree track to qualify as skippable.
+  /// Tracks with S < threshold have weak geometry and are kept in BA.
+  /// sin²(1.8°)≈0.001  sin²(2.6°)≈0.002  sin²(3.1°)≈0.003
+  double skip_2degree_min_angle_score = 0.002;
+  /// An image is considered "stable" if it has at least this many valid triangulated observations.
+  int skip_2degree_min_stable_obs = 50;
+  /// An image is "stable" if at least this fraction of its observations have S ≥ min_angle_score.
+  double skip_2degree_stable_ratio = 0.5;
 };
 
 /// Median-based scene normalization (tracks + registered camera centres). Default 0 = off.

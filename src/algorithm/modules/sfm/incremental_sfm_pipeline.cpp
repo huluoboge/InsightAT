@@ -1310,12 +1310,87 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, TrackStore* store,
 // ─── BA: build from Store, write back ────────────────────────────────────────
 namespace {
 
+/// For each registered image, compute whether it has enough high-quality track support
+/// to allow 2-degree tracks to be skipped in global BA.
+/// S(track) = sin²(parallax_angle) computed from poses_C and track XYZ.
+/// Only 2-view tracks (exactly 2 registered observers) contribute variable S;
+/// higher-degree tracks always contribute S=1.0 (implicitly stable) to both their images.
+static std::vector<bool> compute_image_stability(
+    const TrackStore& store, const std::vector<Eigen::Vector3d>& poses_C,
+    const std::vector<bool>& registered, double min_angle_score, int min_stable_obs,
+    double stable_ratio) {
+  const int n = store.num_images();
+  std::vector<int> obs_count(static_cast<size_t>(n), 0);
+  std::vector<int> stable_count(static_cast<size_t>(n), 0);
+  std::vector<Observation> obs_buf;
+  for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
+    const int tid = static_cast<int>(ti);
+    if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+      continue;
+    obs_buf.clear();
+    store.get_track_observations(tid, &obs_buf);
+    // Collect registered observer image indices.
+    int reg_imgs[2];
+    int n_reg = 0;
+    for (const auto& o : obs_buf) {
+      const int im = static_cast<int>(o.image_index);
+      if (im >= 0 && im < n && registered[static_cast<size_t>(im)]) {
+        if (n_reg < 2)
+          reg_imgs[n_reg] = im;
+        ++n_reg;
+      }
+    }
+    if (n_reg == 0)
+      continue;
+    // Compute S = sin²(θ) only for 2-degree tracks; higher-degree tracks are always stable.
+    double S = 1.0;
+    if (n_reg == 2) {
+      float tx, ty, tz;
+      store.get_track_xyz(tid, &tx, &ty, &tz);
+      const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                              static_cast<double>(tz));
+      const Eigen::Vector3d r0 = (X - poses_C[static_cast<size_t>(reg_imgs[0])]).normalized();
+      const Eigen::Vector3d r1 = (X - poses_C[static_cast<size_t>(reg_imgs[1])]).normalized();
+      const double cos_a = std::max(-1.0, std::min(1.0, r0.dot(r1)));
+      const double sin_a = std::sqrt(1.0 - cos_a * cos_a);
+      S = sin_a * sin_a;
+    }
+    // Accumulate per-image stats (cap n_reg at actual array size for higher-degree tracks).
+    const int cap = std::min(n_reg, static_cast<int>(obs_buf.size()));
+    int counted = 0;
+    for (const auto& o : obs_buf) {
+      if (counted >= cap)
+        break;
+      const int im = static_cast<int>(o.image_index);
+      if (im >= 0 && im < n && registered[static_cast<size_t>(im)]) {
+        obs_count[static_cast<size_t>(im)]++;
+        if (S >= min_angle_score)
+          stable_count[static_cast<size_t>(im)]++;
+        ++counted;
+      }
+    }
+  }
+  std::vector<bool> stable(static_cast<size_t>(n), false);
+  for (int i = 0; i < n; ++i) {
+    if (!registered[static_cast<size_t>(i)])
+      continue;
+    const int oc = obs_count[static_cast<size_t>(i)];
+    stable[static_cast<size_t>(i)] =
+        (oc >= min_stable_obs) &&
+        (static_cast<double>(stable_count[static_cast<size_t>(i)]) / oc >= stable_ratio);
+  }
+  return stable;
+}
+
 bool build_ba_input_from_store(
     const TrackStore& store, const std::vector<Eigen::Matrix3d>& poses_R,
     const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
     const std::vector<int>& image_to_camera_index, const std::vector<camera::Intrinsics>& cameras,
     const std::vector<int>* image_subset, std::vector<int>* ba_image_index_to_global_out,
-    BAInput* ba_input_out, std::vector<int>* point_index_to_track_id_out) {
+    BAInput* ba_input_out, std::vector<int>* point_index_to_track_id_out,
+    const std::vector<bool>* skip_2deg_image_stable,  // nullptr = disabled
+    double skip_2deg_min_angle_score,
+    int* n_skipped_2deg_out) {
   if (!ba_input_out || !point_index_to_track_id_out || !ba_image_index_to_global_out)
     return false;
   const int n_images = store.num_images();
@@ -1381,6 +1456,40 @@ bool build_ba_input_from_store(
     }
     if (visible_in_ba < 2)
       continue;
+    // ── 2-degree track pruning: skip if both observing images are stable and geometry is good.
+    if (skip_2deg_image_stable && !skip_2deg_image_stable->empty() && visible_in_ba == 2) {
+      int im_a = -1, im_b = -1;
+      for (const auto& o : obs_buf) {
+        const int im = static_cast<int>(o.image_index);
+        if (ba_global_set.count(im)) {
+          if (im_a < 0)
+            im_a = im;
+          else
+            im_b = im;
+        }
+      }
+      if (im_a >= 0 && im_b >= 0 &&
+          static_cast<size_t>(im_a) < skip_2deg_image_stable->size() &&
+          static_cast<size_t>(im_b) < skip_2deg_image_stable->size() &&
+          (*skip_2deg_image_stable)[static_cast<size_t>(im_a)] &&
+          (*skip_2deg_image_stable)[static_cast<size_t>(im_b)]) {
+        float tx, ty, tz;
+        store.get_track_xyz(track_id, &tx, &ty, &tz);
+        const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                                static_cast<double>(tz));
+        const Eigen::Vector3d r0 =
+            (X - poses_C[static_cast<size_t>(im_a)]).normalized();
+        const Eigen::Vector3d r1 =
+            (X - poses_C[static_cast<size_t>(im_b)]).normalized();
+        const double cos_a = std::max(-1.0, std::min(1.0, r0.dot(r1)));
+        const double sin_a = std::sqrt(1.0 - cos_a * cos_a);
+        if (sin_a * sin_a >= skip_2deg_min_angle_score) {
+          if (n_skipped_2deg_out)
+            ++(*n_skipped_2deg_out);
+          continue;
+        }
+      }
+    }
     const int pt_idx = static_cast<int>(point_index_to_track_id_out->size());
     track_id_to_point_index[track_id] = pt_idx;
     point_index_to_track_id_out->push_back(track_id);
@@ -1651,7 +1760,9 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    int max_iterations, double* rmse_px_out, int anchor_image,
                    double focal_prior_weight, const BASolverOverrides& solver_overrides,
                    const std::vector<uint32_t>* partial_intr_fix_per_cam,
-                   int initial_pair_global_im1) {
+                   int initial_pair_global_im1,
+                   const std::vector<bool>* precomputed_image_stable,
+                   double skip_2deg_min_angle_score) {
   if (!store || !poses_R || !poses_C)
     return false;
   double initial_pair_baseline_m = 0.0;
@@ -1666,9 +1777,11 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   std::vector<int> ba_image_index_to_global;
   std::vector<int> point_index_to_track_id;
   BAInput ba_in;
+  int n_skipped_2deg = 0;
   if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered, image_to_camera_index,
                                  cameras, nullptr, &ba_image_index_to_global, &ba_in,
-                                 &point_index_to_track_id)) {
+                                 &point_index_to_track_id, precomputed_image_stable,
+                                 skip_2deg_min_angle_score, &n_skipped_2deg)) {
     CHECK(false) << "Failed to build BA input from store";
     return false;
   }
@@ -1752,7 +1865,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
     }
   }
   LOG(INFO) << "run_global_ba: " << ba_in.poses_R.size() << " images, " << ba_in.points3d.size()
-            << " points, " << ba_in.observations.size() << " obs, max_iter=" << max_iterations
+            << " points (" << n_skipped_2deg << " 2deg-skipped), "
+            << ba_in.observations.size() << " obs, max_iter=" << max_iterations
             << "  anchor_global_im=" << anchor_image << "  anchor_ba_idx=" << anchor_ba_idx
             << "  ba[0]_global_im=" << ba_image_index_to_global[0];
   BAResult ba_out;
@@ -1805,7 +1919,7 @@ bool run_local_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   BAInput ba_in;
   if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered, image_to_camera_index,
                                  cameras, nullptr, &ba_image_index_to_global, &ba_in,
-                                 &point_index_to_track_id))
+                                 &point_index_to_track_id, nullptr, 0.0, nullptr))
     return false;
   ba_in.optimize_intrinsics = false;
   for (size_t i = 0; i < ba_image_index_to_global.size(); ++i)
@@ -2681,7 +2795,7 @@ run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
       BAInput ba_in;
       if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered, image_to_camera_index,
                                      *cameras, nullptr, &ba_image_index_to_global, &ba_in,
-                                     &point_index_to_track_id))
+                                     &point_index_to_track_id, nullptr, 0.0, nullptr))
         break;
 
       // Fix all 3D points
@@ -2739,7 +2853,7 @@ run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
       BAInput ba_in;
       if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered, image_to_camera_index,
                                      *cameras, nullptr, &ba_image_index_to_global, &ba_in,
-                                     &point_index_to_track_id))
+                                     &point_index_to_track_id, nullptr, 0.0, nullptr))
         break;
 
       // Fix all poses
@@ -2801,6 +2915,22 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
   const bool do_reject = (num_registered >= opts.outlier.min_registered_images);
   int n_fine_rounds = 30;
 
+  // Precompute per-image stability for 2-degree track pruning once; reused across all fine rounds.
+  std::vector<bool> precomputed_image_stable_2deg;
+  if (opts.global_ba.skip_2degree_tracks) {
+    precomputed_image_stable_2deg = compute_image_stability(
+        *store, *poses_C, registered, opts.global_ba.skip_2degree_min_angle_score,
+        opts.global_ba.skip_2degree_min_stable_obs, opts.global_ba.skip_2degree_stable_ratio);
+    int n_stable = 0;
+    for (bool b : precomputed_image_stable_2deg)
+      if (b)
+        ++n_stable;
+    LOG(INFO) << "  [ba_outlier] 2deg-skip: " << n_stable << " / "
+              << precomputed_image_stable_2deg.size() << " images stable";
+  }
+  const std::vector<bool>* p_image_stable_2deg =
+      opts.global_ba.skip_2degree_tracks ? &precomputed_image_stable_2deg : nullptr;
+
   const auto run_one_ba = [&](BASolverOverrides ov) -> bool {
     auto t_ba = Clock::now();
     bool step_ok = false;
@@ -2809,7 +2939,8 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
     step_ok = run_global_ba(
         store, poses_R, poses_C, registered, image_to_camera_index, *cameras, cameras,
         opts.global_ba.optimize_intrinsics, opts.global_ba.max_iterations, &rmse, anchor_image,
-        opts.intrinsics.focal_prior_weight, ov, &per_cam_masks, initial_pair_im1_global);
+        opts.intrinsics.focal_prior_weight, ov, &per_cam_masks, initial_pair_im1_global,
+        p_image_stable_2deg, opts.global_ba.skip_2degree_min_angle_score);
     VLOG(1) << "[PERF] ba_outlier: "
             << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_ba).count()
             << "ms  RMSE=" << rmse << " px";
