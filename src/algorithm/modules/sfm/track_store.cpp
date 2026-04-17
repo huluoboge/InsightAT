@@ -75,6 +75,26 @@ bool TrackStore::track_has_triangulated_xyz(int track_id) const {
   return (track_flags_[static_cast<size_t>(track_id)] & track_flags::kHasTriangulated) != 0;
 }
 
+bool TrackStore::is_track_skip_ba(int track_id) const {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
+    return false;
+  return (track_flags_[static_cast<size_t>(track_id)] & track_flags::kSkipFromBA) != 0;
+}
+
+void TrackStore::set_track_skip_ba(int track_id, bool skip) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
+    return;
+  if (skip)
+    track_flags_[static_cast<size_t>(track_id)] |= track_flags::kSkipFromBA;
+  else
+    track_flags_[static_cast<size_t>(track_id)] &= static_cast<uint8_t>(~track_flags::kSkipFromBA);
+}
+
+void TrackStore::clear_all_skip_ba_flags() {
+  for (auto& f : track_flags_)
+    f &= static_cast<uint8_t>(~track_flags::kSkipFromBA);
+}
+
 void TrackStore::get_track_xyz(int track_id, float* x, float* y, float* z) const {
   assert(track_id >= 0 && static_cast<size_t>(track_id) < num_tracks());
   const size_t i = static_cast<size_t>(track_id) * 3u;

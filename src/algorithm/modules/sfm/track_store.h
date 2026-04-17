@@ -44,6 +44,10 @@ constexpr uint8_t kAlive = 1u << 0;
 constexpr uint8_t kNeedsRetriangulation = 1u << 1;
 constexpr uint8_t kHasTriangulated =
     1u << 2; ///< Track has valid 3D (set by set_track_xyz / triangulation).
+/// Set by select_ba_subset(): track is excluded from the BA point/obs set for this round.
+/// Persists across BA calls; cleared and recomputed every ba_grid_reselect_every_n calls.
+/// Does NOT affect triangulation, outlier rejection, or re-triangulation paths.
+constexpr uint8_t kSkipFromBA = 1u << 3;
 } // namespace track_flags
 
 namespace obs_flags {
@@ -104,6 +108,13 @@ public:
   void clear_track_xyz(int track_id);
   void set_track_retriangulation_flag(int track_id, bool value);
   bool track_needs_retriangulation(int track_id) const;
+
+  // ── BA subset selection flag (kSkipFromBA) ───────────────────────────────
+  bool is_track_skip_ba(int track_id) const;
+  void set_track_skip_ba(int track_id, bool skip);
+  /// Clear kSkipFromBA on ALL tracks (called before each select_ba_subset pass).
+  void clear_all_skip_ba_flags();
+
   /// Consume and return all track ids that had their retriangulation flag set.
   /// The caller should re-check is_track_valid() and track_needs_retriangulation()
   /// on each element to handle duplicates and already-cleared entries.

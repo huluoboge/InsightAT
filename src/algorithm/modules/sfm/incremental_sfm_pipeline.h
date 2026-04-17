@@ -282,6 +282,31 @@ struct GlobalBAOptions {
   int skip_2degree_min_stable_obs = 50;
   /// An image is "stable" if at least this fraction of its observations have S ≥ min_angle_score.
   double skip_2degree_stable_ratio = 0.5;
+
+  // ── Adaptive grid-NMS BA subset selection ────────────────────────────────────────────────────
+  /// Enable adaptive grid-NMS subset selection: per image, cells of adaptive size each keep the
+  /// highest-scoring track. Selected tracks enter BA; others get kSkipFromBA and are later
+  /// optimised by retri_skipped_tracks_fixed_pose (if enabled). Stacks with skip_2degree_tracks.
+  bool ba_grid_subset = false;
+  /// Target number of selected tracks per image. Adaptive cell size = sqrt(W*H/target).
+  /// 4000×3000 imagery: target=3000 → ~63 px cells; target=5000 → ~49 px cells.
+  int ba_grid_target_per_image = 3000;
+  /// Score weight for track degree: score = w_deg×clamp(deg/deg_cap,0,1) + w_score×S.
+  double ba_grid_w_degree = 0.6;
+  /// Score weight for geometric stability S = sin²(θ) (1.0 for degree≥3 tracks).
+  double ba_grid_w_score = 0.4;
+  /// Degree cap for score saturation (degree ≥ cap → full weight).
+  int ba_grid_degree_cap = 8;
+  /// Recompute the grid-NMS subset every N global-BA calls. 1 = always (safest). Increase to
+  /// amortise selection cost when quality is confirmed.
+  int ba_grid_reselect_every_n = 1;
+
+  // ── Fixed-pose point optimisation for kSkipFromBA tracks ─────────────────────────────────────
+  /// After global BA, run a Ceres solve that fixes ALL poses+intrinsics and only optimises the
+  /// 3D positions of kSkipFromBA tracks. Independent per-point → near-linear in thread count.
+  bool ba_fixed_pose_optimize_skipped = false;
+  /// Max Ceres iterations for the fixed-pose skipped-track solve.
+  int ba_fixed_pose_max_iterations = 30;
 };
 
 /// Median-based scene normalization (tracks + registered camera centres). Default 0 = off.

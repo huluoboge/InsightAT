@@ -250,6 +250,7 @@ int main(int argc, char* argv[]) {
   std::string debug_dir;
   int debug_interval = 1;
   int bundler_max_cameras = -1;
+  int ba_grid_target = 3000;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -267,6 +268,12 @@ int main(int argc, char* argv[]) {
               .doc("Keep camera intrinsics fixed (do not optimize in BA). "));
   cmd.add(make_switch(0, "skip-2degree-tracks")
               .doc("Skip stable 2-view tracks from global BA points (faster, experimental)."));
+  cmd.add(make_switch(0, "ba-grid-subset")
+              .doc("Grid-NMS BA subset: per image keep highest-scoring track per adaptive cell."));
+  cmd.add(make_option(0, ba_grid_target, "ba-grid-target")
+              .doc("Target BA tracks per image for grid-NMS (default 3000)."));
+  cmd.add(make_switch(0, "ba-fixed-pose-skip")
+              .doc("After global BA, run fixed-pose Ceres solve for skipped tracks."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -333,6 +340,16 @@ int main(int argc, char* argv[]) {
   if (cmd.used("skip-2degree-tracks")) {
     opts.global_ba.skip_2degree_tracks = true;
     LOG(INFO) << "--skip-2degree-tracks: stable 2-view tracks will be excluded from global BA.";
+  }
+  if (cmd.used("ba-grid-subset")) {
+    opts.global_ba.ba_grid_subset = true;
+    opts.global_ba.ba_grid_target_per_image = ba_grid_target;
+    LOG(INFO) << "--ba-grid-subset: adaptive grid-NMS subset enabled, target "
+              << opts.global_ba.ba_grid_target_per_image << " tracks/image.";
+  }
+  if (cmd.used("ba-fixed-pose-skip")) {
+    opts.global_ba.ba_fixed_pose_optimize_skipped = true;
+    LOG(INFO) << "--ba-fixed-pose-skip: fixed-pose point optimisation for skipped tracks enabled.";
   }
 
   // Per-iteration debug snapshots: write bundle.out + list.txt to debug_dir/iter_NNNN/
