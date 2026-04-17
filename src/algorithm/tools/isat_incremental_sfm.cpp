@@ -250,7 +250,7 @@ int main(int argc, char* argv[]) {
   std::string debug_dir;
   int debug_interval = 1;
   int bundler_max_cameras = -1;
-  int ba_grid_target = 3000;
+  int ba_grid_target = 1000;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -266,14 +266,17 @@ int main(int argc, char* argv[]) {
               .doc("Subsample to at most N cameras in Bundler output (default: all)"));
   cmd.add(make_switch(0, "fix-intrinsics")
               .doc("Keep camera intrinsics fixed (do not optimize in BA). "));
-  cmd.add(make_switch(0, "skip-2degree-tracks")
-              .doc("Skip stable 2-view tracks from global BA points (faster, experimental)."));
-  cmd.add(make_switch(0, "ba-grid-subset")
-              .doc("Grid-NMS BA subset: per image keep highest-scoring track per adaptive cell."));
+  int flag_skip_2deg = 1;
+  int flag_grid_subset = 1;
+  int flag_fixed_pose = 1;
+  cmd.add(make_option(0, flag_skip_2deg, "skip-2degree-tracks")
+              .doc("Skip stable 2-view tracks from global BA (1=on [default], 0=off)."));
+  cmd.add(make_option(0, flag_grid_subset, "ba-grid-subset")
+              .doc("Grid-NMS BA subset selection (1=on [default], 0=off)."));
   cmd.add(make_option(0, ba_grid_target, "ba-grid-target")
-              .doc("Target BA tracks per image for grid-NMS (default 3000)."));
-  cmd.add(make_switch(0, "ba-fixed-pose-skip")
-              .doc("After global BA, run fixed-pose Ceres solve for skipped tracks."));
+              .doc("Target BA tracks per image for grid-NMS (default 1000)."));
+  cmd.add(make_option(0, flag_fixed_pose, "ba-fixed-pose-skip")
+              .doc("Fixed-pose Ceres solve for skipped tracks after global BA (1=on [default], 0=off)."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -323,9 +326,14 @@ int main(int argc, char* argv[]) {
   opts.global_ba.max_iterations = 500;
   opts.global_ba.early_phase_max_cameras = 100;
   opts.global_ba.periodic_every_n_images = 50; // global BA every 50 registered cameras (was 100)
-  opts.global_ba.every_n_images = 3;//
+  opts.global_ba.every_n_images = 3;
   opts.global_ba.early_phase_global_only_images = 35;
   opts.global_ba.intermediate_loose_after_images = 31;
+  // ── Default-on optimisations (can be disabled via CLI --xxx 0) ─────────────
+  opts.global_ba.skip_2degree_tracks = true;
+  opts.global_ba.ba_grid_subset = true;
+  opts.global_ba.ba_grid_target_per_image = 1000;
+  opts.global_ba.ba_fixed_pose_optimize_skipped = true;
   opts.intrinsics.focal_prior_weight = 1.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
   // constant = top-K co-visible neighbors. Historical camera observations are NEVER deleted
@@ -340,20 +348,15 @@ int main(int argc, char* argv[]) {
     opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
   }
-  if (cmd.used("skip-2degree-tracks")) {
-    opts.global_ba.skip_2degree_tracks = true;
-    LOG(INFO) << "--skip-2degree-tracks: stable 2-view tracks will be excluded from global BA.";
-  }
-  if (cmd.used("ba-grid-subset")) {
-    opts.global_ba.ba_grid_subset = true;
-    opts.global_ba.ba_grid_target_per_image = ba_grid_target;
-    LOG(INFO) << "--ba-grid-subset: adaptive grid-NMS subset enabled, target "
-              << opts.global_ba.ba_grid_target_per_image << " tracks/image.";
-  }
-  if (cmd.used("ba-fixed-pose-skip")) {
-    opts.global_ba.ba_fixed_pose_optimize_skipped = true;
-    LOG(INFO) << "--ba-fixed-pose-skip: fixed-pose point optimisation for skipped tracks enabled.";
-  }
+  // Apply CLI overrides (default 1; pass 0 to disable).
+  opts.global_ba.skip_2degree_tracks       = (flag_skip_2deg  != 0);
+  opts.global_ba.ba_grid_subset            = (flag_grid_subset != 0);
+  opts.global_ba.ba_fixed_pose_optimize_skipped = (flag_fixed_pose != 0);
+  opts.global_ba.ba_grid_target_per_image  = ba_grid_target;
+  LOG(INFO) << "[opts] skip_2deg=" << opts.global_ba.skip_2degree_tracks
+            << " grid_subset=" << opts.global_ba.ba_grid_subset
+            << " grid_target=" << opts.global_ba.ba_grid_target_per_image
+            << " fixed_pose_skip=" << opts.global_ba.ba_fixed_pose_optimize_skipped;
 
   // Per-iteration debug snapshots: write bundle.out + list.txt to debug_dir/iter_NNNN/
   if (!debug_dir.empty()) {
