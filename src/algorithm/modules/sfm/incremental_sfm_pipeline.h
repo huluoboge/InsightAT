@@ -267,6 +267,11 @@ struct GlobalBAOptions {
   /// behaviour) until this many images are registered.  0 = disabled.  Improves stability when
   /// intrinsics are still converging in the first ~100 frames.
   int early_phase_max_cameras = 100;
+  /// Phase boundary: below this count, run global BA every registration (intrinsics unstable).
+  /// Above this (and below local_ba.switch_after_n_images), enter the mid-phase where global BA
+  /// fires every every_n_images registrations and local BA fills the gaps in between.
+  /// 0 = disabled (global-BA-only until switch_after_n_images).
+  int early_phase_global_only_images = 35;
 
   // ── 2-degree track pruning in global BA ──────────────────────────────────────────────────────
   /// If true, 2-view tracks (visible in exactly 2 registered images) whose both observing images
@@ -307,6 +312,18 @@ struct GlobalBAOptions {
   bool ba_fixed_pose_optimize_skipped = false;
   /// Max Ceres iterations for the fixed-pose skipped-track solve.
   int ba_fixed_pose_max_iterations = 30;
+
+  // ── Intermediate-round loose tolerances ──────────────────────────────────────────────────────
+  /// When the outlier-rejection fine loop runs round r>0, the pose is already established and we
+  /// only need to re-converge after deleting bad observations.  Once num_registered is large enough
+  /// (intrinsics stable), apply loose Ceres tolerances for these intermediate rounds so they exit
+  /// quickly.  Round r=0 always uses the full solver_overrides / Ceres defaults.
+  /// Set intermediate_loose_after_images=0 to disable.
+  int intermediate_loose_after_images = 31; ///< Gate: only apply loose tolerances above this count.
+  /// function_tolerance for intermediate rounds (r>0). 0.0 = use Ceres default (1e-6).
+  double intermediate_function_tolerance = 1e-4;
+  /// Max iterations cap for intermediate rounds (r>0). 0 = use max_iterations.
+  int intermediate_max_iterations = 20;
 };
 
 /// Median-based scene normalization (tracks + registered camera centres). Default 0 = off.

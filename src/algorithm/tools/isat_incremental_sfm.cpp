@@ -323,6 +323,9 @@ int main(int argc, char* argv[]) {
   opts.global_ba.max_iterations = 500;
   opts.global_ba.early_phase_max_cameras = 100;
   opts.global_ba.periodic_every_n_images = 50; // global BA every 50 registered cameras (was 100)
+  opts.global_ba.every_n_images = 3;//
+  opts.global_ba.early_phase_global_only_images = 35;
+  opts.global_ba.intermediate_loose_after_images = 31;
   opts.intrinsics.focal_prior_weight = 1.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
   // constant = top-K co-visible neighbors. Historical camera observations are NEVER deleted

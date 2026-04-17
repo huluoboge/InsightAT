@@ -3311,6 +3311,10 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
   // }
 
   // ── Phase 2: fine BA + MAD reproj + angle rejection (uses call.optimize_intrinsics) ────
+  const bool intermediate_loose_enabled =
+      opts.global_ba.intermediate_loose_after_images > 0 &&
+      num_registered >= opts.global_ba.intermediate_loose_after_images &&
+      opts.global_ba.intermediate_function_tolerance > 0.0;
   for (int r = 0; r < n_fine_rounds; ++r) {
     BASolverOverrides ov = opts.global_ba.solver_overrides;
     huber_delta_from_residuals(&ov);
@@ -3323,6 +3327,15 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
       ov.parameter_tolerance = g.parameter_tolerance;
     if (ov.max_num_iterations == 0)
       ov.max_num_iterations = opts.global_ba.max_iterations;
+    // Intermediate rounds (r>0): pose already established, just re-converge after outlier removal.
+    // Apply loose tolerances to exit quickly; only when intrinsics are mature enough.
+    if (r > 0 && intermediate_loose_enabled) {
+      ov.function_tolerance =
+          std::max(ov.function_tolerance, opts.global_ba.intermediate_function_tolerance);
+      if (opts.global_ba.intermediate_max_iterations > 0)
+        ov.max_num_iterations =
+            std::min(ov.max_num_iterations, opts.global_ba.intermediate_max_iterations);
+    }
     ok = run_one_ba(ov);
     if (!ok) {
       double min_deg_angle = 1.5;
@@ -3668,8 +3681,29 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   has_candidates:
     // Determine whether to use local BA for this iteration BEFORE the resection loop,
     // because local BA mode processes one image at a time (breaks after first success).
-    const bool use_local_ba =
-        opts.local_ba.enable && num_registered >= opts.local_ba.switch_after_n_images;
+    //
+    // Three-phase progressive BA strategy:
+    //   Phase 1 (< early_phase_global_only_images): global BA every registration.
+    //   Phase 2 [early_phase_global_only_images, switch_after_n_images): mid-phase; run global BA
+    //     every every_n_images registrations, local BA in between (every_n_images-1 local BAs
+    //     per global BA cycle).  every_n_images=1 collapses to global-BA-every-time.
+    //   Phase 3 (>= switch_after_n_images): existing local-BA-per-iter + periodic global BA.
+    const int early_end = opts.global_ba.early_phase_global_only_images;
+    const int mid_end = opts.local_ba.switch_after_n_images;
+    const bool in_late_phase = opts.local_ba.enable && num_registered >= mid_end;
+    const bool in_mid_phase = opts.local_ba.enable && early_end > 0 &&
+                              num_registered >= early_end && num_registered < mid_end;
+    bool use_local_ba = false;
+    if (in_late_phase) {
+      use_local_ba = true;
+    } else if (in_mid_phase) {
+      const int n = std::max(1, opts.global_ba.every_n_images);
+      // Global BA on the n-th registration of each cycle; local BA on the rest.
+      use_local_ba = ((num_registered - early_end) % n != n - 1);
+    }
+    VLOG(1) << "  [ba_phase] n_reg=" << num_registered
+            << (in_late_phase ? " late" : in_mid_phase ? " mid" : " early")
+            << " use_local=" << use_local_ba;
 
     auto t_resect0 = Clock::now();
     // Accumulate new track IDs across all successful resections in this SfM iteration
