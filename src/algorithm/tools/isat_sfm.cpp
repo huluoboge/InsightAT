@@ -21,7 +21,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <sstream>
@@ -38,10 +40,45 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Log-file sink: duplicate isat_sfm's own glog output to a file
+// ─────────────────────────────────────────────────────────────────────────────
+
+class FileSink : public google::LogSink {
+public:
+  explicit FileSink(const std::string& path) {
+    f_ = fopen(path.c_str(), "a");
+    if (!f_) fprintf(stderr, "[isat_sfm] WARNING: cannot open log file: %s\n", path.c_str());
+  }
+  ~FileSink() override { if (f_) fclose(f_); }
+  bool ok() const { return f_ != nullptr; }
+  void send(google::LogSeverity sev, const char* /*full_filename*/,
+            const char* base_filename, int line,
+            const struct ::tm* tm_time, const char* message,
+            size_t message_len) override {
+    if (!f_) return;
+    static const char kCodes[] = "IWEF";
+    char ts[24];
+    strftime(ts, sizeof(ts), "%m%d %H:%M:%S", tm_time);
+    fprintf(f_, "%c%s %s:%d] %.*s\n",
+            kCodes[std::min((int)sev, 3)], ts,
+            base_filename, line, (int)message_len, message);
+    fflush(f_);
+  }
+private:
+  FILE* f_ = nullptr;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Subprocess helper
 // ─────────────────────────────────────────────────────────────────────────────
 
 static std::string g_bin_dir;
+
+/// Path of the shared pipeline log file (empty = no file logging).
+static std::string g_log_file;
+
+/// Verbosity flags to forward to every child process (e.g. {"-v"} or {"--log-level","debug"}).
+static std::vector<std::string> g_verbosity_args;
 
 static std::string tool_path(const std::string& name) {
   fs::path p = fs::path(g_bin_dir) / name;
@@ -69,11 +106,21 @@ static std::string build_cmd(const std::vector<std::string>& args) {
   return cmd;
 }
 
-/// Run subprocess, stream output to console. Returns exit code.
+/// Append g_verbosity_args to an args list.
+static std::vector<std::string> with_verbosity(std::vector<std::string> args) {
+  for (const auto& a : g_verbosity_args) args.push_back(a);
+  return args;
+}
+
+/// Run subprocess, stream output to console (and to g_log_file when set). Returns exit code.
 static int run(const std::vector<std::string>& args) {
-  std::string cmd = build_cmd(args);
+  auto full_args = with_verbosity(args);
+  std::string cmd = build_cmd(full_args);
   LOG(INFO) << "RUN: " << cmd;
-  int rc = std::system(cmd.c_str());
+  std::string shell_cmd = cmd;
+  if (!g_log_file.empty())
+    shell_cmd += " >> \"" + g_log_file + "\" 2>&1";
+  int rc = std::system(shell_cmd.c_str());
 #ifdef _WIN32
   return rc;
 #else
@@ -81,33 +128,33 @@ static int run(const std::vector<std::string>& args) {
 #endif
 }
 
-/// Run subprocess, capture stdout lines, parse ISAT_EVENT JSON. Returns exit code.
-/// Captured events are appended to `events`. Stderr still goes to console.
+/// Run subprocess, capture stdout+stderr lines, parse ISAT_EVENT JSON. Returns exit code.
+/// Captured events are appended to `events`. Lines echoed to stderr + g_log_file.
 static int run_capture(const std::vector<std::string>& args, std::vector<json>& events) {
-  // Redirect stdout to pipe, keep stderr on console
-  std::string cmd = build_cmd(args) + " 2>&1";
-  LOG(INFO) << "RUN: " << build_cmd(args);
+  auto full_args = with_verbosity(args);
+  std::string cmd = build_cmd(full_args) + " 2>&1";
+  LOG(INFO) << "RUN: " << build_cmd(full_args);
   FILE* pipe = popen(cmd.c_str(), "r");
   if (!pipe) {
     LOG(ERROR) << "popen failed";
     return 1;
   }
+  // Open log file for appending captured output
+  FILE* lf = nullptr;
+  if (!g_log_file.empty()) lf = fopen(g_log_file.c_str(), "a");
   char buf[4096];
   static const std::string prefix = "ISAT_EVENT ";
   while (fgets(buf, sizeof(buf), pipe)) {
     std::string line(buf);
-    // Remove trailing newline
     while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
       line.pop_back();
-    // Parse ISAT_EVENT lines
     if (line.compare(0, prefix.size(), prefix) == 0) {
-      try {
-        events.push_back(json::parse(line.substr(prefix.size())));
-      } catch (...) {}
+      try { events.push_back(json::parse(line.substr(prefix.size()))); } catch (...) {}
     }
-    // Echo everything to stderr so user sees output
     std::cerr << line << "\n";
+    if (lf) { fprintf(lf, "%s\n", line.c_str()); fflush(lf); }
   }
+  if (lf) fclose(lf);
   int status = pclose(pipe);
 #ifdef _WIN32
   return status;
@@ -254,9 +301,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, max_sample, "max-sample").doc("Max images sampled for focal estimation (default: 5)"));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Hold camera intrinsics fixed during BA"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
-  cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
-  cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
+  cmd.add(make_switch('v', "verbose").doc("Verbose (INFO); also forwarded to all sub-tools"));
+  cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only); also forwarded to all sub-tools"));
   cmd.add(make_switch('h', "help").doc("Show help"));
+  cmd.add(make_switch(0, "no-log-file").doc("Disable automatic log file in <work-dir>/logs/"));
 
   try { cmd.process(argc, argv); }
   catch (const std::string& s) {
@@ -272,6 +320,37 @@ int main(int argc, char* argv[]) {
   }
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   bool fix_intrinsics = cmd.used("fix-intrinsics");
+
+  // ── Build verbosity args to forward to all sub-tools ────────────────────
+  if (cmd.used('v')) g_verbosity_args.push_back("-v");
+  else if (cmd.used('q')) g_verbosity_args.push_back("-q");
+  else if (!log_level.empty()) { g_verbosity_args.push_back("--log-level"); g_verbosity_args.push_back(log_level); }
+
+  // ── Set up dated log file in <work-dir>/logs/ ────────────────────────────
+  if (!cmd.used("no-log-file")) {
+    std::string wd = work_dir;
+    while (!wd.empty() && (wd.back() == '/' || wd.back() == '\\')) wd.pop_back();
+    fs::path logs_dir = fs::absolute(wd) / "logs";
+    fs::create_directories(logs_dir);
+    // Generate filename: sfm_YYYYMMDD_HHMMSS.log
+    {
+      std::time_t now = std::time(nullptr);
+      std::tm* lt = std::localtime(&now);
+      char ts[32];
+      std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", lt);
+      g_log_file = (logs_dir / (std::string("sfm_") + ts + ".log")).string();
+    }
+    // Add sink so isat_sfm's own glog lines also appear in the file
+    static FileSink* s_sink = nullptr;
+    s_sink = new FileSink(g_log_file);  // lives for process lifetime
+    if (s_sink->ok()) {
+      google::AddLogSink(s_sink);
+      LOG(INFO) << "Pipeline log file: " << g_log_file;
+    } else {
+      delete s_sink; s_sink = nullptr;
+      g_log_file.clear();
+    }
+  }
 
   // Normalize extensions: "JPG" → ".jpg", "tif" → ".tif", etc.
   ext = normalize_exts(ext);
@@ -426,7 +505,7 @@ int main(int argc, char* argv[]) {
     run_or_die("retrieval-match",
       {tool_path("isat_retrieval_match"),
        "-l", images_all.string(),
-       "-f", feat_dir.string(),
+       "-f", feat_ret_dir.string(),   // low-res retrieval features, NOT full-res feat_dir
        "-w", retrieval_work.string(),
        "-o", pairs_retrieve.string(),
        "--match-backend", match_backend,
