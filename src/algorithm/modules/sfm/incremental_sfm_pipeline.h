@@ -198,9 +198,13 @@ struct ResectionOptions {
 /// to run_global_ba().  It supersedes the old intrinsics_k3p12_free_min_images field.
 struct IntrinsicsSchedule {
   // ── Phase unlock thresholds ───────────────────────────────────────────────
-  int phase1_min_images = 1;   ///< Start optimising fx/fy.
+  //[1,phase1_min_images): fix all
+  //[phase1_min_images, phase2_min_images): refine fx/fy
+  //[phase2_min_images, phase3_min_images): refine fx/fy + k1/k2
+  //[phase3_min_images, ∞): refine all (cx/cy, k3, p1, p2)
+  int phase1_min_images = 3;   ///< Start optimising fx/fy.
   int phase2_min_images = 10;  ///< Also unlock k1/k2.
-  int phase3_min_images = 100; ///< Unlock cx/cy + k3/p1/p2 (full intrinsics).
+  int phase3_min_images = 50; ///< Unlock cx/cy + k3/p1/p2 (full intrinsics).
 
   // ── Progressive freeze (per-camera “frozen intrinsics” for Schur / BA); off by default ─────
   bool progressive_freeze = false;

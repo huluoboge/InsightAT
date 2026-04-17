@@ -328,7 +328,7 @@ int main(int argc, char* argv[]) {
   opts.global_ba.periodic_every_n_images = 50; // global BA every 50 registered cameras (was 100)
   opts.global_ba.every_n_images = 3;
   opts.global_ba.early_phase_global_only_images = 35;
-  opts.global_ba.intermediate_loose_after_images = 31;
+  opts.global_ba.intermediate_loose_after_images = 60; // must be > early_phase to avoid loose BA before intrinsics stabilise
   // ── Default-on optimisations (can be disabled via CLI --xxx 0) ─────────────
   opts.global_ba.skip_2degree_tracks = true;
   opts.global_ba.ba_grid_subset = true;

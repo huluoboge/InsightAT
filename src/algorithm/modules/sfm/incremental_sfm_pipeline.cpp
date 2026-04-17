@@ -43,14 +43,14 @@ namespace sfm {
 uint32_t IntrinsicsSchedule::fix_mask_for(int n_registered) const {
   using M = FixIntrinsicsMask;
   // Phase 0: too few images — freeze everything
-  if (n_registered < 5)
+  if (n_registered < phase1_min_images)
     return static_cast<uint32_t>(M::kFixIntrAll);
   // Phase 1: only fx/fy free; fix sigma, cx, cy, all distortion
-  if (n_registered < 10)
+  if (n_registered < phase2_min_images)
     return static_cast<uint32_t>(M::kFixIntrSigma | M::kFixIntrCx | M::kFixIntrCy | M::kFixIntrK1 |
                                  M::kFixIntrK2 | M::kFixIntrK3 | M::kFixIntrP1 | M::kFixIntrP2);
   // Phase 2: fx/fy + k1/k2 free; fix sigma, cx, cy, k3, p1, p2
-  if (n_registered < 30)
+  if (n_registered < phase3_min_images)
     return static_cast<uint32_t>(M::kFixIntrSigma | M::kFixIntrCx | M::kFixIntrCy | M::kFixIntrK3 |
                                  M::kFixIntrP1 | M::kFixIntrP2);
   // Phase 3: all intrinsics free
@@ -1315,10 +1315,11 @@ namespace {
 /// S(track) = sin²(parallax_angle) computed from poses_C and track XYZ.
 /// Only 2-view tracks (exactly 2 registered observers) contribute variable S;
 /// higher-degree tracks always contribute S=1.0 (implicitly stable) to both their images.
-static std::vector<bool> compute_image_stability(
-    const TrackStore& store, const std::vector<Eigen::Vector3d>& poses_C,
-    const std::vector<bool>& registered, double min_angle_score, int min_stable_obs,
-    double stable_ratio) {
+static std::vector<bool> compute_image_stability(const TrackStore& store,
+                                                 const std::vector<Eigen::Vector3d>& poses_C,
+                                                 const std::vector<bool>& registered,
+                                                 double min_angle_score, int min_stable_obs,
+                                                 double stable_ratio) {
   const int n = store.num_images();
   std::vector<int> obs_count(static_cast<size_t>(n), 0);
   std::vector<int> stable_count(static_cast<size_t>(n), 0);
@@ -1393,12 +1394,11 @@ static std::vector<bool> compute_image_stability(
 ///
 /// Track score = w_deg × clamp(deg/deg_cap, 0, 1)  +  w_score × S(track)
 ///   S=sin²(parallax_angle) for degree-2 tracks; S=1.0 for degree≥3.
-static void select_ba_subset(const TrackStore& store,
-                              const std::vector<Eigen::Vector3d>& poses_C,
-                              const std::vector<bool>& registered,
-                              const std::vector<int>& image_to_camera_index,
-                              const std::vector<camera::Intrinsics>& cameras,
-                              const GlobalBAOptions& opts, TrackStore* store_mut) {
+static void select_ba_subset(const TrackStore& store, const std::vector<Eigen::Vector3d>& poses_C,
+                             const std::vector<bool>& registered,
+                             const std::vector<int>& image_to_camera_index,
+                             const std::vector<camera::Intrinsics>& cameras,
+                             const GlobalBAOptions& opts, TrackStore* store_mut) {
   if (!store_mut)
     return;
   const int n_images = store.num_images();
@@ -1418,8 +1418,10 @@ static void select_ba_subset(const TrackStore& store,
     for (const auto& o : obs_buf) {
       const int im = static_cast<int>(o.image_index);
       if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)]) {
-        if (deg == 0) reg_im0 = im;
-        if (deg == 1) reg_im1 = im;
+        if (deg == 0)
+          reg_im0 = im;
+        if (deg == 1)
+          reg_im1 = im;
         ++deg;
       }
     }
@@ -1428,7 +1430,7 @@ static void select_ba_subset(const TrackStore& store,
       float tx, ty, tz;
       store.get_track_xyz(tid, &tx, &ty, &tz);
       const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
-                               static_cast<double>(tz));
+                              static_cast<double>(tz));
       const Eigen::Vector3d r0 = (X - poses_C[static_cast<size_t>(reg_im0)]).normalized();
       const Eigen::Vector3d r1 = (X - poses_C[static_cast<size_t>(reg_im1)]).normalized();
       const double cos_a = std::max(-1.0, std::min(1.0, r0.dot(r1)));
@@ -1459,8 +1461,10 @@ static void select_ba_subset(const TrackStore& store,
     if (cam_idx >= 0 && cam_idx < static_cast<int>(cameras.size())) {
       W = cameras[static_cast<size_t>(cam_idx)].width;
       H = cameras[static_cast<size_t>(cam_idx)].height;
-      if (W <= 0) W = static_cast<int>(cameras[static_cast<size_t>(cam_idx)].cx * 2.0);
-      if (H <= 0) H = static_cast<int>(cameras[static_cast<size_t>(cam_idx)].cy * 2.0);
+      if (W <= 0)
+        W = static_cast<int>(cameras[static_cast<size_t>(cam_idx)].cx * 2.0);
+      if (H <= 0)
+        H = static_cast<int>(cameras[static_cast<size_t>(cam_idx)].cy * 2.0);
     }
 
     track_ids_im.clear();
@@ -1527,10 +1531,11 @@ static void select_ba_subset(const TrackStore& store,
     }
   }
   LOG(INFO) << "  [ba_grid] select_ba_subset: " << selected.size() << " in BA, " << n_skip
-            << " marked kSkipFromBA  (target/img=" << target << "  gridsize≈" << std::max(1,
-            static_cast<int>(std::ceil(std::sqrt(
-                static_cast<double>(std::max(1, cameras.empty() ? 1 : cameras[0].width)) *
-                std::max(1, cameras.empty() ? 1 : cameras[0].height) / target))))
+            << " marked kSkipFromBA  (target/img=" << target << "  gridsize≈"
+            << std::max(
+                   1, static_cast<int>(std::ceil(std::sqrt(
+                          static_cast<double>(std::max(1, cameras.empty() ? 1 : cameras[0].width)) *
+                          std::max(1, cameras.empty() ? 1 : cameras[0].height) / target))))
             << "px)";
 }
 
@@ -1543,9 +1548,8 @@ static void select_ba_subset(const TrackStore& store,
 static bool build_ba_input_skipped_tracks_fixed_pose(
     const TrackStore& store, const std::vector<Eigen::Matrix3d>& poses_R,
     const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
-    const std::vector<int>& image_to_camera_index,
-    const std::vector<camera::Intrinsics>& cameras, BAInput* ba_input_out,
-    std::vector<int>* ba_image_index_to_global_out,
+    const std::vector<int>& image_to_camera_index, const std::vector<camera::Intrinsics>& cameras,
+    BAInput* ba_input_out, std::vector<int>* ba_image_index_to_global_out,
     std::vector<int>* point_index_to_track_id_out) {
   if (!ba_input_out || !ba_image_index_to_global_out || !point_index_to_track_id_out)
     return false;
@@ -1604,13 +1608,12 @@ static bool build_ba_input_skipped_tracks_fixed_pose(
     ba.poses_R.push_back(poses_R[static_cast<size_t>(g)]);
     ba.poses_C.push_back(poses_C[static_cast<size_t>(g)]);
     const int ci = image_to_camera_index[static_cast<size_t>(g)];
-    ba.image_camera_index.push_back(
-        ci >= 0 && ci < static_cast<int>(cameras.size()) ? ci : 0);
+    ba.image_camera_index.push_back(ci >= 0 && ci < static_cast<int>(cameras.size()) ? ci : 0);
   }
   // Fix ALL poses and intrinsics.
   ba.fix_pose.assign(global_indices.size(), true);
   ba.fix_intrinsics_flags.assign(cameras.size(),
-                                  static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
+                                 static_cast<uint32_t>(FixIntrinsicsMask::kFixIntrAll));
   ba.optimize_intrinsics = false;
 
   point_index_to_track_id_out->clear();
@@ -1618,7 +1621,7 @@ static bool build_ba_input_skipped_tracks_fixed_pose(
     const int pt_idx = static_cast<int>(point_index_to_track_id_out->size());
     point_index_to_track_id_out->push_back(e.track_id);
     ba.points3d.emplace_back(static_cast<double>(e.x), static_cast<double>(e.y),
-                              static_cast<double>(e.z));
+                             static_cast<double>(e.z));
     for (const auto& [g, o] : e.obs) {
       auto it = g2ba.find(g);
       if (it == g2ba.end())
@@ -1636,18 +1639,19 @@ static bool build_ba_input_skipped_tracks_fixed_pose(
 /// Run a fixed-pose Ceres solve for all kSkipFromBA tracks.
 /// Poses + intrinsics are frozen; only 3D point positions are optimised.
 /// Writes back updated XYZ to the store. Returns false if nothing to optimise.
-static bool retri_skipped_tracks_fixed_pose(
-    TrackStore* store, const std::vector<Eigen::Matrix3d>& poses_R,
-    const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
-    const std::vector<int>& image_to_camera_index,
-    const std::vector<camera::Intrinsics>& cameras, int max_iterations, double* rmse_px_out) {
+static bool retri_skipped_tracks_fixed_pose(TrackStore* store,
+                                            const std::vector<Eigen::Matrix3d>& poses_R,
+                                            const std::vector<Eigen::Vector3d>& poses_C,
+                                            const std::vector<bool>& registered,
+                                            const std::vector<int>& image_to_camera_index,
+                                            const std::vector<camera::Intrinsics>& cameras,
+                                            int max_iterations, double* rmse_px_out) {
   BAInput ba_in;
   std::vector<int> ba_image_index_to_global;
   std::vector<int> point_index_to_track_id;
-  if (!build_ba_input_skipped_tracks_fixed_pose(*store, poses_R, poses_C, registered,
-                                                 image_to_camera_index, cameras, &ba_in,
-                                                 &ba_image_index_to_global,
-                                                 &point_index_to_track_id))
+  if (!build_ba_input_skipped_tracks_fixed_pose(
+          *store, poses_R, poses_C, registered, image_to_camera_index, cameras, &ba_in,
+          &ba_image_index_to_global, &point_index_to_track_id))
     return false;
   LOG(INFO) << "retri_skipped_tracks_fixed_pose: " << ba_in.poses_R.size() << " images, "
             << ba_in.points3d.size() << " skipped points, " << ba_in.observations.size() << " obs";
@@ -1676,10 +1680,9 @@ bool build_ba_input_from_store(
     const std::vector<int>& image_to_camera_index, const std::vector<camera::Intrinsics>& cameras,
     const std::vector<int>* image_subset, std::vector<int>* ba_image_index_to_global_out,
     BAInput* ba_input_out, std::vector<int>* point_index_to_track_id_out,
-    const std::vector<bool>* skip_2deg_image_stable,  // nullptr = disabled
-    double skip_2deg_min_angle_score,
-    int* n_skipped_2deg_out,
-    int* n_skipped_grid_out) {  // nullptr = don't report grid-skip count
+    const std::vector<bool>* skip_2deg_image_stable, // nullptr = disabled
+    double skip_2deg_min_angle_score, int* n_skipped_2deg_out,
+    int* n_skipped_grid_out) { // nullptr = don't report grid-skip count
   if (!ba_input_out || !point_index_to_track_id_out || !ba_image_index_to_global_out)
     return false;
   const int n_images = store.num_images();
@@ -1763,8 +1766,7 @@ bool build_ba_input_from_store(
             im_b = im;
         }
       }
-      if (im_a >= 0 && im_b >= 0 &&
-          static_cast<size_t>(im_a) < skip_2deg_image_stable->size() &&
+      if (im_a >= 0 && im_b >= 0 && static_cast<size_t>(im_a) < skip_2deg_image_stable->size() &&
           static_cast<size_t>(im_b) < skip_2deg_image_stable->size() &&
           (*skip_2deg_image_stable)[static_cast<size_t>(im_a)] &&
           (*skip_2deg_image_stable)[static_cast<size_t>(im_b)]) {
@@ -1772,10 +1774,8 @@ bool build_ba_input_from_store(
         store.get_track_xyz(track_id, &tx, &ty, &tz);
         const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
                                 static_cast<double>(tz));
-        const Eigen::Vector3d r0 =
-            (X - poses_C[static_cast<size_t>(im_a)]).normalized();
-        const Eigen::Vector3d r1 =
-            (X - poses_C[static_cast<size_t>(im_b)]).normalized();
+        const Eigen::Vector3d r0 = (X - poses_C[static_cast<size_t>(im_a)]).normalized();
+        const Eigen::Vector3d r1 = (X - poses_C[static_cast<size_t>(im_b)]).normalized();
         const double cos_a = std::max(-1.0, std::min(1.0, r0.dot(r1)));
         const double sin_a = std::sqrt(1.0 - cos_a * cos_a);
         if (sin_a * sin_a >= skip_2deg_min_angle_score) {
@@ -2055,8 +2055,7 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    int max_iterations, double* rmse_px_out, int anchor_image,
                    double focal_prior_weight, const BASolverOverrides& solver_overrides,
                    const std::vector<uint32_t>* partial_intr_fix_per_cam,
-                   int initial_pair_global_im1,
-                   const std::vector<bool>* precomputed_image_stable,
+                   int initial_pair_global_im1, const std::vector<bool>* precomputed_image_stable,
                    double skip_2deg_min_angle_score) {
   if (!store || !poses_R || !poses_C)
     return false;
@@ -3448,9 +3447,9 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
   if (ok && opts.global_ba.ba_fixed_pose_optimize_skipped &&
       (opts.global_ba.ba_grid_subset || opts.global_ba.skip_2degree_tracks)) {
     double skip_rmse = 0.0;
-    retri_skipped_tracks_fixed_pose(store, *poses_R, *poses_C, registered,
-                                     image_to_camera_index, *cameras,
-                                     opts.global_ba.ba_fixed_pose_max_iterations, &skip_rmse);
+    retri_skipped_tracks_fixed_pose(store, *poses_R, *poses_C, registered, image_to_camera_index,
+                                    *cameras, opts.global_ba.ba_fixed_pose_max_iterations,
+                                    &skip_rmse);
   }
 
   return ok;
@@ -3702,7 +3701,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       use_local_ba = ((num_registered - early_end) % n != n - 1);
     }
     VLOG(1) << "  [ba_phase] n_reg=" << num_registered
-            << (in_late_phase ? " late" : in_mid_phase ? " mid" : " early")
+            << (in_late_phase  ? " late"
+                : in_mid_phase ? " mid"
+                               : " early")
             << " use_local=" << use_local_ba;
 
     auto t_resect0 = Clock::now();
@@ -3807,7 +3808,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         auto t_rescue_fs = Clock::now();
         IncrementalRetriangulationOptions fs_rescue;
         fs_rescue.scope = RetriangulationScope::kFullScan;
-        fs_rescue.robust.min_tri_angle_deg = 0.5;  // rescue mode: permissive angle
+        fs_rescue.robust.min_tri_angle_deg = 0.5; // rescue mode: permissive angle
         fs_rescue.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
         fs_rescue.full_scan_commit_reproj_px = opts.triangulation.commit_reproj_px;
         fs_rescue.restore_strict_reproj_px = opts.triangulation.restore_reproj_px;
@@ -3824,9 +3825,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
 
       // Invalidate score cache so choose_resection_candidates re-evaluates all images.
       resection_score_cache.invalidate_all();
-      continue;  // re-run choose_resection_candidates next iteration
+      continue; // re-run choose_resection_candidates next iteration
     }
-    no_candidate_consecutive = 0;  // reset on successful resection
+    no_candidate_consecutive = 0; // reset on successful resection
     double rmse = 0.0;
     // Scene normalization helper (shared between both branches).
     auto maybe_normalize = [&]() {
@@ -4114,17 +4115,21 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         for (size_t pi = 0; pi < view_graph.num_pairs(); ++pi) {
           const PairGeoInfo& pg = view_graph.pair_at(pi);
           const int other =
-              (static_cast<int>(pg.image1_index) == im) ? static_cast<int>(pg.image2_index)
-                                                        : (static_cast<int>(pg.image2_index) == im
-                                                               ? static_cast<int>(pg.image1_index)
-                                                               : -1);
+              (static_cast<int>(pg.image1_index) == im)
+                  ? static_cast<int>(pg.image2_index)
+                  : (static_cast<int>(pg.image2_index) == im ? static_cast<int>(pg.image1_index)
+                                                             : -1);
           if (other < 0)
             continue;
           ++n_pairs;
-          if (pg.F_ok) ++n_F_ok;
-          if (pg.E_ok) ++n_E_ok;
-          if (pg.twoview_ok) ++n_twoview_ok;
-          if (pg.stable) ++n_stable;
+          if (pg.F_ok)
+            ++n_F_ok;
+          if (pg.E_ok)
+            ++n_E_ok;
+          if (pg.twoview_ok)
+            ++n_twoview_ok;
+          if (pg.stable)
+            ++n_stable;
           max_F_inliers = std::max(max_F_inliers, pg.F_inliers);
           max_valid_pts = std::max(max_valid_pts, pg.num_valid_points);
           const bool other_registered =
@@ -4132,15 +4137,13 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
           LOG(INFO) << "    pair(" << im << "," << other << ")"
                     << "  F_ok=" << pg.F_ok << "  F_inliers=" << pg.F_inliers
                     << "  E_ok=" << pg.E_ok << "  twoview_ok=" << pg.twoview_ok
-                    << "  stable=" << pg.stable
-                    << "  valid_pts=" << pg.num_valid_points
+                    << "  stable=" << pg.stable << "  valid_pts=" << pg.num_valid_points
                     << "  degenerate=" << pg.is_degenerate
                     << "  other_registered=" << other_registered;
         }
-        LOG(INFO) << "  img=" << im << "  summary: pairs=" << n_pairs
-                  << "  F_ok=" << n_F_ok << "  E_ok=" << n_E_ok
-                  << "  twoview_ok=" << n_twoview_ok << "  stable=" << n_stable
-                  << "  max_F_inliers=" << max_F_inliers
+        LOG(INFO) << "  img=" << im << "  summary: pairs=" << n_pairs << "  F_ok=" << n_F_ok
+                  << "  E_ok=" << n_E_ok << "  twoview_ok=" << n_twoview_ok
+                  << "  stable=" << n_stable << "  max_F_inliers=" << max_F_inliers
                   << "  max_valid_pts=" << max_valid_pts;
       }
     }
