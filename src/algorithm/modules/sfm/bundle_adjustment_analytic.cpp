@@ -844,10 +844,10 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       // Tighter bounds prevent over-fitting and keep the Schur complement well-conditioned.
       problem.SetParameterLowerBound(ip, kK1, -0.3);
       problem.SetParameterUpperBound(ip, kK1, 0.3);
-      problem.SetParameterLowerBound(ip, kK2, -0.15);
-      problem.SetParameterUpperBound(ip, kK2, 0.15);
-      problem.SetParameterLowerBound(ip, kK3, -0.05);
-      problem.SetParameterUpperBound(ip, kK3, 0.05);
+      problem.SetParameterLowerBound(ip, kK2, -0.25);
+      problem.SetParameterUpperBound(ip, kK2, 0.25);
+      problem.SetParameterLowerBound(ip, kK3, -0.2);
+      problem.SetParameterUpperBound(ip, kK3, 0.2);
       // Tangential distortion: typically very small for modern drone lenses.
       problem.SetParameterLowerBound(ip, kP1, -0.05);
       problem.SetParameterUpperBound(ip, kP1, 0.05);
