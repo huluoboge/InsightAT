@@ -3676,7 +3676,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       }
       continue; // re-run choose_resection_candidates next iteration
     }
-    no_candidate_consecutive = 0; // reset on successful candidate selection
+    // Do NOT reset no_candidate_consecutive here: non-empty resection_candidates only means
+    // images passed the candidate filter — PnP can still fail every time. Resetting here
+    // prevented the [resection_fail] path from ever reaching kMaxNoCandidateRetries (infinite
+    // outer iterations). Counter resets on successful resection below (see no_candidate_consecutive
+    // = 0 after new_registered_image_indices non-empty) and when relaxed unlock finds candidates.
   has_candidates:
     // Determine whether to use local BA for this iteration BEFORE the resection loop,
     // because local BA mode processes one image at a time (breaks after first success).
