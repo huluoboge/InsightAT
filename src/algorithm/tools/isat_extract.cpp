@@ -114,7 +114,7 @@ int main(int argc, char* argv[]) {
   std::string output_retrieval_dir; // Dual-output: retrieval features directory
 
   // SIFT-specific options
-  int nfeatures = 40000;
+  int nfeatures = 10000;
   int nfeatures_retrieval = 1500; // Dual-output: retrieval features count
   int resize_retrieval = 1024;    // Dual-output: retrieval image resize dimension
   float threshold = 0.02f;
@@ -144,7 +144,7 @@ int main(int argc, char* argv[]) {
   // SIFT-specific parameters
   // ================================================================
   cmd.add(make_option('n', nfeatures, "nfeatures")
-              .doc("[SIFT] Maximum features per image (default: 40000)"));
+              .doc("[SIFT] Maximum features per image (default: 10000)"));
   cmd.add(make_option('t', threshold, "threshold").doc("[SIFT] Peak threshold (default: 0.02)"));
   cmd.add(make_option(0, octaves, "octaves").doc("[SIFT] Number of octaves, -1=auto (default: 4)"));
   cmd.add(make_option(0, levels, "levels").doc("[SIFT] Levels per octave (default: 3)"));
@@ -233,8 +233,8 @@ int main(int argc, char* argv[]) {
   sift_params.truncate_method = 1;
 
   insight::modules::SiftGPUParams lowThreshold_sift_params = sift_params;
-  lowThreshold_sift_params.d_peak /= 3.f;
-  
+  lowThreshold_sift_params.d_peak /= 6.f;
+
   insight::modules::SiftGPUParams sift_params_retrieval;
   sift_params_retrieval.n_max_features = nfeatures_retrieval;
   sift_params_retrieval.d_peak = threshold;
@@ -290,6 +290,12 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // Snapshot image_index per task order (writeStage clears tasks).
+  std::vector<uint32_t> image_index_snapshot(static_cast<size_t>(total_images));
+  for (int i = 0; i < total_images; ++i)
+    image_index_snapshot[static_cast<size_t>(i)] = image_tasks[static_cast<size_t>(i)].image_index;
+  std::vector<uint8_t> matching_used_low_peak(static_cast<size_t>(total_images), 0);
+
   // Create pipeline stages
   const int IO_QUEUE_SIZE = 10;
   const int GPU_QUEUE_SIZE = 5;
@@ -338,7 +344,7 @@ int main(int argc, char* argv[]) {
     StageCurrent siftGPUStage(
         "SiftGPU", 1, GPU_QUEUE_SIZE,
         [&image_tasks, &extractor, &sift_params, &lowThreshold_sift_params, &sift_params_retrieval,
-         process_matching, process_retrieval](int index) {
+         process_matching, process_retrieval, &matching_used_low_peak](int index) {
           auto& task = image_tasks[index];
           auto start = std::chrono::high_resolution_clock::now();
 
@@ -356,6 +362,7 @@ int main(int argc, char* argv[]) {
               extractor.reconfigure(lowThreshold_sift_params);
               num_features_matching =
                   extractor.extract(task.image, task.keypoints, task.descriptors);
+              matching_used_low_peak[static_cast<size_t>(index)] = 1;
             }
             task.image_cols = task.image.cols;
             task.image_rows = task.image.rows;
@@ -598,14 +605,41 @@ int main(int argc, char* argv[]) {
 
     LOG(INFO) << "Feature extraction completed in " << extract_total_time_s << "s";
     LOG(INFO) << "Average time per image: " << (float)extract_total_time_s / total_images << "s";
+
+    if (process_matching) {
+      json meta;
+      meta["schema"] = "insightat_matching_extract_meta_v1";
+      meta["min_matching_features_for_full_peak"] = 10000;
+      json arr = json::array();
+      int n_low = 0;
+      for (int i = 0; i < total_images; ++i) {
+        const bool low = matching_used_low_peak[static_cast<size_t>(i)] != 0;
+        if (low)
+          ++n_low;
+        arr.push_back({{"image_index", image_index_snapshot[static_cast<size_t>(i)]},
+                       {"low_peak_matching", low}});
+      }
+      meta["images"] = arr;
+      const fs::path meta_path = fs::path(output_dir) / "matching_extract_meta.json";
+      std::ofstream mf(meta_path);
+      if (mf) {
+        mf << meta.dump(2) << "\n";
+        LOG(INFO) << "Wrote matching extract meta (" << n_low << " low-peak images): "
+                  << meta_path.string();
+      } else {
+        LOG(WARNING) << "Could not write " << meta_path.string();
+      }
+    }
   }
 
-  printEvent({{"type", "extract.complete"},
-              {"ok", true},
-              {"data",
-               {{"num_images", total_images},
-                {"output_dir", output_dir},
-                {"total_time_s", extract_total_time_s}}}});
+  json extract_data = {{"num_images", total_images},
+                       {"output_dir", output_dir},
+                       {"total_time_s", extract_total_time_s}};
+  if (process_matching) {
+    extract_data["matching_extract_meta"] =
+        (fs::path(output_dir) / "matching_extract_meta.json").string();
+  }
+  printEvent({{"type", "extract.complete"}, {"ok", true}, {"data", extract_data}});
 
   return 0;
 }
