@@ -106,8 +106,7 @@ int main(int argc, char* argv[]) {
   FLAGS_colorlogtostderr = 1;
 
   // Define command line options with documentation
-  CmdLine cmd(
-      "InsightAT Feature Extractor - GPU-accelerated SIFT feature extraction");
+  CmdLine cmd("InsightAT Feature Extractor - GPU-accelerated SIFT feature extraction");
 
   // Common options
   std::string input_file;
@@ -119,7 +118,7 @@ int main(int argc, char* argv[]) {
   int nfeatures_retrieval = 1500; // Dual-output: retrieval features count
   int resize_retrieval = 1024;    // Dual-output: retrieval image resize dimension
   float threshold = 0.02f;
-  int octaves = -1;
+  int octaves = 4;
   int levels = 3;
   std::string normalization = "l1root";
   float nms_radius = 3.0f;
@@ -147,8 +146,7 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('n', nfeatures, "nfeatures")
               .doc("[SIFT] Maximum features per image (default: 40000)"));
   cmd.add(make_option('t', threshold, "threshold").doc("[SIFT] Peak threshold (default: 0.02)"));
-  cmd.add(
-      make_option(0, octaves, "octaves").doc("[SIFT] Number of octaves, -1=auto (default: -1)"));
+  cmd.add(make_option(0, octaves, "octaves").doc("[SIFT] Number of octaves, -1=auto (default: 4)"));
   cmd.add(make_option(0, levels, "levels").doc("[SIFT] Levels per octave (default: 3)"));
   cmd.add(make_switch(0, "no-adapt").doc("[SIFT] Disable dark image adaptation"));
   std::string extract_backend = "cuda";
@@ -232,7 +230,11 @@ int main(int argc, char* argv[]) {
   sift_params.n_level = levels;
   sift_params.adapt_darkness = adapt_darkness;
   sift_params.use_cuda = use_cuda_extract;
+  sift_params.truncate_method = 1;
 
+  insight::modules::SiftGPUParams lowThreshold_sift_params = sift_params;
+  lowThreshold_sift_params.d_peak /= 3.f;
+  
   insight::modules::SiftGPUParams sift_params_retrieval;
   sift_params_retrieval.n_max_features = nfeatures_retrieval;
   sift_params_retrieval.d_peak = threshold;
@@ -240,10 +242,13 @@ int main(int argc, char* argv[]) {
   sift_params_retrieval.n_level = levels;
   sift_params_retrieval.adapt_darkness = adapt_darkness;
   sift_params_retrieval.use_cuda = use_cuda_extract;
+  sift_params_retrieval.truncate_method = 1;
 
   // Log configuration
   LOG(INFO) << "Feature extraction configuration:";
   LOG(INFO) << "  SIFT extract backend: " << (use_cuda_extract ? "cuda" : "glsl");
+  LOG(INFO) << "  SIFT first octave (-fo): " << sift_params.n_octave_from << " (octaves=" << octaves
+            << ", levels per octave=" << levels << ")";
   LOG(INFO) << "  SIFT threshold: " << threshold;
   LOG(INFO) << "  Normalization: " << normalization;
   LOG(INFO) << "  uint8 format: " << (use_uint8 ? "yes" : "no");
@@ -294,7 +299,7 @@ int main(int argc, char* argv[]) {
   Stage imageLoadStage("ImageLoad", NUM_IO_THREADS, IO_QUEUE_SIZE,
                        [&image_tasks, process_retrieval, resize_retrieval](int index) {
                          auto& task = image_tasks[index];
-                         cv::Mat image = cv::imread(task.image_path,cv::IMREAD_UNCHANGED);
+                         cv::Mat image = cv::imread(task.image_path, cv::IMREAD_UNCHANGED);
                          if (image.empty()) {
                            LOG(ERROR) << "Failed to load image: " << task.image_path;
                            return;
@@ -332,8 +337,8 @@ int main(int argc, char* argv[]) {
 
     StageCurrent siftGPUStage(
         "SiftGPU", 1, GPU_QUEUE_SIZE,
-        [&image_tasks, &extractor, &sift_params, &sift_params_retrieval, process_matching,
-         process_retrieval](int index) {
+        [&image_tasks, &extractor, &sift_params, &lowThreshold_sift_params, &sift_params_retrieval,
+         process_matching, process_retrieval](int index) {
           auto& task = image_tasks[index];
           auto start = std::chrono::high_resolution_clock::now();
 
@@ -341,11 +346,17 @@ int main(int argc, char* argv[]) {
           int num_features_retrieval = 0;
 
           // Extract matching features from original image
+          // 这里期望特征点不少于1w，如果少的话， 就调整threshold
           if (process_matching && !task.image.empty()) {
             // Configure for matching features (high count)
             extractor.reconfigure(sift_params);
 
             num_features_matching = extractor.extract(task.image, task.keypoints, task.descriptors);
+            if (num_features_matching < 10000) {
+              extractor.reconfigure(lowThreshold_sift_params);
+              num_features_matching =
+                  extractor.extract(task.image, task.keypoints, task.descriptors);
+            }
             task.image_cols = task.image.cols;
             task.image_rows = task.image.rows;
             task.image.release(); // Free original image memory
@@ -496,8 +507,8 @@ int main(int argc, char* argv[]) {
 
             auto metadata =
                 insight::io::create_feature_metadata(task.image_path, "SIFT_GPU",
-                                                   "1.2", // Version bump for dual-output support
-                                                   params_json, schema, 0);
+                                                     "1.2", // Version bump for dual-output support
+                                                     params_json, schema, 0);
 
             writer.set_metadata(metadata);
 
@@ -510,17 +521,17 @@ int main(int argc, char* argv[]) {
               kpt_data.push_back(kp.o);
             }
 
-            writer.add_blob("keypoints", kpt_data.data(), kpt_data.size() * sizeof(float), "float32",
-                           {(int)keypoints.size(), 4});
+            writer.add_blob("keypoints", kpt_data.data(), kpt_data.size() * sizeof(float),
+                            "float32", {(int)keypoints.size(), 4});
 
             // Add descriptors (uint8 or float32)
             if (use_uint8) {
               writer.add_blob("descriptors", descriptors_uchar.data(),
-                             descriptors_uchar.size() * sizeof(unsigned char), "uint8",
-                             {(int)keypoints.size(), 128});
+                              descriptors_uchar.size() * sizeof(unsigned char), "uint8",
+                              {(int)keypoints.size(), 128});
             } else {
               writer.add_blob("descriptors", descriptors.data(), descriptors.size() * sizeof(float),
-                             "float32", {(int)keypoints.size(), 128});
+                              "float32", {(int)keypoints.size(), 128});
             }
 
             return writer.write();

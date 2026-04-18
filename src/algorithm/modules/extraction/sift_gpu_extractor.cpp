@@ -140,12 +140,14 @@ bool SiftGPUExtractor::reconfigure(const SiftGPUParams& new_params) {
   char strNLevel[10];
   char strPeak[10];
   char strMaxFeatures[10];
+  char strImageMaxDimension[10];
 
   sprintf(strOcFrom, "%d", new_params.n_octave_from);
   sprintf(strNOctave, "%d", new_params.n_octaves);
   sprintf(strNLevel, "%d", new_params.n_level);
-  sprintf(strPeak, "%f", new_params.d_peak / new_params.n_level);
+  sprintf(strPeak, "%f", static_cast<double>(new_params.d_peak / new_params.n_level));
   sprintf(strMaxFeatures, "%d", new_params.n_max_features);
+  sprintf(strImageMaxDimension, "%d", new_params.image_max_dimension);
 
   const char* argv[100] = {0};
   int ii = 0;
@@ -159,7 +161,8 @@ bool SiftGPUExtractor::reconfigure(const SiftGPUParams& new_params) {
   argv[ii++] = strNLevel;
   argv[ii++] = "-w";
   argv[ii++] = "3";
-
+  argv[ii++] = "-maxd";
+  argv[ii++] = strImageMaxDimension;
   if (new_params.n_octaves != -1) {
     argv[ii++] = "-no";
     argv[ii++] = strNOctave;
@@ -184,6 +187,11 @@ bool SiftGPUExtractor::reconfigure(const SiftGPUParams& new_params) {
     argv[ii++] = "-da";
   }
 
+  if (VLOG_IS_ON(1)) {
+    for (int i = 0; i < ii; i++) {
+      LOG(INFO) << "argv[" << i << "] = " << argv[i];
+    }
+  }
   // Reconfigure existing SiftGPU instance
   sift_gpu_->ParseParam(ii, argv);
 
@@ -246,12 +254,14 @@ SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUPara
   char strNLevel[10];
   char strPeak[10];
   char strMaxFeatures[10];
+  char strImageMaxDimension[10];
 
   sprintf(strOcFrom, "%d", param.n_octave_from);
   sprintf(strNOctave, "%d", param.n_octaves);
   sprintf(strNLevel, "%d", param.n_level);
-  sprintf(strPeak, "%f", param.d_peak / param.n_level);
+  sprintf(strPeak, "%f", static_cast<double>(param.d_peak / param.n_level));
   sprintf(strMaxFeatures, "%d", param.n_max_features);
+  sprintf(strImageMaxDimension, "%d", param.image_max_dimension);
 
   const char* argv[100] = {0};
   int ii = 0;
@@ -265,6 +275,8 @@ SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUPara
   argv[ii++] = strNLevel;
   argv[ii++] = "-w";
   argv[ii++] = "3";
+  argv[ii++] = "-maxd";
+  argv[ii++] = strImageMaxDimension;
 
   if (param.n_octaves != -1) {
     argv[ii++] = "-no";
@@ -294,6 +306,11 @@ SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUPara
     argv[ii++] = "0"; // device 0
   }
 
+  if (VLOG_IS_ON(1)) {
+    for (int i = 0; i < ii; i++) {
+      LOG(INFO) << "argv[" << i << "] = " << argv[i];
+    }
+  }
   sift_gpu_ptr->ParseParam(ii, argv);
 
   int support = sift_gpu_ptr->CreateContextGL();

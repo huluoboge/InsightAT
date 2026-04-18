@@ -29,14 +29,15 @@ enum class DescriptorNormalization {
 
 /** SIFT GPU 参数（仅提取）。 */
 struct SiftGPUParams {
-  int n_octave_from = 0;      ///< 起始 octave
+  int n_octave_from = -1;     ///< 起始 octave（SiftGPU -fo；-1≈上采样一级
   int n_octaves = -1;         ///< octave 数（-1 自动）
   int n_level = 3;            ///< 每 octave 层数
   double d_peak = 0.02;       ///< 峰值阈值（会除以 n_level）
-  int n_max_features = 8000;  ///< 最大特征数
+  int n_max_features = 40000;  ///< 最大特征数
   bool adapt_darkness = true; ///< 适应暗图
   bool use_cuda = false;      ///< 使用 CUDA 后端
-  int truncate_method = 0;    ///< 0=-tc, 1=-tc2, 2=-tc3
+  int truncate_method = 1;    ///< 0=-tc, 1=-tc2, 2=-tc3
+  int image_max_dimension = 8000;   ///< 最大图像维度
 };
 
 /**
