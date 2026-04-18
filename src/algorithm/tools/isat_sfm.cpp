@@ -5,12 +5,14 @@
  * Orchestrates the full pipeline by invoking sibling CLI tools as subprocesses:
  *   1. create            – project setup, add images, camera estimation, export image list
  *   2. extract           – dual feature extraction (matching + retrieval)
- *   3. match             – retrieval-by-matching (exhaustive low-res) → full-res match → geo
+ *   3. match             – 默认：isat_retrieval_match（低分辨率穷举+F）→ 全分辨率 match → geo；
+ *                          --exhaustive-match：跳过检索阶段，直接全图像对 + 全分辨率匹配
  *   4. tracks            – build tracks from matches + geometry
  *   5. incremental_sfm   – incremental SfM (resection + BA)
  *
  * Usage:
  *   isat_sfm -i /photos -w work/                              # run all steps
+ *   isat_sfm -i /photos -w work/ --exhaustive-match          # 跳过 isat_retrieval_match，全图像对 + 全分辨率匹配
  *   isat_sfm -i /photos -w work/ --steps create,extract       # run only create + extract
  *   isat_sfm -i /photos -w work/ --steps tracks,incremental_sfm  # resume from tracks
  *
@@ -233,6 +235,47 @@ static std::set<std::string> parse_steps(const std::string& steps_str) {
   return result;
 }
 
+/// images_all.json → 图像数量（与 isat_retrieval_match 一致）。
+static int count_images_in_images_all_json(const fs::path& images_all_path) {
+  std::ifstream f(images_all_path);
+  if (!f)
+    return 0;
+  json j;
+  try {
+    f >> j;
+  } catch (...) {
+    return 0;
+  }
+  if (j.contains("images") && j["images"].is_array())
+    return static_cast<int>(j["images"].size());
+  return 0;
+}
+
+/// 写入全穷举图像对 JSON（image1_index < image2_index），供 isat_match / isat_geo 使用。
+static bool write_exhaustive_pairs_json(const fs::path& output_path, int n_images,
+                                        std::string* err_out) {
+  if (n_images < 2) {
+    if (err_out)
+      *err_out = "need at least 2 images for exhaustive pairs";
+    return false;
+  }
+  json pairs_arr = json::array();
+  for (int i = 0; i < n_images; ++i) {
+    for (int j = i + 1; j < n_images; ++j)
+      pairs_arr.push_back({{"image1_index", i}, {"image2_index", j}});
+  }
+  json out = {{"pairs", pairs_arr}};
+  std::ofstream f(output_path);
+  if (!f) {
+    if (err_out)
+      *err_out = "cannot write " + output_path.string();
+    return false;
+  }
+  f << out.dump(2) << "\n";
+  LOG(INFO) << "Exhaustive pairs: " << pairs_arr.size() << " → " << output_path.string();
+  return true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Directory scanning
 // ─────────────────────────────────────────────────────────────────────────────
@@ -307,6 +350,7 @@ int main(int argc, char* argv[]) {
   std::string ext = ".jpg,.tif,.png";
   std::string log_level;
   int max_sample = 5;
+  bool exhaustive_match = false;
 
   CmdLine cmd("InsightAT SfM Pipeline – end-to-end incremental SfM");
   cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required)"));
@@ -318,6 +362,9 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, ext, "ext").doc("Image extensions, comma-separated (default: .jpg,.tif,.png)"));
   cmd.add(make_option(0, max_sample, "max-sample").doc("Max images sampled for focal estimation (default: 5)"));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Hold camera intrinsics fixed during BA"));
+  cmd.add(make_switch(0, "exhaustive-match")
+              .doc("Skip isat_retrieval_match; generate all image pairs and run full-resolution "
+                   "matching only (O(n²) pairs, heavy for large sets)"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO); also forwarded to all sub-tools"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only); also forwarded to all sub-tools"));
@@ -338,6 +385,7 @@ int main(int argc, char* argv[]) {
   }
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   bool fix_intrinsics = cmd.used("fix-intrinsics");
+  exhaustive_match = cmd.used("exhaustive-match");
 
   // ── Build verbosity args to forward to all sub-tools ────────────────────
   if (cmd.used('v')) g_verbosity_args.push_back("-v");
@@ -498,7 +546,7 @@ int main(int argc, char* argv[]) {
        "--resize-retrieval", "1024",
        "--extract-backend", extract_backend,
        "--nfeatures", "40000",
-       "--threshold", "0.02",
+       "--threshold", "0.01",
        "--octaves", "-1",
        "--levels", "3",
        "--norm", "l1root",
@@ -506,29 +554,51 @@ int main(int argc, char* argv[]) {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // Step: MATCH (retrieval-by-matching → match → geo)
+  // Step: MATCH (retrieval-by-matching → match → geo) 或 全穷举全分辨率匹配
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("match")) {
     ++step_num;
-    LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Retrieval-by-matching + Geometry ===";
+    LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": "
+              << (exhaustive_match ? "Exhaustive full-res matching + Geometry ==="
+                                   : "Retrieval-by-matching + Geometry ===");
     fs::create_directories(match_dir_path);
     fs::create_directories(geo_dir);
 
-    // Use isat_retrieval_match: exhaustive low-res matching → F verification → supplement weak images
-    // This replaces the VLAD train → retrieve → match → geo pipeline with a more robust approach.
-    // Output: pairs_retrieve.json (verified + supplemented pairs)
-    fs::path retrieval_work = work_path / "retrieval_match_work";
-    fs::create_directories(retrieval_work);
+    if (exhaustive_match) {
+      const int n_img = count_images_in_images_all_json(images_all);
+      if (n_img < 2) {
+        LOG(ERROR) << "--exhaustive-match: need at least 2 images in " << images_all
+                   << " (got " << n_img << ")";
+        return 1;
+      }
+      const long long n_pairs = static_cast<long long>(n_img) * (n_img - 1) / 2;
+      LOG(INFO) << "Exhaustive full-res match: " << n_img << " images → " << n_pairs
+                << " pairs (skipped isat_retrieval_match)";
+      if (n_img > 80) {
+        LOG(WARNING) << "Very large image count; exhaustive matching may be extremely slow and "
+                        "memory-heavy.";
+      }
+      std::string werr;
+      if (!write_exhaustive_pairs_json(pairs_retrieve, n_img, &werr)) {
+        LOG(ERROR) << werr;
+        return 1;
+      }
+    } else {
+      // Use isat_retrieval_match: exhaustive low-res matching → F verification → supplement weak images
+      // Output: pairs_retrieve.json (verified + supplemented pairs)
+      fs::path retrieval_work = work_path / "retrieval_match_work";
+      fs::create_directories(retrieval_work);
 
-    run_or_die("retrieval-match",
-      {tool_path("isat_retrieval_match"),
-       "-l", images_all.string(),
-       "-f", feat_ret_dir.string(),   // low-res retrieval features, NOT full-res feat_dir
-       "-w", retrieval_work.string(),
-       "-o", pairs_retrieve.string(),
-       "--match-backend", match_backend,
-       "--max-features", "4096",
-       "--threads", "4"});
+      run_or_die("retrieval-match",
+        {tool_path("isat_retrieval_match"),
+         "-l", images_all.string(),
+         "-f", feat_ret_dir.string(), // low-res retrieval features, NOT full-res feat_dir
+         "-w", retrieval_work.string(),
+         "-o", pairs_retrieve.string(),
+         "--match-backend", match_backend,
+         "--max-features", "4096",
+         "--threads", "4"});
+    }
 
     // Now run full-resolution matching on the discovered pairs
     run_or_die("match",

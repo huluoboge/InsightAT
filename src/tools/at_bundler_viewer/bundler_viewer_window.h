@@ -33,6 +33,9 @@ public:
   /// Load an iter_NNNN series from the given parent directory (called at startup if path given).
   void open_iter_series_from_path(const QString& parent_dir);
 
+  /// Load a single folder: Bundler export (list.txt + bundle.out) or COLMAP text (cameras/images/points3D).
+  void open_reconstruction_path(const QString& dir);
+
 protected:
   void keyPressEvent(QKeyEvent* event) override;
 

@@ -3668,7 +3668,10 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                       << " 3d2d=" << relaxed_candidates[0].num_3d2d << ")";
             // Swap into resection_candidates and fall through to normal processing.
             resection_candidates = std::move(relaxed_candidates);
-            no_candidate_consecutive = 0;
+            // Do NOT reset no_candidate_consecutive here: relaxed unlock only lowers the 3D-2D
+            // threshold — PnP can still fail every time. Resetting to 0 caused oscillation with
+            // the [resection_fail] path (empty → BA → relaxed 1 candidate → fail → counter never
+            // reached kMaxNoCandidateRetries). Successful resection still clears the counter below.
             // Don't continue — fall through to the rest of the loop (BA, tri, etc.).
             goto has_candidates;
           }
@@ -3679,8 +3682,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     // Do NOT reset no_candidate_consecutive here: non-empty resection_candidates only means
     // images passed the candidate filter — PnP can still fail every time. Resetting here
     // prevented the [resection_fail] path from ever reaching kMaxNoCandidateRetries (infinite
-    // outer iterations). Counter resets on successful resection below (see no_candidate_consecutive
-    // = 0 after new_registered_image_indices non-empty) and when relaxed unlock finds candidates.
+    // outer iterations). Counter resets on successful resection below (no_candidate_consecutive
+    // = 0 after new_registered_image_indices non-empty).
   has_candidates:
     // Determine whether to use local BA for this iteration BEFORE the resection loop,
     // because local BA mode processes one image at a time (breaks after first success).

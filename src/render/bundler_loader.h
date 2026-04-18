@@ -53,6 +53,11 @@ struct BundlerScene {
 RENDER_EXPORT bool load_bundler_directory(const std::string& bundle_dir, BundlerScene* scene,
                                           std::string* error_message);
 
+/// 自动识别目录类型：若存在 COLMAP text 模型（cameras.txt + images.txt + points3D.txt）则按
+/// COLMAP 解析；否则按 Bundler（list.txt + bundle.out）解析。
+RENDER_EXPORT bool load_reconstruction_directory(const std::string& dir, BundlerScene* scene,
+                                                 std::string* error_message);
+
 /// 加载进度：current ∈ [1,total]，stage 为简短英文阶段名（如 "dimensions"）。
 using BundlerFillProgress = std::function<void(int current, int total, const char* stage)>;
 

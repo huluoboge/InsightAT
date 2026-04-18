@@ -36,7 +36,7 @@ InsightAT 是一个开源的 Structure from Motion 软件。
 
 <!-- TODO: 替换为实际截图 -->
 ```
-at_bundler_viewer 加载 bundle.out 后的 3D 点云 + 相机位姿可视化
+at_bundler_viewer 加载 Bundler（`bundle.out`）或 COLMAP text 稀疏模型（`sparse/0` 下的 `cameras.txt`、`images.txt`、`points3D.txt`）后的 3D 点云 + 相机位姿可视化
 （截图待补充）
 ```
 
@@ -208,7 +208,7 @@ docker run --gpus all \
 
 ### Bundler（默认，可直接可视化）
 
-增量式 SfM 输出 `bundle.out` + `list.txt`，可用 `at_bundler_viewer` 或 MeshLab 查看。
+增量式 SfM 输出 `bundle.out` + `list.txt`，可用 `at_bundler_viewer` 或 MeshLab 查看；COLMAP 结果可打开对应 `sparse/0` 目录对比。
 
 ### COLMAP 兼容导出
 

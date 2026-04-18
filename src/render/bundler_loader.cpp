@@ -5,6 +5,8 @@
 
 #include "bundler_loader.h"
 
+#include "colmap_loader.h"
+
 #include "ImageIO/gdal_utils.h"
 
 #include <glog/logging.h>
@@ -21,6 +23,22 @@
 
 namespace insight {
 namespace render {
+
+bool load_reconstruction_directory(const std::string& dir, BundlerScene* scene,
+                                   std::string* error_message) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path root = fs::absolute(dir, ec);
+  if (ec || !fs::is_directory(root)) {
+    *error_message = "not a directory: " + dir;
+    return false;
+  }
+  const bool has_colmap = fs::exists(root / "cameras.txt") && fs::exists(root / "images.txt") &&
+                          fs::exists(root / "points3D.txt");
+  if (has_colmap)
+    return load_colmap_text_directory(dir, scene, error_message);
+  return load_bundler_directory(dir, scene, error_message);
+}
 
 namespace {
 

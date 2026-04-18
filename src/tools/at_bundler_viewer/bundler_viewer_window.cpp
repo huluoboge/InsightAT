@@ -204,7 +204,7 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QMainWindow(parent) 
   // ── Menu ────────────────────────────────────────────────────────────────────
   auto* file_menu = menuBar()->addMenu(tr("&File"));
 
-  auto* open_act = file_menu->addAction(tr("&Open Bundler folder…"));
+  auto* open_act = file_menu->addAction(tr("&Open reconstruction folder…"));
   open_act->setShortcut(tr("Ctrl+O"));
   connect(open_act, &QAction::triggered, this, &BundlerViewerWindow::open_bundler_directory);
 
@@ -221,25 +221,28 @@ BundlerViewerWindow::~BundlerViewerWindow() {
 
 void BundlerViewerWindow::open_bundler_directory() {
   const QString dir = QFileDialog::getExistingDirectory(
-      this, tr("Bundler export folder"), QString(), QFileDialog::ShowDirsOnly);
+      this, tr("Bundler or COLMAP sparse folder"), QString(), QFileDialog::ShowDirsOnly);
   if (dir.isEmpty())
     return;
+  open_reconstruction_path(dir);
+}
 
-  QProgressDialog progress(tr("Loading Bundler…"), QString(), 0, 0, this);
+void BundlerViewerWindow::open_reconstruction_path(const QString& dir) {
+  QProgressDialog progress(tr("Loading reconstruction…"), QString(), 0, 0, this);
   progress.setWindowModality(Qt::ApplicationModal);
   progress.setMinimumDuration(0);
   progress.setCancelButton(nullptr);
   progress.setRange(0, 0);
-  progress.setLabelText(tr("Reading bundle files…"));
+  progress.setLabelText(tr("Reading model files…"));
   progress.show();
   QApplication::processEvents();
 
   render::BundlerScene scene;
   std::string err;
-  if (!render::load_bundler_directory(dir.toStdString(), &scene, &err)) {
+  if (!render::load_reconstruction_directory(dir.toStdString(), &scene, &err)) {
     progress.reset();
     QMessageBox::warning(this, tr("Load failed"), QString::fromStdString(err));
-    LOG(ERROR) << "load_bundler_directory: " << err;
+    LOG(ERROR) << "load_reconstruction_directory: " << err;
     return;
   }
 
@@ -269,6 +272,8 @@ void BundlerViewerWindow::open_bundler_directory() {
 
   // Keep a copy of the scene for pick queries
   current_scene_ = std::make_shared<render::BundlerScene>(std::move(scene));
+
+  setWindowTitle(tr("Bundler viewer — %1").arg(QDir(dir).dirName()));
 
   render_widget_->fit_scene_to_view();
   render_widget_->updateGL();
@@ -360,8 +365,9 @@ BundlerViewerWindow::get_or_load_scene(int idx, bool* from_cache) {
   *from_cache = false;
   auto scene   = std::make_shared<render::BundlerScene>();
   std::string err;
-  if (!render::load_bundler_directory(iter_dirs_[static_cast<size_t>(idx)], scene.get(), &err)) {
-    LOG(ERROR) << "load_bundler_directory[" << idx << "]: " << err;
+  if (!render::load_reconstruction_directory(iter_dirs_[static_cast<size_t>(idx)], scene.get(),
+                                             &err)) {
+    LOG(ERROR) << "load_reconstruction_directory[" << idx << "]: " << err;
     return {};
   }
   {
@@ -397,7 +403,7 @@ void BundlerViewerWindow::start_prefetch(int center_idx) {
     auto fut = std::async(std::launch::async, [path]() {
       auto s = std::make_shared<render::BundlerScene>();
       std::string e;
-      if (!render::load_bundler_directory(path, s.get(), &e)) {
+      if (!render::load_reconstruction_directory(path, s.get(), &e)) {
         VLOG(1) << "Prefetch failed for " << path << ": " << e;
         return std::shared_ptr<render::BundlerScene>{};
       }
