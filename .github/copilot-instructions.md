@@ -168,50 +168,19 @@ Stage 3  [多线程 I/O]    写磁盘
 
 ---
 
-## Python Pipeline（`src/pipeline/`）
+## 端到端 SfM（`isat_sfm`）
 
-全自动内参标定流水线，一键处理：扫描子目录 → 创建项目 → 每子目录一个分组 → 估计初始内参 → 特征提取/检索/匹配/几何验证/两视图重建/标定 → 精化内参写回 `.iat`。
-
-```
-src/pipeline/
-  __init__.py
-  runner.py          # subprocess 封装，parse ISAT_EVENT，ToolError
-  project_utils.py   # isat_* 工具的 Python 高层封装
-  pipelines/
-    __init__.py
-    auto_calibrate.py  # 主流水线 + CLI 入口
-```
-
-### 运行
+一键流程：扫描子目录 → 创建项目 → 加图与内参估计 → 特征提取 → retrieval-by-matching → 匹配 → 几何 → tracks → 增量式 SfM。项目在 `<work>/project.iat`，日志可在 `<work>/logs/`，计时写入 `<work>/sfm_timing.json`。
 
 ```bash
-python -m src.pipeline.pipelines.auto_calibrate \
-    --input /data/flight01 \
-    --project /out/flight01.iat \
-    --work-dir /out/flight01_work \
-    --ext ".jpg,.tif" \
-    --min-images 5 --max-sample 5
+./build/isat_sfm -i /data/photos -w /data/work -v
+./build/isat_sfm -i /data/photos -w /data/work --steps tracks,incremental_sfm
 ```
 
-### 流水线步骤（每个分组）
+**stdout**：`ISAT_EVENT …`（含 `sfm.pipeline_timing`）  
+环境变量 **`ISAT_BIN_DIR`**：指定 `isat_*` 可执行文件目录（默认在 PATH 或 `<repo_root>/build/`）。
 
-```
-1. isat_project extract -g <id> -t 0 -o images.json
-2. isat_extract -i images.json -o feat/
-3. isat_retrieve -i images.json -f feat/ -o pairs.json
-4. isat_match -i pairs.json -f feat/ -o match/
-5. isat_project intrinsics -g <id> -t 0 -o K_initial.json
-6. isat_geo -i pairs.json -m match/ -o geo/ --estimate-h -k K_initial.json
-7. isat_twoview -i pairs.json -g geo/ -m match/ -o twoview/ -k K_initial.json
-8. isat_calibrate -t twoview/ -o K_refined.json
-9. isat_project set-camera -g <id> --from-k K_refined.json
-```
-
-**stdout**：`PIPELINE_EVENT <json>`（step/group_id/group_name/ok/data）  
-**stderr**：Python logging  
-**exit 0/1/2**：成功/运行错误/参数错误
-
-环境变量 **`ISAT_BIN_DIR`**：指定 isat_* 可执行文件目录（默认 `<repo_root>/build/`）。
+辅助脚本在 `scripts/`（如 `isat_report.py`、`visualize_vlad_retrieval.py`），非构建必需。
 
 ---
 

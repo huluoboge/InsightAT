@@ -41,21 +41,10 @@ set(LIBRARY_OUTPUT_PATH "${PROJECT_BINARY_DIR}")
 
 message(STATUS "library save to : ${LIBRARY_OUTPUT_PATH}")
 
-# Copy data/config to build for default sensor_db (pipeline passes -d <build>/data/config/camera_sensor_database.txt)
+# Copy data/config to build for default sensor_db (isat_sfm / isat_camera_estimator use -d <build>/data/config/camera_sensor_database.txt)
 if(EXISTS "${CMAKE_SOURCE_DIR}/data/config")
   file(COPY "${CMAKE_SOURCE_DIR}/data/config" DESTINATION "${CMAKE_BINARY_DIR}/data")
   message(STATUS "Copied data/config to ${CMAKE_BINARY_DIR}/data/config for default sensor DB")
-endif()
-
-# Copy pipeline Python scripts into build tree so pipeline runs from build directory.
-# We create a build-time target so the copy runs during `make` (not only at configure).
-if(EXISTS "${CMAKE_SOURCE_DIR}/src/pipeline")
-    add_custom_target(copy_pipeline_scripts ALL
-        COMMENT "Copy pipeline Python scripts to build/src/pipeline"
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/src/pipeline
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/src/pipeline ${CMAKE_BINARY_DIR}/src/pipeline
-    )
-    message(STATUS "Added build-time copy target for src/pipeline -> ${CMAKE_BINARY_DIR}/src/pipeline")
 endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

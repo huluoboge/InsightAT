@@ -661,7 +661,7 @@ int main(int argc, char* argv[]) {
   // ── Load sensor DB ─────────────────────────────────────────────────────
   // Resolve path: explicit -d > default build/data/config path > fatal error.
   if (sensor_db.empty()) {
-    // Mirror what project_utils.py does: look for build-time default.
+    // Same default as isat_sfm: sensor DB next to the binary under build/data/config.
     const std::string default_rel = "data/config/camera_sensor_database.txt";
     // Search relative to the executable and to CWD.
     std::vector<std::string> candidates;

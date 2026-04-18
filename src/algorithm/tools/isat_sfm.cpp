@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -38,6 +39,11 @@
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+
+static void printEvent(const json& j) {
+  std::cout << "ISAT_EVENT " << j.dump() << "\n";
+  std::cout.flush();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Log-file sink: duplicate isat_sfm's own glog output to a file
@@ -76,6 +82,16 @@ static std::string g_bin_dir;
 
 /// Path of the shared pipeline log file (empty = no file logging).
 static std::string g_log_file;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step timing registry
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct StepTiming {
+  std::string label;   ///< human-readable step name
+  double      secs;    ///< wall-clock seconds
+};
+static std::vector<StepTiming> g_step_timings;
 
 /// Verbosity flags to forward to every child process (e.g. {"-v"} or {"--log-level","debug"}).
 static std::vector<std::string> g_verbosity_args;
@@ -172,6 +188,7 @@ static void run_or_die(const std::string& step, const std::vector<std::string>& 
     std::exit(1);
   }
   LOG(INFO) << "Step [" << step << "] completed in " << secs << "s";
+  g_step_timings.push_back({step, secs});
 }
 
 /// Run and capture ISAT_EVENT; abort on failure. Returns parsed events.
@@ -186,6 +203,7 @@ static std::vector<json> run_capture_or_die(const std::string& step,
     std::exit(1);
   }
   LOG(INFO) << "Step [" << step << "] completed in " << secs << "s";
+  g_step_timings.push_back({step, secs});
   return events;
 }
 
@@ -576,8 +594,38 @@ int main(int argc, char* argv[]) {
   auto pipeline_end = std::chrono::steady_clock::now();
   double total_secs = std::chrono::duration<double>(pipeline_end - pipeline_start).count();
 
+  // ── Per-step timing table (stderr, human-readable) ──────────────────────
+  auto fmt_secs = [](double s) -> std::string {
+    char buf[32];
+    if (s < 60.0)        snprintf(buf, sizeof(buf), "%.1fs", s);
+    else if (s < 3600.0) snprintf(buf, sizeof(buf), "%.0fm%.0fs", std::floor(s / 60), std::fmod(s, 60));
+    else                 snprintf(buf, sizeof(buf), "%.0fh%.0fm", std::floor(s / 3600), std::floor(std::fmod(s, 3600) / 60));
+    return buf;
+  };
+
+  // Determine column widths
+  size_t max_label = 5;  // "Step"
+  for (const auto& t : g_step_timings) max_label = std::max(max_label, t.label.size());
+
+  auto sep = std::string(max_label + 2, '-') + "+" + std::string(10, '-');
+  auto hdr_line = std::string(" ") + std::string("Step") + std::string(max_label - 4, ' ') + " │ Time";
+
   LOG(INFO) << "========================================";
-  LOG(INFO) << "Pipeline complete in " << total_secs << "s";
+  LOG(INFO) << "Pipeline complete in " << fmt_secs(total_secs);
+  LOG(INFO) << "";
+  LOG(INFO) << hdr_line;
+  LOG(INFO) << sep;
+  for (const auto& t : g_step_timings) {
+    std::string padding(max_label - t.label.size(), ' ');
+    LOG(INFO) << " " << t.label << padding << " │ " << fmt_secs(t.secs);
+  }
+  LOG(INFO) << sep;
+  {
+    std::string total_label("Total");
+    std::string padding(max_label - total_label.size(), ' ');
+    LOG(INFO) << " " << total_label << padding << " │ " << fmt_secs(total_secs);
+  }
+  LOG(INFO) << "";
   if (active_steps.count("incremental_sfm")) {
     LOG(INFO) << "  Poses:  " << (sfm_out / "poses.json").string();
     LOG(INFO) << "  Bundle: " << (sfm_out / "bundle.out").string();
@@ -587,6 +635,44 @@ int main(int argc, char* argv[]) {
               << (sfm_out / "list.txt").string();
   }
   LOG(INFO) << "========================================";
+
+  // ── Build timing JSON (shared by file output + ISAT_EVENT) ─────────────
+  json timing_json;
+  {
+    json steps_arr = json::array();
+    for (const auto& t : g_step_timings)
+      steps_arr.push_back({{"step", t.label}, {"elapsed_s", t.secs}});
+
+    // ISO-8601 timestamp
+    std::time_t now = std::time(nullptr);
+    std::tm* lt = std::localtime(&now);
+    char ts_buf[32];
+    std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%S", lt);
+
+    timing_json = {
+      {"total_s",   total_secs},
+      {"steps",     steps_arr},
+      {"timestamp", ts_buf},
+      {"work_dir",  work_path.string()}
+    };
+  }
+
+  // ── Write sfm_timing.json into work_dir ──────────────────────────────────
+  {
+    fs::path timing_path = work_path / "sfm_timing.json";
+    std::ofstream f(timing_path);
+    if (f.is_open()) {
+      f << timing_json.dump(2) << "\n";
+      LOG(INFO) << "Timing data: " << timing_path;
+    } else {
+      LOG(WARNING) << "Failed to write timing file: " << timing_path;
+    }
+  }
+
+  // ── ISAT_EVENT: pipeline timing (stdout, machine-readable) ───────────────
+  printEvent({{"type", "sfm.pipeline_timing"},
+              {"ok",   true},
+              {"data", timing_json}});
 
   return 0;
 }

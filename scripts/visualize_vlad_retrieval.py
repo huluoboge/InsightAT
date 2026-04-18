@@ -5,7 +5,7 @@ VLAD检索结果可视化工具
 对每个 reference image 检索 top-k 个最相似图像，生成 HTML 报告。用于人工检查 VLAD 检索质量。
 
 用法:
-    python -m src.pipeline.tools.visualize_vlad_retrieval \\
+    python3 scripts/visualize_vlad_retrieval.py \\
         --vlad-dir ./vlad_cache --images ./images.json --output ./retrieval_report.html --top-k 10
 
 VLAD 文件格式 (.isat_vlad):
@@ -218,8 +218,8 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python -m src.pipeline.tools.visualize_vlad_retrieval --vlad-dir ./vlad_cache --images ./images.json --output report.html
-  python -m src.pipeline.tools.visualize_vlad_retrieval --vlad-dir ./vlad_cache --images ./images.json --output report.html --top-k 5 --max-queries 10
+  python3 scripts/visualize_vlad_retrieval.py --vlad-dir ./vlad_cache --images ./images.json --output report.html
+  python3 scripts/visualize_vlad_retrieval.py --vlad-dir ./vlad_cache --images ./images.json --output report.html --top-k 5 --max-queries 10
 """,
     )
     parser.add_argument("--vlad-dir", required=True, help="VLAD 缓存目录 (包含 *.isat_vlad)")

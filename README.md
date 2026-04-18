@@ -62,19 +62,16 @@ my_images
 
 ```bash
 # 编译后，一条命令完成全流程
-./build/isat_sfm --input /path/to/photos --work-dir work/ -v
+./build/isat_sfm -i /path/to/photos -w work/ -v
 ```
 
 这会自动执行：创建项目 → 特征提取 → 图像检索 → 特征匹配 → 几何验证 → Track 构建 → 增量式 SfM。
 
 **没有 CUDA？** 用 GLSL 后端：
 ```bash
-./build/isat_sfm --input /path/to/photos --work-dir work/ \
+./build/isat_sfm -i /path/to/photos -w work/ \
     --extract-backend glsl --match-backend glsl -v
 ```
-
-> 也可以用 Python pipeline 脚本（功能相同，更多参数控制）：
-> `python -m src.pipeline.sfm -i /path/to/photos -p out.iat -w work/ -v`
 
 ### 3. 查看结果
 
@@ -161,26 +158,29 @@ docker run --gpus all \
 
 ### 分步运行
 
-如果需要更细粒度的控制，可以用 Python pipeline 或直接调用各 CLI 工具：
+`isat_sfm` 支持 `--steps` 只跑部分步骤；项目与工作目录约定为 `<work>/project.iat` 与中间文件均在 `<work>/` 下：
 
 ```bash
-# Python pipeline（支持 --steps 分步运行）
-python -m src.pipeline.sfm -i photos/ -p out.iat -w work/ --steps create,extract,match
-python -m src.pipeline.sfm -i photos/ -p out.iat -w work/ --steps tracks,incremental_sfm
+# 只跑到匹配与几何（例如先检查 pair / geo）
+./build/isat_sfm -i photos/ -w work/ --steps create,extract,match
+
+# 从已有 match/geo 继续：tracks + 增量式 SfM
+./build/isat_sfm -i photos/ -w work/ --steps tracks,incremental_sfm
 ```
 
-### 主要参数
+更细粒度控制可直接调用各 `isat_*` 工具（见下表）。
+
+### `isat_sfm` 主要参数
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--input, -i` | 照片根目录 | （必填） |
-| `--project, -p` | 项目文件路径 | （必填） |
-| `--work-dir, -w` | 工作目录 | （必填） |
+| `-i` / `--input` | 照片根目录 | （必填） |
+| `-w` / `--work-dir` | 工作目录（含 `project.iat`、特征、匹配、SfM 输出） | （必填） |
 | `--steps` | 运行步骤 | `create,extract,match,tracks,incremental_sfm` |
 | `--extract-backend` | 特征提取后端（cuda / glsl） | `cuda` |
 | `--match-backend` | 匹配后端（cuda / glsl） | `cuda` |
 | `--fix-intrinsics` | 固定相机内参（环拍/物体扫描推荐） | `false` |
-| `-v / --verbose` | 详细日志 | `false` |
+| `-v` / `--verbose` | 详细日志 | `false` |
 
 ### CLI 工具
 
@@ -238,6 +238,8 @@ InsightAT 是一个轻量的增量式 SfM 工具，可以和 COLMAP 配合使用
 | 平台 | Linux | Linux / macOS / Windows |
 
 典型工作流：InsightAT 稀疏重建 → 导出 COLMAP 格式 → COLMAP dense reconstruction。
+
+**批量评测**：与 COLMAP 对比、ETH3D 数据整理与推荐命令顺序见 [benchmarks/README.md](benchmarks/README.md)。
 
 ---
 

@@ -51,7 +51,7 @@
 
 **差异化卖点（README 里要突出的）**：
 1. **GPU 全链路加速** — 提取/匹配/RANSAC 全在 GPU，比 COLMAP 快
-2. **一键运行** — `python -m src.pipeline.sfm -i photos/ -p out.iat -w work/` 搞定
+2. **一键运行** — `./build/isat_sfm -i photos/ -w work/` 搞定
 3. **实时可视化** — 每次 BA 迭代输出 Bundler，at_bundler_viewer 实时查看
 4. **航拍优化** — GNSS 先验检索、sensor_db 自动识别、航拍默认参数
 5. **CLI-First** — 每个步骤可单独运行，方便集成到自动化流程
@@ -101,8 +101,8 @@ Eigen3, Ceres Solver ≥2.0, OpenCV ≥3.0, GDAL, glog, GLEW, EGL
 - 基于 nvidia/cuda:12.x-devel-ubuntu22.04
 - 安装所有依赖
 - 编译 InsightAT
-- 入口点：pipeline 脚本
-- 用法：`docker run --gpus all -v /data:/data insightat sfm -i /data/photos -p /data/out.iat -w /data/work`
+- 入口点：`isat_sfm`（或各 `isat_*` CLI）
+- 用法：`docker run --gpus all -v /data:/data insightat isat_sfm -i /data/photos -w /data/work`
 
 **从源码编译**：
 ```bash
@@ -176,7 +176,7 @@ cmake --build build -j$(nproc)
 
 | 版本 | 重点 |
 |------|------|
-| v0.2 | C++ pipeline 二进制 `isat_sfm`（无需 Python，跨平台）；PopSIFT 替换 SiftGPU |
+| v0.2 | PopSIFT 替换 SiftGPU；更多 benchmark |
 | v0.3 | 预编译包（.deb / Windows installer）；更多 benchmark 和精度对比 |
 | v0.4 | Cluster + Merge + Global BA（大规模数据支持） |
 | v1.0 | 两层 SfM（粗到精）；全链路 GPU；生产就绪 |
