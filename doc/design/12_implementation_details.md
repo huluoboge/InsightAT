@@ -111,6 +111,43 @@ SfM pipeline（ViewGraph、TrackStore、BA —— 全用内部索引）
 
 `isat_tracks` 采用两遍 I/O：Phase 1 用 Union-Find 得到 track 等价类，Phase 2 向 TrackStore 填入观测。**两阶段均只使用 geo 的 F/E inlier**（先读 `F_inliers`，若无则读 `E_inliers`），保证 track 内点率与下游 SfM 可用性。Phase 1 仅对 inlier 做 `merge_keys`，Phase 2 仅对 inlier 做 `add_observation`；不使用 two-view 的 points3d 填 track xyz（各对局部坐标系不一致），track 3D 由 incremental SfM 在全局系下三角化。
 
+#### .isat_tracks IDC Schema 版本历史
+
+`.isat_tracks` 文件由 `save_track_store_to_idc` 写出，`load_track_store_from_idc` 读入，向后兼容（读端只检查 `kAlive` bit，额外 bit 被忽略）。
+
+| schema_version | 写入方 | 新增内容 |
+|---|---|---|
+| `1.0` | `isat_tracks` | 基础格式：观测 blobs + 元数据 |
+| `1.1` | `isat_tracks`（带 view graph） | JSON 头部内嵌 `view_graph_pairs` 数组 |
+| `1.2` | `isat_incremental_sfm` | `is_sfm_result=true`，SfM 统计字段，`track_flags` 保留 `kHasTriangulated` |
+
+**`track_flags` 位定义**（`uint8_t`，来自 `track_store.h::track_flags` 命名空间）：
+
+| Bit | 常量 | 含义 |
+|-----|------|------|
+| 0 (`0x01`) | `kAlive` | track 存活（未被删除），读端唯一检查位 |
+| 1 (`0x02`) | `kNeedsRetriangulation` | 内部标记，仅 SfM 运行期有效，保存后无语义 |
+| 2 (`0x04`) | `kHasTriangulated` | 该 track 已被三角化（xyz 有效）；仅 Schema 1.2 保证正确写入 |
+| 3 (`0x08`) | `kSkipFromBA` | 被 BA 子集选择排除；仅 SfM 运行期有效 |
+
+**Schema 1.2 额外 JSON 头部字段**（`isat_incremental_sfm` 输出）：
+
+```json
+{
+  "schema_version": "1.2",
+  "is_sfm_result": true,
+  "num_registered_images": 36,
+  "num_triangulated": 38602,
+  "num_inlier": 37800,
+  "num_outlier": 802,
+  "num_not_triangulated": 6719
+}
+```
+
+- `num_inlier` = 存活（`kAlive`）且已三角化的 track 数（BA 后未被剔除的三维点）
+- `num_outlier` = 已三角化但已被删除（`!kAlive`）的 track 数（BA 后被剔除的外点）
+- `num_not_triangulated` = 从未完成三角化的 track 数
+
 #### 与 GPU BA 的关系
 
 向量化后，`cameras` 数组可直接作为 Ceres/GPU BA 的参数块数组（`camera_index_for_image[i]` 给出哪张图用哪个相机参数块），同构于 COLMAP 的 `camera_id → camera params` 表示，便于未来切换 GPU BA 后端（sba、g2o 等）。

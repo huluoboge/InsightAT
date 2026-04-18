@@ -64,7 +64,8 @@ static bool write_poses_json(const std::string& path, const std::vector<Eigen::M
     if (!registered[i])
       continue;
     json pose;
-    pose["image_index"] = static_cast<int>(i);
+    pose["image_index"]  = static_cast<int>(i);
+    pose["camera_index"] = image_to_camera_index[i];
     pose["R"] = std::vector<double>{poses_R[i](0, 0), poses_R[i](0, 1), poses_R[i](0, 2),
                                     poses_R[i](1, 0), poses_R[i](1, 1), poses_R[i](1, 2),
                                     poses_R[i](2, 0), poses_R[i](2, 1), poses_R[i](2, 2)};
@@ -236,6 +237,206 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
 
   LOG(INFO) << "Wrote " << bundle_path << " (" << reg_indices.size() << " cameras, "
             << points.size() << " points)";
+  return true;
+}
+
+// ─── COLMAP sparse text output ────────────────────────────────────────────────
+// Writes three text files to <out_dir>/colmap/sparse/0/:
+//   cameras.txt  – PINHOLE or OPENCV camera models (one per unique intrinsics)
+//   images.txt   – registered images: pose as quaternion + translation, with per-image 2D points
+//   points3D.txt – triangulated 3D points with full track (IMAGE_ID POINT2D_IDX pairs)
+//
+// COLMAP conventions:
+//   rotation: QW QX QY QZ  (Eigen::Quaterniond(R))
+//   translation: t = R * (-C)  (same as Bundler but without y-flip)
+//   camera IDs and image IDs are 1-indexed
+//   POINT2D_IDX: 0-based index into the image's POINTS2D list in images.txt
+static bool write_colmap(const std::string& out_dir, const std::vector<std::string>& image_paths,
+                         const std::vector<Eigen::Matrix3d>& poses_R,
+                         const std::vector<Eigen::Vector3d>& poses_C,
+                         const std::vector<bool>& registered,
+                         const std::vector<camera::Intrinsics>& cameras,
+                         const std::vector<int>& image_to_camera_index,
+                         const TrackStore& store) {
+  namespace fs = std::filesystem;
+
+  const std::string sparse_dir = out_dir + "/colmap/sparse/0";
+  try {
+    fs::create_directories(sparse_dir);
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "write_colmap: cannot create " << sparse_dir << ": " << e.what();
+    return false;
+  }
+
+  const int n_images = static_cast<int>(registered.size());
+
+  // ── Map global image index → COLMAP 1-based image ID ─────────────────────
+  std::vector<int> global_to_colmap_id(static_cast<size_t>(n_images), 0);
+  int next_img_id = 1;
+  for (int i = 0; i < n_images; ++i)
+    if (registered[static_cast<size_t>(i)])
+      global_to_colmap_id[static_cast<size_t>(i)] = next_img_id++;
+
+  // ── Determine unique cameras and assign COLMAP camera IDs ─────────────────
+  // We map each camera index in project → COLMAP camera ID (1-based)
+  const int n_cams = static_cast<int>(cameras.size());
+  std::vector<int> cam_to_colmap_id(static_cast<size_t>(n_cams), 0);
+  int next_cam_id = 1;
+  // Only emit cameras that are actually used by at least one registered image
+  for (int i = 0; i < n_images; ++i) {
+    if (!registered[static_cast<size_t>(i)])
+      continue;
+    const int ci = image_to_camera_index[static_cast<size_t>(i)];
+    if (ci >= 0 && ci < n_cams && cam_to_colmap_id[static_cast<size_t>(ci)] == 0)
+      cam_to_colmap_id[static_cast<size_t>(ci)] = next_cam_id++;
+  }
+
+  // ── cameras.txt ──────────────────────────────────────────────────────────
+  const std::string cams_path = sparse_dir + "/cameras.txt";
+  {
+    std::ofstream f(cams_path);
+    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << cams_path; return false; }
+    f << "# Camera list with one line of data per camera:\n"
+      << "#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n"
+      << "# Number of cameras: " << (next_cam_id - 1) << "\n";
+    f << std::fixed << std::setprecision(6);
+    for (int ci = 0; ci < n_cams; ++ci) {
+      if (cam_to_colmap_id[static_cast<size_t>(ci)] == 0)
+        continue;
+      const camera::Intrinsics& K = cameras[static_cast<size_t>(ci)];
+      const bool has_distortion = (std::abs(K.k1) > 1e-10 || std::abs(K.k2) > 1e-10 ||
+                                   std::abs(K.p1) > 1e-10 || std::abs(K.p2) > 1e-10);
+      const int cmap_id = cam_to_colmap_id[static_cast<size_t>(ci)];
+      if (has_distortion) {
+        // OPENCV: fx fy cx cy k1 k2 p1 p2
+        f << cmap_id << " OPENCV " << K.width << " " << K.height
+          << " " << K.fx << " " << K.fy << " " << K.cx << " " << K.cy
+          << " " << K.k1 << " " << K.k2 << " " << K.p1 << " " << K.p2 << "\n";
+      } else {
+        // PINHOLE: fx fy cx cy
+        f << cmap_id << " PINHOLE " << K.width << " " << K.height
+          << " " << K.fx << " " << K.fy << " " << K.cx << " " << K.cy << "\n";
+      }
+    }
+  }
+  LOG(INFO) << "write_colmap: wrote " << cams_path;
+
+  // ── Build per-image 2D → 3D observation lists (for images.txt + points3D.txt) ────
+  // obs2d[global_image_index] = list of (u, v, point3d_id_1based, track_id)
+  struct Obs2D { float u, v; int point3d_id; };
+  std::vector<std::vector<Obs2D>> img_obs(static_cast<size_t>(n_images));
+
+  // Collect valid tracks and assign 1-based COLMAP point3D IDs
+  struct ColmapPoint3D {
+    float x, y, z;
+    int point3d_id; // 1-based
+    std::vector<std::pair<int,int>> track; // (colmap_image_id, point2d_idx)
+  };
+
+  std::vector<ColmapPoint3D> colmap_points;
+  colmap_points.reserve(store.num_tracks());
+  int next_pt_id = 1;
+
+  std::vector<Observation> obs_buf;
+  for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
+    const int tid = static_cast<int>(ti);
+    if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+      continue;
+    float px, py, pz;
+    store.get_track_xyz(tid, &px, &py, &pz);
+
+    obs_buf.clear();
+    store.get_track_observations(tid, &obs_buf);
+
+    ColmapPoint3D pt;
+    pt.x = px; pt.y = py; pt.z = pz;
+    pt.point3d_id = next_pt_id;
+
+    for (const auto& o : obs_buf) {
+      const int im = static_cast<int>(o.image_index);
+      if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+        continue;
+      const int cmap_img_id = global_to_colmap_id[static_cast<size_t>(im)];
+      if (cmap_img_id == 0)
+        continue;
+      // POINT2D_IDX will be the current size of img_obs[im] before we push
+      const int pt2d_idx = static_cast<int>(img_obs[static_cast<size_t>(im)].size());
+      img_obs[static_cast<size_t>(im)].push_back({o.u, o.v, next_pt_id});
+      pt.track.emplace_back(cmap_img_id, pt2d_idx);
+    }
+
+    if (pt.track.size() >= 2) {
+      colmap_points.push_back(std::move(pt));
+      ++next_pt_id;
+    }
+  }
+
+  // ── images.txt ───────────────────────────────────────────────────────────
+  const std::string imgs_path = sparse_dir + "/images.txt";
+  {
+    std::ofstream f(imgs_path);
+    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << imgs_path; return false; }
+    f << "# Image list with two lines of data per image:\n"
+      << "#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n"
+      << "#   POINTS2D[] as (X, Y, POINT3D_ID)\n"
+      << "# Number of images: " << (next_img_id - 1) << "\n";
+    f << std::fixed << std::setprecision(9);
+    for (int i = 0; i < n_images; ++i) {
+      if (!registered[static_cast<size_t>(i)])
+        continue;
+      const int cmap_img_id = global_to_colmap_id[static_cast<size_t>(i)];
+      const int ci = image_to_camera_index[static_cast<size_t>(i)];
+      const int cmap_cam_id = cam_to_colmap_id[static_cast<size_t>(ci)];
+
+      const Eigen::Quaterniond q(poses_R[static_cast<size_t>(i)]);
+      const Eigen::Vector3d t = poses_R[static_cast<size_t>(i)] * (-poses_C[static_cast<size_t>(i)]);
+
+      const std::string name = (i < static_cast<int>(image_paths.size()))
+          ? fs::path(image_paths[static_cast<size_t>(i)]).filename().string()
+          : "image_" + std::to_string(i) + ".jpg";
+
+      // Line 1: pose
+      f << cmap_img_id
+        << " " << q.w() << " " << q.x() << " " << q.y() << " " << q.z()
+        << " " << t(0) << " " << t(1) << " " << t(2)
+        << " " << cmap_cam_id << " " << name << "\n";
+
+      // Line 2: 2D points (X Y POINT3D_ID, -1 if not triangulated)
+      const auto& obs = img_obs[static_cast<size_t>(i)];
+      if (obs.empty()) {
+        f << "\n";
+      } else {
+        f << std::setprecision(2);
+        for (size_t oi = 0; oi < obs.size(); ++oi) {
+          if (oi > 0) f << " ";
+          f << obs[oi].u << " " << obs[oi].v << " " << obs[oi].point3d_id;
+        }
+        f << "\n";
+        f << std::setprecision(9);
+      }
+    }
+  }
+  LOG(INFO) << "write_colmap: wrote " << imgs_path;
+
+  // ── points3D.txt ─────────────────────────────────────────────────────────
+  const std::string pts_path = sparse_dir + "/points3D.txt";
+  {
+    std::ofstream f(pts_path);
+    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << pts_path; return false; }
+    f << "# 3D point list with one line of data per point:\n"
+      << "#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[]\n"
+      << "# Number of points: " << colmap_points.size() << "\n";
+    f << std::fixed << std::setprecision(6);
+    for (const auto& pt : colmap_points) {
+      f << pt.point3d_id
+        << " " << pt.x << " " << pt.y << " " << pt.z
+        << " 128 128 128 0.0";
+      for (const auto& [img_id, pt2d_idx] : pt.track)
+        f << " " << img_id << " " << pt2d_idx;
+      f << "\n";
+    }
+  }
+  LOG(INFO) << "write_colmap: wrote " << pts_path << " (" << colmap_points.size() << " points)";
   return true;
 }
 
@@ -415,17 +616,28 @@ int main(int argc, char* argv[]) {
   write_bundler(output_dir, image_paths, poses_R, poses_C, registered, project.cameras,
                 project.image_to_camera_index, store);
 
+  write_colmap(output_dir, image_paths, poses_R, poses_C, registered, project.cameras,
+               project.image_to_camera_index, store);
+
   // ── Save TrackStore (3-D points + observation flags) to bundle dir ────────
   // Saved as tracks.isat_tracks in the same output directory so downstream
   // tools (test_sfm_diag2, isat_incremental_sfm re-run, …) can load it.
+  // All tracks are written (including dead/outlier), track_flags preserves
+  // kHasTriangulated so report tools can distinguish triangulated from raw.
   {
     const int n_imgs = project.num_images();
     std::vector<uint32_t> img_indices(static_cast<size_t>(n_imgs));
     for (int i = 0; i < n_imgs; ++i)
       img_indices[static_cast<size_t>(i)] = static_cast<uint32_t>(i);
 
+    TrackSaveOptions sfm_opts;
+    sfm_opts.is_sfm_result         = true;
+    sfm_opts.num_registered_images = n_reg;
+    // num_triangulated / num_inlier auto-counted in save_track_store_to_idc
+
     const std::string tracks_out = output_dir + "/tracks.isat_tracks";
-    if (save_track_store_to_idc(store, img_indices, tracks_out)) {
+    if (save_track_store_to_idc(store, img_indices, tracks_out,
+                                /*view_graph=*/nullptr, &sfm_opts)) {
       LOG(INFO) << "Saved TrackStore → " << tracks_out;
     } else {
       LOG(ERROR) << "Failed to save TrackStore to " << tracks_out;

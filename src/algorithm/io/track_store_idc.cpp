@@ -98,28 +98,70 @@ bool load_track_store_from_idc(const std::string& path, TrackStore* store_out,
 }
 
 bool save_track_store_to_idc(const TrackStore& store, const std::vector<uint32_t>& image_indices,
-                             const std::string& path, const ViewGraph* view_graph) {
+                             const std::string& path, const ViewGraph* view_graph,
+                             const TrackSaveOptions* opts) {
   const size_t n_tracks = store.num_tracks();
+  const bool embed_vg  = view_graph != nullptr && view_graph->num_pairs() > 0;
+  const bool is_sfm    = opts != nullptr && opts->is_sfm_result;
+
+  // ── Determine schema_version ─────────────────────────────────────────────
+  std::string schema_ver = "1.0";
+  if (is_sfm)           schema_ver = "1.2";
+  else if (embed_vg)    schema_ver = "1.1";
+
   nlohmann::json meta;
-  const bool embed_vg = view_graph != nullptr && view_graph->num_pairs() > 0;
-  meta["schema_version"] = embed_vg ? "1.1" : "1.0";
-  meta["task_type"] = "tracks";
-  meta["num_images"] = static_cast<int>(image_indices.size());
-  meta["image_indices"] = image_indices;
-  meta["num_tracks"] = static_cast<int>(n_tracks);
+  meta["schema_version"] = schema_ver;
+  meta["task_type"]      = "tracks";
+  meta["num_images"]     = static_cast<int>(image_indices.size());
+  meta["image_indices"]  = image_indices;
+  meta["num_tracks"]     = static_cast<int>(n_tracks);
+
   if (embed_vg)
     meta["view_graph_pairs"] = view_graph_pairs_to_json_array(*view_graph);
 
-  std::vector<float> track_xyz(static_cast<size_t>(n_tracks) * 3);
+  // ── Serialize tracks (always all tracks, never filter) ───────────────────
+  std::vector<float>   track_xyz(static_cast<size_t>(n_tracks) * 3);
   std::vector<uint8_t> track_flag_bytes(static_cast<size_t>(n_tracks));
+
+  int auto_num_triangulated = 0;
+  int auto_num_inlier       = 0;
+
   for (size_t t = 0; t < n_tracks; ++t) {
     float x, y, z;
     store.get_track_xyz(static_cast<int>(t), &x, &y, &z);
-    track_xyz[t * 3] = x;
+    track_xyz[t * 3]     = x;
     track_xyz[t * 3 + 1] = y;
     track_xyz[t * 3 + 2] = z;
-    track_flag_bytes[static_cast<size_t>(t)] =
-        store.is_track_valid(static_cast<int>(t)) ? track_flags::kAlive : 0;
+
+    uint8_t flags = 0;
+    const bool alive = store.is_track_valid(static_cast<int>(t));
+    const bool tri   = store.track_has_triangulated_xyz(static_cast<int>(t));
+    if (alive) flags |= track_flags::kAlive;
+    if (tri)   flags |= track_flags::kHasTriangulated;
+    if (is_sfm && store.is_track_skip_ba(static_cast<int>(t)))
+      flags |= track_flags::kSkipFromBA;
+    track_flag_bytes[t] = flags;
+
+    if (tri) {
+      ++auto_num_triangulated;
+      if (alive) ++auto_num_inlier;
+    }
+  }
+
+  // ── Embed SfM-result metadata ─────────────────────────────────────────────
+  if (is_sfm) {
+    const int num_tri   = (opts->num_triangulated >= 0) ? opts->num_triangulated
+                                                        : auto_num_triangulated;
+    const int num_inlier = (opts->num_inlier >= 0) ? opts->num_inlier
+                                                   : auto_num_inlier;
+    const int num_outlier        = num_tri - num_inlier;
+    const int num_not_triangulated = static_cast<int>(n_tracks) - num_tri;
+    meta["is_sfm_result"]           = true;
+    meta["num_registered_images"]   = opts->num_registered_images;
+    meta["num_triangulated"]        = num_tri;
+    meta["num_inlier"]              = num_inlier;
+    meta["num_outlier"]             = num_outlier;
+    meta["num_not_triangulated"]    = num_not_triangulated;
   }
 
   std::vector<uint32_t> track_obs_offset(static_cast<size_t>(n_tracks) + 1);
@@ -180,7 +222,8 @@ bool save_track_store_to_idc(const TrackStore& store, const std::vector<uint32_t
   }
   VLOG(1) << "save_track_store_to_idc: wrote " << path << " (" << n_tracks << " tracks, " << n_obs
           << " observations"
-          << (embed_vg ? ", view_graph_pairs embedded" : "") << ")";
+          << (embed_vg ? ", view_graph embedded" : "")
+          << (is_sfm   ? ", sfm_result meta"     : "") << ")";
   return true;
 }
 

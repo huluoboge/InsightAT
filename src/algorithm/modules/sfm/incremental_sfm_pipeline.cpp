@@ -4056,19 +4056,32 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                 &rmse, static_cast<int>(*im1_ptr));
   LOG(INFO) << "Final BA RMSE=" << rmse << " px";
 
-  // IncrementalRetriangulationOptions retri_opts;
-  // retri_opts.robust.min_tri_angle_deg = opts.triangulation.min_angle_deg;
-  // retri_opts.restore_strict_reproj_px = 4.0;
-  // Drain pending queue one final time: global BA outlier rejection may have cleared some XYZ.
-  IncrementalRetriangulationOptions retri_opts_post;
-  retri_opts_post.scope = RetriangulationScope::kFullScan;
-  retri_opts_post.robust.min_tri_angle_deg = opts.triangulation.min_angle_deg;
-  retri_opts_post.robust.max_tri_angle_deg = opts.triangulation.max_angle_deg;
-  retri_opts_post.full_scan_commit_reproj_px = opts.triangulation.commit_reproj_px;
-  retri_opts_post.restore_strict_reproj_px = opts.triangulation.restore_reproj_px;
-  run_retriangulation(store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
-                      image_to_camera_index, retri_opts_post);
-  LOG(INFO) << "Post-final-BA retriangulation done. total_tri=" << count_tri_tracks();
+  // ── Post-BA cleanup ───────────────────────────────────────────────────────
+  // No kFullScan retriangulation here: final BA already rejected outliers at a tight threshold
+  // (~4 px); a kFullScan pass would attempt to re-triangulate those same cleared tracks at a
+  // looser commit_reproj_px (16 px default), causing tug-of-war.  Instead we only:
+  //   (a) refine kSkipFromBA track positions with fixed-pose Ceres (they never entered BA),
+  //   (b) apply the same strict outlier rejection to any newly refined points.
+  if (opts.global_ba.ba_fixed_pose_optimize_skipped &&
+      (opts.global_ba.ba_grid_subset || opts.global_ba.skip_2degree_tracks)) {
+    double skip_rmse = 0.0;
+    retri_skipped_tracks_fixed_pose(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                    image_to_camera_index, *cameras,
+                                    opts.global_ba.ba_fixed_pose_max_iterations, &skip_rmse);
+    LOG(INFO) << "Post-final fixed-pose BA (skipped tracks): RMSE=" << skip_rmse << " px";
+  }
+  {
+    const double strict_thr = opts.outlier.threshold_px;
+    int rej = 0;
+    rej += reject_outliers_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                     *cameras, image_to_camera_index, strict_thr);
+    rej += reject_outliers_angle_multiview(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                           opts.outlier.min_angle_deg, opts.outlier.max_angle_deg);
+    rej += reject_outliers_depth(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                 opts.outlier.max_depth_factor);
+    LOG(INFO) << "Post-final outlier cleanup: strict_thr=" << strict_thr
+              << " px  rejected=" << rej << "  total_tri=" << count_tri_tracks();
+  }
 
   // ── Diagnostic: report unregistered images ───────────────────────────────
   // For each image that was never registered, log:
