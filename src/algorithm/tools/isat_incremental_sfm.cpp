@@ -12,6 +12,8 @@
  *   -m / --pairs     Path to pairs JSON (for view graph)
  *   -g / --geo       Directory of .isat_geo files (index-based: im0_im1.isat_geo)
  *   -o / --output    Output directory; writes poses.json, bundle.out, list.txt
+ *
+ *   --ba-threads N   Ceres solver thread count for bundle adjustment (0 = hardware default).
  */
 
 #include <cmath>
@@ -452,6 +454,7 @@ int main(int argc, char* argv[]) {
   int debug_interval = 1;
   int bundler_max_cameras = -1;
   int ba_grid_target = 1000;
+  int ba_threads = 0;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -478,6 +481,8 @@ int main(int argc, char* argv[]) {
               .doc("Target BA tracks per image for grid-NMS (default 1000)."));
   cmd.add(make_option(0, flag_fixed_pose, "ba-fixed-pose-skip")
               .doc("Fixed-pose Ceres solve for skipped tracks after global BA (1=on [default], 0=off)."));
+  cmd.add(make_option(0, ba_threads, "ba-threads")
+              .doc("Ceres num_threads for BA solves (default: 0 = use hardware concurrency)."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -493,6 +498,11 @@ int main(int argc, char* argv[]) {
   if (tracks_path.empty() || project_path.empty() || pairs_path.empty() || geo_dir.empty() ||
       output_dir.empty()) {
     std::cerr << "Error: -t, -p, -m, -g, -o are required\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (ba_threads < 0) {
+    std::cerr << "Error: --ba-threads must be >= 0\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -545,6 +555,10 @@ int main(int argc, char* argv[]) {
   opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
   opts.local_ba.switch_after_n_images = 100;
   opts.resection.backend = ResectionBackend::kPoseLib;
+  if (ba_threads > 0) {
+    opts.global_ba.solver_overrides.num_threads = ba_threads;
+    LOG(INFO) << "Ceres BA num_threads=" << ba_threads;
+  }
   if (cmd.used("fix-intrinsics")) {
     opts.global_ba.optimize_intrinsics = false;
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";

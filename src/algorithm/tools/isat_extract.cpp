@@ -122,6 +122,7 @@ int main(int argc, char* argv[]) {
   int levels = 3;
   std::string normalization = "l1root";
   float nms_radius = 3.0f;
+  int io_threads = 4; ///< Load / post-process / write stages (GPU stage stays single-threaded).
 
   // ================================================================
   // Required arguments
@@ -164,6 +165,9 @@ int main(int argc, char* argv[]) {
       make_option(0, nms_radius, "nms-radius").doc("[SIFT] NMS radius in pixels (default: 3.0)"));
   cmd.add(make_switch(0, "nms-no-orient")
               .doc("[SIFT] NMS ignores orientation (removes multi-orientation)"));
+  cmd.add(make_option('j', io_threads, "threads")
+              .doc("CPU worker threads for image load, post-process, and feature write (default: 4; "
+                   "GPU extraction uses one context on the main thread)"));
 
   // Logging options
   std::string log_level;
@@ -191,6 +195,11 @@ int main(int argc, char* argv[]) {
   // Validate required arguments
   if (input_file.empty() || output_dir.empty()) {
     std::cerr << "Error: -i/--input and -o/--output are required\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (io_threads < 1) {
+    std::cerr << "Error: -j/--threads must be >= 1\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -272,6 +281,7 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  Mode: "
             << (only_retrieval ? "retrieval-only"
                                : (enable_dual_output ? "dual-output" : "matching-only"));
+  LOG(INFO) << "  CPU I/O / post threads: " << io_threads;
 
   // Create output directories
   if (process_matching)
@@ -299,10 +309,9 @@ int main(int argc, char* argv[]) {
   // Create pipeline stages
   const int IO_QUEUE_SIZE = 10;
   const int GPU_QUEUE_SIZE = 5;
-  const int NUM_IO_THREADS = 4;
 
   // Stage 1: Image loading (multi-threaded I/O)
-  Stage imageLoadStage("ImageLoad", NUM_IO_THREADS, IO_QUEUE_SIZE,
+  Stage imageLoadStage("ImageLoad", io_threads, IO_QUEUE_SIZE,
                        [&image_tasks, process_retrieval, resize_retrieval](int index) {
                          auto& task = image_tasks[index];
                          cv::Mat image = cv::imread(task.image_path, cv::IMREAD_UNCHANGED);
@@ -408,7 +417,7 @@ int main(int argc, char* argv[]) {
         });
     // Stage 3: CPU post-processing (normalization, distribution, uint8 conversion)
     Stage postProcessStage(
-        "PostProcess", NUM_IO_THREADS, IO_QUEUE_SIZE,
+        "PostProcess", io_threads, IO_QUEUE_SIZE,
         [&image_tasks, use_uint8, enable_nms, normalization, nms_radius, nms_keep_orientation,
          process_matching, process_retrieval](int index) {
           auto& task = image_tasks[index];
@@ -468,7 +477,7 @@ int main(int argc, char* argv[]) {
 
     // Stage 4: Write IDC files (multi-threaded I/O, dual-output support)
     Stage writeStage(
-        "WriteIDC", NUM_IO_THREADS, IO_QUEUE_SIZE,
+        "WriteIDC", io_threads, IO_QUEUE_SIZE,
         [&output_dir, &output_retrieval_dir, &image_tasks, use_uint8, enable_nms, normalization,
          nms_radius, nms_keep_orientation, &sift_params, &sift_params_retrieval, process_matching,
          process_retrieval](int index) {

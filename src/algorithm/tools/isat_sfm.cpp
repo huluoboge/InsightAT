@@ -16,6 +16,7 @@
  *   isat_sfm -i /photos -w work/ --exhaustive-match           # 跳过检索，全图像对全分辨率匹配
  *   isat_sfm -i /photos -w work/ --no-grid                    # 提取不传 --nms（关空间网格）
  *   isat_sfm -i /photos -w work/ --geo-thresh-f 3             # 更严 F 内点（像素，见 --help）
+ *   isat_sfm -i /photos -w work/ --io-threads 8 --ba-threads 8  # I/O 与 Ceres 线程数
  *   isat_sfm -i /photos -w work/ --steps create,extract       # 只跑 create + extract
  *   isat_sfm -i /photos -w work/ --steps tracks,incremental_sfm  # 从 tracks 续跑
  *
@@ -474,6 +475,10 @@ int main(int argc, char* argv[]) {
   int geo_min_inliers = 10;
   /// Passed to isat_geo -t / --thresh-f (F 内点 Sampson 门限，单位像素；越大越宽松).
   double geo_thresh_f = 16.0;
+  /// isat_extract / isat_retrieval_match / isat_match CPU I/O worker count (GPU 仍单线程上下文).
+  int io_threads = 4;
+  /// isat_incremental_sfm Ceres BA threads (0 = 子进程默认，按硬件并发).
+  int ba_threads = 0;
 
   CmdLine cmd("InsightAT SfM Pipeline – end-to-end incremental SfM");
   cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required)"));
@@ -512,6 +517,12 @@ int main(int argc, char* argv[]) {
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only); also forwarded to all sub-tools"));
   cmd.add(make_switch('h', "help").doc("Show help"));
   cmd.add(make_switch(0, "no-log-file").doc("Disable automatic log file in <work-dir>/logs/"));
+  cmd.add(make_option(0, io_threads, "io-threads")
+              .doc("CPU threads for extract + retrieval + match I/O stages (default: 4). "
+                   "Forwarded as -j/--threads to those tools."));
+  cmd.add(make_option(0, ba_threads, "ba-threads")
+              .doc("Ceres thread count for incremental SfM bundle adjustment (default: 0 = use "
+                   "isat_incremental_sfm hardware default). Set >0 to cap or fix parallelism."));
 
   try {
     cmd.process(argc, argv);
@@ -539,6 +550,16 @@ int main(int argc, char* argv[]) {
   }
   if (auto_exhaustive_max_images < 0) {
     std::cerr << "Error: --auto-exhaustive-max-images must be >= 0 (0 disables)\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (io_threads < 1) {
+    std::cerr << "Error: --io-threads must be >= 1\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (ba_threads < 0) {
+    std::cerr << "Error: --ba-threads must be >= 0\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -588,6 +609,8 @@ int main(int argc, char* argv[]) {
   // Normalize extensions: "JPG" → ".jpg", "tif" → ".tif", etc.
   ext = normalize_exts(ext);
   LOG(INFO) << "Image extensions: " << ext;
+  LOG(INFO) << "Threading: io_threads=" << io_threads << "  ba_threads=" << ba_threads
+            << (ba_threads > 0 ? "" : " (BA: auto)");
 
   auto active_steps = parse_steps(steps_str);
   {
@@ -737,7 +760,9 @@ int main(int argc, char* argv[]) {
                                               "--norm",
                                               "l1root",
                                               "--no-adapt",
-                                              "--uint8"};
+                                              "--uint8",
+                                              "-j",
+                                              std::to_string(io_threads)};
       if (!no_grid)
         extract_cmd.push_back("--nms");
       run_or_die("extract", extract_cmd);
@@ -766,7 +791,9 @@ int main(int argc, char* argv[]) {
                                               "--norm",
                                               "l1root",
                                               "--no-adapt",
-                                              "--uint8"};
+                                              "--uint8",
+                                              "-j",
+                                              std::to_string(io_threads)};
       if (!no_grid)
         extract_cmd.push_back("--nms");
       run_or_die("extract", extract_cmd);
@@ -825,7 +852,7 @@ int main(int argc, char* argv[]) {
                  {tool_path("isat_retrieval_match"), "-l", images_all.string(), "-f",
                   feat_ret_dir.string(), "-w", retrieval_work.string(), "-o",
                   pairs_retrieve.string(), "--match-backend", match_backend, "--max-features", "4096",
-                  "--threads", "4"});
+                  "--threads", std::to_string(io_threads)});
 
       const fs::path meta_path = feat_dir / "matching_extract_meta.json";
       const std::vector<int> boost_idx = read_low_peak_matching_indices(meta_path);
@@ -843,7 +870,8 @@ int main(int argc, char* argv[]) {
 
     run_or_die("match", {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f",
                          feat_dir.string(), "-o", match_dir_path.string(), "--match-backend",
-                         match_backend, "--max-features", "10000", "--threads", "4"});
+                         match_backend, "--max-features", "10000", "--threads",
+                         std::to_string(io_threads)});
 
     // Full geometric verification on full-resolution matches
     char geo_tf_buf[64];
@@ -891,6 +919,10 @@ int main(int argc, char* argv[]) {
                                         sfm_out.string()};
     if (fix_intrinsics)
       sfm_cmd.push_back("--fix-intrinsics");
+    if (ba_threads > 0) {
+      sfm_cmd.push_back("--ba-threads");
+      sfm_cmd.push_back(std::to_string(ba_threads));
+    }
     run_or_die("incremental-sfm", sfm_cmd);
   }
 

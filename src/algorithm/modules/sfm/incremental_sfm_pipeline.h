@@ -61,6 +61,8 @@ struct BASolverOverrides {
   int max_num_iterations = 0;    ///< 0 = use max_iterations param of run_global_ba / local BA.
   double huber_loss_delta = 0.0; ///< Huber loss δ (px). 0 = BAInput default (4.0 px).
   double tikhonov_lambda = 0.0;  ///< Tikhonov regularization lambda. 0 = disabled. Passed to BAInput::tikhonov_lambda.
+  /// Ceres `Solver::Options::num_threads`. 0 = use BAInput default (hardware concurrency).
+  int num_threads = 0;
 };
 
 /**

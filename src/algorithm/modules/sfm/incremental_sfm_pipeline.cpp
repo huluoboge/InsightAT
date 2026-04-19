@@ -1645,7 +1645,8 @@ static bool retri_skipped_tracks_fixed_pose(TrackStore* store,
                                             const std::vector<bool>& registered,
                                             const std::vector<int>& image_to_camera_index,
                                             const std::vector<camera::Intrinsics>& cameras,
-                                            int max_iterations, double* rmse_px_out) {
+                                            int max_iterations, double* rmse_px_out,
+                                            int ceres_num_threads) {
   BAInput ba_in;
   std::vector<int> ba_image_index_to_global;
   std::vector<int> point_index_to_track_id;
@@ -1653,6 +1654,8 @@ static bool retri_skipped_tracks_fixed_pose(TrackStore* store,
           *store, poses_R, poses_C, registered, image_to_camera_index, cameras, &ba_in,
           &ba_image_index_to_global, &point_index_to_track_id))
     return false;
+  if (ceres_num_threads > 0)
+    ba_in.num_threads = ceres_num_threads;
   LOG(INFO) << "retri_skipped_tracks_fixed_pose: " << ba_in.poses_R.size() << " images, "
             << ba_in.points3d.size() << " skipped points, " << ba_in.observations.size() << " obs";
   BAResult ba_out;
@@ -2090,6 +2093,8 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
   if (solver_overrides.huber_loss_delta > 0.0)
     ba_in.huber_loss_delta = solver_overrides.huber_loss_delta;
   ba_in.tikhonov_lambda = solver_overrides.tikhonov_lambda;
+  if (solver_overrides.num_threads > 0)
+    ba_in.num_threads = solver_overrides.num_threads;
   // Build per-camera intrinsics fix flags.
   // camera_frozen: frozen cameras keep kFixIntrAll (Schur-complement sparsity benefit).
   // partial_intr_fix_per_cam (priority): per-camera schedule mask based on each camera's own
@@ -2229,6 +2234,8 @@ bool run_local_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
     ba_in.solver_function_tolerance = overrides.function_tolerance;
   if (overrides.gradient_tolerance > 0.0)
     ba_in.solver_gradient_tolerance = overrides.gradient_tolerance;
+  if (overrides.num_threads > 0)
+    ba_in.num_threads = overrides.num_threads;
   int n_optimized = 0;
   for (size_t i = 0; i < ba_in.fix_pose.size(); ++i)
     if (!ba_in.fix_pose[i])
@@ -2505,6 +2512,8 @@ bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_
     ba_in.solver_function_tolerance = overrides.function_tolerance;
   if (overrides.gradient_tolerance > 0.0)
     ba_in.solver_gradient_tolerance = overrides.gradient_tolerance;
+  if (overrides.num_threads > 0)
+    ba_in.num_threads = overrides.num_threads;
   int n_variable = 0, n_constant = 0;
   for (bool f : ba_in.fix_pose) {
     if (f)
@@ -2761,6 +2770,8 @@ bool run_local_ba_batch_neighbor(
     ba_in.solver_function_tolerance = overrides.function_tolerance;
   if (overrides.gradient_tolerance > 0.0)
     ba_in.solver_gradient_tolerance = overrides.gradient_tolerance;
+  if (overrides.num_threads > 0)
+    ba_in.num_threads = overrides.num_threads;
   BAResult ba_out;
   if (!global_bundle_analytic(ba_in, &ba_out, max_iterations)) {
     LOG(WARNING) << "run_local_ba_batch_neighbor: solver failed";
@@ -3075,7 +3086,8 @@ run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    std::vector<camera::Intrinsics>* cameras, int anchor_image,
                    bool optimize_intrinsics, const std::vector<uint32_t>* partial_intr_fix_per_cam,
                    double focal_prior_weight, double* rmse_px_out, int max_outer_iters = 5,
-                   int inner_iters = 100, double convergence_tol = 1e-3) {
+                   int inner_iters = 100, double convergence_tol = 1e-3,
+                   int ceres_num_threads = 0) {
   if (!store || !poses_R || !poses_C || !cameras)
     return false;
 
@@ -3127,6 +3139,8 @@ run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
       // Use DENSE_SCHUR — robust for near-degenerate pose-only problems
       ba_in.solver_dense_schur_max_variable_cams = static_cast<int>(ba_in.poses_R.size()) + 1;
       ba_in.huber_loss_delta = 4.0;
+      if (ceres_num_threads > 0)
+        ba_in.num_threads = ceres_num_threads;
 
       BAResult ba_out;
       if (!global_bundle_analytic(ba_in, &ba_out, inner_iters) || !ba_out.success) {
@@ -3164,6 +3178,8 @@ run_alternating_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
       // DENSE_SCHUR with all poses fixed degenerates to point-only; use SPARSE_NORMAL_CHOLESKY
       // which is block-diagonal and always positive definite for point-only problems.
       ba_in.solver_dense_schur_max_variable_cams = 0; // force SPARSE_SCHUR path
+      if (ceres_num_threads > 0)
+        ba_in.num_threads = ceres_num_threads;
 
       BAResult ba_out;
       if (!global_bundle_analytic(ba_in, &ba_out, inner_iters) || !ba_out.success) {
@@ -3362,7 +3378,8 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
                                   cameras, anchor_image, opts.global_ba.optimize_intrinsics,
                                   &per_cam_masks, opts.intrinsics.focal_prior_weight, &rmse,
                                   /*max_outer_iters=*/5, /*inner_iters=*/100,
-                                  /*convergence_tol=*/1e-3);
+                                  /*convergence_tol=*/1e-3,
+                                  opts.global_ba.solver_overrides.num_threads);
           if (ok) {
             LOG(INFO) << "  [ba_outlier] fine round " << r
                       << ": alternating BA succeeded, RMSE=" << rmse << " px";
@@ -3448,8 +3465,8 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
       (opts.global_ba.ba_grid_subset || opts.global_ba.skip_2degree_tracks)) {
     double skip_rmse = 0.0;
     retri_skipped_tracks_fixed_pose(store, *poses_R, *poses_C, registered, image_to_camera_index,
-                                    *cameras, opts.global_ba.ba_fixed_pose_max_iterations,
-                                    &skip_rmse);
+                                    *cameras, opts.global_ba.ba_fixed_pose_max_iterations, &skip_rmse,
+                                    opts.global_ba.solver_overrides.num_threads);
   }
 
   return ok;
@@ -3876,7 +3893,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         LOG(INFO) << "  Local BA strategy: batch neighbor optimization (all registered images)";
       }
       auto t_lba0 = Clock::now();
-      BASolverOverrides local_ov{}; // default overrides for local BA
+      BASolverOverrides local_ov{};
+      local_ov.num_threads = opts.global_ba.solver_overrides.num_threads;
       const bool local_ba_ok =
           run_local_ba_dispatch(opts.local_ba, anchor_image, store_out, poses_R_out, poses_C_out,
                                 *registered_out, image_to_camera_index, *cameras,
@@ -4074,7 +4092,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     double skip_rmse = 0.0;
     retri_skipped_tracks_fixed_pose(store_out, *poses_R_out, *poses_C_out, *registered_out,
                                     image_to_camera_index, *cameras,
-                                    opts.global_ba.ba_fixed_pose_max_iterations, &skip_rmse);
+                                    opts.global_ba.ba_fixed_pose_max_iterations, &skip_rmse,
+                                    opts.global_ba.solver_overrides.num_threads);
     LOG(INFO) << "Post-final fixed-pose BA (skipped tracks): RMSE=" << skip_rmse << " px";
   }
   {
