@@ -32,6 +32,7 @@
 #include "tools/project_loader.h"
 
 #include "../io/track_store_idc.h"
+#include "../modules/camera/camera_utils.h"
 #include "../modules/sfm/incremental_sfm_pipeline.h"
 #include "../modules/sfm/track_store.h"
 
@@ -242,11 +243,49 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
   return true;
 }
 
+// Mean reprojection error (px) for one track: pipeline-consistent with incremental_sfm_pipeline /
+// bundle_adjustment_analytic (distorted pixels, same as collect_reproj_errors).
+static double track_mean_reprojection_error_px(
+    int tid, const TrackStore& store, const Eigen::Vector3d& X,
+    const std::vector<Eigen::Matrix3d>& poses_R, const std::vector<Eigen::Vector3d>& poses_C,
+    const std::vector<bool>& registered, const std::vector<camera::Intrinsics>& cameras,
+    const std::vector<int>& image_to_camera_index, int n_images) {
+  std::vector<Observation> obs_buf;
+  store.get_track_observations(tid, &obs_buf);
+  double sum = 0.0;
+  int n = 0;
+  for (const auto& o : obs_buf) {
+    const int im = static_cast<int>(o.image_index);
+    if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    const int ci = image_to_camera_index[static_cast<size_t>(im)];
+    if (ci < 0 || ci >= static_cast<int>(cameras.size()))
+      continue;
+    const Eigen::Matrix3d& R = poses_R[static_cast<size_t>(im)];
+    const Eigen::Vector3d& C = poses_C[static_cast<size_t>(im)];
+    Eigen::Vector3d p = R * (X - C);
+    if (p(2) <= 1e-12)
+      continue;
+    const camera::Intrinsics& K = cameras[static_cast<size_t>(ci)];
+    const double xn = p(0) / p(2), yn = p(1) / p(2);
+    double xd = 0.0, yd = 0.0;
+    camera::apply_distortion(xn, yn, K, &xd, &yd);
+    const double u_pred = K.fx * xd + K.cx;
+    const double v_pred = K.fy * yd + K.cy;
+    const double du = static_cast<double>(o.u) - u_pred;
+    const double dv = static_cast<double>(o.v) - v_pred;
+    sum += std::sqrt(du * du + dv * dv);
+    ++n;
+  }
+  return n > 0 ? sum / static_cast<double>(n) : 0.0;
+}
+
 // ─── COLMAP sparse text output ────────────────────────────────────────────────
 // Writes three text files to <out_dir>/colmap/sparse/0/:
-//   cameras.txt  – PINHOLE or OPENCV camera models (one per unique intrinsics)
+//   cameras.txt  – OPENCV only (OpenCV tangential order; p1/p2 swapped from internal ContextCapture)
 //   images.txt   – registered images: pose as quaternion + translation, with per-image 2D points
-//   points3D.txt – triangulated 3D points with full track (IMAGE_ID POINT2D_IDX pairs)
+//   points3D.txt – triangulated 3D points with full track (IMAGE_ID POINT2D_IDX pairs);
+//                  ERROR column = mean reprojection error (px) over track observations
 //
 // COLMAP conventions:
 //   rotation: QW QX QY QZ  (Eigen::Quaterniond(R))
@@ -306,18 +345,20 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
       if (cam_to_colmap_id[static_cast<size_t>(ci)] == 0)
         continue;
       const camera::Intrinsics& K = cameras[static_cast<size_t>(ci)];
-      const bool has_distortion = (std::abs(K.k1) > 1e-10 || std::abs(K.k2) > 1e-10 ||
-                                   std::abs(K.p1) > 1e-10 || std::abs(K.p2) > 1e-10);
       const int cmap_id = cam_to_colmap_id[static_cast<size_t>(ci)];
-      if (has_distortion) {
-        // OPENCV: fx fy cx cy k1 k2 p1 p2
-        f << cmap_id << " OPENCV " << K.width << " " << K.height
-          << " " << K.fx << " " << K.fy << " " << K.cx << " " << K.cy
-          << " " << K.k1 << " " << K.k2 << " " << K.p1 << " " << K.p2 << "\n";
+      // COLMAP OpenCV tangential order differs from internal ContextCapture: OpenCV p1 = K.p2,
+      // OpenCV p2 = K.p1.
+      // - OPENCV: fx fy cx cy k1 k2 p1 p2 — only two radial coeffs (no k3 in this model).
+      // - FULL_OPENCV: fx fy cx cy k1 k2 p1 p2 k3 k4 k5 k6 — rational radial; with k4=k5=k6=0
+      //   matches polynomial (1 + k1*r² + k2*r⁴ + k3*r⁶) / 1, i.e. standard OpenCV + k3.
+      if (std::abs(K.k3) <= 1e-12) {
+        f << cmap_id << " OPENCV " << K.width << " " << K.height << " " << K.fx << " " << K.fy
+          << " " << K.cx << " " << K.cy << " " << K.k1 << " " << K.k2 << " " << K.p2 << " " << K.p1
+          << "\n";
       } else {
-        // PINHOLE: fx fy cx cy
-        f << cmap_id << " PINHOLE " << K.width << " " << K.height
-          << " " << K.fx << " " << K.fy << " " << K.cx << " " << K.cy << "\n";
+        f << cmap_id << " FULL_OPENCV " << K.width << " " << K.height << " " << K.fx << " " << K.fy
+          << " " << K.cx << " " << K.cy << " " << K.k1 << " " << K.k2 << " " << K.p2 << " " << K.p1
+          << " " << K.k3 << " 0 0 0\n";
       }
     }
   }
@@ -332,6 +373,7 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
   struct ColmapPoint3D {
     float x, y, z;
     int point3d_id; // 1-based
+    double mean_reproj_px; ///< COLMAP points3D.txt ERROR field
     std::vector<std::pair<int,int>> track; // (colmap_image_id, point2d_idx)
   };
 
@@ -353,6 +395,10 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
     ColmapPoint3D pt;
     pt.x = px; pt.y = py; pt.z = pz;
     pt.point3d_id = next_pt_id;
+    const Eigen::Vector3d Xw(static_cast<double>(px), static_cast<double>(py), static_cast<double>(pz));
+    pt.mean_reproj_px =
+        track_mean_reprojection_error_px(tid, store, Xw, poses_R, poses_C, registered, cameras,
+                                         image_to_camera_index, n_images);
 
     for (const auto& o : obs_buf) {
       const int im = static_cast<int>(o.image_index);
@@ -432,7 +478,7 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
     for (const auto& pt : colmap_points) {
       f << pt.point3d_id
         << " " << pt.x << " " << pt.y << " " << pt.z
-        << " 128 128 128 0.0";
+        << " 128 128 128 " << pt.mean_reproj_px;
       for (const auto& [img_id, pt2d_idx] : pt.track)
         f << " " << img_id << " " << pt2d_idx;
       f << "\n";

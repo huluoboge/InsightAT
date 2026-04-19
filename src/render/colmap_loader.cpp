@@ -79,6 +79,12 @@ static bool parse_camera_intrinsics(const ColmapCameraRow& row, double* focal, d
     *k2 = p[5];
     return true;
   }
+  if (m == "FULL_OPENCV" && p.size() >= 12) {
+    *focal = 0.5 * (p[0] + p[1]);
+    *k1 = p[4];
+    *k2 = p[5];
+    return true;
+  }
   if (m == "SIMPLE_RADIAL_FISHEYE" && p.size() >= 4) {
     *focal = p[0];
     *k1 = p[3];

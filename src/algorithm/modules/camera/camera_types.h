@@ -53,6 +53,9 @@ struct Intrinsics {
   int width = 0;
   int height = 0;
   double k1 = 0.0, k2 = 0.0, k3 = 0.0;
+  /// Tangential coeffs: Bentley / ContextCapture order (camera_utils.h). COLMAP export uses
+  /// OpenCV tangential order (swap): written OpenCV p1 = p2 here, OpenCV p2 = p1 here.
+  /// Radial k3: COLMAP ``OPENCV`` has no k3 — use ``FULL_OPENCV`` in exporters when k3 ≠ 0.
   double p1 = 0.0, p2 = 0.0;
 
   bool has_image_size() const { return width > 0 && height > 0; }

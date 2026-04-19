@@ -8,6 +8,7 @@
 
 #include "ColmapExporter.h"
 #include "database/database_types.h"
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <glog/logging.h>
@@ -209,13 +210,22 @@ bool ColmapExporter::write_cameras_text(const insight::database::Project& projec
     if (group.group_camera) {
       const auto& camera = *group.group_camera;
 
-      file << cameraId << " "
-           << "OPENCV " << camera.width << " " << camera.height << " ";
-
+      // OPENCV: no k3. FULL_OPENCV: k1 k2 p1 p2 k3 k4 k5 k6 with k4=k5=k6=0 for polynomial radial.
+      file << cameraId << " ";
+      if (std::abs(camera.k3) <= 1e-12) {
+        file << "OPENCV " << camera.width << " " << camera.height << " ";
+      } else {
+        file << "FULL_OPENCV " << camera.width << " " << camera.height << " ";
+      }
+      // OpenCV tangential order vs ContextCapture storage: write OpenCV p1=p2, p2=p1.
       file << std::fixed << std::setprecision(6) << camera.focal_length << " "
            << camera.focal_length * camera.aspect_ratio << " " << camera.principal_point_x << " "
-           << camera.principal_point_y << " " << camera.k1 << " " << camera.k2 << " " << camera.p1
-           << " " << camera.p2 << "\n";
+           << camera.principal_point_y << " " << camera.k1 << " " << camera.k2 << " " << camera.p2
+           << " " << camera.p1;
+      if (std::abs(camera.k3) > 1e-12) {
+        file << " " << camera.k3 << " 0 0 0";
+      }
+      file << "\n";
 
       cameraId++;
     }
