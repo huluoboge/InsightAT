@@ -35,7 +35,11 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from benchmarks.sfm_compare.colmap_sparse import count_points3d, load_cameras_by_basename  # noqa: E402
+from benchmarks.sfm_compare.colmap_sparse import (  # noqa: E402
+    count_images_in_dir,
+    count_points3d,
+    load_cameras_by_basename,
+)
 
 
 def _isat_sfm_exe() -> str:
@@ -136,10 +140,11 @@ def main() -> int:
                 timing = None
 
         sparse = work / "incremental_sfm" / "colmap" / "sparse" / "0" / "images.txt"
-        n_isat = 0
+        n_input = count_images_in_dir(img_dir)
+        n_reg = 0
         n_pts = 0
         if sparse.is_file():
-            n_isat = len(load_cameras_by_basename(sparse))
+            n_reg = len(load_cameras_by_basename(sparse))
             n_pts = count_points3d(sparse.parent / "points3D.txt")
 
         row = {
@@ -151,13 +156,14 @@ def main() -> int:
             "log": str(log_path),
             "sfm_timing_json": str(timing_path) if timing_path.is_file() else "",
             "timing": timing,
-            "n_images_colmap_export": n_isat,
-            "n_points3d_colmap_export": n_pts,
+            "n_images_input": n_input,
+            "n_images_registered": n_reg,
+            "n_points3d": n_pts,
         }
         run_json.write_text(json.dumps(row, indent=2), encoding="utf-8")
         print(
             f"[isat_sfm] {name}: code={p.returncode} wall={elapsed:.1f}s "
-            f"reg={n_isat} pts={n_pts}"
+            f"n_images_input={n_input} n_images_registered={n_reg} n_points3d={n_pts}"
         )
         results.append(row)
 

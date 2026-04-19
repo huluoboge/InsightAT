@@ -11,6 +11,20 @@ from typing import Dict, Iterator
 
 import numpy as np
 
+# Flat `images/` folders (COLMAP / benchmark layout): count only common raster extensions.
+_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"})
+
+
+def count_images_in_dir(directory: Path) -> int:
+    """Count image files directly under ``directory`` (non-recursive)."""
+    if not directory.is_dir():
+        return 0
+    n = 0
+    for p in directory.iterdir():
+        if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES:
+            n += 1
+    return n
+
 
 @dataclass(frozen=True)
 class CameraPose:

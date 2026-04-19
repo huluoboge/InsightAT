@@ -54,7 +54,11 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from benchmarks.sfm_compare.colmap_sparse import count_points3d, load_cameras_by_basename  # noqa: E402
+from benchmarks.sfm_compare.colmap_sparse import (  # noqa: E402
+    count_images_in_dir,
+    count_points3d,
+    load_cameras_by_basename,
+)
 
 
 def _colmap_exe(bin_dir: Optional[str]) -> str:
@@ -243,16 +247,20 @@ def _timing_breakdown(step_rows: List[Dict[str, Any]]) -> Dict[str, float]:
     }
 
 
-def _sparse_stats(workspace: Path) -> Dict[str, Any]:
+def _sparse_stats(workspace: Path, image_path: Path) -> Dict[str, Any]:
     sparse = workspace / "sparse" / "0"
     images_txt = sparse / "images.txt"
     pts_txt = sparse / "points3D.txt"
-    out: Dict[str, Any] = {"sparse_dir": str(sparse)}
+    out: Dict[str, Any] = {
+        "sparse_dir": str(sparse),
+        "n_images_input": count_images_in_dir(image_path),
+    }
     if not images_txt.is_file():
-        out["n_images"] = 0
+        out["n_images_registered"] = 0
         out["n_points3d"] = 0
         return out
-    out["n_images"] = len(load_cameras_by_basename(images_txt))
+    n_reg = len(load_cameras_by_basename(images_txt))
+    out["n_images_registered"] = n_reg
     out["n_points3d"] = count_points3d(pts_txt)
     return out
 
@@ -328,7 +336,7 @@ def main() -> int:
             reuse_workspace=args.reuse_workspace,
             skip_text_export=args.skip_text_export,
         )
-        stats = _sparse_stats(workspace)
+        stats = _sparse_stats(workspace, img_dir)
         bd = _timing_breakdown(step_rows)
         row = {
             "scene": name,
@@ -345,7 +353,9 @@ def main() -> int:
         print(
             f"[colmap] {name}: code={rc} total={elapsed:.1f}s sfm={bd['elapsed_sfm_s']:.1f}s "
             f"txt_export={bd['elapsed_text_export_s']:.1f}s "
-            f"images={stats.get('n_images', 0)} pts={stats.get('n_points3d', 0)}"
+            f"n_images_input={stats.get('n_images_input', 0)} "
+            f"n_images_registered={stats.get('n_images_registered', 0)} "
+            f"n_points3d={stats.get('n_points3d', 0)}"
         )
         results.append(row)
 
