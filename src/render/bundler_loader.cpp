@@ -293,12 +293,16 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
     RenderTracks::Photo photo;
     photo.id = static_cast<int>(i);
 
-    int w = 640;
-    int h = 480;
+    int w = (c.image_width > 0) ? c.image_width : 6400;
+    int h = (c.image_height > 0) ? c.image_height : 4800;
+    const int fallback_w = w;
+    const int fallback_h = h;
     const std::string& ip = scene.image_paths[i];
     if (!get_image_dimensions(ip, w, h)) {
-      LOG(WARNING) << "GetWidthHeightPixel failed for " << ip << ", using defaults " << w << "x"
-                   << h;
+      w = fallback_w;
+      h = fallback_h;
+      LOG(WARNING) << "GetWidthHeightPixel failed for " << ip << ", using " << w << "x" << h
+                   << (c.image_width > 0 ? " (COLMAP cameras.txt)" : " (defaults)");
     }
     photo.w = static_cast<float>(w);
     photo.h = static_cast<float>(h);

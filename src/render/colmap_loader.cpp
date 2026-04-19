@@ -1,6 +1,10 @@
 /**
  * @file  colmap_loader.cpp
- * @brief COLMAP sparse text model → BundlerScene（与 Bundler 相同 world→camera: Xc = R*Xw + t）。
+ * @brief COLMAP sparse text model → BundlerScene（world→camera: Xc = R*Xw + t）。
+ *
+ * COLMAP 相机轴为 CV 惯例（+X 右、+Y 下、+Z 前）；渲染里 draw_camera_image_frame 按 OpenGL
+ * 视锥（+Y 上、沿 -Z 看）绘制。导入时在保持光心 C = -R^T t 不变的前提下左乘对角(1,-1,-1)，
+ * 使 COLMAP 与 Bundler 在可视化里朝向一致。
  */
 
 #include "colmap_loader.h"
@@ -27,6 +31,10 @@ namespace render {
 namespace {
 
 namespace fs = std::filesystem;
+
+// COLMAP / OpenCV 相机系 → 与 render_tracks 中视锥一致（与 bundle.out 中常见 Bundler 视姿对齐）
+static const Eigen::Matrix3d kColmapCvCameraToBundlerLikeCamera =
+    (Eigen::Matrix3d() << 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0).finished();
 
 static std::string trim_copy(std::string_view sv) {
   while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front())))
@@ -123,6 +131,21 @@ static std::string resolve_image_path(const fs::path& sparse_dir, const std::str
   if (fs::exists(images_up))
     return fs::weakly_canonical(images_up).string();
 
+  // ETH3D 等：images.txt 常为另一台机器上的绝对路径 .../gt/dslr_images/xxx.JPG；在本机数据根下
+  // 向上查找存在的 gt/dslr_images/<basename>。
+  fs::path walk = sparse_dir;
+  for (int depth = 0; depth < 8; ++depth) {
+    const fs::path gt_dslr = walk / "gt" / "dslr_images" / base;
+    if (fs::exists(gt_dslr))
+      return fs::weakly_canonical(gt_dslr).string();
+    if (walk.has_parent_path())
+      walk = walk.parent_path();
+    else
+      break;
+  }
+
+  if (n.is_absolute())
+    return n.string();
   return try1.string();
 }
 
@@ -379,8 +402,10 @@ bool load_colmap_text_directory(const std::string& colmap_sparse_dir, BundlerSce
     c.focal = blk.focal;
     c.k1 = blk.k1;
     c.k2 = blk.k2;
-    c.R = blk.R;
-    c.t = blk.t;
+    c.R = kColmapCvCameraToBundlerLikeCamera * blk.R;
+    c.t = kColmapCvCameraToBundlerLikeCamera * blk.t;
+    c.image_width = blk.width_hint;
+    c.image_height = blk.height_hint;
     scene->cameras.push_back(c);
     scene->image_paths.push_back(resolve_image_path(root, blk.name));
   }

@@ -235,6 +235,7 @@ bool GdalUtils::GenerateOverviews(const char *lpstrFileFullPath, const char *res
 
 bool GdalUtils::GetWidthHeightPixel(const char *lpstrImagePath, int &w, int &h)
 {
+	InitGDAL();
 	GDALDatasetH hDataset = GDALOpen(lpstrImagePath, GA_ReadOnly);
 
 	if (hDataset)

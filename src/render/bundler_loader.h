@@ -27,6 +27,9 @@ struct BundlerCamera {
   double k2 = 0;
   Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
   Eigen::Vector3d t = Eigen::Vector3d::Zero();
+  /// COLMAP cameras.txt 中的宽高；>0 时在 GDAL 读图失败时用作渲染尺寸回退。
+  int image_width = 0;
+  int image_height = 0;
 };
 
 struct BundlerObservation {
