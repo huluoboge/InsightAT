@@ -38,6 +38,15 @@ struct SiftGPUParams {
   bool use_cuda = false;      ///< 使用 CUDA 后端
   int truncate_method = 1;    ///< 0=-tc, 1=-tc2, 2=-tc3
   int image_max_dimension = 8000;   ///< 最大图像维度
+
+  bool operator==(const SiftGPUParams& o) const {
+    return n_octave_from == o.n_octave_from && n_octaves == o.n_octaves &&
+           n_level == o.n_level && d_peak == o.d_peak &&
+           n_max_features == o.n_max_features && adapt_darkness == o.adapt_darkness &&
+           use_cuda == o.use_cuda && truncate_method == o.truncate_method &&
+           image_max_dimension == o.image_max_dimension;
+  }
+  bool operator!=(const SiftGPUParams& o) const { return !(*this == o); }
 };
 
 /**

@@ -165,9 +165,10 @@ int main(int argc, char* argv[]) {
       make_option(0, nms_radius, "nms-radius").doc("[SIFT] NMS radius in pixels (default: 3.0)"));
   cmd.add(make_switch(0, "nms-no-orient")
               .doc("[SIFT] NMS ignores orientation (removes multi-orientation)"));
-  cmd.add(make_option('j', io_threads, "threads")
-              .doc("CPU worker threads for image load, post-process, and feature write (default: 4; "
-                   "GPU extraction uses one context on the main thread)"));
+  cmd.add(
+      make_option('j', io_threads, "threads")
+          .doc("CPU worker threads for image load, post-process, and feature write (default: 4; "
+               "GPU extraction uses one context on the main thread)"));
 
   // Logging options
   std::string log_level;
@@ -206,19 +207,13 @@ int main(int argc, char* argv[]) {
 
   // Process dual-output options
   bool only_retrieval = cmd.used("only-retrieval");
-  bool enable_dual_output = !output_retrieval_dir.empty();
+  bool enable_dual_output = !output_retrieval_dir.empty() && !only_retrieval;
   bool process_matching = !only_retrieval;
   bool process_retrieval = enable_dual_output || only_retrieval;
 
   // Validation
   if (only_retrieval && output_retrieval_dir.empty()) {
-    output_retrieval_dir = output_dir; // Use main output dir for retrieval-only mode
     process_matching = false;
-  }
-  if (only_retrieval && enable_dual_output) {
-    std::cerr << "Warning: --only-retrieval ignores --output-retrieval, using -o for retrieval "
-                 "features\n";
-    output_retrieval_dir = output_dir;
   }
 
   // Process switches
@@ -236,13 +231,15 @@ int main(int argc, char* argv[]) {
   sift_params.n_max_features = nfeatures;
   sift_params.d_peak = threshold;
   sift_params.n_octaves = octaves;
+  sift_params.n_octave_from = 0;
   sift_params.n_level = levels;
   sift_params.adapt_darkness = adapt_darkness;
   sift_params.use_cuda = use_cuda_extract;
   sift_params.truncate_method = 1;
+  sift_params.image_max_dimension = 6000;
 
   insight::modules::SiftGPUParams lowThreshold_sift_params = sift_params;
-  lowThreshold_sift_params.d_peak /= 6.f;
+  lowThreshold_sift_params.d_peak /= 10.f;
 
   insight::modules::SiftGPUParams sift_params_retrieval;
   sift_params_retrieval.n_max_features = nfeatures_retrieval;
@@ -349,7 +346,13 @@ int main(int argc, char* argv[]) {
     if (!extractor.initialize()) {
       LOG(FATAL) << "Failed to initialize SiftGPU";
     }
-
+    LOG(INFO) << "SiftGPU initialized successfully";
+    LOG(INFO) << "SiftGPU parameters: " << sift_params.n_octave_from << " " << sift_params.n_octaves
+              << " " << sift_params.n_level << " " << sift_params.d_peak << " "
+              << sift_params.n_max_features << " " << sift_params.adapt_darkness << " "
+              << sift_params.use_cuda << " " << sift_params.truncate_method << " "
+              << sift_params.image_max_dimension;
+              
     StageCurrent siftGPUStage(
         "SiftGPU", 1, GPU_QUEUE_SIZE,
         [&image_tasks, &extractor, &sift_params, &lowThreshold_sift_params, &sift_params_retrieval,
@@ -364,11 +367,17 @@ int main(int argc, char* argv[]) {
           // 这里期望特征点不少于1w，如果少的话， 就调整threshold
           if (process_matching && !task.image.empty()) {
             // Configure for matching features (high count)
-            extractor.reconfigure(sift_params);
+            if (!extractor.reconfigure(sift_params)) {
+              LOG(ERROR) << "Failed to reconfigure SiftGPU for matching features";
+              exit(1);
+            }
 
             num_features_matching = extractor.extract(task.image, task.keypoints, task.descriptors);
             if (num_features_matching < 10000) {
-              extractor.reconfigure(lowThreshold_sift_params);
+              if (!extractor.reconfigure(lowThreshold_sift_params)) {
+                LOG(ERROR) << "Failed to reconfigure SiftGPU for matching features";
+                exit(1);
+              }
               num_features_matching =
                   extractor.extract(task.image, task.keypoints, task.descriptors);
               matching_used_low_peak[static_cast<size_t>(index)] = 1;
@@ -633,8 +642,8 @@ int main(int argc, char* argv[]) {
       std::ofstream mf(meta_path);
       if (mf) {
         mf << meta.dump(2) << "\n";
-        LOG(INFO) << "Wrote matching extract meta (" << n_low << " low-peak images): "
-                  << meta_path.string();
+        LOG(INFO) << "Wrote matching extract meta (" << n_low
+                  << " low-peak images): " << meta_path.string();
       } else {
         LOG(WARNING) << "Could not write " << meta_path.string();
       }

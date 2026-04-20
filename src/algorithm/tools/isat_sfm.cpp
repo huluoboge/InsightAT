@@ -5,9 +5,9 @@
  * Orchestrates the full pipeline by invoking sibling CLI tools as subprocesses:
  *   1. create            – project setup, add images, camera estimation, export image list
  *   2. extract           – dual feature extraction (matching + retrieval)
- *   3. match             – 默认：检索穷举 → 全分辨率 match → geo；图像数 < --auto-exhaustive-max-images
- *                          时自动改全穷举；若有 matching_extract_meta.json 中的 low_peak 图，则与
- *                          检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举
+ *   3. match             – 默认：检索穷举 → 全分辨率 match → geo；图像数 <
+ * --auto-exhaustive-max-images 时自动改全穷举；若有 matching_extract_meta.json 中的 low_peak
+ * 图，则与 检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举
  *   4. tracks            – build tracks from matches + geometry
  *   5. incremental_sfm   – incremental SfM (resection + BA)
  *
@@ -298,7 +298,8 @@ static bool write_exhaustive_pairs_json(const fs::path& output_path, int n_image
   return true;
 }
 
-/// 读取 isat_extract 写入的 matching_extract_meta.json，返回 low_peak_matching==true 的 image_index。
+/// 读取 isat_extract 写入的 matching_extract_meta.json，返回 low_peak_matching==true 的
+/// image_index。
 static std::vector<int> read_low_peak_matching_indices(const fs::path& meta_path) {
   std::vector<int> out;
   std::ifstream f(meta_path);
@@ -740,7 +741,7 @@ int main(int argc, char* argv[]) {
     if (no_grid) {
       LOG(INFO) << "isat_extract: spatial grid disabled (--no-grid, omitting --nms)";
     }
-    if (exhaustive_match) {
+    { // 无论是否retrieval，都需要先全分辨率取特征一次
       LOG(INFO) << "Exhaustive full-res matching + Geometry";
       std::vector<std::string> extract_cmd = {tool_path("isat_extract"),
                                               "-i",
@@ -766,7 +767,8 @@ int main(int argc, char* argv[]) {
       if (!no_grid)
         extract_cmd.push_back("--nms");
       run_or_die("extract", extract_cmd);
-    } else {
+    }
+    if (!exhaustive_match) { // 需要提取小图像
       std::vector<std::string> extract_cmd = {tool_path("isat_extract"),
                                               "-i",
                                               images_all.string(),
@@ -793,7 +795,8 @@ int main(int argc, char* argv[]) {
                                               "--no-adapt",
                                               "--uint8",
                                               "-j",
-                                              std::to_string(io_threads)};
+                                              std::to_string(io_threads),
+                                              "--only-retrieval"};
       if (!no_grid)
         extract_cmd.push_back("--nms");
       run_or_die("extract", extract_cmd);
@@ -814,15 +817,16 @@ int main(int argc, char* argv[]) {
     }
 
     const bool manual_exhaustive = exhaustive_match;
-    const bool auto_exhaustive =
-        !manual_exhaustive && auto_exhaustive_max_images > 0 && (n_img < auto_exhaustive_max_images);
+    const bool auto_exhaustive = !manual_exhaustive && auto_exhaustive_max_images > 0 &&
+                                 (n_img < auto_exhaustive_max_images);
     const bool use_exhaustive_pairs = manual_exhaustive || auto_exhaustive;
 
     fs::create_directories(match_dir_path);
     fs::create_directories(geo_dir);
 
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Match + Geometry ===";
-    LOG(INFO) << "  Images: " << n_img << "  manual_exhaustive=" << (manual_exhaustive ? "yes" : "no")
+    LOG(INFO) << "  Images: " << n_img
+              << "  manual_exhaustive=" << (manual_exhaustive ? "yes" : "no")
               << "  auto_exhaustive=" << (auto_exhaustive ? "yes" : "no") << " (threshold "
               << auto_exhaustive_max_images << ")";
 
@@ -832,8 +836,9 @@ int main(int argc, char* argv[]) {
         LOG(INFO) << "Exhaustive pairs (--exhaustive-match): " << n_img << " images → " << n_pairs
                   << " pairs (skipped isat_retrieval_match)";
       } else {
-        LOG(INFO) << "Auto exhaustive pairs (image count " << n_img << " < " << auto_exhaustive_max_images
-                  << "): " << n_pairs << " pairs (skipped isat_retrieval_match)";
+        LOG(INFO) << "Auto exhaustive pairs (image count " << n_img << " < "
+                  << auto_exhaustive_max_images << "): " << n_pairs
+                  << " pairs (skipped isat_retrieval_match)";
       }
       if (n_img > 80) {
         LOG(WARNING) << "Very large image count; exhaustive matching may be extremely slow and "
@@ -851,8 +856,8 @@ int main(int argc, char* argv[]) {
       run_or_die("retrieval-match",
                  {tool_path("isat_retrieval_match"), "-l", images_all.string(), "-f",
                   feat_ret_dir.string(), "-w", retrieval_work.string(), "-o",
-                  pairs_retrieve.string(), "--match-backend", match_backend, "--max-features", "4096",
-                  "--threads", std::to_string(io_threads)});
+                  pairs_retrieve.string(), "--match-backend", match_backend, "--max-features",
+                  "4096", "--threads", std::to_string(io_threads)});
 
       const fs::path meta_path = feat_dir / "matching_extract_meta.json";
       const std::vector<int> boost_idx = read_low_peak_matching_indices(meta_path);
@@ -868,10 +873,10 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    run_or_die("match", {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f",
-                         feat_dir.string(), "-o", match_dir_path.string(), "--match-backend",
-                         match_backend, "--max-features", "10000", "--threads",
-                         std::to_string(io_threads)});
+    run_or_die("match",
+               {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),
+                "-o", match_dir_path.string(), "--match-backend", match_backend, "--max-features",
+                "10000", "--threads", std::to_string(io_threads)});
 
     // Full geometric verification on full-resolution matches
     char geo_tf_buf[64];
