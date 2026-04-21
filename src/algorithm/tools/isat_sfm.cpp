@@ -876,7 +876,7 @@ int main(int argc, char* argv[]) {
     run_or_die("match",
                {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),
                 "-o", match_dir_path.string(), "--match-backend", match_backend, "--max-features",
-                "10000", "--threads", std::to_string(io_threads)});
+                "-1", "--threads", std::to_string(io_threads)});
 
     // Full geometric verification on full-resolution matches
     char geo_tf_buf[64];

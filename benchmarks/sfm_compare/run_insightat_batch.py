@@ -6,10 +6,18 @@ Expected:
   <dataset>/scenes/<scene_name>/images/
 
 Writes per scene:
-  <scene>/results/insightat/work/  — project.iat, incremental_sfm/, sfm_timing.json, …
+  <scene>/results/insightat/work/  — project.iat, images_all.json, incremental_sfm/, …
+
+Per-scene ``run.json`` stats: ``n_images_input`` from ``work/images_all.json`` (``images``
+array length, same as C++ tools); fallback recursive scan of ``images/`` if missing.
+``n_images_registered`` from ``work/incremental_sfm/list.txt`` (Bundler) line count only.
 
 By default each scene **deletes and recreates** `work/` so reruns are full pipelines.
 Use `--reuse-work` to keep an existing work directory (expert only).
+
+Use `--skip-done` to resume a batch: scenes that already have `results/insightat/run.json`
+with `exit_code == 0` are skipped (work dir untouched); others run as usual (still cleans
+`work/` unless `--reuse-work`).
 
 Environment:
   ISAT_BIN_DIR — directory containing isat_sfm (default: <repo>/build if present).
@@ -17,6 +25,9 @@ Environment:
 Example:
   ISAT_BIN_DIR=/path/to/InsightAT/build \\
     python3 benchmarks/sfm_compare/run_insightat_batch.py -d /data/eth3d_prepared
+
+Resume (skip scenes that finished successfully last time):
+  python3 benchmarks/sfm_compare/run_insightat_batch.py -d /data/eth3d_prepared --skip-done
 """
 
 from __future__ import annotations
@@ -36,10 +47,30 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from benchmarks.sfm_compare.colmap_sparse import (  # noqa: E402
-    count_images_in_dir,
+    count_bundler_list_paths,
+    count_images_in_images_all_json,
+    count_images_in_tree,
     count_points3d,
-    load_cameras_by_basename,
 )
+
+
+def _scene_insightat_run_json(scenes_dir: Path, scene_name: str) -> Path:
+    return scenes_dir / scene_name / "results" / "insightat" / "run.json"
+
+
+def _load_successful_run_row(run_json: Path) -> Optional[Dict[str, Any]]:
+    """If run.json records a successful isat_sfm run, return that object; else None."""
+    if not run_json.is_file():
+        return None
+    try:
+        data = json.loads(run_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("exit_code") != 0:
+        return None
+    return data
 
 
 def _isat_sfm_exe() -> str:
@@ -76,6 +107,11 @@ def main() -> int:
         action="store_true",
         help="Do not delete results/insightat/work before each scene (default: delete for a clean rerun)",
     )
+    ap.add_argument(
+        "--skip-done",
+        action="store_true",
+        help="Skip scenes whose results/insightat/run.json has exit_code==0 (resume batch)",
+    )
     args = ap.parse_args()
 
     root = Path(args.dataset_root).resolve()
@@ -101,12 +137,21 @@ def main() -> int:
         img_dir = scenes_dir / name / "images"
         if not img_dir.is_dir():
             continue
+        run_json = _scene_insightat_run_json(scenes_dir, name)
+        if args.skip_done:
+            prev = _load_successful_run_row(run_json)
+            if prev is not None:
+                row = dict(prev)
+                row["skipped"] = True
+                results.append(row)
+                print(f"[isat_sfm] {name}: skip (already done, exit_code=0)")
+                continue
+
         work = scenes_dir / name / "results" / "insightat" / "work"
         if not args.reuse_work and work.exists():
             shutil.rmtree(work)
         work.mkdir(parents=True, exist_ok=True)
         log_path = scenes_dir / name / "results" / "insightat" / "isat_sfm_console.log"
-        run_json = scenes_dir / name / "results" / "insightat" / "run.json"
 
         cmd = [
             isat,
@@ -139,12 +184,17 @@ def main() -> int:
             except json.JSONDecodeError:
                 timing = None
 
+        images_all_json = work / "images_all.json"
+        bundler_list = work / "incremental_sfm" / "list.txt"
         sparse = work / "incremental_sfm" / "colmap" / "sparse" / "0" / "images.txt"
-        n_input = count_images_in_dir(img_dir)
-        n_reg = 0
+        # Pipeline truth: project image count (matches isat_retrieval_match / C++ helpers).
+        n_input = count_images_in_images_all_json(images_all_json)
+        if n_input == 0:
+            n_input = count_images_in_tree(img_dir)
+        # SfM success: Bundler reconstruction list only (not COLMAP basename heuristics).
+        n_reg = count_bundler_list_paths(bundler_list) if bundler_list.is_file() else 0
         n_pts = 0
         if sparse.is_file():
-            n_reg = len(load_cameras_by_basename(sparse))
             n_pts = count_points3d(sparse.parent / "points3D.txt")
 
         row = {
@@ -152,6 +202,7 @@ def main() -> int:
             "exit_code": p.returncode,
             "elapsed_wall_s": round(elapsed, 3),
             "clean_work": not args.reuse_work,
+            "skipped": False,
             "cmd": cmd,
             "log": str(log_path),
             "sfm_timing_json": str(timing_path) if timing_path.is_file() else "",

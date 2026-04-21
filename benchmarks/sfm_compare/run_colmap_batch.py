@@ -55,9 +55,9 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from benchmarks.sfm_compare.colmap_sparse import (  # noqa: E402
-    count_images_in_dir,
+    count_colmap_images_txt_cameras,
+    count_images_in_tree,
     count_points3d,
-    load_cameras_by_basename,
 )
 
 
@@ -253,13 +253,13 @@ def _sparse_stats(workspace: Path, image_path: Path) -> Dict[str, Any]:
     pts_txt = sparse / "points3D.txt"
     out: Dict[str, Any] = {
         "sparse_dir": str(sparse),
-        "n_images_input": count_images_in_dir(image_path),
+        "n_images_input": count_images_in_tree(image_path),
     }
     if not images_txt.is_file():
         out["n_images_registered"] = 0
         out["n_points3d"] = 0
         return out
-    n_reg = len(load_cameras_by_basename(images_txt))
+    n_reg = count_colmap_images_txt_cameras(images_txt)
     out["n_images_registered"] = n_reg
     out["n_points3d"] = count_points3d(pts_txt)
     return out

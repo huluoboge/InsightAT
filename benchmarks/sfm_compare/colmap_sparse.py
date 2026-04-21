@@ -5,6 +5,8 @@ Convention matches COLMAP / InsightAT export: X_cam = R * X_world + t, C = -R^T 
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator
@@ -23,6 +25,88 @@ def count_images_in_dir(directory: Path) -> int:
     for p in directory.iterdir():
         if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES:
             n += 1
+    return n
+
+
+def count_images_in_tree(directory: Path) -> int:
+    """Count image files under ``directory`` (recursive), same extensions as flat layout."""
+    if not directory.is_dir():
+        return 0
+    n = 0
+    for p in directory.rglob("*"):
+        if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES:
+            n += 1
+    return n
+
+
+_RE_COLMAP_NUM_IMAGES = re.compile(r"^#\s*Number of images:\s*(\d+)\s*$")
+
+
+def count_bundler_list_paths(list_txt: Path) -> int:
+    """Bundler ``list.txt``: one registered image path per non-empty, non-comment line."""
+    if not list_txt.is_file():
+        return 0
+    n = 0
+    for line in list_txt.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        n += 1
+    return n
+
+
+def count_images_in_images_all_json(images_all_json: Path) -> int:
+    """
+    InsightAT ``work/images_all.json``: same rule as ``isat_sfm`` / ``isat_retrieval_match``:
+    length of the top-level ``images`` array.
+    """
+    if not images_all_json.is_file():
+        return 0
+    try:
+        data = json.loads(images_all_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    images = data.get("images")
+    if isinstance(images, list):
+        return len(images)
+    return 0
+
+
+def count_colmap_images_txt_cameras(images_txt: Path) -> int:
+    """
+    Number of cameras in COLMAP ``images.txt`` without loading the whole file.
+
+    Prefer the ``# Number of images: N`` header when present (second line can be huge).
+    Otherwise stream-parse image header lines and skip each following POINTS2D line.
+    """
+    if not images_txt.is_file():
+        return 0
+    n = 0
+    with images_txt.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.startswith("#"):
+                m = _RE_COLMAP_NUM_IMAGES.match(line.rstrip("\n"))
+                if m:
+                    return int(m.group(1))
+                continue
+            s = line.strip()
+            if not s:
+                continue
+            parts = s.split()
+            if len(parts) < 10:
+                continue
+            try:
+                int(parts[0])
+                float(parts[1])
+                float(parts[2])
+                float(parts[3])
+                float(parts[4])
+            except (ValueError, IndexError):
+                continue
+            n += 1
+            f.readline()
     return n
 
 
