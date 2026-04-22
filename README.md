@@ -146,6 +146,33 @@ docker run --gpus all \
     isat_sfm -i /data/input -w /data/output/work
 ```
 
+如果需要在docker中显示ui，可以执行下面的命令
+
+```
+docker run -d \
+  --name cuda-gl \
+  --restart always \
+  --gpus all \
+  -u $(id -u):$(id -g) \
+  -v $(pwd):/workspace \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v $HOME/.Xauthority:/home/$USER/.Xauthority \
+  -e DISPLAY=$DISPLAY \
+  -e XAUTHORITY=/home/$USER/.Xauthority \
+  --net=host \
+  --ipc=host \
+  -w /workspace \
+  insightat \
+  sleep infinity
+
+
+```
+例如：
+
+```
+docker run --gpus all -it --name insightat-dev -u $(id -u):$(id -g) -v /home/jones:/home/jones -v /tmp/.X11-unix:/tmp/.X11-unix -v $HOME/.Xauthority:/home/$USER/.Xauthority -e DISPLAY=$DISPLAY -e XAUTHORITY=/home/$USER/.Xauthority  --net=host --ipc=host  838b6ba31c3a /bin/bash
+
+```
 ---
 
 ## 🛠️ Pipeline 详解
