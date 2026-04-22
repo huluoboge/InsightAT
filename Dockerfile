@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git python3 \
     libeigen3-dev libceres-dev libopencv-dev libgdal-dev \
     libgoogle-glog-dev libglew-dev libegl1-mesa-dev \
-    qtbase5-dev libqt5opengl5-dev \
+    qtbase5-dev libqt5opengl5-dev p7zip-full\
     && rm -rf /var/lib/apt/lists/*
 
 ENV CUDA_HOME=/usr/local/cuda PATH=/usr/local/cuda/bin:${PATH} LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}

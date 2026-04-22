@@ -114,6 +114,19 @@ struct BAInput {
   /// intrinsics parameter block, ensuring Hessian positive-definiteness for CHOLMOD.
   /// Passed from BASolverOverrides::tikhonov_lambda via run_global_ba.
   double tikhonov_lambda = 0.0;
+
+  /// Per distinct camera: total observation count from the **full scene graph**, not the BA
+  /// subset. Index matches cameras[]. When provided, this is used to decide whether to apply
+  /// relaxed distortion bounds (see relax_intrinsics_obs_threshold).
+  /// If empty and threshold > 0, the count is computed from input.observations — which may
+  /// vary between BA calls when using subsets, causing strategy oscillation. Prefer setting
+  /// this explicitly from the caller.
+  std::vector<int> camera_total_obs;
+
+  /// When camera_total_obs[c] >= this threshold and threshold > 0, wider distortion bounds
+  /// are applied for camera c (k1 ±0.8, k2 ±0.5, k3 ±0.3) instead of the default tight
+  /// bounds (k1 ±0.3, k2 ±0.25, k3 ±0.2). 0 = always use tight bounds (default=50000).
+  int relax_intrinsics_obs_threshold = 50000;
 };
 
 struct BAResult {

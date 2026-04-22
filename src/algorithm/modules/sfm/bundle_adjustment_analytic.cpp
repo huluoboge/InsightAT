@@ -819,6 +819,24 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   //
   // Bounds are NOT applied to fully-constant blocks (frozen cameras) — those blocks are
   // already handled by SetParameterBlockConstant and never touch the optimizer.
+  //
+  // When relax_intrinsics_obs_threshold > 0 and a camera has enough observations, wider
+  // bounds are used (k1 ±0.8, k2 ±0.5, k3 ±0.3). Observation counts come from
+  // input.camera_total_obs (full scene graph). If that is empty, counts are computed from
+  // input.observations as a fallback — note this may be a BA subset and vary between calls.
+
+  // Fallback obs count per distinct camera (used only when camera_total_obs is not set).
+  std::vector<int> obs_per_cam_fallback(static_cast<size_t>(n_distinct), 0);
+  if (input.relax_intrinsics_obs_threshold > 0 && input.camera_total_obs.empty()) {
+    for (const auto& obs : input.observations) {
+      if (obs.image_index < 0 || obs.image_index >= n_cams)
+        continue;
+      const int c = input.image_camera_index[static_cast<size_t>(obs.image_index)];
+      if (c >= 0 && c < n_distinct)
+        ++obs_per_cam_fallback[static_cast<size_t>(c)];
+    }
+  }
+
   if (input.optimize_intrinsics) {
     for (int c = 0; c < n_distinct; ++c) {
       double* ip = intr_params.data() + static_cast<size_t>(c) * kAnalyticIntrCount;
@@ -838,16 +856,34 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       // sigma = fy/fx: modern camera lenses are very close to square pixels.
       problem.SetParameterLowerBound(ip, kSigma, 0.95);
       problem.SetParameterUpperBound(ip, kSigma, 1.05);
-      // Radial distortion: tighter bounds for aerial/drone lenses where distortion is small.
-      // k1/k2/k3 are nearly collinear in the r range of aerial nadir imagery (r/r_max ≈ 0.4-0.7),
-      // so loose bounds allow the optimizer to trade them against each other and focal length.
-      // Tighter bounds prevent over-fitting and keep the Schur complement well-conditioned.
-      problem.SetParameterLowerBound(ip, kK1, -0.3);
-      problem.SetParameterUpperBound(ip, kK1, 0.3);
-      problem.SetParameterLowerBound(ip, kK2, -0.25);
-      problem.SetParameterUpperBound(ip, kK2, 0.25);
-      problem.SetParameterLowerBound(ip, kK3, -0.2);
-      problem.SetParameterUpperBound(ip, kK3, 0.2);
+
+      // Radial distortion bounds — tight by default; relaxed when observation count is high.
+      // When BA uses a subset, input.camera_total_obs provides stable full-scene counts
+      // to avoid oscillation between tight/relaxed strategies across BA calls.
+      const int total_obs_c =
+          (input.camera_total_obs.size() > static_cast<size_t>(c))
+              ? input.camera_total_obs[static_cast<size_t>(c)]
+              : obs_per_cam_fallback[static_cast<size_t>(c)];
+      const bool use_relaxed_bounds = (input.relax_intrinsics_obs_threshold > 0) &&
+                                      (total_obs_c >= input.relax_intrinsics_obs_threshold);
+      if (use_relaxed_bounds) {
+        // More observations → better-conditioned normal equations → can afford wider bounds.
+        // k1/k2/k3 are still bounded (not free) to prevent r²/r⁴/r⁶ degeneracy.
+        problem.SetParameterLowerBound(ip, kK1, -0.8);
+        problem.SetParameterUpperBound(ip, kK1, 0.8);
+        problem.SetParameterLowerBound(ip, kK2, -0.5);
+        problem.SetParameterUpperBound(ip, kK2, 0.5);
+        problem.SetParameterLowerBound(ip, kK3, -0.3);
+        problem.SetParameterUpperBound(ip, kK3, 0.3);
+      } else {
+        // Tight bounds for sparse / low-obs scenarios (aerial nadir r-collinearity regime).
+        problem.SetParameterLowerBound(ip, kK1, -0.3);
+        problem.SetParameterUpperBound(ip, kK1, 0.3);
+        problem.SetParameterLowerBound(ip, kK2, -0.25);
+        problem.SetParameterUpperBound(ip, kK2, 0.25);
+        problem.SetParameterLowerBound(ip, kK3, -0.2);
+        problem.SetParameterUpperBound(ip, kK3, 0.2);
+      }
       // Tangential distortion: typically very small for modern drone lenses.
       problem.SetParameterLowerBound(ip, kP1, -0.05);
       problem.SetParameterUpperBound(ip, kP1, 0.05);
