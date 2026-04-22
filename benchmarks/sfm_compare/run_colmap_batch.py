@@ -174,6 +174,8 @@ def _run_sparse_sfm_pipeline(
                 str(image_path),
                 "--ImageReader.camera_model",
                 camera_model,
+                "--FeatureExtraction.max_image_size",
+                "3200",
             ],
         ),
         (
