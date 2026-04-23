@@ -30,8 +30,7 @@ endif ()
 # ==============================================================================
 # INSIGHTAT build options
 # ==============================================================================
-option(INSIGHTAT_BUILD_SOFTWARES "Build softwares" OFF)
-option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" OFF)
+option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" ON)
 
 message(STATUS "Top-level: SIFTGPU_ENABLE_CUDA=${SIFTGPU_ENABLE_CUDA}")
 

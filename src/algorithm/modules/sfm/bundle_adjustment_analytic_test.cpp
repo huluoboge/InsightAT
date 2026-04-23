@@ -21,6 +21,8 @@
 #include "bundle_adjustment_analytic.h"
 #include "../camera/camera_types.h"
 
+#include <glog/logging.h>
+
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <ceres/ceres.h>

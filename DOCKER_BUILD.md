@@ -90,7 +90,6 @@ The Dockerfile is located at `./Dockerfile` and can be customized:
 
 - **Base CUDA Image**: Change `nvidia/cuda:11.8.0-devel-ubuntu22.04` to a different CUDA version
 - **Compiler**: Modify GCC version installation (currently GCC 11)
-- **CMake Options**: Update in `cmake` command (e.g., add `-DINSIGHTAT_BUILD_SOFTWARES=OFF` to skip GUI)
 - **Build Type**: Change `-DCMAKE_BUILD_TYPE=Release` if needed
 
 ### Example: Different CUDA Version
