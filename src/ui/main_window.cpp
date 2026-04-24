@@ -593,7 +593,7 @@ void MainWindow::on_about() {
                      tr("InsightAT - Photogrammetry Suite\n"
                         "Version 1.0.0\n\n"
                         "A comprehensive photogrammetry processing application.\n\n"
-                        "© 2026 InsightAT Contributors"));
+                        "© 2026 Yang Hu"));
 }
 
 void MainWindow::on_about_qt() { QApplication::aboutQt(); }

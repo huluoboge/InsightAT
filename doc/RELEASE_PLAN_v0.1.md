@@ -45,7 +45,7 @@
   - COLMAP 兼容导出
 ## 与 COLMAP 的区别
 ## Roadmap
-## 设计文档（链接到 doc/design/）
+## 设计文档（链接到 doc/dev-notes/design/）
 ## License
 ```
 

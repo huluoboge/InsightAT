@@ -27,7 +27,7 @@
 
 ### 2.2 编码规范文档
 
-- 在 **doc/design/02_coding_style.md** §2.1 中，将「函数/方法：snake_case 或 camelCase（仅 Qt slots）」改为 **仅 snake_case**，并注明 UI 槽与信号也使用 snake_case。
+- 在 **doc/dev-notes/design/02_coding_style.md** §2.1 中，将「函数/方法：snake_case 或 camelCase（仅 Qt slots）」改为 **仅 snake_case**，并注明 UI 槽与信号也使用 snake_case。
 
 ## 3. UI 层命名规则（约定）
 

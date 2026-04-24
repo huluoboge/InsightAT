@@ -538,7 +538,7 @@ MatchResult matchWithGeometry(
 
 - **SiftGPU 文档**: `third_party/SiftGPU/README.md`
 - **SiftMatch CUDA 实现**: `third_party/SiftGPU/SiftMatch.cu`
-- **IDC 格式规范**: `doc/design/08_functional_at_toolkit.md`
+- **IDC 格式规范**: `doc/dev-notes/design/04_functional_at_toolkit.md`
 - **isat_extract 参考**: `src/algorithm/tools/isat_extract.cpp`
 
 ---

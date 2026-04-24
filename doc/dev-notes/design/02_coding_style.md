@@ -430,7 +430,7 @@ if (!fs::is_directory(input_dir)) {
 
 - `stdout` **只输出** `ISAT_EVENT <single-line-json>`
 - 人类可读日志输出到 `stderr`（通过 glog）
-- 详见 `doc/design/CLI_IO_CONVENTIONS.md`
+- 详见 `doc/dev-notes/design/05_cli_io_conventions.md`
 
 ### 9.3 禁止裸 `throw` 到顶层
 

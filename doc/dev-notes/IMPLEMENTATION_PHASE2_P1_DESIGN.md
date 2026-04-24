@@ -603,7 +603,7 @@ src/Common/
 
 ## 📚 相关文档
 
-- [doc/design/rotation/rotation_standards.md](../design/rotation/rotation_standards.md)
+- [design/rotation/rotation_standards.md](design/rotation/rotation_standards.md)
 - [doc/dev-notes/CODE_ANALYSIS_ROTATION.md](CODE_ANALYSIS_ROTATION.md)
 - [src/Common/ROTATION_UTILS_IMPLEMENTATION.md](rotation_utils.md)
 

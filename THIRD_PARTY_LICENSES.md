@@ -1,51 +1,62 @@
 # Third-Party Licenses
 
-InsightAT includes or links against the following third-party libraries.
-Each retains its original license; see the referenced files for full text.
+Copyright (c) 2026 Yang Hu. InsightAT project code is licensed under MIT (`LICENSE` at repository root).
+Third-party components keep their own original licenses.
 
----
+## Bundled under `third_party/`
 
-## Bundled in `third_party/`
+### PopSift (default SIFT backend)
+- **License**: MPL-2.0
+- **Path**: `third_party/popsift/`
+- **License file**: `third_party/popsift/COPYING.md`
 
-### SiftGPU
-- **Author**: Changchang Wu, University of North Carolina at Chapel Hill
-- **License**: Custom (educational, research and non-profit use only)
-- **Notice**: Permission to use, copy, modify and distribute this software and
-  its documentation for educational, research and non-profit purposes, without
-  fee, and without a written agreement is hereby granted, provided that the
-  above copyright notice and the following paragraph appear in all copies.
-- **⚠️ Restriction**: Commercial use is NOT permitted under this license.
-- **Files**: `third_party/SiftGPU/`
+### SiftGPU (optional backend; disabled by default)
+- **License**: Custom (educational, research and non-profit purposes only)
+- **Path**: `third_party/SiftGPU/`
+- **License file**: `third_party/SiftGPU/LICENSE`
+- **Restriction**: Not permitted for general commercial use.
 
 ### PoseLib
-- **Author**: Viktor Larsson
-- **License**: BSD 3-Clause
-- **Files**: `third_party/PoseLib/`
-
-### stlplus3
-- **License**: BSD
-- **Files**: `third_party/stlplus3/`
+- **License**: BSD-3-Clause
+- **Path**: `third_party/PoseLib/`
+- **License file**: `third_party/PoseLib/LICENSE`
 
 ### cereal
-- **License**: BSD 3-Clause
-- **Files**: `third_party/cereal/`
+- **License**: BSD-3-Clause
+- **Path**: `third_party/cereal/`
+
+### stlplus3
+- **License**: BSD-style (see upstream files)
+- **Path**: `third_party/stlplus3/`
 
 ### cmdLine
-- **License**: MPL2
-- **Files**: `third_party/cmdLine/`
+- **License**: MPL-2.0
+- **Path**: `third_party/cmdLine/`
 
----
+### nanoflann
+- **License**: BSD-2-Clause
+- **Path**: `third_party/nanoflann/`
+- **License file**: `third_party/nanoflann/LICENSE`
+
+### task_queue
+- **License**: MIT
+- **Path**: `third_party/task_queue/`
+- **License file**: `third_party/task_queue/LICENSE`
 
 ## System Dependencies (linked, not bundled)
 
-| Library | License | Notes |
-|---------|---------|-------|
-| Eigen3 | MPL2 / BSD 3-Clause | Header-only linear algebra |
-| Ceres Solver | BSD 3-Clause | Nonlinear least squares (BA) |
-| OpenCV | Apache 2.0 | Image I/O, basic CV |
-| GDAL | MIT/X | Geospatial coordinate transforms |
-| glog | BSD 3-Clause | Logging |
-| GLEW | BSD / MIT | OpenGL extension loading |
-| Qt5/Qt6 | LGPL 3.0 | UI only (not required for CLI tools) |
-| CUDA Toolkit | NVIDIA EULA | GPU compute |
-| nlohmann/json | MIT | JSON parsing |
+- Eigen3: MPL-2.0 / BSD-3-Clause
+- Ceres Solver: BSD-3-Clause
+- OpenCV: Apache-2.0
+- GDAL: MIT/X-style
+- glog: BSD-3-Clause
+- GLEW: BSD/MIT
+- Qt5/Qt6: LGPL-3.0
+- CUDA Toolkit: NVIDIA EULA
+- nlohmann/json: MIT
+
+## Compliance Note
+
+When redistributing binaries or source, keep all required copyright notices
+and license texts for third-party components. The repository MIT license does
+not replace third-party license obligations.

@@ -138,7 +138,7 @@ std::vector<ImagePair> retrieveByVLAD(
    - 修改: VLAD检索lambda（捕获并传递尺度加权参数）
 
 ### 文档
-7. **doc/design/retrieval/scale_weighted_vlad_usage.md** (新建)
+7. **doc/dev-notes/design/retrieval/scale_weighted_vlad_usage.md** (新建)
    - 完整使用指南
    - 参数调优建议
    - 性能对比数据

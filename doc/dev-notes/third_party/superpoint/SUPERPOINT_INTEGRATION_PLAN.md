@@ -325,7 +325,7 @@ isat_extract --feature_type=superpoint → IDC (256-dim, schema v1.1)
 ### Step 8: Documentation & Design Conventions Sync
 
 **Files to Modify/Create**:
-- `doc/design/04_functional_at_toolkit.md` (add SuperPoint section)
+- `doc/dev-notes/design/04_functional_at_toolkit.md` (add SuperPoint section)
 - `doc/tools/isat_extract.md` (if exists, or create)
 - `third_party/superpoint/README.md` (update with InsightAT integration)
 - This document (`doc/dev-notes/third_party/superpoint/SUPERPOINT_INTEGRATION_PLAN.md`)
@@ -440,9 +440,9 @@ isat_extract --feature_type=superpoint → IDC (256-dim, schema v1.1)
 ## References
 
 - Copilot Instructions: `.github/copilot-instructions.md`
-- Architecture Overview: `doc/design/11_architecture_overview.md`
-- Implementation Details: `doc/design/12_implementation_details.md`
-- Functional Toolkit: `doc/design/04_functional_at_toolkit.md`
+- Architecture Overview: `doc/dev-notes/design/11_architecture_overview.md`
+- Implementation Details: `doc/dev-notes/design/12_implementation_details.md`
+- Functional Toolkit: `doc/dev-notes/design/04_functional_at_toolkit.md`
 - Task Queue Design: `third_party/task_queue/STAGECURRENT_USAGE.md`
 - Existing SIFT Integration: `doc/dev-notes/third_party/siftgpu/`
 
