@@ -465,9 +465,13 @@ int main(int argc, char* argv[]) {
   std::string steps_str = "create,extract,match,tracks,incremental_sfm";
   std::string extract_backend = "cuda";
   std::string match_backend = "cuda";
+  bool use_pop_sift = false;
+  bool use_sift_gpu = false;
   std::string ext = ".jpg,.tif,.png";
   std::string log_level;
   int max_sample = 5;
+  // int image_max_dim = 6000;
+  int image_max_dim = 3200;
   bool exhaustive_match = false;
   /// When not using --exhaustive-match: if image count < this, skip retrieval and use full
   /// exhaustive pairs (same as manual exhaustive for small sets).
@@ -490,12 +494,19 @@ int main(int argc, char* argv[]) {
                    "create,extract,match,tracks,incremental_sfm)"));
   cmd.add(make_option(0, extract_backend, "extract-backend")
               .doc("Feature extraction backend: cuda or glsl (default: cuda)"));
+  cmd.add(make_switch(0, "use-pop-sift")
+              .doc("Feature extraction implementation: use PopSift"));
+  cmd.add(make_switch(0, "use-sift-gpu")
+              .doc("Feature extraction implementation: force SiftGPU"));
   cmd.add(make_option(0, match_backend, "match-backend")
               .doc("Matching backend: cuda or glsl (default: cuda)"));
   cmd.add(make_option(0, ext, "ext")
               .doc("Image extensions, comma-separated (default: .jpg,.tif,.png)"));
   cmd.add(make_option(0, max_sample, "max-sample")
               .doc("Max images sampled for focal estimation (default: 5)"));
+  cmd.add(make_option(0, image_max_dim, "image-max-dim")
+              .doc("Forwarded to isat_extract --image-max-dim (default: 6000); "
+                   "reduce to lower PopSift GPU memory usage, e.g. 4096"));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Hold camera intrinsics fixed during BA"));
   cmd.add(make_switch(0, "exhaustive-match")
               .doc("Skip isat_retrieval_match; generate all image pairs and run full-resolution "
@@ -568,6 +579,17 @@ int main(int argc, char* argv[]) {
   bool fix_intrinsics = cmd.used("fix-intrinsics");
   exhaustive_match = cmd.used("exhaustive-match");
   const bool no_grid = cmd.used("no-grid");
+  use_pop_sift = cmd.used("use-pop-sift");
+  use_sift_gpu = cmd.used("use-sift-gpu");
+
+  if (use_pop_sift && use_sift_gpu) {
+    std::cerr << "Error: cannot set both --use-pop-sift and --use-sift-gpu\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (!use_pop_sift && !use_sift_gpu) {
+    use_sift_gpu = true;
+  }
 
   // ── Build verbosity args to forward to all sub-tools ────────────────────
   if (cmd.used('v'))
@@ -612,6 +634,8 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Image extensions: " << ext;
   LOG(INFO) << "Threading: io_threads=" << io_threads << "  ba_threads=" << ba_threads
             << (ba_threads > 0 ? "" : " (BA: auto)");
+  LOG(INFO) << "SIFT image max dim: " << image_max_dim;
+  LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
 
   auto active_steps = parse_steps(steps_str);
   {
@@ -758,6 +782,8 @@ int main(int argc, char* argv[]) {
                                               "-1",
                                               "--levels",
                                               std::to_string(sift_levels),
+                                              "--image-max-dim",
+                                              std::to_string(image_max_dim),
                                               "--norm",
                                               "l1root",
                                               "--no-adapt",
@@ -766,6 +792,10 @@ int main(int argc, char* argv[]) {
                                               std::to_string(io_threads)};
       if (!no_grid)
         extract_cmd.push_back("--nms");
+      if (use_pop_sift)
+        extract_cmd.push_back("--use-pop-sift");
+      else
+        extract_cmd.push_back("--use-sift-gpu");
       run_or_die("extract", extract_cmd);
     }
     if (!exhaustive_match) { // 需要提取小图像
@@ -790,6 +820,8 @@ int main(int argc, char* argv[]) {
                                               "-1",
                                               "--levels",
                                               std::to_string(sift_levels),
+                                              "--image-max-dim",
+                                              std::to_string(image_max_dim),
                                               "--norm",
                                               "l1root",
                                               "--no-adapt",
@@ -799,6 +831,10 @@ int main(int argc, char* argv[]) {
                                               "--only-retrieval"};
       if (!no_grid)
         extract_cmd.push_back("--nms");
+      if (use_pop_sift)
+        extract_cmd.push_back("--use-pop-sift");
+      else
+        extract_cmd.push_back("--use-sift-gpu");
       run_or_die("extract", extract_cmd);
     }
   }
@@ -876,7 +912,8 @@ int main(int argc, char* argv[]) {
     run_or_die("match",
                {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),
                 "-o", match_dir_path.string(), "--match-backend", match_backend, "--max-features",
-                "-1", "--threads", std::to_string(io_threads)});
+                "-1", "--threads", std::to_string(io_threads),
+                (use_pop_sift ? "--use-pop-sift" : "--use-sift-gpu")});
 
     // Full geometric verification on full-resolution matches
     char geo_tf_buf[64];

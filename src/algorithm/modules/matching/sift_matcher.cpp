@@ -9,19 +9,47 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <cstring>
 
 #include <SiftGPU/SiftGPU.h>
 #include <glog/logging.h>
+#if defined(HAVE_CUDA) && __has_include(<popsift/features.h>)
+#define INSIGHTAT_HAS_POPSIFT_MATCH 1
+#include <popsift/features.h>
+#else
+#define INSIGHTAT_HAS_POPSIFT_MATCH 0
+#endif
 
 namespace insight {
 namespace algorithm {
 namespace matching {
 
-SiftMatcher::SiftMatcher(int max_features, bool use_cuda) : max_features_(max_features) {
+SiftMatcher::SiftMatcher(int max_features, bool use_cuda)
+    : SiftMatcher(SiftMatcherParams{max_features, use_cuda, true, false}) {}
 
-  matcher_ = std::make_unique<SiftMatchGPU>(max_features);
+SiftMatcher::SiftMatcher(const SiftMatcherParams& params)
+    : max_features_(params.max_features), params_(params) {
+  if (params_.use_sift_gpu == params_.use_pop_sift) {
+    LOG(ERROR) << "Exactly one matching backend must be enabled: use_sift_gpu xor use_pop_sift";
+    return;
+  }
 
-  if (use_cuda) {
+  if (params_.use_pop_sift) {
+#if INSIGHTAT_HAS_POPSIFT_MATCH
+    backend_ = Backend::kPopSift;
+    LOG(INFO) << "SiftMatcher initialized with PopSift backend (max_features=" << max_features_
+              << ")";
+    return;
+#else
+    LOG(ERROR) << "PopSift matcher requested but not available in this build";
+    return;
+#endif
+  }
+  backend_ = Backend::kSiftGPU;
+
+  matcher_ = std::make_unique<SiftMatchGPU>(max_features_);
+
+  if (params_.use_cuda) {
     // CUDA backend: no GL context needed. SetLanguage(CUDA) then VerifyContextGL() only;
     // SiftMatchGPU creates SiftMatchCU and sets _GoodOpenGL in InitSiftMatch (no CreateContextGL).
     matcher_->SetLanguage(SiftMatchGPU::SIFTMATCH_CUDA);
@@ -29,7 +57,7 @@ SiftMatcher::SiftMatcher(int max_features, bool use_cuda) : max_features_(max_fe
       LOG(ERROR) << "SiftMatchGPU CUDA backend failed (VerifyContextGL)";
       matcher_.reset();
     } else {
-      LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features
+      LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features_
                 << " (CUDA backend)";
     }
     return;
@@ -46,7 +74,8 @@ SiftMatcher::SiftMatcher(int max_features, bool use_cuda) : max_features_(max_fe
     LOG(ERROR) << "Failed to create/verify context for SiftMatchGPU";
     matcher_.reset();
   } else {
-    LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features << " (GLSL backend)";
+    LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features_
+              << " (GLSL backend)";
   }
 }
 
@@ -55,11 +84,22 @@ SiftMatcher::~SiftMatcher() {
 }
 
 bool SiftMatcher::verify_context() const {
+  if (backend_ == Backend::kPopSift) {
+#if INSIGHTAT_HAS_POPSIFT_MATCH
+    return true;
+#else
+    return false;
+#endif
+  }
   return matcher_ && (matcher_->CreateContextGL() != 0) && (matcher_->VerifyContextGL() != 0);
 }
 
 MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& features2,
                                const MatchOptions& options) {
+  if (backend_ == Backend::kPopSift) {
+    return match_popsift(features1, features2, options);
+  }
+
   if (!matcher_) {
     LOG(ERROR) << "SiftMatchGPU not initialized";
     return MatchResult();
@@ -214,6 +254,127 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
   }
   result.num_matches = num_matches;
   return result;
+}
+
+MatchResult SiftMatcher::match_popsift(const FeatureData& features1, const FeatureData& features2,
+                                       const MatchOptions& options) {
+#if INSIGHTAT_HAS_POPSIFT_MATCH
+  if (features1.num_features == 0 || features2.num_features == 0) {
+    return MatchResult();
+  }
+
+  auto top_n_spatial = [](const FeatureData& f, int max_n,
+                          int grid_rows, int grid_cols) -> std::vector<int> {
+    int n = static_cast<int>(f.num_features);
+    if (n == 0) return {};
+    if (max_n <= 0 || n <= max_n) {
+      std::vector<int> idx(n);
+      std::iota(idx.begin(), idx.end(), 0);
+      return idx;
+    }
+    float xmin = f.keypoints[0][0], xmax = xmin;
+    float ymin = f.keypoints[0][1], ymax = ymin;
+    for (int i = 1; i < n; ++i) {
+      xmin = std::min(xmin, f.keypoints[i][0]);
+      xmax = std::max(xmax, f.keypoints[i][0]);
+      ymin = std::min(ymin, f.keypoints[i][1]);
+      ymax = std::max(ymax, f.keypoints[i][1]);
+    }
+    float cell_w = (xmax - xmin + 1.0f) / grid_cols;
+    float cell_h = (ymax - ymin + 1.0f) / grid_rows;
+    int n_cells = grid_rows * grid_cols;
+    std::vector<std::vector<int>> cells(n_cells);
+    for (int i = 0; i < n; ++i) {
+      int cx = std::min(static_cast<int>((f.keypoints[i][0] - xmin) / cell_w), grid_cols - 1);
+      int cy = std::min(static_cast<int>((f.keypoints[i][1] - ymin) / cell_h), grid_rows - 1);
+      cells[cy * grid_cols + cx].push_back(i);
+    }
+    for (auto& cell : cells) {
+      std::sort(cell.begin(), cell.end(),
+                [&f](int a, int b) { return f.keypoints[a][2] > f.keypoints[b][2]; });
+    }
+    std::vector<int> out;
+    out.reserve(max_n);
+    std::vector<int> pos(n_cells, 0);
+    while (static_cast<int>(out.size()) < max_n) {
+      bool any = false;
+      for (int c = 0; c < n_cells && static_cast<int>(out.size()) < max_n; ++c) {
+        if (pos[c] < static_cast<int>(cells[c].size())) {
+          out.push_back(cells[c][pos[c]++]);
+          any = true;
+        }
+      }
+      if (!any) break;
+    }
+    return out;
+  };
+
+  auto pack_to_float = [](const FeatureData& f, const std::vector<int>& idx) {
+    std::vector<float> buf(static_cast<size_t>(idx.size()) * 128, 0.0f);
+    if (f.descriptor_type == DescriptorType::kFloat32) {
+      for (size_t i = 0; i < idx.size(); ++i) {
+        std::memcpy(buf.data() + i * 128, f.descriptors_float.data() + idx[i] * 128, 128 * sizeof(float));
+      }
+    } else {
+      for (size_t i = 0; i < idx.size(); ++i) {
+        const uint8_t* src = f.descriptors_uint8.data() + idx[i] * 128;
+        float* dst = buf.data() + i * 128;
+        for (int k = 0; k < 128; ++k) dst[k] = static_cast<float>(src[k]);
+      }
+    }
+    return buf;
+  };
+
+  int cap = options.max_features_per_image;
+  int grow = options.spatial_grid_rows > 0 ? options.spatial_grid_rows : 4;
+  int gcol = options.spatial_grid_cols > 0 ? options.spatial_grid_cols : 4;
+  auto idx1 = top_n_spatial(features1, cap, grow, gcol);
+  auto idx2 = top_n_spatial(features2, cap, grow, gcol);
+
+  auto desc1 = pack_to_float(features1, idx1);
+  auto desc2 = pack_to_float(features2, idx2);
+  auto rows = popsift::match_descriptors_bruteforce(
+      desc1.data(), static_cast<int>(idx1.size()), desc2.data(), static_cast<int>(idx2.size()),
+      options.ratio_test, true);
+  if (rows.size() != idx1.size()) {
+    LOG(ERROR) << "PopSift brute-force returned unexpected row count";
+    return MatchResult();
+  }
+
+  std::vector<int> reverse_best;
+  if (options.mutual_best_match) {
+    auto rows_rev = popsift::match_descriptors_bruteforce(
+        desc2.data(), static_cast<int>(idx2.size()), desc1.data(), static_cast<int>(idx1.size()),
+        1.0f, false);
+    reverse_best.assign(idx2.size(), -1);
+    for (size_t i = 0; i < rows_rev.size(); ++i) reverse_best[i] = rows_rev[i].best_train_idx;
+  }
+
+  MatchResult result;
+  for (size_t qi = 0; qi < rows.size(); ++qi) {
+    const auto& r = rows[qi];
+    if (!r.accepted || r.best_train_idx < 0 || r.best_train_idx >= static_cast<int>(idx2.size())) continue;
+    if (options.mutual_best_match && reverse_best[static_cast<size_t>(r.best_train_idx)] != static_cast<int>(qi)) {
+      continue;
+    }
+    int o1 = idx1[qi];
+    int o2 = idx2[static_cast<size_t>(r.best_train_idx)];
+    result.indices.emplace_back(static_cast<uint16_t>(o1), static_cast<uint16_t>(o2));
+    const auto& kp1 = features1.keypoints[o1];
+    const auto& kp2 = features2.keypoints[o2];
+    result.coords_pixel.emplace_back(kp1[0], kp1[1], kp2[0], kp2[1]);
+    result.distances.push_back(std::sqrt(std::max(0.0f, r.best_dist_sq)));
+    if (options.max_matches > 0 && static_cast<int>(result.indices.size()) >= options.max_matches) break;
+  }
+  result.num_matches = static_cast<int>(result.indices.size());
+  return result;
+#else
+  (void)features1;
+  (void)features2;
+  (void)options;
+  LOG(ERROR) << "PopSift matcher backend not compiled";
+  return MatchResult();
+#endif
 }
 
 MatchResult SiftMatcher::match_guided(const FeatureData& features1, const FeatureData& features2,

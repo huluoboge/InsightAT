@@ -56,6 +56,8 @@ struct ImageTask {
   int image_rows;
   int image_retrieval_cols; // cache resized image size
   int image_retrieval_rows;
+  float image_coord_scale_back = 1.0f;           // for keypoint remap to original image
+  float image_retrieval_coord_scale_back = 1.0f; // for keypoint remap to original image
   int camera_id;
   int index;
 
@@ -120,6 +122,7 @@ int main(int argc, char* argv[]) {
   float threshold = 0.02f;
   int octaves = 4;
   int levels = 3;
+  int image_max_dim = 6000;
   std::string normalization = "l1root";
   float nms_radius = 3.0f;
   int io_threads = 4; ///< Load / post-process / write stages (GPU stage stays single-threaded).
@@ -149,10 +152,16 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('t', threshold, "threshold").doc("[SIFT] Peak threshold (default: 0.02)"));
   cmd.add(make_option(0, octaves, "octaves").doc("[SIFT] Number of octaves, -1=auto (default: 4)"));
   cmd.add(make_option(0, levels, "levels").doc("[SIFT] Levels per octave (default: 3)"));
+  cmd.add(make_option(0, image_max_dim, "image-max-dim")
+              .doc("[SIFT] Max input image dimension for extraction (default: 6000)"));
   cmd.add(make_switch(0, "no-adapt").doc("[SIFT] Disable dark image adaptation"));
   std::string extract_backend = "cuda";
+  bool use_pop_sift = false;
+  bool use_sift_gpu = false;
   cmd.add(make_option(0, extract_backend, "extract-backend")
               .doc("[SIFT] GPU backend: cuda or glsl (default: cuda when built with CUDA)"));
+  cmd.add(make_switch(0, "use-pop-sift").doc("[SIFT] Use PopSift extractor implementation"));
+  cmd.add(make_switch(0, "use-sift-gpu").doc("[SIFT] Force use SiftGPU extractor implementation"));
 
   // Descriptor options
   cmd.add(make_option(0, normalization, "norm")
@@ -226,6 +235,17 @@ int main(int argc, char* argv[]) {
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   bool use_cuda_extract = (extract_backend == "cuda");
+  use_pop_sift = cmd.used("use-pop-sift");
+  use_sift_gpu = cmd.used("use-sift-gpu");
+
+  if (use_pop_sift && use_sift_gpu) {
+    LOG(ERROR) << "Cannot set both --use-pop-sift and --use-sift-gpu";
+    return 1;
+  }
+  if (!use_pop_sift && !use_sift_gpu) {
+    use_sift_gpu = true;
+  }
+
   // Setup SIFT parameters (pure extraction only)
   insight::modules::SiftGPUParams sift_params;
   sift_params.n_max_features = nfeatures;
@@ -235,8 +255,10 @@ int main(int argc, char* argv[]) {
   sift_params.n_level = levels;
   sift_params.adapt_darkness = adapt_darkness;
   sift_params.use_cuda = use_cuda_extract;
+  sift_params.use_sift_gpu = use_sift_gpu;
+  sift_params.use_pop_sift = use_pop_sift;
   sift_params.truncate_method = 1;
-  sift_params.image_max_dimension = 6000;
+  sift_params.image_max_dimension = image_max_dim;
 
   insight::modules::SiftGPUParams lowThreshold_sift_params = sift_params;
   lowThreshold_sift_params.d_peak /= 10.f;
@@ -248,14 +270,19 @@ int main(int argc, char* argv[]) {
   sift_params_retrieval.n_level = levels;
   sift_params_retrieval.adapt_darkness = adapt_darkness;
   sift_params_retrieval.use_cuda = use_cuda_extract;
+  sift_params_retrieval.use_sift_gpu = use_sift_gpu;
+  sift_params_retrieval.use_pop_sift = use_pop_sift;
   sift_params_retrieval.truncate_method = 1;
+  sift_params_retrieval.image_max_dimension = image_max_dim;
 
   // Log configuration
   LOG(INFO) << "Feature extraction configuration:";
   LOG(INFO) << "  SIFT extract backend: " << (use_cuda_extract ? "cuda" : "glsl");
+  LOG(INFO) << "  SIFT implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
   LOG(INFO) << "  SIFT first octave (-fo): " << sift_params.n_octave_from << " (octaves=" << octaves
             << ", levels per octave=" << levels << ")";
   LOG(INFO) << "  SIFT threshold: " << threshold;
+  LOG(INFO) << "  SIFT image max dim: " << image_max_dim;
   LOG(INFO) << "  Normalization: " << normalization;
   LOG(INFO) << "  uint8 format: " << (use_uint8 ? "yes" : "no");
   LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
@@ -309,7 +336,7 @@ int main(int argc, char* argv[]) {
 
   // Stage 1: Image loading (multi-threaded I/O)
   Stage imageLoadStage("ImageLoad", io_threads, IO_QUEUE_SIZE,
-                       [&image_tasks, process_retrieval, resize_retrieval](int index) {
+                       [&image_tasks, process_retrieval, resize_retrieval, image_max_dim](int index) {
                          auto& task = image_tasks[index];
                          cv::Mat image = cv::imread(task.image_path, cv::IMREAD_UNCHANGED);
                          if (image.empty()) {
@@ -318,7 +345,23 @@ int main(int argc, char* argv[]) {
                          }
                          LOG(INFO) << "Loaded image [" << index << "]: " << task.image_path << " ("
                                    << image.cols << "x" << image.rows << ")";
+                         task.image_cols = image.cols;
+                         task.image_rows = image.rows;
+                         task.image_coord_scale_back = 1.0f;
+
+                         // Prepare matching image for extraction (CPU stage), then remap keypoints later.
                          task.image = image;
+                         const int match_max_dim = std::max(task.image.cols, task.image.rows);
+                         if (image_max_dim > 0 && match_max_dim > image_max_dim) {
+                           const float scale = static_cast<float>(image_max_dim) / match_max_dim;
+                           cv::Mat image_resized;
+                           cv::resize(task.image, image_resized, cv::Size(), scale, scale, cv::INTER_AREA);
+                           task.image = std::move(image_resized);
+                           task.image_coord_scale_back = 1.0f / scale;
+                           LOG(INFO) << "  Resized for matching: " << task.image.cols << "x"
+                                     << task.image.rows << " (scale_back="
+                                     << task.image_coord_scale_back << ")";
+                         }
 
                          // Prepare retrieval image if needed (dual-output or retrieval-only)
                          if (process_retrieval) {
@@ -329,10 +372,13 @@ int main(int argc, char* argv[]) {
                              cv::resize(image, image_resized, cv::Size(), scale, scale,
                                         cv::INTER_AREA);
                              task.image_retrieval = image_resized;
+                             task.image_retrieval_coord_scale_back = 1.0f / scale;
                              LOG(INFO) << "  Resized for retrieval: " << image_resized.cols << "x"
-                                       << image_resized.rows;
+                                       << image_resized.rows << " (scale_back="
+                                       << task.image_retrieval_coord_scale_back << ")";
                            } else {
                              task.image_retrieval = image.clone();
+                             task.image_retrieval_coord_scale_back = 1.0f;
                              LOG(INFO) << "  Retrieval image (no resize needed): " << image.cols
                                        << "x" << image.rows;
                            }
@@ -382,8 +428,13 @@ int main(int argc, char* argv[]) {
                   extractor.extract(task.image, task.keypoints, task.descriptors);
               matching_used_low_peak[static_cast<size_t>(index)] = 1;
             }
-            task.image_cols = task.image.cols;
-            task.image_rows = task.image.rows;
+            if (task.image_coord_scale_back != 1.0f) {
+              for (auto& kp : task.keypoints) {
+                kp.x *= task.image_coord_scale_back;
+                kp.y *= task.image_coord_scale_back;
+                kp.s *= task.image_coord_scale_back;
+              }
+            }
             task.image.release(); // Free original image memory
           }
 
@@ -394,8 +445,15 @@ int main(int argc, char* argv[]) {
 
             num_features_retrieval = extractor.extract(
                 task.image_retrieval, task.keypoints_retrieval, task.descriptors_retrieval);
-            task.image_retrieval_cols = task.image_retrieval.cols;
-            task.image_retrieval_rows = task.image_retrieval.rows;
+            task.image_retrieval_cols = task.image_cols;
+            task.image_retrieval_rows = task.image_rows;
+            if (task.image_retrieval_coord_scale_back != 1.0f) {
+              for (auto& kp : task.keypoints_retrieval) {
+                kp.x *= task.image_retrieval_coord_scale_back;
+                kp.y *= task.image_retrieval_coord_scale_back;
+                kp.s *= task.image_retrieval_coord_scale_back;
+              }
+            }
             task.image_retrieval.release(); // Free resized image memory
           }
 
@@ -489,7 +547,7 @@ int main(int argc, char* argv[]) {
         "WriteIDC", io_threads, IO_QUEUE_SIZE,
         [&output_dir, &output_retrieval_dir, &image_tasks, use_uint8, enable_nms, normalization,
          nms_radius, nms_keep_orientation, &sift_params, &sift_params_retrieval, process_matching,
-         process_retrieval](int index) {
+         process_retrieval, use_pop_sift](int index) {
           auto& task = image_tasks[index];
 
           // Use image_index for output filename: {image_index}.isat_feat
@@ -517,6 +575,7 @@ int main(int argc, char* argv[]) {
             params_json["uint8"] = use_uint8;
             params_json["nms_enabled"] = enable_nms;
             params_json["feature_type"] = feature_type; // "matching" or "retrieval"
+            params_json["extractor_impl"] = use_pop_sift ? "popsift" : "sift_gpu";
             if (enable_nms) {
               params_json["nms_radius"] = nms_radius;
               params_json["nms_keep_orientation"] = nms_keep_orientation;
@@ -530,8 +589,9 @@ int main(int argc, char* argv[]) {
             schema.normalization = normalization;
             schema.quantization_scale = use_uint8 ? 512.0f : 1.0f;
 
+            const std::string extractor_name = use_pop_sift ? "POP_SIFT" : "SIFT_GPU";
             auto metadata =
-                insight::io::create_feature_metadata(task.image_path, "SIFT_GPU",
+                insight::io::create_feature_metadata(task.image_path, extractor_name,
                                                      "1.2", // Version bump for dual-output support
                                                      params_json, schema, 0);
 

@@ -170,6 +170,22 @@ target_link_libraries(InsightATAlgorithm
         ${OPENGL_LIBRARIES}
 )
 
+# Optional PopSift backend for SIFT extraction.
+# Enabled only when PopSift target is available from parent CMake.
+if(TARGET PopSift::popsift)
+    target_link_libraries(InsightATAlgorithm PUBLIC PopSift::popsift)
+    target_compile_definitions(InsightATAlgorithm PUBLIC HAVE_CUDA)
+    message(STATUS "InsightATAlgorithm: PopSift backend enabled")
+else()
+    if(SIFTGPU_ENABLE_CUDA)
+        message(FATAL_ERROR
+            "InsightATAlgorithm: SIFTGPU_ENABLE_CUDA=ON but PopSift::popsift target is missing. "
+            "PopSift must be built in this configuration.")
+    else()
+        message(STATUS "InsightATAlgorithm: PopSift backend disabled (CUDA SiftGPU is OFF)")
+    endif()
+endif()
+
 # CUDA PCA: compile definition + link cuBLAS/cuSOLVER so all consumers resolve the .cu symbols
 if(INSIGHTAT_USE_CUDA_PCA)
     target_compile_definitions(InsightATAlgorithm PUBLIC INSIGHTAT_USE_CUDA_PCA)
@@ -246,6 +262,38 @@ target_link_libraries(isat_extract
         ${GLEW_LIBRARIES}
         ${OPENGL_LIBRARIES}
 )
+
+# In fully-static PopSift builds, rely on direct linkage from final executable
+# so CUDA device-link can see PopSift CUDA objects explicitly.
+if(TARGET PopSift::popsift)
+    if(BUILD_SHARED_LIBS)
+        target_link_libraries(isat_extract PRIVATE PopSift::popsift)
+    else()
+        # Static CUDA archives can drop device-link registration objects unless
+        # the archive is force-loaded.
+        target_link_libraries(isat_extract PRIVATE
+            -Wl,--whole-archive
+            PopSift::popsift
+            -Wl,--no-whole-archive)
+    endif()
+endif()
+
+# PopSift/CUDA static-device runtime may require explicit linkage at final executable link step.
+if(TARGET CUDA::cudadevrt)
+    target_link_libraries(isat_extract PRIVATE CUDA::cudadevrt)
+elseif(DEFINED CUDA_CUDADEVRT_LIBRARY AND NOT "${CUDA_CUDADEVRT_LIBRARY}" STREQUAL "")
+    target_link_libraries(isat_extract PRIVATE ${CUDA_CUDADEVRT_LIBRARY})
+endif()
+if(TARGET CUDA::cudart)
+    target_link_libraries(isat_extract PRIVATE CUDA::cudart)
+endif()
+
+if(TARGET PopSift::popsift)
+    # Force CUDA linker for final executable to resolve fatbin/device-runtime symbols
+    # propagated from static PopSift CUDA objects.
+    set_target_properties(isat_extract PROPERTIES LINKER_LANGUAGE CUDA)
+    set_target_properties(isat_extract PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
 
 target_include_directories(isat_extract
     PRIVATE

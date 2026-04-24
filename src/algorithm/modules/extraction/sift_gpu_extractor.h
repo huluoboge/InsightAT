@@ -36,6 +36,9 @@ struct SiftGPUParams {
   int n_max_features = 10000;  ///< 最大特征数
   bool adapt_darkness = true; ///< 适应暗图
   bool use_cuda = false;      ///< 使用 CUDA 后端
+  bool use_sift_gpu = true;   ///< 使用 SiftGPU 作为提取实现
+  bool use_pop_sift = false;  ///< 使用 PopSift 作为提取实现
+  int popsift_gpu_device = 0; ///< PopSift CUDA 设备 ID
   int truncate_method = 1;    ///< 0=-tc, 1=-tc2, 2=-tc3
   int image_max_dimension = 8000;   ///< 最大图像维度
 
@@ -43,7 +46,9 @@ struct SiftGPUParams {
     return n_octave_from == o.n_octave_from && n_octaves == o.n_octaves &&
            n_level == o.n_level && d_peak == o.d_peak &&
            n_max_features == o.n_max_features && adapt_darkness == o.adapt_darkness &&
-           use_cuda == o.use_cuda && truncate_method == o.truncate_method &&
+           use_cuda == o.use_cuda && use_sift_gpu == o.use_sift_gpu &&
+           use_pop_sift == o.use_pop_sift && popsift_gpu_device == o.popsift_gpu_device &&
+           truncate_method == o.truncate_method &&
            image_max_dimension == o.image_max_dimension;
   }
   bool operator!=(const SiftGPUParams& o) const { return !(*this == o); }
@@ -71,9 +76,14 @@ public:
 private:
   SiftGPUParams params_;
   SiftGPUPtr sift_gpu_;
+  struct PopSiftImpl;
+  std::shared_ptr<PopSiftImpl> popsift_impl_;
   bool initialized_ = false;
 
   SiftGPUPtr create_sift_gpu(const SiftGPUParams& param);
+  bool initialize_popsift(const SiftGPUParams& param);
+  int extract_popsift(const cv::Mat& image, std::vector<SiftGPU::SiftKeypoint>& keypoints,
+                      std::vector<float>& descriptors);
 };
 
 /** 对关键点与描述子做网格分布（可在 CPU 线程中调用）。 */

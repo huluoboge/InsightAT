@@ -8,12 +8,30 @@
 
 #include <GL/gl.h>
 #include <cstdio>
+#include <cstring>
+#include <stdexcept>
 
 #include <glog/logging.h>
 #include <opencv2/imgproc.hpp>
 
+#if defined(HAVE_CUDA) && __has_include(<popsift/features.h>) && __has_include(<popsift/popsift.h>) && \
+    __has_include(<popsift/sift_conf.h>)
+#define INSIGHTAT_HAS_POPSIFT 1
+#include <popsift/features.h>
+#include <popsift/popsift.h>
+#include <popsift/sift_conf.h>
+#else
+#define INSIGHTAT_HAS_POPSIFT 0
+#endif
+
 namespace insight {
 namespace modules {
+
+struct SiftGPUExtractor::PopSiftImpl {
+#if INSIGHTAT_HAS_POPSIFT
+  std::unique_ptr<PopSift> popsift;
+#endif
+};
 
 // ============================================================================
 // Generic descriptor normalization and conversion utilities
@@ -114,10 +132,21 @@ bool SiftGPUExtractor::initialize() {
     return true;
   }
 
-  sift_gpu_ = create_sift_gpu(params_);
-  if (!sift_gpu_) {
-    LOG(ERROR) << "Failed to create SiftGPU instance";
+  if (params_.use_sift_gpu == params_.use_pop_sift) {
+    LOG(ERROR) << "Exactly one backend must be enabled: use_sift_gpu xor use_pop_sift";
     return false;
+  }
+
+  if (params_.use_pop_sift) {
+    if (!initialize_popsift(params_)) {
+      return false;
+    }
+  } else {
+    sift_gpu_ = create_sift_gpu(params_);
+    if (!sift_gpu_) {
+      LOG(ERROR) << "Failed to create SiftGPU instance";
+      return false;
+    }
   }
 
   initialized_ = true;
@@ -135,16 +164,25 @@ bool SiftGPUExtractor::reconfigure(const SiftGPUParams& new_params) {
     LOG(INFO) << "SiftGPU params unchanged, skipping reconfigure";
     return true;
   }
-
-  // destroy existing SiftGPU instance before creating a new one
-  SiftGPUPtr().swap(sift_gpu_);
-  params_ = new_params;
-  sift_gpu_ = create_sift_gpu(new_params);
-  // Update stored parameters
-
-  if (!sift_gpu_) {
-    LOG(ERROR) << "Failed to create SiftGPU instance";
+  if (new_params.use_sift_gpu == new_params.use_pop_sift) {
+    LOG(ERROR) << "Exactly one backend must be enabled: use_sift_gpu xor use_pop_sift";
     return false;
+  }
+
+  // destroy existing backend instance before creating a new one
+  SiftGPUPtr().swap(sift_gpu_);
+  popsift_impl_.reset();
+  params_ = new_params;
+  if (params_.use_pop_sift) {
+    if (!initialize_popsift(params_)) {
+      return false;
+    }
+  } else {
+    sift_gpu_ = create_sift_gpu(new_params);
+    if (!sift_gpu_) {
+      LOG(ERROR) << "Failed to create SiftGPU instance";
+      return false;
+    }
   }
 
   initialized_ = true;
@@ -154,6 +192,10 @@ bool SiftGPUExtractor::reconfigure(const SiftGPUParams& new_params) {
 
 int SiftGPUExtractor::extract(const cv::Mat& image, std::vector<SiftGPU::SiftKeypoint>& keypoints,
                               std::vector<float>& descriptors) {
+  if (params_.use_pop_sift) {
+    return extract_popsift(image, keypoints, descriptors);
+  }
+
   if (!initialized_) {
     LOG(ERROR) << "SiftGPU not initialized";
     return 0;
@@ -200,6 +242,10 @@ int SiftGPUExtractor::extract(const cv::Mat& image, std::vector<SiftGPU::SiftKey
 }
 
 SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUParams& param) {
+  if (param.use_pop_sift) {
+    LOG(ERROR) << "create_sift_gpu called while use_pop_sift=true";
+    return SiftGPUPtr();
+  }
   SiftGPUPtr sift_gpu_ptr(new SiftGPU);
 
   char strOcFrom[10];
@@ -279,6 +325,166 @@ SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUPara
   }
 
   return sift_gpu_ptr;
+}
+
+bool SiftGPUExtractor::initialize_popsift(const SiftGPUParams& param) {
+#if INSIGHTAT_HAS_POPSIFT
+  if (param.use_sift_gpu && param.use_pop_sift) {
+    LOG(ERROR) << "Both use_sift_gpu and use_pop_sift are enabled; choose only one";
+    return false;
+  }
+  if (!param.use_pop_sift) {
+    LOG(ERROR) << "initialize_popsift called while use_pop_sift=false";
+    return false;
+  }
+
+  popsift_impl_ = std::make_shared<PopSiftImpl>();
+  try {
+    popsift::Config ps_config;
+    ps_config.setThreshold(static_cast<float>(param.d_peak));
+    ps_config.setEdgeLimit(10.0f);
+    ps_config.setFilterMaxExtrema(param.n_max_features);
+    ps_config.setFilterGridSize(4);
+    ps_config.setFilterSorting(popsift::Config::LargestScaleFirst);
+
+    popsift_impl_->popsift = std::make_unique<PopSift>(
+        ps_config, popsift::Config::ExtractingMode, PopSift::ByteImages, param.popsift_gpu_device);
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "PopSift init failed: " << e.what();
+    popsift_impl_.reset();
+    return false;
+  } catch (...) {
+    LOG(ERROR) << "PopSift init failed: unknown exception";
+    popsift_impl_.reset();
+    return false;
+  }
+
+  LOG(INFO) << "PopSift initialized successfully on device " << param.popsift_gpu_device;
+  return true;
+#else
+  (void)param;
+  LOG(ERROR) << "PopSift requested but not available in this build (missing CUDA/PopSift headers)";
+  return false;
+#endif
+}
+
+int SiftGPUExtractor::extract_popsift(const cv::Mat& image, std::vector<SiftGPU::SiftKeypoint>& keypoints,
+                                      std::vector<float>& descriptors) {
+#if INSIGHTAT_HAS_POPSIFT
+  try {
+    if (!popsift_impl_ || !popsift_impl_->popsift) {
+      LOG(ERROR) << "PopSift backend not initialized";
+      return 0;
+    }
+
+    cv::Mat gray;
+    if (image.channels() == 1 && image.depth() == CV_8U) {
+      gray = image;
+    } else if (image.channels() == 3) {
+      cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+      if (gray.depth() != CV_8U) {
+        gray.convertTo(gray, CV_8U);
+      }
+    } else if (image.channels() == 4) {
+      cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
+      if (gray.depth() != CV_8U) {
+        gray.convertTo(gray, CV_8U);
+      }
+    } else {
+      image.convertTo(gray, CV_8U);
+    }
+
+    // Internal fallback: if caller did not pre-resize, guard PopSift memory by resizing here.
+    // When caller already resized to <= image_max_dimension, this branch is a no-op.
+    double coord_scale_back = 1.0;
+    const int max_dim = std::max(gray.cols, gray.rows);
+    if (params_.image_max_dimension > 0 && max_dim > params_.image_max_dimension) {
+      const double scale = static_cast<double>(params_.image_max_dimension) / max_dim;
+      cv::Mat resized;
+      cv::resize(gray, resized, cv::Size(), scale, scale, cv::INTER_AREA);
+      gray = std::move(resized);
+      coord_scale_back = 1.0 / scale;
+      LOG(WARNING) << "PopSift internal resize from " << image.cols << "x" << image.rows << " to "
+                   << gray.cols << "x" << gray.rows
+                   << " (image_max_dimension=" << params_.image_max_dimension << ")";
+    }
+
+    if (!gray.isContinuous()) {
+      gray = gray.clone();
+    }
+
+    SiftJob* job = nullptr;
+    try {
+      job = popsift_impl_->popsift->enqueue(gray.cols, gray.rows, gray.data);
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "PopSift enqueue failed: " << e.what();
+      return 0;
+    }
+
+    if (!job) {
+      LOG(ERROR) << "PopSift enqueue returned null job";
+      return 0;
+    }
+
+    popsift::FeaturesHost* features = nullptr;
+    try {
+      features = job->getHost();
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "PopSift getHost failed: " << e.what();
+      delete job;
+      return 0;
+    }
+
+    keypoints.clear();
+    descriptors.clear();
+
+    if (features) {
+      const int num_features = features->getFeatureCount();
+      int num_desc = 0;
+      for (int i = 0; i < num_features; ++i) {
+        num_desc += features->begin()[i].num_ori;
+      }
+
+      keypoints.reserve(static_cast<size_t>(num_desc));
+      descriptors.reserve(static_cast<size_t>(num_desc) * 128);
+
+      for (int i = 0; i < num_features; ++i) {
+        const popsift::Feature& feat = features->begin()[i];
+        for (int o = 0; o < feat.num_ori; ++o) {
+          SiftGPU::SiftKeypoint kp;
+          kp.x = static_cast<float>(feat.xpos * coord_scale_back);
+          kp.y = static_cast<float>(feat.ypos * coord_scale_back);
+          kp.s = static_cast<float>(feat.sigma * coord_scale_back);
+          kp.o = feat.orientation[o];
+          keypoints.push_back(kp);
+
+          const popsift::Descriptor* desc = feat.desc[o];
+          if (desc) {
+            descriptors.insert(descriptors.end(), desc->features, desc->features + 128);
+          } else {
+            descriptors.insert(descriptors.end(), 128, 0.0f);
+          }
+        }
+      }
+      delete features;
+    }
+
+    delete job;
+    return static_cast<int>(keypoints.size());
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "PopSift extract failed with exception: " << e.what();
+    return 0;
+  } catch (...) {
+    LOG(ERROR) << "PopSift extract failed with unknown exception";
+    return 0;
+  }
+#else
+  (void)image;
+  (void)keypoints;
+  (void)descriptors;
+  LOG(ERROR) << "PopSift backend is not compiled in this build";
+  return 0;
+#endif
 }
 
 // ============================================================================

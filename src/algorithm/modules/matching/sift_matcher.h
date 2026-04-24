@@ -21,6 +21,13 @@ namespace insight {
 namespace algorithm {
 namespace matching {
 
+struct SiftMatcherParams {
+  int max_features = 10000;
+  bool use_cuda = true;
+  bool use_sift_gpu = true;
+  bool use_pop_sift = false;
+};
+
 /**
  * SiftMatcher - Wrapper around SiftMatchGPU
  *
@@ -35,10 +42,12 @@ class SiftMatcher {
 public:
   /**
    * Constructor
-   * @param max_features Maximum number of features per image
-   * @param use_cuda Use CUDA matching when the library was built with CUDA (faster than GLSL)
+   * @param params matcher backend and capacity options
    */
-  explicit SiftMatcher(int max_features = 10000, bool use_cuda = true);
+  explicit SiftMatcher(const SiftMatcherParams& params = SiftMatcherParams());
+
+  // Backward-compatible constructor
+  explicit SiftMatcher(int max_features, bool use_cuda);
 
   /**
    * Destructor - releases GPU resources
@@ -80,13 +89,18 @@ public:
   int get_max_features() const { return max_features_; }
 
 private:
+  enum class Backend { kSiftGPU, kPopSift };
   int max_features_;
+  SiftMatcherParams params_;
+  Backend backend_ = Backend::kSiftGPU;
   std::unique_ptr<SiftMatchGPU> matcher_;
 
   MatchResult convert_match_result(const std::vector<uint32_t>& match_buffer, int num_matches,
                                   const FeatureData& features1, const FeatureData& features2);
   float compute_descriptor_distance(const FeatureData& features1, const FeatureData& features2,
                                    size_t idx1, size_t idx2) const;
+  MatchResult match_popsift(const FeatureData& features1, const FeatureData& features2,
+                            const MatchOptions& options);
 };
 
 }  // namespace matching

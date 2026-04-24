@@ -257,7 +257,7 @@ static size_t sanitize_matches_one_to_one(MatchResult* matches) {
  * Write match result to IDC file
  */
 bool writeMatchIDC(const MatchResult& matches, const PairTask& pair,
-                   const std::string& output_dir) {
+                   const std::string& output_dir, const std::string& matcher_impl) {
 
   if (matches.num_matches == 0) {
     LOG(WARNING) << "No matches for pair " << pair.image1_index << " - " << pair.image2_index;
@@ -270,8 +270,9 @@ bool writeMatchIDC(const MatchResult& matches, const PairTask& pair,
   json metadata;
   metadata["schema_version"] = "1.0";
   metadata["task_type"] = "feature_matching";
-  metadata["algorithm"]["name"] = "SiftGPU";
-  metadata["algorithm"]["version"] = "1.1";
+  metadata["algorithm"]["name"] = (matcher_impl == "popsift") ? "POP_SIFT" : "SIFT_GPU";
+  metadata["algorithm"]["impl"] = matcher_impl;
+  metadata["algorithm"]["version"] = "1.2";
 
   metadata["image_pair"]["image1_index"] = pair.image1_index;
   metadata["image_pair"]["image2_index"] = pair.image2_index;
@@ -354,6 +355,8 @@ int main(int argc, char* argv[]) {
   int grid_rows = 4;        // spatial stratification grid rows
   int grid_cols = 4;        // spatial stratification grid cols
   int num_threads = 4;
+  bool use_pop_sift = false;
+  bool use_sift_gpu = false;
 
   // Required arguments
   cmd.add(make_option('i', pairs_json, "input")
@@ -384,6 +387,8 @@ int main(int argc, char* argv[]) {
   std::string match_backend = "cuda";
   cmd.add(make_option(0, match_backend, "match-backend")
               .doc("GPU backend for matching: cuda or glsl (default: cuda when built with CUDA)"));
+  cmd.add(make_switch(0, "use-pop-sift").doc("Use PopSift brute-force matcher backend"));
+  cmd.add(make_switch(0, "use-sift-gpu").doc("Use SiftGPU matcher backend"));
 
   // Logging options
   std::string log_level;
@@ -429,7 +434,17 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  Max matches: " << (max_matches > 0 ? std::to_string(max_matches) : "unlimited");
   LOG(INFO) << "  CPU threads: " << num_threads;
   bool use_cuda_match = (match_backend == "cuda");
+  use_pop_sift = cmd.used("use-pop-sift");
+  use_sift_gpu = cmd.used("use-sift-gpu");
+  if (use_pop_sift && use_sift_gpu) {
+    LOG(ERROR) << "Cannot set both --use-pop-sift and --use-sift-gpu";
+    return 1;
+  }
+  if (!use_pop_sift && !use_sift_gpu) {
+    use_sift_gpu = true;
+  }
   LOG(INFO) << "  Match backend: " << (use_cuda_match ? "cuda" : "glsl");
+  LOG(INFO) << "  Matcher implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
 
   // Validate feature directory if provided
   if (!feature_dir.empty() && !fs::is_directory(feature_dir)) {
@@ -485,7 +500,12 @@ int main(int argc, char* argv[]) {
   // GPU buffer must cover the actual number of features uploaded.
   // When cap is -1 (all features), use a large safe upper bound (32768 ≈ typical SIFT max).
   int gpu_buf = max_features > 0 ? max_features : 32768;
-  SiftMatcher matcher(gpu_buf, use_cuda_match);
+  SiftMatcherParams matcher_params;
+  matcher_params.max_features = gpu_buf;
+  matcher_params.use_cuda = use_cuda_match;
+  matcher_params.use_sift_gpu = use_sift_gpu;
+  matcher_params.use_pop_sift = use_pop_sift;
+  SiftMatcher matcher(matcher_params);
 
   if (!matcher.verify_context()) {
     LOG(FATAL) << "Failed to initialize SiftMatchGPU - OpenGL context error";
@@ -521,7 +541,8 @@ int main(int argc, char* argv[]) {
 
   // Stage 3: Write results (multi-threaded I/O)
   Stage writeStage(
-      "WriteResults", num_threads, IO_QUEUE_SIZE, [&pair_tasks, &output_dir](int index) {
+      "WriteResults", num_threads, IO_QUEUE_SIZE,
+      [&pair_tasks, &output_dir, use_pop_sift](int index) {
         auto& task = pair_tasks[index];
 
         if (task.matches.num_matches == 0) {
@@ -530,7 +551,7 @@ int main(int argc, char* argv[]) {
 
         auto start = std::chrono::high_resolution_clock::now();
 
-        writeMatchIDC(task.matches, task, output_dir);
+        writeMatchIDC(task.matches, task, output_dir, use_pop_sift ? "popsift" : "sift_gpu");
 
         auto end = std::chrono::high_resolution_clock::now();
         int write_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
