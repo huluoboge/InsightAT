@@ -90,19 +90,27 @@ python3 benchmarks/sfm_compare/run_insightat_batch.py \
 
 ### 4. 稀疏模型对比（相似变换对齐相机中心）
 
-在 **同一数据集根目录** 下，对每个场景若同时存在 COLMAP 与 InsightAT 的 `images.txt`，则估计 Umeyama 相似变换并统计位姿中心误差（米）：
+在 **同一数据集根目录** 下，对每个场景将 **参考** 与 InsightAT 导出的 `images.txt` 按 **图像 basename** 对齐，估计 Umeyama 相似变换（参考相机中心 → InsightAT）并统计残差的 RMSE / 中位数（米）。
+
+- **默认参考**：`scenes/<scene>/gt/images.txt`（ETH3D `dslr_calibration` 提供的 COLMAP 文本真值）。输出默认 **`compare_gt_insightat.json`**。
+- **可选**：`--ref-source colmap` 使用 COLMAP 稀疏重建作参考（与 InsightAT 互比），输出默认 **`compare_colmap_insightat.json`**。
 
 ```bash
+# 相对 ETH3D GT（推荐）
+python3 benchmarks/sfm_compare/compare_dataset_batch.py -d /path/to/eth3d_root
+
+# 或：相对 COLMAP 稀疏模型（旧版 A/B）
 python3 benchmarks/sfm_compare/compare_dataset_batch.py \
   -d /path/to/eth3d_root \
+  --ref-source colmap \
   -o /path/to/compare_colmap_insightat.json
 ```
 
-默认输出文件为 `<dataset>/compare_colmap_insightat.json`（可用 `-o` 覆盖）。
+可用 `-o` 覆盖默认输出路径。
 
 ### 5. 生成对比图表（README 用图）
 
-在已存在 `colmap_batch_summary.json`、`insightat_batch_summary.json` 的前提下，可选运行第 4 步生成 `compare_colmap_insightat.json`，然后执行：
+在已存在 `colmap_batch_summary.json`、`insightat_batch_summary.json` 的前提下，建议先运行第 4 步生成 **`compare_gt_insightat.json`**（或 `compare_colmap_insightat.json`），然后执行：
 
 ```bash
 pip install matplotlib   # 若尚未安装
@@ -113,9 +121,9 @@ python3 benchmarks/sfm_compare/plot_eth3d_benchmark.py -d /path/to/eth3d_root
 
 - `eth3d_wall_time_colmap_vs_insightat.png` — 各场景墙钟：COLMAP `elapsed_sfm_s` vs InsightAT `elapsed_wall_s`
 - `eth3d_sparse_points_colmap_vs_insightat.png` — `points3D` 数量（文本模型统计）
-- `eth3d_camera_center_alignment.png` — 若有对比 JSON：对齐后相机中心 RMSE / 中位数（米）
+- `eth3d_camera_center_alignment.png` — 若有对比 JSON：参考（默认真值 GT）与 InsightAT 对齐后的相机中心 RMSE / 中位数（米）
 
-仅统计两边 `exit_code == 0` 的场景；对齐图仅含 `compare_colmap_insightat.json` 中 `ok: true` 的场景。
+仅统计两边 `exit_code == 0` 的场景；对齐图使用 **`compare_gt_insightat.json`**（若存在），否则回退 **`compare_colmap_insightat.json`** 中 `ok: true` 的条目。
 
 ### 单场景手动对比
 
@@ -145,7 +153,7 @@ python3 benchmarks/sfm_compare/compare_colmap_sparse.py \
 - **匹配**：按 `images.txt` 中图像 **文件名（basename）** 对齐；仅统计两模型均存在的图像。
 - **对齐**：将 **参考侧（ref）** 相机中心经相似变换对齐到 **估计侧（est）**，报告 RMSE、中位数误差、最大误差及尺度因子。
 - **解释**：这是典型的「两重建互比」；**不是** ETH3D 官方真值评测。若需与 `gt/` 对比，需另行实现真值格式读取与对齐。
-- **参考 / 估计**：脚本中 **ref = COLMAP**、`est = InsightAT`（路径见 `compare_dataset_batch.py`）。对齐图里 **RMSE 与中位数** 是同一对齐下的两种误差统计，**不是**两根柱各代表一个软件。
+- **参考 / 估计**：默认 **ref = `gt/images.txt`（ETH3D 标定真值）**、`est = InsightAT`；`--ref-source colmap` 时 ref = COLMAP 稀疏。对齐图里 **RMSE 与中位数** 是同一对齐下的两种误差统计，**不是**两根柱各代表一个软件。
 
 ## 辅助脚本（仓库其它位置）
 

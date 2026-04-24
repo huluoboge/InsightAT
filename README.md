@@ -182,9 +182,9 @@ InsightAT differs from traditional SfM systems:
 
 ## Benchmarks (ETH3D-style)
 
-We batch-run **COLMAP** (sparse SfM only: feature extraction + exhaustive matching + mapper) and **InsightAT** (`isat_sfm`) on the same prepared image sets, then compare timing, sparse point counts, and—after a similarity alignment of camera centers—pose consistency between the two sparse models.
+We batch-run **COLMAP** (sparse SfM only: feature extraction + exhaustive matching + mapper) and **InsightAT** (`isat_sfm`) on the same prepared image sets, then compare **wall time** and **sparse point counts**. For camera geometry we align **InsightAT** to the scene’s **ETH3D GT** (`scenes/<scene>/gt/images.txt`, COLMAP text format from `dslr_calibration`) and report RMSE / median of camera-center residuals (meters)—**not** the official ETH3D leaderboard script, but a practical check when GT is available.
 
-This is **not** the official ETH3D leaderboard metric; it is an internal A/B for reproducibility. See [benchmarks/README.md](benchmarks/README.md) for full procedure, environment variables, and caveats.
+See [benchmarks/README.md](benchmarks/README.md) for full procedure, environment variables, and caveats.
 
 ### Results (example batch)
 
@@ -194,12 +194,12 @@ This is **not** the official ETH3D leaderboard metric; it is an internal A/B for
 
 ![Camera center alignment RMSE / median](doc/images/benchmarks/eth3d_camera_center_alignment.png)
 
-**How to read the third figure:** it is **not** “green = COLMAP, red = InsightAT”. Both bars describe **one** comparison per scene: **COLMAP sparse model = reference**, **InsightAT = estimate**. A similarity transform aligns COLMAP camera centers to InsightAT’s; **green = RMSE** and **red = median** of the remaining center residuals (meters)—two statistics of the same geometric agreement.
+**How to read the third figure:** it is **not** “green = GT, red = InsightAT”. Both bars are **one** comparison per scene: **ETH3D GT = reference**, **InsightAT = estimate**. After an Umeyama similarity (GT → InsightAT), **green = RMSE** and **red = median** of camera-center residuals (meters).
 
 ### How to reproduce
 
 1. Prepare dataset layout: `python3 benchmarks/eth3d/prepare_datasets.py -d /path/to/eth3d_root` (see [benchmarks/README.md](benchmarks/README.md)).
-2. Run COLMAP batch → InsightAT batch → optional `compare_dataset_batch.py`.
+2. Run COLMAP batch → InsightAT batch → `python3 benchmarks/sfm_compare/compare_dataset_batch.py -d ...` (writes `compare_gt_insightat.json` by default).
 3. Generate figures: `python3 benchmarks/sfm_compare/plot_eth3d_benchmark.py -d /path/to/eth3d_root`
 
 ---

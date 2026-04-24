@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Plot COLMAP vs InsightAT ETH3D-style batch summaries (wall time, sparse points).
+Plot COLMAP vs InsightAT ETH3D-style batch summaries (wall time, sparse points)
+and optional GT-vs-InsightAT (or COLMAP-vs-InsightAT) alignment errors.
 
 Reads (under --dataset-root):
   - colmap_batch_summary.json   (from run_colmap_batch.py)
   - insightat_batch_summary.json (from run_insightat_batch.py)
-  - compare_colmap_insightat.json (optional; from compare_dataset_batch.py)
+  - compare_gt_insightat.json or compare_colmap_insightat.json (optional; from compare_dataset_batch.py)
 
 Writes PNG figures to --out-dir (default: doc/images/benchmarks).
 
@@ -70,14 +71,23 @@ def _collect_timing_pairs(
     return names, t_col, t_isat, pts_col, pts_isat
 
 
-def _load_compare_rows(root: Path) -> List[Dict[str, Any]]:
-    p = root / "compare_colmap_insightat.json"
-    if not p.is_file():
-        return []
-    data = _load_json(p)
-    if not isinstance(data, list):
-        return []
-    return [r for r in data if isinstance(r, dict) and r.get("ok")]
+def _load_compare_rows(root: Path) -> Tuple[List[Dict[str, Any]], str]:
+    """Prefer GT-vs-InsightAT JSON; fall back to legacy COLMAP-vs-InsightAT."""
+    for name, ref_label in (
+        ("compare_gt_insightat.json", "gt"),
+        ("compare_colmap_insightat.json", "colmap"),
+    ):
+        p = root / name
+        if not p.is_file():
+            continue
+        data = _load_json(p)
+        if not isinstance(data, list):
+            continue
+        rows = [r for r in data if isinstance(r, dict) and r.get("ok")]
+        if rows:
+            tag = str(rows[0].get("reference", ref_label))
+            return rows, tag
+    return [], "unknown"
 
 
 def _bar_grouped(
@@ -148,8 +158,9 @@ def main() -> int:
         out_dir / "eth3d_sparse_points_colmap_vs_insightat.png",
     )
 
-    compare_rows = _load_compare_rows(root)
+    compare_rows, ref_tag = _load_compare_rows(root)
     if compare_rows:
+        ref_name = "ETH3D GT (dslr_calibration)" if ref_tag == "gt" else "COLMAP sparse"
         scenes_c = [r["scene"] for r in compare_rows]
         rmse = [float(r["rmse_m"]) for r in compare_rows]
         med = [float(r["median_m"]) for r in compare_rows]
@@ -160,8 +171,8 @@ def main() -> int:
         ax.bar(x + w / 2, med, width=w, label="Median error", color="#C44E52")
         ax.set_ylabel("Residual (meters)")
         ax.set_title(
-            "Camera centers: COLMAP = reference, InsightAT = estimate\n"
-            "(Umeyama similarity ref→est; bars are two error summaries per scene, not two pipelines)"
+            f"Camera centers: {ref_name} = reference, InsightAT = estimate\n"
+            "(Umeyama similarity ref→est; green=RMSE, red=median — same alignment per scene)"
         )
         ax.set_xticks(x)
         ax.set_xticklabels(scenes_c, rotation=40, ha="right")
