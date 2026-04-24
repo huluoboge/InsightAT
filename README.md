@@ -180,6 +180,28 @@ InsightAT differs from traditional SfM systems:
 
 ---
 
+## Benchmarks (ETH3D-style)
+
+We batch-run **COLMAP** (sparse SfM only: feature extraction + exhaustive matching + mapper) and **InsightAT** (`isat_sfm`) on the same prepared image sets, then compare timing, sparse point counts, and—after a similarity alignment of camera centers—pose consistency between the two sparse models.
+
+This is **not** the official ETH3D leaderboard metric; it is an internal A/B for reproducibility. See [benchmarks/README.md](benchmarks/README.md) for full procedure, environment variables, and caveats.
+
+### Results (example batch)
+
+![Wall time COLMAP vs InsightAT](doc/images/benchmarks/eth3d_wall_time_colmap_vs_insightat.png)
+
+![Sparse points COLMAP vs InsightAT](doc/images/benchmarks/eth3d_sparse_points_colmap_vs_insightat.png)
+
+![Camera center alignment RMSE / median](doc/images/benchmarks/eth3d_camera_center_alignment.png)
+
+### How to reproduce
+
+1. Prepare dataset layout: `python3 benchmarks/eth3d/prepare_datasets.py -d /path/to/eth3d_root` (see [benchmarks/README.md](benchmarks/README.md)).
+2. Run COLMAP batch → InsightAT batch → optional `compare_dataset_batch.py`.
+3. Generate figures: `python3 benchmarks/sfm_compare/plot_eth3d_benchmark.py -d /path/to/eth3d_root`
+
+---
+
 🚧 Current Status (v0.1)
 ------------------------
 

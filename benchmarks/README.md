@@ -5,6 +5,7 @@
 ## 依赖
 
 - **Python 3**，**NumPy**（`pip install numpy`）
+- **生成图表**（可选）：**Matplotlib**（`pip install matplotlib`）
 - **COLMAP**：可执行文件在 `PATH` 中，或通过 `COLMAP_BIN_DIR` 指定安装目录（见下）
 - **InsightAT**：已编译，`build/isat_sfm` 存在，或通过 `ISAT_BIN_DIR` 指定
 
@@ -98,6 +99,23 @@ python3 benchmarks/sfm_compare/compare_dataset_batch.py \
 ```
 
 默认输出文件为 `<dataset>/compare_colmap_insightat.json`（可用 `-o` 覆盖）。
+
+### 5. 生成对比图表（README 用图）
+
+在已存在 `colmap_batch_summary.json`、`insightat_batch_summary.json` 的前提下，可选运行第 4 步生成 `compare_colmap_insightat.json`，然后执行：
+
+```bash
+pip install matplotlib   # 若尚未安装
+python3 benchmarks/sfm_compare/plot_eth3d_benchmark.py -d /path/to/eth3d_root
+```
+
+默认将 PNG 写入仓库 **`doc/images/benchmarks/`**（可用 `--out-dir` 覆盖）。产出示例：
+
+- `eth3d_wall_time_colmap_vs_insightat.png` — 各场景墙钟：COLMAP `elapsed_sfm_s` vs InsightAT `elapsed_wall_s`
+- `eth3d_sparse_points_colmap_vs_insightat.png` — `points3D` 数量（文本模型统计）
+- `eth3d_camera_center_alignment.png` — 若有对比 JSON：对齐后相机中心 RMSE / 中位数（米）
+
+仅统计两边 `exit_code == 0` 的场景；对齐图仅含 `compare_colmap_insightat.json` 中 `ok: true` 的场景。
 
 ### 单场景手动对比
 
