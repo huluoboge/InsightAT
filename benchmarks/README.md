@@ -1,161 +1,198 @@
 # Benchmarks
 
-本目录包含数据集整理脚本，以及 **COLMAP** 与 **InsightAT（`isat_sfm`）** 的批量运行与稀疏模型对比工具。其中 COLMAP 批跑 **只做稀疏 SfM**（特征提取 + 匹配 + `mapper`），不包含稠密重建 / MVS。所有命令均在 **仓库根目录** 下执行（保证 `import benchmarks....` 可用）。
+Scripts to prepare **ETH3D-style** layouts, batch-run **COLMAP** (sparse SfM only) and **InsightAT** (`isat_sfm`), compare reconstructions to **GT** (and optionally COLMAP vs InsightAT), and plot summary figures.
 
-## 依赖
+Run all commands from the **repository root** so `import benchmarks....` works.
 
-- **Python 3**，**NumPy**（`pip install numpy`）
-- **生成图表**（可选）：**Matplotlib**（`pip install matplotlib`）
-- **COLMAP**：可执行文件在 `PATH` 中，或通过 `COLMAP_BIN_DIR` 指定安装目录（见下）
-- **InsightAT**：已编译，`build/isat_sfm` 存在，或通过 `ISAT_BIN_DIR` 指定
+## Dependencies
 
-## 数据目录约定
+- **Python 3**, **NumPy** (`pip install numpy`)
+- **Matplotlib** (optional, for figures: `pip install matplotlib`)
+- **COLMAP** on `PATH`, or set **`COLMAP_BIN_DIR`**
+- **InsightAT** built with `isat_sfm` (set **`ISAT_BIN_DIR`** to the directory containing it)
+- **`wget`** or **`curl`** if you use the optional ETH3D download helper script
+- **`p7zip-full`** (or `7z`) to extract `.7z` archives for `prepare_datasets.py --extract`
 
-在使用 `benchmarks/eth3d/prepare_datasets.py` 整理 ETH3D 后，根目录（下称 `<dataset>`）形如：
+## Recording your hardware (recommended)
+
+Published timings are **machine-specific**. When you share numbers or regenerate README figures, record at least:
+
+| Field | Example (this repo’s reference run) |
+|-------|-------------------------------------|
+| GPU | NVIDIA **GTX 1060** (6 GB) — older consumer card; large images / dense SIFT pyramids are VRAM-sensitive |
+| Driver / CUDA | (fill in `nvidia-smi` / `nvcc --version`) |
+| COLMAP version | (fill in `colmap -h` or build hash) |
+| InsightAT flags | e.g. **`--use-sift-gpu`** forwarded from `run_insightat_batch.py` |
+
+### SIFT backend “fairness”
+
+- **COLMAP** uses its **own** SIFT implementation (often CUDA-accelerated when built with CUDA); it is **not** the same third-party library as InsightAT’s optional **SiftGPU** path.
+- If your goal is to compare **InsightAT’s SiftGPU path** to other experiments that also used **SiftGPU-class** extraction inside InsightAT, pass **`--use-sift-gpu`** to `run_insightat_batch.py` (requires an InsightAT build with **`INSIGHTAT_ENABLE_SIFTGPU=ON`**).
+- The default InsightAT pipeline uses **PopSift**; use **`--use-pop-sift`** only if you need to force it explicitly.
+
+## Dataset layout
+
+After `benchmarks/eth3d/prepare_datasets.py`, the dataset root `<dataset>` looks like:
 
 ```
 <dataset>/
+  zip/                 # optional: *_dslr_jpg.7z (see download script below)
+  raw/                 # extracted archives
   scenes/
     <scene_name>/
-      images/                 # 图像（常为指向 raw 的符号链接）
-      gt/                     # 可选：真值标定（ETH3D）
+      images/          # often a symlink to .../dslr_images/
+      gt/              # ETH3D calibration in COLMAP text format (symlink to dslr_calibration_jpg/)
       results/
-        colmap/               # COLMAP 批跑输出（脚本创建）
-        insightat/            # InsightAT 批跑输出（脚本创建）
+        colmap/        # created by the COLMAP batch script
+        insightat/     # created by the InsightAT batch script
 ```
 
-批跑脚本写入的路径：
+| Tool | Main outputs |
+|------|----------------|
+| COLMAP | `scenes/<scene>/results/colmap/workspace/` (includes `sparse/0/`) |
+| InsightAT | `scenes/<scene>/results/insightat/work/` (`incremental_sfm/`, `sfm_timing.json`, …) |
 
-| 工具 | 工作目录 / 产物 |
-|------|------------------|
-| COLMAP | `scenes/<scene>/results/colmap/workspace/`（含 `sparse/0/`） |
-| InsightAT | `scenes/<scene>/results/insightat/work/`（含 `incremental_sfm/`、`sfm_timing.json`） |
+## Optional: download ETH3D training archives
 
-## 推荐执行顺序
+Official listing: [https://www.eth3d.net/datasets](https://www.eth3d.net/datasets) (respect the **CC BY-NC-SA 4.0** license).
 
-按顺序完成：**准备数据 → 批量 COLMAP → 批量 InsightAT → 全库对比**（前两步可交换，但对比前两边都需已有 `sparse/0`）。
+Helper (subset of high-res multi-view **training** DSLR JPG packs):
 
-### 1. 准备数据集（ETH3D 示例）
+```bash
+chmod +x benchmarks/eth3d/download_eth3d_training_scenes.sh   # once
+./benchmarks/eth3d/download_eth3d_training_scenes.sh /path/to/eth3d_root
+```
 
-若压缩包在 `<dataset>/zip/`，先解压再整理：
+- Downloads `*_dslr_jpg.7z` into `<dataset>/zip/`.
+- Override the scene list: `SCENES="courtyard pipes" ./benchmarks/eth3d/download_eth3d_training_scenes.sh ...`
+- Dry run: `DRY_RUN=1 ./benchmarks/eth3d/download_eth3d_training_scenes.sh ...`
+- Mirror override: `ETH3D_BASE_URL=https://www.eth3d.net/data ./benchmarks/eth3d/download_eth3d_training_scenes.sh ...`
+
+Then extract + symlink:
 
 ```bash
 python3 benchmarks/eth3d/prepare_datasets.py -d /path/to/eth3d_root --extract
-```
-
-若已在 `<dataset>/raw/` 下解压完毕，只需整理目录与符号链接：
-
-```bash
+# or, if you already extracted into raw/:
 python3 benchmarks/eth3d/prepare_datasets.py -d /path/to/eth3d_root
 ```
 
-### 2. 批量运行 COLMAP（仅稀疏 SfM，无稠密 / MVS）
+## Recommended pipeline
 
-脚本使用 **`feature_extractor` → `exhaustive_matcher` → `mapper`**，**不**调用 `automatic_reconstructor`（后者会继续做去畸变与 patch-match 稠密重建）。
+Order: **prepare data → batch COLMAP → batch InsightAT → compare → plots** (the first two can be swapped, but both sparse models must exist before GT comparison).
 
-COLMAP 3.4+ / 4.x 默认把稀疏模型写成 **二进制**（`images.bin` 等）。批跑在 mapper 成功后会自动执行 **`model_converter --output_type TXT`**，把 `sparse/0` 转为 **`images.txt` / `points3D.txt`**，供本仓库的 Python 统计与 `compare_*.py` 使用。若只想保留二进制，可加 **`--skip-text-export`**。
+### 1) Batch COLMAP (sparse only; no dense / MVS)
 
-各场景的 `results/colmap/run.json` 含 **`steps`** 分步耗时，以及：
-- **`elapsed_s`**：整段墙钟时间（SfM + BIN→TXT，与 `steps` 各步之和一致）
-- **`elapsed_sfm_s`**：仅特征提取 + 匹配 + `mapper`（与 InsightAT 对比 SfM 时用）
-- **`elapsed_text_export_s`**：仅 `model_converter`（格式导出，不计入「纯重建」对比时可忽略）
+Pipeline per scene: `feature_extractor` → `exhaustive_matcher` → `mapper` → optional `model_converter` to **TEXT** (`images.txt`, …) for the Python tools here.
 
 ```bash
-export COLMAP_BIN_DIR=/path/to/colmap/install/bin   # 含 colmap 可执行文件的目录
+export COLMAP_BIN_DIR=/path/to/colmap/install/bin
 
 python3 benchmarks/sfm_compare/run_colmap_batch.py \
   -d /path/to/eth3d_root \
   --summary /path/to/colmap_batch_summary.json
 ```
 
-可选：`--camera-model OPENCV`（默认），对应 `feature_extractor` 的 `ImageReader.camera_model`。
+`run.json` per scene includes **`elapsed_sfm_s`** (feature + match + mapper) and **`elapsed_s`** (includes BIN→TXT export when enabled).
 
-默认每次会 **删除并重建** 该场景的 `results/colmap/workspace/`，避免沿用失败或旧版跑出的中间文件；仅当需要保留目录时再使用 `--reuse-workspace`。
+By default each scene’s `results/colmap/workspace/` is **deleted and recreated**; use **`--reuse-workspace`** only if you know why you need it.
 
-### 3. 批量运行 InsightAT（`isat_sfm`）
-
-端到端墙钟时间写入 `results/insightat/run.json`；分步耗时见各场景 `work/sfm_timing.json`。
+### 2) Batch InsightAT (`isat_sfm`)
 
 ```bash
-export ISAT_BIN_DIR=/path/to/InsightAT/build   # 含 isat_sfm 的目录
+export ISAT_BIN_DIR=/path/to/InsightAT/build
 
+# Default PopSift path (no extra SIFT flags):
 python3 benchmarks/sfm_compare/run_insightat_batch.py \
   -d /path/to/eth3d_root \
-  --summary /path/to/isat_batch_summary.json
+  --summary /path/to/insightat_batch_summary.json
+
+# Optional: headless GLSL backends
+#   --extract-backend glsl --match-backend glsl
+
+# Optional: SiftGPU path (requires SiftGPU-enabled build)
+python3 benchmarks/sfm_compare/run_insightat_batch.py \
+  -d /path/to/eth3d_root \
+  --use-sift-gpu \
+  --summary /path/to/insightat_batch_summary.json
 ```
 
-无 CUDA 时可加：`--extract-backend glsl --match-backend glsl`。环拍/物体扫描可酌情加 `--fix-intrinsics`。
+Use **`--reuse-work`** to keep an existing `work/`. **`--skip-done`** resumes a batch (skips scenes whose `run.json` has `exit_code == 0`).
 
-默认每次会 **删除并重建** `results/insightat/work/`；需要保留工作目录时使用 `--reuse-work`。
+### 3) Compare camera centers (Umeyama)
 
-### 4. 稀疏模型对比（相似变换对齐相机中心）
+**Default (`--ref-source gt`, can be omitted)** — reference is **`scenes/<scene>/gt/images.txt`**. Writes **two** JSON files in `<dataset>/`:
 
-在 **同一数据集根目录** 下，对每个场景将 **参考** 与 InsightAT 导出的 `images.txt` 按 **图像 basename** 对齐，估计 Umeyama 相似变换（参考相机中心 → InsightAT）并统计残差的 RMSE / 中位数（米）。
+| File | Meaning |
+|------|---------|
+| **`compare_gt_colmap.json`** | GT vs **COLMAP** sparse `sparse/0/images.txt` |
+| **`compare_gt_insightat.json`** | GT vs **InsightAT** export `.../sparse/0/images.txt` |
 
-- **默认参考**：`scenes/<scene>/gt/images.txt`（ETH3D `dslr_calibration` 提供的 COLMAP 文本真值）。输出默认 **`compare_gt_insightat.json`**。
-- **可选**：`--ref-source colmap` 使用 COLMAP 稀疏重建作参考（与 InsightAT 互比），输出默认 **`compare_colmap_insightat.json`**。
+Each successful row includes `"reference": "gt"` and `"estimate": "colmap"` or `"insightat"`.
+
+`-o/--output` is **ignored** in GT mode (fixed filenames). stderr prints a note if you pass `-o` anyway.
 
 ```bash
-# 相对 ETH3D GT（推荐）
 python3 benchmarks/sfm_compare/compare_dataset_batch.py -d /path/to/eth3d_root
+```
 
-# 或：相对 COLMAP 稀疏模型（旧版 A/B）
+**Legacy** (`--ref-source colmap`): COLMAP sparse as reference vs InsightAT only → **`compare_colmap_insightat.json`** (or `-o` path).
+
+```bash
 python3 benchmarks/sfm_compare/compare_dataset_batch.py \
   -d /path/to/eth3d_root \
   --ref-source colmap \
   -o /path/to/compare_colmap_insightat.json
 ```
 
-可用 `-o` 覆盖默认输出路径。
-
-### 5. 生成对比图表（README 用图）
-
-在已存在 `colmap_batch_summary.json`、`insightat_batch_summary.json` 的前提下，建议先运行第 4 步生成 **`compare_gt_insightat.json`**（或 `compare_colmap_insightat.json`），然后执行：
+### 4) Plots (for `doc/images/benchmarks/`)
 
 ```bash
-pip install matplotlib   # 若尚未安装
+pip install matplotlib
 python3 benchmarks/sfm_compare/plot_eth3d_benchmark.py -d /path/to/eth3d_root
+# optional: --out-dir /other/dir
+# optional: --figure-suffix <tag> (append to PNG basenames so default files are not overwritten)
+# optional: --only wall,points,gt-colmap,gt-insightat,legacy (subset; default: all)
 ```
 
-默认将 PNG 写入仓库 **`doc/images/benchmarks/`**（可用 `--out-dir` 覆盖）。产出示例：
+Outputs (typical):
 
-- `eth3d_wall_time_colmap_vs_insightat.png` — 各场景墙钟：COLMAP `elapsed_sfm_s` vs InsightAT `elapsed_wall_s`
-- `eth3d_sparse_points_colmap_vs_insightat.png` — `points3D` 数量（文本模型统计）
-- `eth3d_camera_center_alignment.png` — 若有对比 JSON：参考（默认真值 GT）与 InsightAT 对齐后的相机中心 RMSE / 中位数（米）
+- `eth3d_wall_time_colmap_vs_insightat.png`
+- `eth3d_sparse_points_colmap_vs_insightat.png`
+- `eth3d_gt_vs_colmap_alignment.png` — if **`compare_gt_colmap.json`** exists
+- `eth3d_gt_vs_insightat_alignment.png` — if **`compare_gt_insightat.json`** exists
+- `eth3d_camera_center_alignment.png` — only if **neither** GT JSON exists but **`compare_colmap_insightat.json`** does (legacy)
 
-仅统计两边 `exit_code == 0` 的场景；对齐图使用 **`compare_gt_insightat.json`**（若存在），否则回退 **`compare_colmap_insightat.json`** 中 `ok: true` 的条目。
+Timing plots only include scenes where **both** COLMAP and InsightAT batch rows report `exit_code == 0`.
 
-### 单场景手动对比
-
-仅对比一对 `sparse/0` 目录时：
+### Single-pair sparse compare
 
 ```bash
 python3 benchmarks/sfm_compare/compare_colmap_sparse.py \
-  --ref  /path/to/.../results/colmap/workspace/sparse/0 \
-  --est  /path/to/.../results/insightat/work/incremental_sfm/colmap/sparse/0 \
+  --ref  /path/to/.../sparse/0 \
+  --est  /path/to/.../sparse/0 \
   -o metrics.json
 ```
 
-## 环境变量小结
+## Environment variables
 
-| 变量 | 含义 |
-|------|------|
-| `COLMAP_BIN_DIR` | 包含 `colmap` 的目录（批跑时也会 prepend 到 `PATH`） |
-| `ISAT_BIN_DIR` | 包含 `isat_sfm` 及 sibling 工具的目录 |
+| Variable | Meaning |
+|----------|---------|
+| `COLMAP_BIN_DIR` | Directory containing the `colmap` executable (prepended to `PATH` in batch scripts) |
+| `ISAT_BIN_DIR` | Directory containing `isat_sfm` and sibling tools |
 
-## 子目录说明
+## Layout of this folder
 
-- **`eth3d/`** — `prepare_datasets.py`：从 ETH3D 压缩包/解压目录生成统一的 `scenes/` 布局。
-- **`sfm_compare/`** — COLMAP / InsightAT 批跑与 `compare_*.py` 对比脚本；共享 `colmap_sparse.py`、`align_similarity.py`（解析 COLMAP 文本模型、Umeyama 对齐）。
+- **`eth3d/`** — `prepare_datasets.py`, optional `download_eth3d_training_scenes.sh`
+- **`sfm_compare/`** — batch runners + `compare_*.py` + `colmap_sparse.py`, `align_similarity.py`
 
-## 指标说明（对比脚本）
+## What the metrics mean
 
-- **匹配**：按 `images.txt` 中图像 **文件名（basename）** 对齐；仅统计两模型均存在的图像。
-- **对齐**：将 **参考侧（ref）** 相机中心经相似变换对齐到 **估计侧（est）**，报告 RMSE、中位数误差、最大误差及尺度因子。
-- **解释**：这是典型的「两重建互比」；**不是** ETH3D 官方真值评测。若需与 `gt/` 对比，需另行实现真值格式读取与对齐。
-- **参考 / 估计**：默认 **ref = `gt/images.txt`（ETH3D 标定真值）**、`est = InsightAT`；`--ref-source colmap` 时 ref = COLMAP 稀疏。对齐图里 **RMSE 与中位数** 是同一对齐下的两种误差统计，**不是**两根柱各代表一个软件。
+- **Image pairing**: matches **image basenames** in `images.txt`; only images present in **both** models are used.
+- **Alignment**: fits a **similarity** mapping **reference camera centers → estimate camera centers**, then reports RMSE / median / max error and scale.
+- **Not** the official ETH3D leaderboard submission; it is a **practical** GT or cross-model consistency check using the released calibration bundles.
+- **Bar charts (RMSE vs median)**: the two colors are **two statistics of the same residual vector**, not “green = software A, red = software B”.
 
-## 辅助脚本（仓库其它位置）
+## Other tools in the repo
 
-- `scripts/isat_report.py` — 从 `work/` 生成 HTML 质量报告  
-- `scripts/visualize_vlad_retrieval.py` — VLAD 检索可视化（需单独流程产出 `.isat_vlad`）
+- `scripts/isat_report.py` — HTML report from a `work/` directory  
+- `scripts/visualize_vlad_retrieval.py` — VLAD retrieval visualization (separate pipeline)

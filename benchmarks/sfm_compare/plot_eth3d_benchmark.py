@@ -6,9 +6,13 @@ and optional GT-vs-InsightAT (or COLMAP-vs-InsightAT) alignment errors.
 Reads (under --dataset-root):
   - colmap_batch_summary.json   (from run_colmap_batch.py)
   - insightat_batch_summary.json (from run_insightat_batch.py)
-  - compare_gt_insightat.json or compare_colmap_insightat.json (optional; from compare_dataset_batch.py)
+  - compare_gt_colmap.json + compare_gt_insightat.json (default compare_dataset_batch --ref-source gt)
+  - or compare_colmap_insightat.json (legacy --ref-source colmap)
 
 Writes PNG figures to --out-dir (default: doc/images/benchmarks).
+
+Use ``--figure-suffix`` to write alternate filenames without overwriting the default
+figures. Use ``--only`` to emit a subset of charts.
 
 Requires: matplotlib, numpy
   pip install matplotlib numpy
@@ -71,23 +75,48 @@ def _collect_timing_pairs(
     return names, t_col, t_isat, pts_col, pts_isat
 
 
-def _load_compare_rows(root: Path) -> Tuple[List[Dict[str, Any]], str]:
-    """Prefer GT-vs-InsightAT JSON; fall back to legacy COLMAP-vs-InsightAT."""
-    for name, ref_label in (
-        ("compare_gt_insightat.json", "gt"),
-        ("compare_colmap_insightat.json", "colmap"),
-    ):
-        p = root / name
-        if not p.is_file():
-            continue
-        data = _load_json(p)
-        if not isinstance(data, list):
-            continue
-        rows = [r for r in data if isinstance(r, dict) and r.get("ok")]
-        if rows:
-            tag = str(rows[0].get("reference", ref_label))
-            return rows, tag
-    return [], "unknown"
+def _ok_rows(path: Path) -> List[Dict[str, Any]]:
+    if not path.is_file():
+        return []
+    data = _load_json(path)
+    if not isinstance(data, list):
+        return []
+    return [r for r in data if isinstance(r, dict) and r.get("ok")]
+
+
+def _plot_alignment_bars(
+    compare_rows: List[Dict[str, Any]],
+    title: str,
+    out: Path,
+) -> None:
+    if not compare_rows:
+        return
+    scenes_c = [r["scene"] for r in compare_rows]
+    rmse = [float(r["rmse_m"]) for r in compare_rows]
+    med = [float(r["median_m"]) for r in compare_rows]
+    x = np.arange(len(scenes_c))
+    w = 0.38
+    fig, ax = plt.subplots(figsize=(max(10.0, len(scenes_c) * 0.55), 5.8))
+    ax.bar(x - w / 2, rmse, width=w, label="RMSE (all cameras)", color="#55A868")
+    ax.bar(x + w / 2, med, width=w, label="Median error", color="#C44E52")
+    ax.set_ylabel("Residual (meters)")
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenes_c, rotation=40, ha="right")
+    ax.legend(loc="upper right")
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    fig.tight_layout()
+    fig.savefig(out, dpi=160)
+    plt.close(fig)
+
+
+def _with_figure_suffix(path: Path, figure_suffix: str) -> Path:
+    s = figure_suffix.strip()
+    if not s:
+        return path
+    if not s.startswith("_"):
+        s = "_" + s
+    return path.with_name(path.stem + s + path.suffix)
 
 
 def _bar_grouped(
@@ -125,6 +154,19 @@ def main() -> int:
         default=None,
         help="Output directory for PNG files (default: <repo>/doc/images/benchmarks)",
     )
+    ap.add_argument(
+        "--figure-suffix",
+        default="",
+        help="Append before .png on every written file (e.g. 'v2' → *_v2.png). "
+        "Avoids overwriting default benchmark figures.",
+    )
+    ap.add_argument(
+        "--only",
+        default="all",
+        metavar="WHAT",
+        help="Comma-separated subset: wall,points,gt-colmap,gt-insightat,legacy. "
+        "Default: all (wall+points always if timing data exists; alignment per JSON).",
+    )
     args = ap.parse_args()
 
     root = args.dataset_root.resolve()
@@ -132,55 +174,78 @@ def main() -> int:
     out_dir = (args.out_dir or (repo / "doc" / "images" / "benchmarks")).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    names, t_col, t_isat, pts_col, pts_isat = _collect_timing_pairs(root)
-    if not names:
-        print("No scenes with both COLMAP and InsightAT exit_code==0.", file=sys.stderr)
-        return 1
+    only_raw = [x.strip().lower() for x in args.only.split(",") if x.strip()]
+    want_all = not only_raw or only_raw == ["all"]
+    want: set[str]
+    if want_all:
+        want = {"wall", "points", "gt-colmap", "gt-insightat", "legacy"}
+    else:
+        want = set(only_raw)
 
-    _bar_grouped(
-        names,
-        t_col,
-        t_isat,
-        "COLMAP (sparse SfM only, elapsed_sfm_s)",
-        "InsightAT (isat_sfm wall, elapsed_wall_s)",
-        "Seconds",
-        "ETH3D scenes — wall time (lower is better)",
-        out_dir / "eth3d_wall_time_colmap_vs_insightat.png",
-    )
-    _bar_grouped(
-        names,
-        [float(v) for v in pts_col],
-        [float(v) for v in pts_isat],
-        "COLMAP points3D",
-        "InsightAT points3D",
-        "Count",
-        "ETH3D scenes — sparse 3D points (text export)",
-        out_dir / "eth3d_sparse_points_colmap_vs_insightat.png",
-    )
+    sfx = args.figure_suffix
 
-    compare_rows, ref_tag = _load_compare_rows(root)
-    if compare_rows:
-        ref_name = "ETH3D GT (dslr_calibration)" if ref_tag == "gt" else "COLMAP sparse"
-        scenes_c = [r["scene"] for r in compare_rows]
-        rmse = [float(r["rmse_m"]) for r in compare_rows]
-        med = [float(r["median_m"]) for r in compare_rows]
-        x = np.arange(len(scenes_c))
-        w = 0.38
-        fig, ax = plt.subplots(figsize=(max(10.0, len(scenes_c) * 0.55), 5.8))
-        ax.bar(x - w / 2, rmse, width=w, label="RMSE (all cameras)", color="#55A868")
-        ax.bar(x + w / 2, med, width=w, label="Median error", color="#C44E52")
-        ax.set_ylabel("Residual (meters)")
-        ax.set_title(
-            f"Camera centers: {ref_name} = reference, InsightAT = estimate\n"
-            "(Umeyama similarity ref→est; green=RMSE, red=median — same alignment per scene)"
+    need_timing = ("wall" in want) or ("points" in want)
+    names: List[str] = []
+    t_col: List[float] = []
+    t_isat: List[float] = []
+    pts_col: List[int] = []
+    pts_isat: List[int] = []
+    if need_timing:
+        names, t_col, t_isat, pts_col, pts_isat = _collect_timing_pairs(root)
+        if not names:
+            print("No scenes with both COLMAP and InsightAT exit_code==0.", file=sys.stderr)
+            return 1
+
+    if "wall" in want:
+        _bar_grouped(
+            names,
+            t_col,
+            t_isat,
+            "COLMAP (sparse SfM only, elapsed_sfm_s)",
+            "InsightAT (isat_sfm wall, elapsed_wall_s)",
+            "Seconds",
+            "ETH3D scenes — wall time (lower is better)",
+            _with_figure_suffix(out_dir / "eth3d_wall_time_colmap_vs_insightat.png", sfx),
         )
-        ax.set_xticks(x)
-        ax.set_xticklabels(scenes_c, rotation=40, ha="right")
-        ax.legend(loc="upper right")
-        ax.grid(axis="y", linestyle="--", alpha=0.35)
-        fig.tight_layout()
-        fig.savefig(out_dir / "eth3d_camera_center_alignment.png", dpi=160)
-        plt.close(fig)
+    if "points" in want:
+        _bar_grouped(
+            names,
+            [float(v) for v in pts_col],
+            [float(v) for v in pts_isat],
+            "COLMAP points3D",
+            "InsightAT points3D",
+            "Count",
+            "ETH3D scenes — sparse 3D points (text export)",
+            _with_figure_suffix(out_dir / "eth3d_sparse_points_colmap_vs_insightat.png", sfx),
+        )
+
+    rows_gt_colmap = _ok_rows(root / "compare_gt_colmap.json")
+    rows_gt_isat = _ok_rows(root / "compare_gt_insightat.json")
+    if "gt-colmap" in want and rows_gt_colmap:
+        _plot_alignment_bars(
+            rows_gt_colmap,
+            "Camera centers: ETH3D GT = ref, COLMAP sparse = est\n"
+            "(Umeyama GT→COLMAP; green=RMSE, red=median per scene)",
+            _with_figure_suffix(out_dir / "eth3d_gt_vs_colmap_alignment.png", sfx),
+        )
+    if "gt-insightat" in want and rows_gt_isat:
+        _plot_alignment_bars(
+            rows_gt_isat,
+            "Camera centers: ETH3D GT = ref, InsightAT = est\n"
+            "(Umeyama GT→InsightAT; green=RMSE, red=median per scene)",
+            _with_figure_suffix(out_dir / "eth3d_gt_vs_insightat_alignment.png", sfx),
+        )
+    if "legacy" in want and not rows_gt_colmap and not rows_gt_isat:
+        legacy = _ok_rows(root / "compare_colmap_insightat.json")
+        if legacy:
+            ref_tag = str(legacy[0].get("reference", "colmap"))
+            ref_name = "ETH3D GT (dslr_calibration)" if ref_tag == "gt" else "COLMAP sparse"
+            _plot_alignment_bars(
+                legacy,
+                f"Camera centers: {ref_name} = ref, InsightAT = est (legacy JSON)\n"
+                "(Umeyama ref→est; green=RMSE, red=median)",
+                _with_figure_suffix(out_dir / "eth3d_camera_center_alignment.png", sfx),
+            )
 
     print(f"Wrote figures under {out_dir}")
     return 0

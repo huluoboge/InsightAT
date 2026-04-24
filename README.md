@@ -182,9 +182,11 @@ InsightAT differs from traditional SfM systems:
 
 ## Benchmarks (ETH3D-style)
 
-We batch-run **COLMAP** (sparse SfM only: feature extraction + exhaustive matching + mapper) and **InsightAT** (`isat_sfm`) on the same prepared image sets, then compare **wall time** and **sparse point counts**. For camera geometry we align **InsightAT** to the scene’s **ETH3D GT** (`scenes/<scene>/gt/images.txt`, COLMAP text format from `dslr_calibration`) and report RMSE / median of camera-center residuals (meters)—**not** the official ETH3D leaderboard script, but a practical check when GT is available.
+We batch-run **COLMAP** (sparse SfM only: feature extraction + exhaustive matching + mapper) and **InsightAT** (`isat_sfm`) on the same prepared image sets, then compare **wall time** and **sparse point counts**. For camera geometry we use the scene’s **ETH3D GT** (`scenes/<scene>/gt/images.txt`) as reference and report RMSE / median of camera-center residuals (meters) **separately for COLMAP sparse and for InsightAT** (Umeyama alignment GT→estimate). This is **not** the official ETH3D leaderboard script, but uses the same released calibration models.
 
 See [benchmarks/README.md](benchmarks/README.md) for full procedure, environment variables, and caveats.
+
+**Example hardware / flags:** the reference figures in this repo were produced on an older **NVIDIA GTX 1060 (6 GB)**. InsightAT was run with **`--use-sift-gpu`** (forwarded by `run_insightat_batch.py`) where a SiftGPU-enabled build is available; COLMAP still uses its own SIFT stack—document your GPU, driver, and both toolchains when publishing timings.
 
 ### Results (example batch)
 
@@ -192,14 +194,16 @@ See [benchmarks/README.md](benchmarks/README.md) for full procedure, environment
 
 ![Sparse points COLMAP vs InsightAT](doc/images/benchmarks/eth3d_sparse_points_colmap_vs_insightat.png)
 
-![Camera center alignment RMSE / median](doc/images/benchmarks/eth3d_camera_center_alignment.png)
+![GT vs COLMAP camera center alignment](doc/images/benchmarks/eth3d_gt_vs_colmap_alignment.png)
 
-**How to read the third figure:** it is **not** “green = GT, red = InsightAT”. Both bars are **one** comparison per scene: **ETH3D GT = reference**, **InsightAT = estimate**. After an Umeyama similarity (GT → InsightAT), **green = RMSE** and **red = median** of camera-center residuals (meters).
+![GT vs InsightAT camera center alignment](doc/images/benchmarks/eth3d_gt_vs_insightat_alignment.png)
+
+**How to read the alignment figures:** in each image, the two bar colors are **not** two different software packages—they are **RMSE** and **median** of the same per-camera residuals. **First image:** GT → **COLMAP** sparse. **Second image:** GT → **InsightAT** (Umeyama alignment ref→est).
 
 ### How to reproduce
 
 1. Prepare dataset layout: `python3 benchmarks/eth3d/prepare_datasets.py -d /path/to/eth3d_root` (see [benchmarks/README.md](benchmarks/README.md)).
-2. Run COLMAP batch → InsightAT batch → `python3 benchmarks/sfm_compare/compare_dataset_batch.py -d ...` (writes `compare_gt_insightat.json` by default).
+2. Run COLMAP batch → InsightAT batch → `python3 benchmarks/sfm_compare/compare_dataset_batch.py -d ...` (writes **`compare_gt_colmap.json`** and **`compare_gt_insightat.json`** by default).
 3. Generate figures: `python3 benchmarks/sfm_compare/plot_eth3d_benchmark.py -d /path/to/eth3d_root`
 
 ---

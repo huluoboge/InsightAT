@@ -28,6 +28,9 @@ Example:
 
 Resume (skip scenes that finished successfully last time):
   python3 benchmarks/sfm_compare/run_insightat_batch.py -d /data/eth3d_prepared --skip-done
+
+SiftGPU path (requires INSIGHTAT_ENABLE_SIFTGPU build):
+  python3 benchmarks/sfm_compare/run_insightat_batch.py -d /data/eth3d_prepared --use-sift-gpu
 """
 
 from __future__ import annotations
@@ -96,6 +99,17 @@ def main() -> int:
     ap.add_argument("--extract-backend", default="cuda", choices=("cuda", "glsl"))
     ap.add_argument("--match-backend", default="cuda", choices=("cuda", "glsl"))
     ap.add_argument("--fix-intrinsics", action="store_true")
+    sift = ap.add_mutually_exclusive_group()
+    sift.add_argument(
+        "--use-sift-gpu",
+        action="store_true",
+        help="Forward --use-sift-gpu to isat_sfm (SiftGPU feature path; requires a build with SiftGPU enabled).",
+    )
+    sift.add_argument(
+        "--use-pop-sift",
+        action="store_true",
+        help="Forward --use-pop-sift to isat_sfm (PopSift; default isat_sfm backend when neither flag is set).",
+    )
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument(
         "--summary",
@@ -166,6 +180,10 @@ def main() -> int:
         ]
         if args.fix_intrinsics:
             cmd.append("--fix-intrinsics")
+        if args.use_sift_gpu:
+            cmd.append("--use-sift-gpu")
+        elif args.use_pop_sift:
+            cmd.append("--use-pop-sift")
         if args.verbose:
             cmd.append("-v")
 
