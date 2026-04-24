@@ -155,14 +155,17 @@ def main() -> int:
         med = [float(r["median_m"]) for r in compare_rows]
         x = np.arange(len(scenes_c))
         w = 0.38
-        fig, ax = plt.subplots(figsize=(max(10.0, len(scenes_c) * 0.55), 5.2))
-        ax.bar(x - w / 2, rmse, width=w, label="RMSE (m)", color="#55A868")
-        ax.bar(x + w / 2, med, width=w, label="Median (m)", color="#C44E52")
-        ax.set_ylabel("Meters (after similarity alignment)")
-        ax.set_title("Camera center error — COLMAP ref vs InsightAT est")
+        fig, ax = plt.subplots(figsize=(max(10.0, len(scenes_c) * 0.55), 5.8))
+        ax.bar(x - w / 2, rmse, width=w, label="RMSE (all cameras)", color="#55A868")
+        ax.bar(x + w / 2, med, width=w, label="Median error", color="#C44E52")
+        ax.set_ylabel("Residual (meters)")
+        ax.set_title(
+            "Camera centers: COLMAP = reference, InsightAT = estimate\n"
+            "(Umeyama similarity ref→est; bars are two error summaries per scene, not two pipelines)"
+        )
         ax.set_xticks(x)
         ax.set_xticklabels(scenes_c, rotation=40, ha="right")
-        ax.legend()
+        ax.legend(loc="upper right")
         ax.grid(axis="y", linestyle="--", alpha=0.35)
         fig.tight_layout()
         fig.savefig(out_dir / "eth3d_camera_center_alignment.png", dpi=160)

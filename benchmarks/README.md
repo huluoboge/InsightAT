@@ -145,6 +145,7 @@ python3 benchmarks/sfm_compare/compare_colmap_sparse.py \
 - **匹配**：按 `images.txt` 中图像 **文件名（basename）** 对齐；仅统计两模型均存在的图像。
 - **对齐**：将 **参考侧（ref）** 相机中心经相似变换对齐到 **估计侧（est）**，报告 RMSE、中位数误差、最大误差及尺度因子。
 - **解释**：这是典型的「两重建互比」；**不是** ETH3D 官方真值评测。若需与 `gt/` 对比，需另行实现真值格式读取与对齐。
+- **参考 / 估计**：脚本中 **ref = COLMAP**、`est = InsightAT`（路径见 `compare_dataset_batch.py`）。对齐图里 **RMSE 与中位数** 是同一对齐下的两种误差统计，**不是**两根柱各代表一个软件。
 
 ## 辅助脚本（仓库其它位置）
 

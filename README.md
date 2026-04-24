@@ -194,6 +194,8 @@ This is **not** the official ETH3D leaderboard metric; it is an internal A/B for
 
 ![Camera center alignment RMSE / median](doc/images/benchmarks/eth3d_camera_center_alignment.png)
 
+**How to read the third figure:** it is **not** “green = COLMAP, red = InsightAT”. Both bars describe **one** comparison per scene: **COLMAP sparse model = reference**, **InsightAT = estimate**. A similarity transform aligns COLMAP camera centers to InsightAT’s; **green = RMSE** and **red = median** of the remaining center residuals (meters)—two statistics of the same geometric agreement.
+
 ### How to reproduce
 
 1. Prepare dataset layout: `python3 benchmarks/eth3d/prepare_datasets.py -d /path/to/eth3d_root` (see [benchmarks/README.md](benchmarks/README.md)).
