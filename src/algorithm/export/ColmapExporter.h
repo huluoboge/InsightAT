@@ -18,7 +18,6 @@
 #define ALGORITHM_COLMAPEXPORTER_H
 
 #include <map>
-#include <memory>
 #include <string>
 
 namespace insight {

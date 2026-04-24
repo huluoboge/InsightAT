@@ -588,7 +588,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   if (!use_pop_sift && !use_sift_gpu) {
-    use_sift_gpu = true;
+    use_pop_sift = true;
   }
 
   // ── Build verbosity args to forward to all sub-tools ────────────────────
@@ -635,7 +635,7 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Threading: io_threads=" << io_threads << "  ba_threads=" << ba_threads
             << (ba_threads > 0 ? "" : " (BA: auto)");
   LOG(INFO) << "SIFT image max dim: " << image_max_dim;
-  LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
+  LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift (default)" : "sift_gpu");
 
   auto active_steps = parse_steps(steps_str);
   {

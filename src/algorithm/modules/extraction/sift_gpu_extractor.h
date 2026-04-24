@@ -36,8 +36,8 @@ struct SiftGPUParams {
   int n_max_features = 10000;  ///< 最大特征数
   bool adapt_darkness = true; ///< 适应暗图
   bool use_cuda = false;      ///< 使用 CUDA 后端
-  bool use_sift_gpu = true;   ///< 使用 SiftGPU 作为提取实现
-  bool use_pop_sift = false;  ///< 使用 PopSift 作为提取实现
+  bool use_sift_gpu = false;  ///< 使用 SiftGPU 作为提取实现（可选）
+  bool use_pop_sift = true;   ///< 使用 PopSift 作为提取实现（默认）
   int popsift_gpu_device = 0; ///< PopSift CUDA 设备 ID
   int truncate_method = 1;    ///< 0=-tc, 1=-tc2, 2=-tc3
   int image_max_dimension = 8000;   ///< 最大图像维度

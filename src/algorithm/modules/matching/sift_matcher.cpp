@@ -13,6 +13,9 @@
 
 #include <SiftGPU/SiftGPU.h>
 #include <glog/logging.h>
+#ifndef INSIGHTAT_ENABLE_SIFTGPU
+#define INSIGHTAT_ENABLE_SIFTGPU 0
+#endif
 #if defined(HAVE_CUDA) && __has_include(<popsift/features.h>)
 #define INSIGHTAT_HAS_POPSIFT_MATCH 1
 #include <popsift/features.h>
@@ -47,6 +50,7 @@ SiftMatcher::SiftMatcher(const SiftMatcherParams& params)
   }
   backend_ = Backend::kSiftGPU;
 
+#if INSIGHTAT_ENABLE_SIFTGPU
   matcher_ = std::make_unique<SiftMatchGPU>(max_features_);
 
   if (params_.use_cuda) {
@@ -77,6 +81,10 @@ SiftMatcher::SiftMatcher(const SiftMatcherParams& params)
     LOG(INFO) << "SiftMatchGPU initialized with max_features=" << max_features_
               << " (GLSL backend)";
   }
+#else
+  LOG(ERROR) << "SiftGPU matcher requested but disabled at compile time "
+             << "(INSIGHTAT_ENABLE_SIFTGPU=OFF)";
+#endif
 }
 
 SiftMatcher::~SiftMatcher() {
@@ -91,7 +99,11 @@ bool SiftMatcher::verify_context() const {
     return false;
 #endif
   }
+#if INSIGHTAT_ENABLE_SIFTGPU
   return matcher_ && (matcher_->CreateContextGL() != 0) && (matcher_->VerifyContextGL() != 0);
+#else
+  return false;
+#endif
 }
 
 MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& features2,
@@ -380,6 +392,15 @@ MatchResult SiftMatcher::match_popsift(const FeatureData& features1, const Featu
 MatchResult SiftMatcher::match_guided(const FeatureData& features1, const FeatureData& features2,
                                       const Eigen::Matrix3f* F, const Eigen::Matrix3f* H,
                                       const MatchOptions& options) {
+#if !INSIGHTAT_ENABLE_SIFTGPU
+  (void)features1;
+  (void)features2;
+  (void)F;
+  (void)H;
+  (void)options;
+  LOG(ERROR) << "Guided matching requires SiftGPU, but SiftGPU is disabled at compile time";
+  return MatchResult();
+#else
   if (!matcher_) {
     LOG(ERROR) << "SiftMatchGPU not initialized";
     return MatchResult();
@@ -448,6 +469,7 @@ MatchResult SiftMatcher::match_guided(const FeatureData& features1, const Featur
   VLOG(1) << "Guided matching: " << num_matches << " features";
 
   return convert_match_result(match_buffer_flat, num_matches, features1, features2);
+#endif
 }
 
 MatchResult SiftMatcher::convert_match_result(const std::vector<uint32_t>& match_buffer,

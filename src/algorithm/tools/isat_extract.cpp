@@ -243,7 +243,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   if (!use_pop_sift && !use_sift_gpu) {
-    use_sift_gpu = true;
+    use_pop_sift = true;
   }
 
   // Setup SIFT parameters (pure extraction only)

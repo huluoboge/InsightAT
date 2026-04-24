@@ -165,10 +165,21 @@ target_link_libraries(InsightATAlgorithm
         PoseLib
         PoseLib::PoseLib
         ${OpenCV_LIBS}
-        sift_gpu
-        ${GLEW_LIBRARIES}
-        ${OPENGL_LIBRARIES}
 )
+
+if(TARGET sift_gpu)
+    target_link_libraries(InsightATAlgorithm
+        PUBLIC
+            sift_gpu
+            ${GLEW_LIBRARIES}
+            ${OPENGL_LIBRARIES}
+    )
+    target_compile_definitions(InsightATAlgorithm PUBLIC INSIGHTAT_ENABLE_SIFTGPU=1)
+    message(STATUS "InsightATAlgorithm: optional SiftGPU backend enabled")
+else()
+    target_compile_definitions(InsightATAlgorithm PUBLIC INSIGHTAT_ENABLE_SIFTGPU=0)
+    message(STATUS "InsightATAlgorithm: SiftGPU backend disabled")
+endif()
 
 # Optional PopSift backend for SIFT extraction.
 # Enabled only when PopSift target is available from parent CMake.
@@ -177,13 +188,9 @@ if(TARGET PopSift::popsift)
     target_compile_definitions(InsightATAlgorithm PUBLIC HAVE_CUDA)
     message(STATUS "InsightATAlgorithm: PopSift backend enabled")
 else()
-    if(SIFTGPU_ENABLE_CUDA)
-        message(FATAL_ERROR
-            "InsightATAlgorithm: SIFTGPU_ENABLE_CUDA=ON but PopSift::popsift target is missing. "
-            "PopSift must be built in this configuration.")
-    else()
-        message(STATUS "InsightATAlgorithm: PopSift backend disabled (CUDA SiftGPU is OFF)")
-    endif()
+    message(FATAL_ERROR
+        "InsightATAlgorithm: PopSift::popsift target is missing. "
+        "PopSift is required as the default backend.")
 endif()
 
 # CUDA PCA: compile definition + link cuBLAS/cuSOLVER so all consumers resolve the .cu symbols
@@ -258,10 +265,16 @@ target_link_libraries(isat_extract
         InsightATAlgorithm
         glog::glog
         ${OpenCV_LIBS}
-        sift_gpu
-        ${GLEW_LIBRARIES}
-        ${OPENGL_LIBRARIES}
 )
+
+if(TARGET sift_gpu)
+    target_link_libraries(isat_extract
+        PRIVATE
+            sift_gpu
+            ${GLEW_LIBRARIES}
+            ${OPENGL_LIBRARIES}
+    )
+endif()
 
 # In fully-static PopSift builds, rely on direct linkage from final executable
 # so CUDA device-link can see PopSift CUDA objects explicitly.
@@ -311,10 +324,16 @@ target_link_libraries(isat_match
         insightat_tools_logging
         InsightATAlgorithm
         glog::glog
-        sift_gpu
-        ${GLEW_LIBRARIES}
-        ${OPENGL_LIBRARIES}
 )
+
+if(TARGET sift_gpu)
+    target_link_libraries(isat_match
+        PRIVATE
+            sift_gpu
+            ${GLEW_LIBRARIES}
+            ${OPENGL_LIBRARIES}
+    )
+endif()
 
 target_include_directories(isat_match
     PRIVATE

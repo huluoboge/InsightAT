@@ -24,8 +24,8 @@ namespace matching {
 struct SiftMatcherParams {
   int max_features = 10000;
   bool use_cuda = true;
-  bool use_sift_gpu = true;
-  bool use_pop_sift = false;
+  bool use_sift_gpu = false;
+  bool use_pop_sift = true;
 };
 
 /**

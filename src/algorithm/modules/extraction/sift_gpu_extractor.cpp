@@ -6,7 +6,13 @@
 #include "sift_gpu_extractor.h"
 #include "feature_distribution.h"
 
+#ifndef INSIGHTAT_ENABLE_SIFTGPU
+#define INSIGHTAT_ENABLE_SIFTGPU 0
+#endif
+
+#if INSIGHTAT_ENABLE_SIFTGPU
 #include <GL/gl.h>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -142,11 +148,17 @@ bool SiftGPUExtractor::initialize() {
       return false;
     }
   } else {
+#if !INSIGHTAT_ENABLE_SIFTGPU
+    LOG(ERROR) << "SiftGPU extractor requested but disabled at compile time "
+               << "(INSIGHTAT_ENABLE_SIFTGPU=OFF)";
+    return false;
+#else
     sift_gpu_ = create_sift_gpu(params_);
     if (!sift_gpu_) {
       LOG(ERROR) << "Failed to create SiftGPU instance";
       return false;
     }
+#endif
   }
 
   initialized_ = true;
@@ -178,11 +190,17 @@ bool SiftGPUExtractor::reconfigure(const SiftGPUParams& new_params) {
       return false;
     }
   } else {
+#if !INSIGHTAT_ENABLE_SIFTGPU
+    LOG(ERROR) << "SiftGPU extractor requested but disabled at compile time "
+               << "(INSIGHTAT_ENABLE_SIFTGPU=OFF)";
+    return false;
+#else
     sift_gpu_ = create_sift_gpu(new_params);
     if (!sift_gpu_) {
       LOG(ERROR) << "Failed to create SiftGPU instance";
       return false;
     }
+#endif
   }
 
   initialized_ = true;
@@ -196,6 +214,13 @@ int SiftGPUExtractor::extract(const cv::Mat& image, std::vector<SiftGPU::SiftKey
     return extract_popsift(image, keypoints, descriptors);
   }
 
+#if !INSIGHTAT_ENABLE_SIFTGPU
+  (void)image;
+  (void)keypoints;
+  (void)descriptors;
+  LOG(ERROR) << "SiftGPU extraction requested but disabled at compile time";
+  return 0;
+#else
   if (!initialized_) {
     LOG(ERROR) << "SiftGPU not initialized";
     return 0;
@@ -239,9 +264,15 @@ int SiftGPUExtractor::extract(const cv::Mat& image, std::vector<SiftGPU::SiftKey
   // This keeps GPU extraction pure and allows flexible pipeline composition.
 
   return num_features;
+#endif
 }
 
 SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUParams& param) {
+#if !INSIGHTAT_ENABLE_SIFTGPU
+  (void)param;
+  LOG(ERROR) << "create_sift_gpu called but SiftGPU is disabled at compile time";
+  return SiftGPUPtr();
+#else
   if (param.use_pop_sift) {
     LOG(ERROR) << "create_sift_gpu called while use_pop_sift=true";
     return SiftGPUPtr();
@@ -325,6 +356,7 @@ SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUPara
   }
 
   return sift_gpu_ptr;
+#endif
 }
 
 bool SiftGPUExtractor::initialize_popsift(const SiftGPUParams& param) {
