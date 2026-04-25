@@ -209,8 +209,8 @@
 ### 8. Documentation & Design Sync (Step 8)
 
 **Files to Update**:
-- `doc/dev-notes/design/04_functional_at_toolkit.md`: Add SuperPoint section
-- `doc/tools/isat_extract.md`: SuperPoint usage examples
+- `doc/develop/design/04_functional_at_toolkit.md`: Add SuperPoint section
+- `doc/dev-notes/tools/isat_extract.md`: SuperPoint usage examples
 - `third_party/superpoint/README.md`: InsightAT integration guide
 - `doc/dev-notes/third_party/superpoint/SUPERPOINT_INTEGRATION_PLAN.md`: Mark steps complete
 

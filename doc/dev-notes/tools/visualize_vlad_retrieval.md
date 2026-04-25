@@ -358,7 +358,7 @@ Top-K: 10
 ## 文件位置
 
 - **脚本位置**: `scripts/visualize_vlad_retrieval.py`
-- **文档位置**: `doc/tools/visualize_vlad_retrieval.md`
+- **文档位置**: `doc/dev-notes/tools/visualize_vlad_retrieval.md`
 - **相关工具**: `isat_retrieve`, `isat_train_vlad`, `isat_extract`
 
 ## 更新历史

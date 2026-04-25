@@ -84,14 +84,14 @@ std::vector<ImagePair> retrieveByVocabTree(
 ```
 
 ### 5. **Documentation**
-✅ **Quick-start Guide**: `doc/tools/VOCAB_TREE_QUICKSTART.md`
+✅ **Quick-start Guide**: `doc/dev-notes/tools/VOCAB_TREE_QUICKSTART.md`
 - Complete training workflow
 - Parameter tuning recommendations
 - Hybrid strategy examples
 - Troubleshooting guide
 - Performance comparison: Vocab Tree vs VLAD
 
-✅ **Implementation Spec**: `doc/tools/VOCAB_TREE_IMPLEMENTATION.md`
+✅ **Implementation Spec**: `doc/dev-notes/tools/VOCAB_TREE_IMPLEMENTATION.md`
 - Architecture details
 - Code quality checklist
 - Future enhancement roadmap
@@ -381,8 +381,8 @@ The implementation:
 4. **Deploy in production**: Use `gps+vocab` hybrid for aerial photogrammetry workflows
 
 For questions or issues, refer to:
-- **Quick-start Guide**: `doc/tools/VOCAB_TREE_QUICKSTART.md`
-- **Implementation Spec**: `doc/tools/VOCAB_TREE_IMPLEMENTATION.md`
+- **Quick-start Guide**: `doc/dev-notes/tools/VOCAB_TREE_QUICKSTART.md`
+- **Implementation Spec**: `doc/dev-notes/tools/VOCAB_TREE_IMPLEMENTATION.md`
 - **API Documentation**: `src/algorithm/modules/retrieval/vocab_tree_retrieval.h`
 
 **Happy retrieving! 🚀**

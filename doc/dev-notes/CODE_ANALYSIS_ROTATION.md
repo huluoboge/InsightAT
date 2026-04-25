@@ -345,5 +345,5 @@ bool isGimbalLockRisk(double phi_rad) {
 
 ## 参考
 
-- 本分析基于：`doc/dev-notes/design/rotation/rotation_standards.md`
+- 本分析基于：`doc/dev-notes/rotation/rotation_standards.md`
 - 标准文献：AIAA R-004-1992, IEEE 1571-2006, ISPRS

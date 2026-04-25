@@ -549,7 +549,7 @@ src/algorithm/tools/
 third_party/nanoflann/
 └── nanoflann.hpp              # Header-only k-d tree库
 
-doc/tools/
+doc/dev-notes/tools/
 ├── isat_retrieve_DESIGN.md         # 本设计文档
 ├── isat_retrieve_TEST_RESULTS.md   # GPS测试报告
 └── VLAD_QUICKSTART.md              # VLAD使用指南（新）

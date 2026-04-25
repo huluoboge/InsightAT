@@ -53,8 +53,8 @@
 
 ## 4. 与设计文档的对应
 
-- 实现后，`doc/dev-notes/design/12_implementation_details.md` 中「SfM 内部 ID 重编码与向量化相机表示」一节应更新为：导出即 index，不再需要 IdMapping；文件名与 JSON 均以 index 为准。
-- `doc/dev-notes/design/image_id_design.md` 可补充：导出阶段产生 image_index + cameras 紧致结构，后续工具仅使用 index。
+- 实现后，`doc/develop/design/12_implementation_details.md` 中「SfM 内部 ID 重编码与向量化相机表示」一节应更新为：导出即 index，不再需要 IdMapping；文件名与 JSON 均以 index 为准。
+- `doc/dev-notes/image_id_design.md` 可补充：导出阶段产生 image_index + cameras 紧致结构，后续工具仅使用 index。
 
 ---
 

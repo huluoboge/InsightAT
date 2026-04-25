@@ -1,6 +1,5 @@
 # InsightAT
 
-
 **InsightAT is an open-source one-stop Structure-from-Motion system designed for easy-to-use and automated 3D reconstruction.**
 
 InsightAT is a Structure-from-Motion system designed for **robustness, scalability, and automation**.  
@@ -14,27 +13,34 @@ It focuses on turning image collections into high-quality sparse 3D reconstructi
 
 ## 🚀 Quick Start
 
-
-### 1. Build
+**Build (recommended: Docker).** A native `cmake` build pulls in many system packages (Eigen, Ceres, OpenCV, GDAL, Qt, SuiteSparse, …). The supported path is to **build the image** and run tools inside the container.
 
 ```bash
-
 git clone https://github.com/huluoboge/InsightAT.git
 cd InsightAT
-
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-
-
+docker build -t insightat:cuda11.8 -f Dockerfile .
 ```
-### 2. Run
+
+Run the pipeline (mount your photos and a writable work directory; requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) for `--gpus all`):
+
+```bash
+docker run --rm --gpus all -v /path/to/photos:/data/images -v /path/to/work:/data/work \
+  insightat:cuda11.8 isat_sfm -i /data/images -w /data/work
+```
+
+See **[DOCKER_BUILD.md](DOCKER_BUILD.md)** for `docker-test.sh` (extracting `build/`), X11, and details.
+
+**Optional native build** (for contributors comfortable installing dependencies on Linux): [doc/develop/build.md](doc/develop/build.md).
+
+**Run (after a local `cmake` build)**:
 
 ```bash
 ./build/isat_sfm -i images/ -w work/
 ```
 
-### 3. View result
-```
+**View result (local build)**:
+
+```bash
 ./build/at_bundler_viewer work/incremental_sfm
 ```
 
@@ -90,8 +96,8 @@ Default SIFT extraction and matching use **PopSift** (CUDA). Optional **SiftGPU*
 
 #### Optimization strategy:
 
-*   BA operates on subsets for efficiency
-*   Resection uses full global structure for stability
+*   BA operates on **retained state subsets** for efficiency
+*   Resection / registration uses the **full track structure** for robustness
 *   Full 3D point cloud is always preserved
 
 ---
@@ -218,7 +224,7 @@ Implemented:
 *   Async IO architecture
 *   CLI-based modular system
 *   Track-based reconstruction system
-*   Subset BA + global resection design
+*   Subset BA + full-track resection design
 
 Planned:
 
@@ -242,6 +248,6 @@ Copyright (c) 2026 Yang Hu
 ---------------
 
 Contributions are welcome.  
-See [doc/README.md](doc/README.md) and [doc/dev-notes/design/index.md](doc/dev-notes/design/index.md) before submitting PRs.
+See [doc/README.md](doc/README.md) for **user** vs **developer** documentation; for code changes, see [doc/develop/design/index.md](doc/develop/design/index.md) as needed.
 
 

@@ -1,5 +1,7 @@
 # InsightAT Docker Build Guide (CUDA 11.8 + GCC 11)
 
+**Recommended** way to get a reproducible build: the image installs all heavy native dependencies and compiles the project. Use this if you do not want to install Eigen, Ceres, OpenCV, GDAL, Qt, and related dev packages on the host.
+
 This guide explains how to build InsightAT using Docker with CUDA 11.8 and GCC 11.
 
 ## Quick Start
