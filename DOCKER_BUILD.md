@@ -37,13 +37,18 @@ chmod +x docker-test.sh
 ./docker-test.sh help
 ```
 
+## Troubleshooting
+
+**`CMake 3.24 or higher is required` (configure fails in `third_party/popsift`)**  
+The Dockerfile installs a new enough CMake with `pip3 install "cmake>=3.24"`. Do not rely only on `apt install cmake` on Ubuntu 22.04 (3.22.x).
+
 ## Docker Image Details
 
 **Base Image**: `nvidia/cuda:11.8.0-devel-ubuntu22.04`
 
 **Installed Dependencies**:
 - **Compiler**: GCC 11, G++ 11 (default with Ubuntu 22.04)
-- **Build Tools**: CMake, Make, pkg-config
+- **Build Tools**: **CMake 3.24+** (installed via `pip3`; PopSift requires CMake ≥ 3.24, which Ubuntu 22.04’s `apt` `cmake` does not satisfy)
 - **CUDA**: 11.8 with full development toolkit
 - **Computer Vision**: OpenCV 4.x (with Qt5 GUI support)
 - **Geo Data**: GDAL + PROJ + GEOS

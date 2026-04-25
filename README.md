@@ -1,7 +1,7 @@
 # InsightAT
 
 
-**Open-source GPU-accelerated incremental SfM system for large-scale 3D reconstruction.**
+**InsightAT is an open-source one-stop Structure-from-Motion system designed for easy-to-use and automated 3D reconstruction.**
 
 InsightAT is a Structure-from-Motion system designed for **robustness, scalability, and automation**.  
 It focuses on turning image collections into high-quality sparse 3D reconstructions through a fully CLI-driven, cloud-friendly pipeline.
