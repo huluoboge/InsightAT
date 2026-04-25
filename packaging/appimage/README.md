@@ -1,6 +1,6 @@
 # AppImage (InsightAT)
 
-**v0.1 policy:** this bundle is **CLI-only**. The Qt application target `InsightAT` is **not** copied into the AppImage — the GUI is **not** considered ready for release; including it would invite accidental use. With **no arguments**, the AppImage runs **`isat_tools`** so you immediately see which programs are inside.
+**v0.1 policy:** the main Qt shell **`InsightAT`** (project UI) is **not** in this image — it is not release-ready. The bundle still includes **`at_bundler_viewer`**, a separate **Qt + OpenGL** program for visualizing Bundler outputs. Everything else is command-line tools. With **no arguments**, the AppImage runs **`isat_tools`** so you see which programs are inside.
 
 Build from the **repository root**:
 
