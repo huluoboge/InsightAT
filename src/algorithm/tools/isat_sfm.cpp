@@ -19,6 +19,7 @@
  *   isat_sfm -i /photos -w work/ --io-threads 8 --ba-threads 8  # I/O 与 Ceres 线程数
  *   isat_sfm -i /photos -w work/ --steps create,extract       # 只跑 create + extract
  *   isat_sfm -i /photos -w work/ --steps tracks,incremental_sfm  # 从 tracks 续跑
+ *   isat_sfm -i /photos -w work/ --output-interval-sfm           # 在 <work>/sfm_interval/ 写每步 Bundler 快照，at_bundler_viewer 查看
  *
  * The binary locates sibling tools relative to its own path (same directory).
  */
@@ -535,6 +536,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, ba_threads, "ba-threads")
               .doc("Ceres thread count for incremental SfM bundle adjustment (default: 0 = use "
                    "isat_incremental_sfm hardware default). Set >0 to cap or fix parallelism."));
+  cmd.add(make_switch(0, "output-interval-sfm")
+              .doc("During incremental SfM, write per-iteration Bundler bundle.out + list.txt under "
+                   "<work-dir>/sfm_interval/iter_NNNN/ (interval fixed at 1; view with "
+                   "at_bundler_viewer). No need to set paths manually."));
 
   try {
     cmd.process(argc, argv);
@@ -644,6 +649,9 @@ int main(int argc, char* argv[]) {
       if (active_steps.count(s))
         active_list += (active_list.empty() ? "" : ", ") + s;
     LOG(INFO) << "Active steps: " << active_list;
+  }
+  if (cmd.used("output-interval-sfm") && !active_steps.count("incremental_sfm")) {
+    LOG(WARNING) << "--output-interval-sfm is ignored: incremental_sfm is not in --steps.";
   }
 
   // Strip trailing directory separators before constructing paths.
@@ -965,6 +973,17 @@ int main(int argc, char* argv[]) {
       sfm_cmd.push_back("--ba-threads");
       sfm_cmd.push_back(std::to_string(ba_threads));
     }
+    if (cmd.used("output-interval-sfm")) {
+      const fs::path sfm_interval_dir = work_path / "sfm_interval";
+      fs::create_directories(sfm_interval_dir);
+      const std::string abs_interval = fs::absolute(sfm_interval_dir).string();
+      sfm_cmd.push_back("--debug-dir");
+      sfm_cmd.push_back(abs_interval);
+      sfm_cmd.push_back("--debug-interval");
+      sfm_cmd.push_back("1");
+      LOG(INFO) << "Per-iteration Bundler snapshots: " << abs_interval
+                << "/iter_NNNN/  (at_bundler_viewer; interval=1)";
+    }
     run_or_die("incremental-sfm", sfm_cmd);
   }
 
@@ -1015,9 +1034,19 @@ int main(int argc, char* argv[]) {
   if (active_steps.count("incremental_sfm")) {
     LOG(INFO) << "  Poses:  " << (sfm_out / "poses.json").string();
     LOG(INFO) << "  Bundle: " << (sfm_out / "bundle.out").string();
+    LOG(INFO) << "  COLMAP: " << (sfm_out / "colmap" / "sparse" / "0").string();
+    if (cmd.used("output-interval-sfm")) {
+      const std::string iv =
+          fs::absolute(work_path / "sfm_interval").string();
+      LOG(INFO) << "  Per-step SfM (Bundlers): " << iv << "/iter_*/";
+    }
     LOG(INFO) << "View results:";
     LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " " << (sfm_out / "bundle.out").string()
               << " " << (sfm_out / "list.txt").string();
+    if (cmd.used("output-interval-sfm")) {
+      LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " "
+                << (work_path / "sfm_interval" / "iter_0000" / "bundle.out").string() << " ...";
+    }
   }
   LOG(INFO) << "========================================";
 
