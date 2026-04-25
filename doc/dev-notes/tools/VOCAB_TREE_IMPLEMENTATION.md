@@ -109,7 +109,7 @@ strategies["vocab"] = [&vocab_file, &vocab_cache_dir](
 ### 6. Documentation
 
 **Created Files:**
-- ✅ `doc/tools/VOCAB_TREE_QUICKSTART.md`: Complete user guide
+- ✅ `doc/dev-notes/tools/VOCAB_TREE_QUICKSTART.md`: Complete user guide
   - Training workflow with parameter recommendations
   - Query examples for single and hybrid strategies
   - Performance comparison: Vocab Tree vs VLAD
@@ -322,6 +322,6 @@ DBoW3 vocabulary tree retrieval is **fully integrated** and **ready for use**. T
 4. **Deploy**: Use `gps+vocab` hybrid strategy in production matching pipeline
 
 For questions or issues, refer to:
-- `doc/tools/VOCAB_TREE_QUICKSTART.md`: Usage guide
+- `doc/dev-notes/tools/VOCAB_TREE_QUICKSTART.md`: Usage guide
 - `src/algorithm/modules/retrieval/vocab_tree_retrieval.h`: API documentation
 - DBoW3 upstream: https://github.com/rmsalinas/DBow3

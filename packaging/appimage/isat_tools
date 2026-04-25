@@ -1,0 +1,10 @@
+#!/bin/sh
+# List executables shipped under this AppImage's usr/bin (for CLI discovery).
+# Usage: ./InsightAT-x86_64.AppImage isat_tools
+#        (or run from extracted AppDir: ./AppDir/usr/bin/isat_tools)
+d="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+for f in "$d"/*; do
+  [ -e "$f" ] || continue
+  [ -f "$f" ] && [ -x "$f" ] || continue
+  basename "$f"
+done | sort -u

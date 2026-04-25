@@ -1,0 +1,8 @@
+#!/bin/sh
+# Show bundled resource locations (set by AppRun when running the AppImage).
+# Usage: ./InsightAT-x86_64.AppImage isat_info
+printf '%s\n' "INSIGHTAT_SHARE=${INSIGHTAT_SHARE:-<unset, run through AppImage>}"
+printf '%s\n' "INSIGHTAT_DATA_DIR=${INSIGHTAT_DATA_DIR:-<unset>}"
+printf '%s\n' "data/config: ${INSIGHTAT_SHARE:-}/data/config"
+printf '%s\n' "scripts:     ${INSIGHTAT_SHARE:-}/scripts"
+command -v python3 >/dev/null 2>&1 && printf 'python3:     %s\n' "$(command -v python3)" || true

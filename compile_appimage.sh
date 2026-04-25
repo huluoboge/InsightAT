@@ -1,70 +1,198 @@
 #!/bin/bash
-set -e
+# Build an InsightAT AppImage. All scratch output goes under build-appimage/ (gitignored via build-*).
+#
+# Optional env:
+#   INSIGHTAT_BUILD_DIR  — CMake build directory (default: build-ceres-11.8)
+#   BUNDLE_PYTHON=1|0   — copy host python3 + stdlib into AppDir (default: 1). Set 0 to skip (smaller image).
+#   CUDA_LIBS_DIR        — e.g. /usr/local/cuda-11.8/lib64
+#
+set -euo pipefail
 
-# 1. 配置路径
-INSIGHTAT_BUILD_DIR=build-ceres-11.8         # InsightAT 可执行文件目录
-APPDIR=InsightAT.AppDir
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+OUT_DIR="${REPO_ROOT}/build-appimage"
+TOOLS_DIR="${OUT_DIR}/.tools"
+APPDIR="${OUT_DIR}/InsightAT.AppDir"
 APPNAME=InsightAT
-VERSION=0.1.0
-CUDA_LIBS_DIR=/usr/local/cuda-11.8/lib64  # CUDA 动态库目录（如有不同请修改）
+VERSION="${INSIGHTAT_VERSION:-0.1.0}"
+INSIGHTAT_BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build-ceres-11.8}"
+CUDA_LIBS_DIR="${CUDA_LIBS_DIR:-/usr/local/cuda-11.8/lib64}"
+DESKTOP_SRC="${REPO_ROOT}/packaging/appimage/insightat.desktop"
+ICON_SRC="${REPO_ROOT}/packaging/appimage/app.png"
+BUNDLE_PYTHON="${BUNDLE_PYTHON:-1}"
+# Set to 1 to also copy /usr/lib/python3/dist-packages (Debian/Ubuntu; may add ~100–300 MiB, needed for numpy/matplotlib in scripts)
+BUNDLE_PYTHON_DIST="${BUNDLE_PYTHON_DIST:-0}"
 
-# 2. 清理旧目录
+if [[ ! -f "$ICON_SRC" ]]; then
+  echo "Missing $ICON_SRC"
+  exit 1
+fi
+if [[ ! -f "$DESKTOP_SRC" ]]; then
+  echo "Missing $DESKTOP_SRC"
+  exit 1
+fi
+
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/$APPNAME"
+mkdir -p \
+  "$APPDIR/usr/bin" \
+  "$APPDIR/usr/lib" \
+  "$APPDIR/usr/share/applications" \
+  "$APPDIR/usr/share/${APPNAME}" \
+  "$TOOLS_DIR"
 
-# 3. 拷贝可执行文件
-cp $INSIGHTAT_BUILD_DIR/isat_* "$APPDIR/usr/bin/"
-cp $INSIGHTAT_BUILD_DIR/InsightAT "$APPDIR/usr/bin/"
-# 如有其他可执行文件，继续 cp
+shopt -s nullglob
+isats=( "$INSIGHTAT_BUILD_DIR"/isat_* )
+shopt -u nullglob
+if [[ ${#isats[@]} -eq 0 ]]; then
+  echo "ERROR: no isat_* binaries in ${INSIGHTAT_BUILD_DIR} (build the project first)."
+  exit 1
+fi
+# AppImage is CLI-only for v0.1: do not ship the Qt "InsightAT" binary (GUI not release-ready).
+for f in "${isats[@]}" "$INSIGHTAT_BUILD_DIR/at_bundler_viewer"; do
+  [[ -f "$f" && -x "$f" ]] || { echo "ERROR: required binary missing or not executable: $f"; exit 1; }
+  cp -a "$f" "$APPDIR/usr/bin/"
+done
 
-# 4. 拷贝资源文件
-cp -r data scripts "$APPDIR/usr/share/$APPNAME/"  # 如有需要
+# Helper scripts (run: ./AppImage isat_tools | isat_info; default with no args = isat_tools)
+for _helper in isat_tools isat_info; do
+  if [[ -f "${REPO_ROOT}/packaging/appimage/${_helper}" ]]; then
+    cp -a "${REPO_ROOT}/packaging/appimage/${_helper}" "$APPDIR/usr/bin/${_helper}"
+    chmod a+x "$APPDIR/usr/bin/${_helper}"
+  else
+    echo "WARNING: packaging/appimage/${_helper} missing."
+  fi
+done
 
-# 5. 收集依赖库（除系统库）
-for exe in "$APPDIR/usr/bin/"*; do
-    ldd "$exe" | grep "=>" | awk '{print $3}' | while read lib; do
-        if [[ -n "$lib" && ! "$lib" =~ ^/lib && ! "$lib" =~ ^/usr/lib$ && ! "$lib" =~ ^/usr/lib/x86_64-linux-gnu/libc.so ]]; then
-            cp -n "$lib" "$APPDIR/usr/lib/" 2>/dev/null || true
-        fi
+# App data: full tree under usr/share/InsightAT (includes data/config, data/gdal, etc.)
+if [[ -d "${REPO_ROOT}/data" ]]; then
+  cp -a "${REPO_ROOT}/data" "$APPDIR/usr/share/${APPNAME}/"
+fi
+if [[ -d "${REPO_ROOT}/scripts" ]]; then
+  cp -a "${REPO_ROOT}/scripts" "$APPDIR/usr/share/${APPNAME}/"
+fi
+
+# isat_sfm / isat_camera_estimator resolve sensor DB as: <binary_dir>/data/config/...
+# Symlink usr/bin/data -> ../share/InsightAT/data so CWD is irrelevant.
+ln -sfn "../share/${APPNAME}/data" "$APPDIR/usr/bin/data"
+
+# Optional: bundle Python 3 (build host) for running usr/share/InsightAT/scripts/
+if [[ "$BUNDLE_PYTHON" == "1" ]]; then
+  if PYBIN=$(command -v python3 2>/dev/null); then
+    PYBIN=$(readlink -f "$PYBIN")
+    echo "BUNDLE_PYTHON: using $PYBIN"
+    cp -a "$PYBIN" "$APPDIR/usr/bin/python3"
+    PYDIR=$(dirname "$PYBIN")
+    for f in "$PYDIR"/python3.*; do
+      if [[ -f "$f" && -x "$f" && "$f" != "$PYBIN" ]] && [[ $(basename "$f") =~ ^python3[.0-9]+$ ]]; then
+        cp -a "$f" "$APPDIR/usr/bin/" 2>/dev/null || true
+      fi
     done
-done
-
-# 6. 拷贝 CUDA 运行库（只拷贝 libcudart/libcublas/libcufft 等，不拷贝 libcuda.so）
-for lib in libcudart.so* libcublas.so* libcufft.so* libnvrtc.so*; do
-    if [ -e "$CUDA_LIBS_DIR/$lib" ]; then
-        cp -n "$CUDA_LIBS_DIR/$lib" "$APPDIR/usr/lib/"
+    PYMAJMIN=$(python3 -c 'import sys; print("%d.%d" % (sys.version_info[0:2]))' 2>/dev/null || echo "3.10")
+    for cand in "/usr/lib/python${PYMAJMIN}" "/usr/local/lib/python${PYMAJMIN}"; do
+      if [[ -d "$cand" ]]; then
+        echo "BUNDLE_PYTHON: copying stdlib from $cand"
+        cp -a "$cand" "$APPDIR/usr/lib/"
+        break
+      fi
+    done
+    if [[ "$BUNDLE_PYTHON_DIST" == "1" ]] && [[ -d /usr/lib/python3/dist-packages ]]; then
+      echo "BUNDLE_PYTHON: copying /usr/lib/python3/dist-packages (BUNDLE_PYTHON_DIST=1; large)"
+      mkdir -p "$APPDIR/usr/lib/python3"
+      cp -a /usr/lib/python3/dist-packages "$APPDIR/usr/lib/python3/"
     fi
+  else
+    echo "WARNING: python3 not found on build host; AppImage will not include Python. Set BUNDLE_PYTHON=0 to silence."
+  fi
+else
+  echo "BUNDLE_PYTHON=0: not bundling python3; use system python3 and paths under INSIGHTAT_SHARE for scripts if needed."
+fi
+
+# Bundle shared libs for all ELF in usr/bin
+file_is_elf() {
+  file -b --mime-type "$1" 2>/dev/null | grep -q 'application/x-executable' || file -b "$1" 2>/dev/null | grep -qE '^ELF'
+}
+
+for exe in "$APPDIR"/usr/bin/*; do
+  [[ -f "$exe" && -x "$exe" ]] || continue
+  file_is_elf "$exe" || continue
+  ldd "$exe" 2>/dev/null | awk '/=>/ {print $3}' | while read -r lib; do
+    [[ -n "$lib" && -f "$lib" ]] || continue
+    case "$lib" in
+      /lib/*|/usr/lib/libc.so*|/usr/lib/x86_64-linux-gnu/libc.so*) continue ;;
+    esac
+    cp -n "$lib" "$APPDIR/usr/lib/" 2>/dev/null || true
+  done
 done
 
-# 7. 生成 AppRun 启动器
-cat > "$APPDIR/AppRun" <<EOF
+# CUDA (optional)
+for pat in libcudart.so* libcublas.so* libcufft.so* libnvrtc.so*; do
+  for f in "$CUDA_LIBS_DIR"/$pat; do
+    [[ -e "$f" ]] && cp -n "$f" "$APPDIR/usr/lib/" || true
+  done
+done
+
+# AppImage metadata
+cp -a "$ICON_SRC" "$APPDIR/app.png"
+for d in 256x256 128x128 64x64 48x48; do
+  mkdir -p "$APPDIR/usr/share/icons/hicolor/${d}/apps"
+  cp -a "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/${d}/apps/app.png"
+done
+cp -a "$DESKTOP_SRC" "$APPDIR/usr/share/applications/insightat.desktop"
+cp -a "$DESKTOP_SRC" "$APPDIR/${APPNAME}.desktop"
+
+# AppRun
+cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/bash
-HERE="\$(dirname "\$(readlink -f "\$0")")"
-export LD_LIBRARY_PATH="\$HERE/usr/lib:\$LD_LIBRARY_PATH"
-export INSIGHTAT_DATA_DIR="\$HERE/usr/share/$APPNAME"
-exec "\$HERE/usr/bin/\$@"
+HERE="$(dirname "$(readlink -f "${0}")")"
+export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
+export PATH="${HERE}/usr/bin:${PATH:-}"
+export INSIGHTAT_PREFIX="${HERE}/usr"
+export INSIGHTAT_SHARE="${HERE}/usr/share/InsightAT"
+export INSIGHTAT_DATA_DIR="${INSIGHTAT_SHARE}"
+# Bundled data (config, PROJ/CSV, GDAL data files) — isat_* looks under usr/bin/data via symlink
+if [[ -d "${INSIGHTAT_SHARE}/data/gdal" ]]; then
+  export GDAL_DATA="${INSIGHTAT_SHARE}/data/gdal"
+fi
+# Bundled CPython (if present)
+if [[ -x "${HERE}/usr/bin/python3" && -d "${HERE}/usr/lib" ]]; then
+  export PYTHONHOME="${HERE}/usr"
+  export PYTHONNOUSERSITE=1
+fi
+# No args: list bundled CLIs (Qt InsightAT is intentionally not included in the image).
+if [[ $# -eq 0 ]]; then
+  exec "${HERE}/usr/bin/isat_tools" "$@"
+else
+  exec "${HERE}/usr/bin/$@"
+fi
 EOF
 chmod +x "$APPDIR/AppRun"
 
-# 8. 生成 desktop 文件（可选，CLI 可省略）
-cat > "$APPDIR/$APPNAME.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=InsightAT
-Exec=isat_project
-Icon=app
-Categories=Utility;
-EOF
+# linuxdeploy
+LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+wget -N -q -P "$TOOLS_DIR" "$LINUXDEPLOY_URL" 2>/dev/null || true
+chmod +x "$TOOLS_DIR"/linuxdeploy-x86_64.AppImage 2>/dev/null || true
+if [[ ! -x "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" ]]; then
+  echo "Failed to get linuxdeploy; download manually to $TOOLS_DIR and re-run."
+  exit 1
+fi
 
-# 9. 准备图标（可选）
-# cp path/to/icon.png "$APPDIR/app.png"
+(
+  cd "$OUT_DIR"
+  export ARCH=x86_64
+  ./.tools/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
+    --appdir "$APPDIR" \
+    --desktop-file "$DESKTOP_SRC" \
+    --icon-file "$ICON_SRC" \
+    --icon-filename=app \
+    --output appimage
+)
 
-# 10. 下载 linuxdeploy 和 appimagetool
-wget -N https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-wget -N https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-chmod +x linuxdeploy-x86_64.AppImage appimagetool-x86_64.AppImage
+OUT_IMG=$(ls -1t "${OUT_DIR}/"*.AppImage 2>/dev/null | head -1 || true)
+if [[ -n "$OUT_IMG" ]]; then
+  echo "AppImage: $OUT_IMG"
+  echo "No-arg default:  $OUT_IMG  → runs isat_tools (list CLIs in this image)"
+else
+  echo "Expected an *.AppImage under ${OUT_DIR}/"
+  exit 1
+fi
 
-# 11. 生成 AppImage
-./linuxdeploy-x86_64.AppImage --appdir "$APPDIR" --output appimage
-
-echo "AppImage 打包完成！"
+echo "Done."

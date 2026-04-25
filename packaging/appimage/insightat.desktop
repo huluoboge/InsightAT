@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=InsightAT
+GenericName=Photogrammetry CLIs
+Comment=Command-line SfM tools (Qt GUI is not included; not ready for v0.1). Double-click lists bundled programs.
+Icon=app
+TryExec=isat_tools
+Exec=isat_tools
+Terminal=true
+Categories=Graphics;Photography;Science;

@@ -1,6 +1,11 @@
 build
 build-*
 build_*
+build-appimage/
+
+# AppImage artifacts in repo root (use build-appimage/ via compile_appimage.sh)
+/InsightAT.AppDir
+/*.AppImage
 .vscode/launch.json
 .cursor
 .kiro

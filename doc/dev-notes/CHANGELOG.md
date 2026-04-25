@@ -2,7 +2,7 @@
 
 All notable changes to the InsightAT project are documented in this file.
 
-Historical design notes and architecture drafts live under [doc/dev-notes/design/](doc/dev-notes/design/). This changelog focuses on implementation and refactoring milestones.
+Historical design notes and architecture drafts live under [doc/develop/design/](doc/develop/design/). This changelog focuses on implementation and refactoring milestones.
 
 ---
 
@@ -20,7 +20,7 @@ Historical design notes and architecture drafts live under [doc/dev-notes/design
 - **数据层**：`database` 模块（`database_types.h`）提供 CoordinateSystem、InputPose、Measurement、ATTask、Project、ImageGroup、CameraModel 等，Cereal 序列化与版本控制。
 - **算法模块**：特征提取（SIFT GPU）、检索（VLAD、Sequence）、匹配、几何（GPU RANSAC）、两视图重建与焦距优化、track 构建。
 - **UI**：Qt 主窗口、项目/任务/坐标系配置、相机参数与图像组管理、与 ProjectDocument 绑定；无 3D 渲染依赖。
-- **规范**：CLI I/O 约定（stdout/stderr、`ISAT_EVENT`）、编码风格与 IDC 格式见 [doc/dev-notes/design/](doc/dev-notes/design/)。
+- **规范**：CLI I/O 约定（stdout/stderr、`ISAT_EVENT`）、编码风格与 IDC 格式见 [doc/develop/design/](doc/develop/design/)。
 
 ### 进行中 / 计划中（相对设计文档）
 
@@ -37,8 +37,8 @@ Historical design notes and architecture drafts live under [doc/dev-notes/design
 
 ### 文档
 
-- 设计文档索引：[doc/dev-notes/design/index.md](doc/dev-notes/design/index.md)；架构、数据模型、坐标系与旋转、序列化、UI、函数式 AT 工具包见对应编号文档。
-- 实现与工具说明见 [doc/dev-notes/](doc/dev-notes/)、[doc/tools/](doc/tools/)。
+- 设计文档索引：[doc/develop/design/index.md](doc/develop/design/index.md)；架构、数据模型、坐标系与旋转、序列化、UI、函数式 AT 工具包见对应编号文档。
+- 实现与工具说明见 [doc/dev-notes/](doc/dev-notes/)、[doc/dev-notes/tools/](doc/dev-notes/tools/)。
 
 ---
 

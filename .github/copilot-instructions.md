@@ -146,7 +146,7 @@ Stage 3  [多线程 I/O]    写磁盘
 
 ## 代码风格
 
-详细规范见 [编码风格](../doc/dev-notes/design/02_coding_style.md)，格式化由根目录 [`.clang-format`](.clang-format) 自动执行（clang-format 14，列宽 100，4 空格缩进）。
+详细规范见 [编码风格](../doc/develop/design/02-coding_style.md)，格式化由根目录 [`.clang-format`](.clang-format) 自动执行（clang-format 14，列宽 100，4 空格缩进）。
 
 **关键命名规则**：
 
@@ -205,7 +205,7 @@ make isat_geo -j4                   # 构建单个工具
 - GPU Stage 2（主线程 EGL）中**禁止读写磁盘**
 
 # 文档
-详细文档请先阅读 README.md，编码规范请遵守 `doc/dev-notes/design/02_coding_style.md`。
+详细文档请先阅读 README.md，编码规范请遵守 `doc/develop/design/02-coding_style.md`。
 
 # 其他说明
 在agent模式下， 应该先就理解的内容进行总结，并交互确认，甚至讨论， 然后再进行设计和代码编写。 首先需要是一个Structure from Motion (SfM), 摄影测量、计算机视觉多视图几何，SLAM方面的专家，要有非常强的时间经验和算法工程能力， 以这个背景来进行思考、设计和编码

@@ -206,7 +206,7 @@ src/Common/
 src/Common/
 └── db_types.h                              [更新文档注释] ✅
 
-doc/dev-notes/design/rotation/
+doc/dev-notes/rotation/
 ├── rotation_readme.md                      [已有]
 ├── rotation_standards.md                  [已有]
 ├── rotation_quick_reference.md            [已有]
@@ -259,8 +259,8 @@ IMPLEMENTATION_PHASE2_P0_SUMMARY.md         [本文件]    ✅
 ## 📞 相关文档链接
 
 **理论基础**:
-- [doc/dev-notes/design/rotation/rotation_standards.md](doc/dev-notes/design/rotation/rotation_standards.md) - 标准参考（13 KB）
-- [doc/dev-notes/design/rotation/rotation_quick_reference.md](doc/dev-notes/design/rotation/rotation_quick_reference.md) - 快速查询（4.6 KB）
+- [doc/dev-notes/rotation/rotation_standards.md](doc/dev-notes/rotation/rotation_standards.md) - 标准参考（13 KB）
+- [doc/dev-notes/rotation/rotation_quick_reference.md](doc/dev-notes/rotation/rotation_quick_reference.md) - 快速查询（4.6 KB）
 
 **问题分析**:
 - [doc/dev-notes/CODE_ANALYSIS_ROTATION.md](doc/dev-notes/CODE_ANALYSIS_ROTATION.md) - 问题分析（7.2 KB）
@@ -271,7 +271,7 @@ IMPLEMENTATION_PHASE2_P0_SUMMARY.md         [本文件]    ✅
 - [src/Common/rotation_utils.cpp](src/Common/rotation_utils.cpp) - 实现代码
 
 **导航**:
-- [doc/dev-notes/design/rotation/rotation_readme.md](doc/dev-notes/design/rotation/rotation_readme.md) - 旋转模块导航
+- [doc/dev-notes/rotation/rotation_readme.md](doc/dev-notes/rotation/rotation_readme.md) - 旋转模块导航
 - [doc/README.md](doc/README.md) - 全项目文档导航
 
 ---
@@ -279,7 +279,7 @@ IMPLEMENTATION_PHASE2_P0_SUMMARY.md         [本文件]    ✅
 ## 💡 使用建议
 
 ### 对于新开发者
-1. 先读 [rotation_quick_reference.md](doc/dev-notes/design/rotation/rotation_quick_reference.md) (5分钟)
+1. 先读 [rotation_quick_reference.md](doc/dev-notes/rotation/rotation_quick_reference.md) (5分钟)
 2. 看实现示例在 [ROTATION_UTILS_IMPLEMENTATION.md](src/Common/ROTATION_UTILS_IMPLEMENTATION.md) 中
 3. 需要时查 [rotation_utils.h](src/Common/rotation_utils.h) 的详细 API
 
