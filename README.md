@@ -136,22 +136,26 @@ After initial reconstruction, the system supports:
 
 ---
 
-## 🧭 System Architecture
+## 🧭 Current Sequential Structure from Motion System Architecture
 
 ```
 Images
   ↓
-Feature Extraction (GPU)
+Feature Extraction 
   ↓
-Matching (GPU + async IO)
+Image Matching
+  ↓
+Feature Matching 
+  ↓
+Geometry Filtering 
   ↓
 Track Construction
   ↓
 Incremental SfM
   ↓
-Global Optimization (BA / Resection)
-  ↓
 Sparse 3D Model
+  ↓
+Post Process (Absolute Orientation,Camera Rig Auto Detection,Pose Refinement...)
 ```
 
 ---
@@ -169,22 +173,6 @@ Target scenario:
 
 > Multi-thousand to million image reconstruction at cloud scale
 
----
-
-🆚 Comparison with COLMAP
--------------------------
-
-InsightAT differs from traditional SfM systems:
-
-|  | InsightAT | COLMAP |
-| --- | --- | --- |
-| System design | Full pipeline system | Algorithm toolbox |
-| Execution model | CLI + task graph | Monolithic tools |
-| Optimization | Coarse-to-fine system | Local pipeline tuning |
-| Scale focus | Large-scale + cloud | General-purpose SfM |
-| Automation | Fully automated pipeline | User-configured workflow |
-
----
 
 ## Benchmarks (ETH3D-style)
 
