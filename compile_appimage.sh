@@ -3,6 +3,7 @@
 #
 # Optional env:
 #   INSIGHTAT_BUILD_DIR  — CMake build directory (default: build-ceres-11.8)
+#   INSIGHTAT_QMAKE     — path to `qmake` for the *same* Qt that linked at_bundler_viewer (default: from CMakeCache Qt5Core_QMAKE_EXECUTABLE, else first of qmake-qt5, qmake on PATH). Required for consistent Qt in the AppImage; wrong/missing QMAKE can cause "Cannot mix incompatible Qt library" at runtime.
 #   BUNDLE_PYTHON=1|0   — copy host python3 + stdlib into AppDir (default: 1). Set 0 to skip (smaller image).
 #   CUDA_LIBS_DIR        — e.g. /usr/local/cuda-11.8/lib64
 #
@@ -139,8 +140,9 @@ done
 cp -a "$DESKTOP_SRC" "$APPDIR/usr/share/applications/insightat.desktop"
 cp -a "$DESKTOP_SRC" "$APPDIR/${APPNAME}.desktop"
 
-# AppRun
-cat > "$APPDIR/AppRun" <<'EOF'
+# AppRun (source outside AppDir for linuxdeploy --custom-apprun; then copy into AppDir)
+APPRUN_SRC="${OUT_DIR}/insightat_AppRun.in"
+cat > "$APPRUN_SRC" <<'EOF'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "${0}")")"
 export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
@@ -148,6 +150,15 @@ export PATH="${HERE}/usr/bin:${PATH:-}"
 export INSIGHTAT_PREFIX="${HERE}/usr"
 export INSIGHTAT_SHARE="${HERE}/usr/share/InsightAT"
 export INSIGHTAT_DATA_DIR="${INSIGHTAT_SHARE}"
+# Qt (at_bundler_viewer): use *only* bundled plugins, never the host (avoids 5.15.3 + 5.15.13 mix)
+unset QTDIR QT_QPA_PLATFORM_PLUGIN_PATH 2>/dev/null || true
+for _qtp in "${HERE}/usr/lib/qt5/plugins" "${HERE}/usr/plugins" "${HERE}/usr/lib/x86_64-linux-gnu/qt5/plugins"; do
+  if [[ -d "${_qtp}/platforms" ]]; then
+    export QT_PLUGIN_PATH="${_qtp}"
+    export QT_QPA_PLATFORM_PLUGIN_PATH="${_qtp}/platforms"
+    break
+  fi
+done
 # Bundled data (config, PROJ/CSV, GDAL data files) — isat_* looks under usr/bin/data via symlink
 if [[ -d "${INSIGHTAT_SHARE}/data/gdal" ]]; then
   export GDAL_DATA="${INSIGHTAT_SHARE}/data/gdal"
@@ -164,14 +175,46 @@ else
   exec "${HERE}/usr/bin/$@"
 fi
 EOF
+chmod +x "$APPRUN_SRC"
+cp -a "$APPRUN_SRC" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 
-# linuxdeploy
+# linuxdeploy + Qt plugin (platforms/imageformats from the same tree as the linked libQt5*.so; avoids host 5.15.x)
 LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+LINUXDEPLOY_QT_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
 wget -N -q -P "$TOOLS_DIR" "$LINUXDEPLOY_URL" 2>/dev/null || true
+wget -N -q -P "$TOOLS_DIR" "$LINUXDEPLOY_QT_URL" 2>/dev/null || true
 chmod +x "$TOOLS_DIR"/linuxdeploy-x86_64.AppImage 2>/dev/null || true
+chmod +x "$TOOLS_DIR"/linuxdeploy-plugin-qt-x86_64.AppImage 2>/dev/null || true
 if [[ ! -x "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" ]]; then
   echo "Failed to get linuxdeploy; download manually to $TOOLS_DIR and re-run."
+  exit 1
+fi
+if [[ ! -x "$TOOLS_DIR/linuxdeploy-plugin-qt-x86_64.AppImage" ]]; then
+  echo "Failed to get linuxdeploy-plugin-qt; download manually to $TOOLS_DIR and re-run."
+  exit 1
+fi
+
+# Resolve qmake: must be the same Qt install that built at_bundler_viewer
+INSIGHTAT_QMAKE_RESOLVED="${INSIGHTAT_QMAKE:-}"
+if [[ -z "$INSIGHTAT_QMAKE_RESOLVED" && -f "$INSIGHTAT_BUILD_DIR/CMakeCache.txt" ]]; then
+  if grep -qE '^Qt5Core_QMAKE_EXECUTABLE:FILEPATH=' "$INSIGHTAT_BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
+    INSIGHTAT_QMAKE_RESOLVED=$(grep -E '^Qt5Core_QMAKE_EXECUTABLE:FILEPATH=' "$INSIGHTAT_BUILD_DIR/CMakeCache.txt" | head -1 | cut -d= -f2- | tr -d '\r')
+  fi
+fi
+if [[ -z "$INSIGHTAT_QMAKE_RESOLVED" ]]; then
+  for cand in qmake-qt5 qmake; do
+    if c=$(command -v "$cand" 2>/dev/null) && [[ -x "$c" ]]; then
+      INSIGHTAT_QMAKE_RESOLVED=$c
+      break
+    fi
+  done
+fi
+if [[ -n "$INSIGHTAT_QMAKE_RESOLVED" && -x "$INSIGHTAT_QMAKE_RESOLVED" ]]; then
+  export QMAKE="$INSIGHTAT_QMAKE_RESOLVED"
+  echo "Using QMAKE=$QMAKE (linuxdeploy-plugin-qt: bundle Qt platforms/plugins from this tree)"
+else
+  echo "ERROR: set INSIGHTAT_QMAKE to the qmake that matches your build (prevents host Qt 5.15.x from mixing with bundled libs)."
   exit 1
 fi
 
@@ -180,9 +223,11 @@ fi
   export ARCH=x86_64
   ./.tools/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
     --appdir "$APPDIR" \
+    --custom-apprun "$APPRUN_SRC" \
     --desktop-file "$DESKTOP_SRC" \
     --icon-file "$ICON_SRC" \
     --icon-filename=app \
+    --plugin qt \
     --output appimage
 )
 

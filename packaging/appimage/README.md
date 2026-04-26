@@ -51,3 +51,5 @@ Output: `build-appimage/InsightAT-x86_64.AppImage` (under `build-*`, gitignored)
 ```
 
 For `numpy`-heavy scripts, rebuild with `BUNDLE_PYTHON_DIST=1 ./compile_appimage.sh` (larger image).
+
+**Qt / `at_bundler_viewer`:** if you see `Cannot mix incompatible Qt library (5.15.A) with this library (5.15.B)`, the AppImage was loading **Qt from the system** (plugins/platforms) and **Qt from the bundle** (libs) from two different patch releases. The script uses **`linuxdeploy-plugin-qt`** and **`QMAKE` must match the Qt that built `at_bundler_viewer`**. The default is to read `Qt5Core_QMAKE_EXECUTABLE` from `INSIGHTAT_BUILD_DIR/CMakeCache.txt`, or you can set `INSIGHTAT_QMAKE=/path/to/qmake` before running `./compile_appimage.sh`. Rebuild the AppImage after this change; no change is needed to your library install on the target machine.
