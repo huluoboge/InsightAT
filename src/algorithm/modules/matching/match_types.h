@@ -107,6 +107,10 @@ struct MatchOptions {
   // Require mutual best match (bidirectional consistency)
   bool mutual_best_match = true;
 
+  // Whether to compute descriptor L2 distance for each output match.
+  // Keep disabled for speed unless debugging/evaluation needs it.
+  bool compute_distances = false;
+
   // Maximum features per image uploaded to GPU (-1 = all).
   // Features are selected via spatial grid stratification (see spatial_grid_rows/cols):
   // the image is divided into a grid and each cell contributes features round-robin,

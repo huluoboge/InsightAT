@@ -373,7 +373,12 @@ bool SiftGPUExtractor::initialize_popsift(const SiftGPUParams& param) {
   popsift_impl_ = std::make_shared<PopSiftImpl>();
   try {
     popsift::Config ps_config;
+    // PopSift's getPeakThreshold() = _threshold * 0.5 * 255 / levels, so it already
+    // divides by levels internally. Pass d_peak directly (no per-level normalization here).
+    // Effective DoG threshold = d_peak * 0.5 * 255 / levels — intentionally lower than
+    // SiftGPU's d_peak/n_level * 255 to yield more raw candidates before grid filtering.
     ps_config.setThreshold(static_cast<float>(param.d_peak));
+    ps_config.setLevels(param.n_level);
     ps_config.setEdgeLimit(10.0f);
     ps_config.setFilterMaxExtrema(param.n_max_features);
     ps_config.setFilterGridSize(4);

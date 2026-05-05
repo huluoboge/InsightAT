@@ -14,6 +14,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <climits>
+#include <cstring>
+#include <memory>
 
 #include "render/bundler_loader.h"
 #include "render/render_tracks.h"
@@ -23,6 +26,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -41,6 +45,38 @@
 namespace insight {
 
 namespace {
+
+constexpr int kProgressUiThrottleMs = 45;
+
+/// 更新解析 / GDAL 进度。tot<0 表示总量未知（COLMAP 文本阶段），用 setRange(0,0) 走 Qt 不定进度；
+/// 满条或 busy 外观由主题决定，label 中仍显示已解析条数。
+void pump_parse_progress(QProgressDialog& dlg, QElapsedTimer& throttle_ms, int64_t cur, int64_t tot,
+                         const QString& label, bool* unknown_total_mode = nullptr) {
+  dlg.setLabelText(label);
+  const bool unknown_total = (tot < 0);
+  if (unknown_total_mode) {
+    if (unknown_total && !*unknown_total_mode) {
+      dlg.setRange(0, 0);
+      dlg.setValue(0);
+      *unknown_total_mode = true;
+    } else if (!unknown_total && *unknown_total_mode) {
+      *unknown_total_mode = false;
+    }
+  } else if (unknown_total) {
+    dlg.setRange(0, 0);
+    dlg.setValue(0);
+  }
+
+  if (!unknown_total) {
+    const int hi = static_cast<int>(std::min<int64_t>(std::max<int64_t>(tot, int64_t{1}), INT_MAX));
+    dlg.setMaximum(hi);
+    dlg.setValue(static_cast<int>(std::min<int64_t>(std::max<int64_t>(cur, int64_t{0}), hi)));
+  }
+  if (throttle_ms.elapsed() >= kProgressUiThrottleMs) {
+    throttle_ms.restart();
+    QApplication::processEvents();
+  }
+}
 
 QPushButton* make_toggle(const QString& text, const QString& tooltip, bool checked) {
   auto* b = new QPushButton(text);
@@ -233,19 +269,37 @@ void BundlerViewerWindow::open_reconstruction_path(const QString& dir) {
   progress.setMinimumDuration(0);
   progress.setCancelButton(nullptr);
   progress.setRange(0, 0);
-  progress.setLabelText(tr("Reading model files…"));
+  progress.setLabelText(tr("Reading model…"));
   progress.show();
+  QElapsedTimer ui_throttle;
+  ui_throttle.start();
   QApplication::processEvents();
 
   render::BundlerScene scene;
   std::string err;
-  if (!render::load_reconstruction_directory(dir.toStdString(), &scene, &err)) {
+  bool parse_indeterminate = false;
+  render::ReconstructionLoadProgress on_parse = [&](int64_t cur, int64_t tot, const char* stage) {
+    QString lab;
+    if (tot < 0) {
+      if (std::strcmp(stage, "images") == 0)
+        lab = tr("Parsing images.txt… %1").arg(cur);
+      else if (std::strcmp(stage, "points3D") == 0)
+        lab = tr("Parsing points3D.txt… %1").arg(cur);
+      else
+        lab = tr("Reading model… %1").arg(cur);
+    } else
+      lab = tr("Parsing bundle.out… %1 / %2").arg(cur).arg(tot);
+    pump_parse_progress(progress, ui_throttle, cur, tot, lab, &parse_indeterminate);
+  };
+
+  if (!render::load_reconstruction_directory(dir.toStdString(), &scene, &err, std::move(on_parse))) {
     progress.reset();
     QMessageBox::warning(this, tr("Load failed"), QString::fromStdString(err));
     LOG(ERROR) << "load_reconstruction_directory: " << err;
     return;
   }
 
+  parse_indeterminate = false;
   const int n_cam = static_cast<int>(scene.cameras.size());
   progress.setRange(0, std::max(1, n_cam));
   progress.setValue(0);
@@ -254,11 +308,9 @@ void BundlerViewerWindow::open_reconstruction_path(const QString& dir) {
   render::fill_render_tracks_from_bundler(
       tracks_, scene,
       [&](int current, int total, const char* /*stage*/) {
-        progress.setValue(current);
-        progress.setMaximum(std::max(1, total));
-        progress.setLabelText(
-            tr("Reading image dimensions… %1 / %2").arg(current).arg(total));
-        QApplication::processEvents();
+        const QString lab =
+            tr("Reading image dimensions… %1 / %2").arg(current).arg(total);
+        pump_parse_progress(progress, ui_throttle, current, total, lab, nullptr);
       });
 
   progress.setValue(progress.maximum());
@@ -329,7 +381,8 @@ void BundlerViewerWindow::open_iter_series_from_path(const QString& parent_dir) 
 // ── Scene cache and prefetch ────────────────────────────────────────────────
 
 std::shared_ptr<render::BundlerScene>
-BundlerViewerWindow::get_or_load_scene(int idx, bool* from_cache) {
+BundlerViewerWindow::get_or_load_scene(int idx, bool* from_cache,
+                                       const render::ReconstructionLoadProgress* parse_progress) {
   // 1. Check the scene cache first.
   {
     std::lock_guard<std::mutex> lk(cache_mutex_);
@@ -365,8 +418,10 @@ BundlerViewerWindow::get_or_load_scene(int idx, bool* from_cache) {
   *from_cache = false;
   auto scene   = std::make_shared<render::BundlerScene>();
   std::string err;
+  const render::ReconstructionLoadProgress parse_cb =
+      (parse_progress && *parse_progress) ? *parse_progress : render::ReconstructionLoadProgress{};
   if (!render::load_reconstruction_directory(iter_dirs_[static_cast<size_t>(idx)], scene.get(),
-                                             &err)) {
+                                             &err, parse_cb)) {
     LOG(ERROR) << "load_reconstruction_directory[" << idx << "]: " << err;
     return {};
   }
@@ -433,40 +488,67 @@ void BundlerViewerWindow::load_iter_at(int idx) {
   if (idx < 0 || idx >= static_cast<int>(iter_dirs_.size()))
     return;
 
+  // First iteration: show progress during disk parse (bundle / COLMAP) and GDAL dimensions.
+  const bool need_progress = !dims_warmed_;
+
+  std::unique_ptr<QProgressDialog> cold_dlg;
+  QElapsedTimer ui_throttle;
+  render::ReconstructionLoadProgress parse_cb;
+  const render::ReconstructionLoadProgress* parse_ptr = nullptr;
+
+  bool parse_indeterminate = false;
+  if (need_progress) {
+    cold_dlg = std::make_unique<QProgressDialog>(tr("Loading first iteration…"), QString(), 0, 0,
+                                                 this);
+    cold_dlg->setWindowModality(Qt::ApplicationModal);
+    cold_dlg->setMinimumDuration(0);
+    cold_dlg->setCancelButton(nullptr);
+    cold_dlg->setLabelText(tr("Reading model…"));
+    cold_dlg->show();
+    ui_throttle.start();
+    QApplication::processEvents();
+
+    parse_cb = [this, dlg = cold_dlg.get(), &ui_throttle, &parse_indeterminate](
+                   int64_t cur, int64_t tot, const char* stage) {
+      QString lab;
+      if (tot < 0) {
+        if (std::strcmp(stage, "images") == 0)
+          lab = tr("Parsing images.txt… %1").arg(cur);
+        else if (std::strcmp(stage, "points3D") == 0)
+          lab = tr("Parsing points3D.txt… %1").arg(cur);
+        else
+          lab = tr("Reading model… %1").arg(cur);
+      } else
+        lab = tr("Parsing bundle.out… %1 / %2").arg(cur).arg(tot);
+      pump_parse_progress(*dlg, ui_throttle, cur, tot, lab, &parse_indeterminate);
+    };
+    parse_ptr = &parse_cb;
+  }
+
   bool from_cache = false;
-  auto scene = get_or_load_scene(idx, &from_cache);
+  auto scene = get_or_load_scene(idx, &from_cache, parse_ptr);
   if (!scene)
     return; // error already logged
 
-  // Show progress dialog only on cold load (first time, GDAL dimension reads are slow).
-  // After dims_warmed_=true all subsequent calls to fill_render_tracks are O(1) on GDAL.
-  const bool need_progress = !dims_warmed_;
-
   if (need_progress) {
+    QProgressDialog& progress = *cold_dlg;
+    parse_indeterminate = false;
     const int n_cam = static_cast<int>(scene->cameras.size());
-    QProgressDialog progress(tr("Loading first iteration…"), QString(), 0, std::max(1, n_cam),
-                             this);
-    progress.setWindowModality(Qt::ApplicationModal);
-    progress.setMinimumDuration(0);
-    progress.setCancelButton(nullptr);
-    progress.setLabelText(tr("Reading image dimensions (first load)…"));
-    progress.show();
-    QApplication::processEvents();
+    progress.setRange(0, std::max(1, n_cam));
+    progress.setValue(0);
+    progress.setLabelText(tr("Reading image dimensions…"));
 
     render::fill_render_tracks_from_bundler(
         tracks_, *scene,
         [&](int current, int total, const char* /*stage*/) {
-          progress.setValue(current);
-          progress.setMaximum(std::max(1, total));
-          progress.setLabelText(
-              tr("Reading image dimensions… %1 / %2").arg(current).arg(total));
-          QApplication::processEvents();
+          const QString lab =
+              tr("Reading image dimensions… %1 / %2").arg(current).arg(total);
+          pump_parse_progress(progress, ui_throttle, current, total, lab, nullptr);
         });
 
     progress.setValue(progress.maximum());
     QApplication::processEvents();
   } else {
-    // Fast path: GDAL dimension cache is warm, fill is near-instant.
     render::fill_render_tracks_from_bundler(tracks_, *scene);
   }
 

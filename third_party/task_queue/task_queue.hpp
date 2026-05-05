@@ -8,6 +8,14 @@
 #include <thread>
 #include <vector>
 
+namespace task_queue_context {
+inline thread_local int g_worker_index = -1;
+inline int current_worker_index()
+{
+    return g_worker_index;
+}
+} // namespace task_queue_context
+
 // 任务队列
 class TaskQueue {
 public:
@@ -103,7 +111,8 @@ public:
         , doneMtx(doneMtx)
     {
         for (size_t i = 0; i < numThreads; ++i) {
-            workers.emplace_back([this] {
+            workers.emplace_back([this, i] {
+                task_queue_context::g_worker_index = static_cast<int>(i);
                 while (true) {
                     auto task = taskQueue.popTask();
                     if (stop)
@@ -209,6 +218,7 @@ public:
 
     void run()
     {
+        task_queue_context::g_worker_index = 0;
         while (true) {
             auto task = taskQueue.popTask();
             if (stop)

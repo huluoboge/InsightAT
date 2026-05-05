@@ -171,6 +171,11 @@ public:
   /// 相机中心与点云在当前节点坐标系下的轴对齐包围盒；无几何则返回 false。
   bool world_axis_aligned_bounds(Vec3* bmin, Vec3* bmax) const;
 
+  /// 用于 reset-view：围绕 `origin` 的取景半径。相机取到原点的最大距离；点云（含 GCP）
+  /// 取距离的分位数（如 0.88），减轻离群点对缩放的拉扯。`point_quantile` 建议 (0.8, 1]。
+  bool fit_framing_radius_about_origin(const Vec3& origin, double point_quantile,
+                                       double* out_radius) const;
+
   void clear() {
     tracks_.clear();
     photos_.clear();

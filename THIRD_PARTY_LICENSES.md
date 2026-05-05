@@ -55,6 +55,16 @@ Third-party components keep their own original licenses.
 - CUDA Toolkit: NVIDIA EULA
 - nlohmann/json: MIT
 
+## Algorithmic References (independent reimplementation)
+
+### Cascade Hash matching (`src/algorithm/modules/cpu_cascade_hash/`)
+- **Reference source**: openMVG cascade-hash matching implementation and related papers
+- **Code status**: reimplemented in InsightAT coding style; no third-party source files are bundled in this path
+- **Upstream project license (openMVG)**: MPL-2.0
+- **Notice**: if future commits copy or adapt upstream code text from openMVG, keep upstream file headers and satisfy MPL-2.0 source-level obligations for those files
+- **Patent / commercial note**: openMVG marks Cascade Hashing as a non-free module and notes the original source was released for research usage; for commercial usage, contact the original paper authors.
+- **Paper reference**: *Fast and Accurate Image Matching with Cascade Hashing for 3D Reconstruction* (CVPR 2014), Jian Cheng, Cong Leng, Jiaxiang Wu, Hainan Cui, Hanqing Lu.
+
 ## Compliance Note
 
 When redistributing binaries or source, keep all required copyright notices

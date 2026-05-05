@@ -82,9 +82,12 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                    const std::vector<camera::Intrinsics>& cameras,
                    std::vector<camera::Intrinsics>* cameras_in_out, bool optimize_intrinsics,
                    int max_iterations, double* rmse_px_out, int anchor_image = -1,
+                   int max_observations_per_track = 0,
                    double focal_prior_weight = 0.0, const BASolverOverrides& solver_overrides = {},
                    const std::vector<uint32_t>* partial_intr_fix_per_cam = nullptr,
-                   int initial_pair_global_im1 = -1);
+                   int initial_pair_global_im1 = -1,
+                   const std::vector<bool>* precomputed_image_stable = nullptr,
+                   double skip_2deg_min_angle_score = 0.0);
 
 /**
  * Run local BA: optimize a subset of images (other poses fixed). Intrinsics not optimized.
@@ -99,6 +102,7 @@ bool run_local_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                   const std::vector<camera::Intrinsics>& cameras, int local_ba_window,
                   int max_iterations, double* rmse_px_out,
                   const std::vector<int>* indices_to_optimize = nullptr, int anchor_image = -1,
+                  int max_observations_per_track = 0,
                   const BASolverOverrides& overrides = {});
 
 /**
@@ -115,7 +119,7 @@ bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_
                          const std::vector<int>& image_to_camera_index,
                          const std::vector<camera::Intrinsics>& cameras,
                          const std::vector<int>& batch, int max_variable_cameras,
-                         int max_iterations, double* rmse_px_out,
+                         int max_iterations, double* rmse_px_out, int max_observations_per_track = 0,
                          const BASolverOverrides& overrides = {});
 
 /**
@@ -132,6 +136,7 @@ bool run_local_ba_batch_neighbor(
     const std::vector<bool>& registered, const std::vector<int>& image_to_camera_index,
     const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& batch,
     const std::vector<int>& new_track_ids, int neighbor_k, int max_iterations, double* rmse_px_out,
+    int max_observations_per_track = 0,
     const BASolverOverrides& overrides = {});
 
 // ─── Full pipeline ───────────────────────────────────────────────────────────
@@ -245,6 +250,8 @@ struct LocalBAOptions {
   /// Default false: global-only loop until you opt in.
   bool enable = false;
   int max_iterations = 25;
+  /// Cap per-track observations inserted into local BA (0 = no cap).
+  int max_observations_per_track = 8;
 };
 
 /**
@@ -311,6 +318,8 @@ struct GlobalBAOptions {
   /// Recompute the grid-NMS subset every N global-BA calls. 1 = always (safest). Increase to
   /// amortise selection cost when quality is confirmed.
   int ba_grid_reselect_every_n = 1;
+  /// Cap per-track observations inserted into global BA (0 = no cap).
+  int max_observations_per_track = 8;
 
   // ── Fixed-pose point optimisation for kSkipFromBA tracks ─────────────────────────────────────
   /// After global BA, run a Ceres solve that fixes ALL poses+intrinsics and only optimises the
@@ -351,7 +360,7 @@ struct OutlierOptions {
   double min_angle_deg = 0.50;    ///< Reject observation if max parallax angle < this (fine phase).
   double max_angle_deg = 120.0;   ///< Reject observation if max parallax angle > this (fine phase).
   double max_depth_factor = 200.0; ///< Reject if depth > median_scene_depth × factor (0 = off).
-  int min_for_retry = 30;          ///< Continue iterating when newly rejected >= this.
+  int min_for_retry = 60;          ///< Continue iterating when newly rejected >= this.
   int min_registered_images = 2;   ///< Minimum registered images before outlier rejection runs.
   int final_max_rounds = 10;       ///< Max rounds in the final global BA reject loop.
   /// If true (and coarse_ba_max_rounds > 0, global BA), run fixed-intrinsic coarse BA before fine

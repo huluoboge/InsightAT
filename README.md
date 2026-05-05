@@ -202,13 +202,15 @@ See [benchmarks/README.md](benchmarks/README.md) for full procedure, environment
 
 ---
 
-🚧 Current Status (v0.1)
+🚧 Current Status (v0.2)
 ------------------------
+
+**v0.2** adds Ceres **CUDA_SPARSE** (cuDSS/cuSPARSE) for faster large BA, **gpu_cascade_hash** default matching, CUDA 12.8 build path (SiftGPU optional on CUDA 11.8), batched CUDA geo verification, and viewer/AppImage fixes. Release notes: [doc/dev-notes/release-v0.2.0.md](doc/dev-notes/release-v0.2.0.md).
 
 Implemented:
 
 *   Incremental SfM pipeline
-*   GPU feature extraction and matching
+*   GPU feature extraction and matching (incl. PopSift / cascade hash paths)
 *   Async IO architecture
 *   CLI-based modular system
 *   Track-based reconstruction system

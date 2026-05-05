@@ -36,6 +36,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <glog/logging.h>
@@ -466,6 +467,12 @@ int main(int argc, char* argv[]) {
   std::string steps_str = "create,extract,match,tracks,incremental_sfm";
   std::string extract_backend = "cuda";
   std::string match_backend = "cuda";
+  std::string match_impl = "cascade-gpu";
+  int cascade_gpu_device = 0;
+  int cascade_gpu_image_block_size = 1000;
+  int cascade_gpu_sample_images = 256;
+  int cascade_gpu_min_output_matches = 16;
+  std::string cascade_cpu_preset = "modern";
   bool use_pop_sift = false;
   bool use_sift_gpu = false;
   std::string ext = ".jpg,.tif,.png";
@@ -477,12 +484,15 @@ int main(int argc, char* argv[]) {
   /// When not using --exhaustive-match: if image count < this, skip retrieval and use full
   /// exhaustive pairs (same as manual exhaustive for small sets).
   int auto_exhaustive_max_images = 60;
+  /// Geometry backend selection for isat_geo.
+  /// Accepted values: cuda|gpu|poselib. Default: cuda (mapped to isat_geo --backend gpu).
+  std::string geo_backend = "cuda";
   /// Passed to isat_geo --min-inliers (F/E/H RANSAC inlier count gate for pairs.json).
   int geo_min_inliers = 10;
   /// Passed to isat_geo -t / --thresh-f (F 内点 Sampson 门限，单位像素；越大越宽松).
   double geo_thresh_f = 16.0;
   /// isat_extract / isat_retrieval_match / isat_match CPU I/O worker count (GPU 仍单线程上下文).
-  int io_threads = 4;
+  int io_threads = -1;
   /// isat_incremental_sfm Ceres BA threads (0 = 子进程默认，按硬件并发).
   int ba_threads = 0;
 
@@ -496,11 +506,25 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, extract_backend, "extract-backend")
               .doc("Feature extraction backend: cuda or glsl (default: cuda)"));
   cmd.add(make_switch(0, "use-pop-sift")
-              .doc("Feature extraction implementation: use PopSift"));
+              .doc("Feature extraction implementation: use PopSift (default if neither switch is set)"));
   cmd.add(make_switch(0, "use-sift-gpu")
-              .doc("Feature extraction implementation: force SiftGPU"));
+              .doc("Feature extraction implementation: force SiftGPU instead of PopSift"));
   cmd.add(make_option(0, match_backend, "match-backend")
               .doc("Matching backend: cuda or glsl (default: cuda)"));
+  cmd.add(make_option(0, match_impl, "match-impl")
+              .doc("Matching implementation: gpu or cascade or cascade-gpu (default: cascade-gpu). "
+                   "cascade invokes isat_cpu_cascade_hashing_match; "
+                   "cascade-gpu invokes isat_gpu_cascade_hashing_match."));
+  cmd.add(make_option(0, cascade_gpu_device, "cascade-gpu-device")
+              .doc("CUDA device id for --match-impl=cascade-gpu (default: 0)"));
+  cmd.add(make_option(0, cascade_gpu_image_block_size, "cascade-gpu-image-block-size")
+              .doc("Unique-image block size for GPU cascade matching (default: 1000)"));
+  cmd.add(make_option(0, cascade_gpu_sample_images, "cascade-gpu-sample-images")
+              .doc("Sample images for GPU cascade global mean descriptor (default: 256)"));
+  cmd.add(make_option(0, cascade_gpu_min_output_matches, "cascade-gpu-min-output-matches")
+              .doc("Minimum matches per pair for GPU cascade output (default: 16)"));
+  cmd.add(make_option(0, cascade_cpu_preset, "cascade-cpu-preset")
+              .doc("Preset for --match-impl=cascade: legacy or modern (default: modern)"));
   cmd.add(make_option(0, ext, "ext")
               .doc("Image extensions, comma-separated (default: .jpg,.tif,.png)"));
   cmd.add(make_option(0, max_sample, "max-sample")
@@ -521,6 +545,9 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, geo_min_inliers, "geo-min-inliers")
               .doc("isat_geo --min-inliers: min F/E/H inliers to accept a pair (default: 10). "
                    "Stricter scenes: try 12–15."));
+  cmd.add(make_option(0, geo_backend, "geo-backend")
+              .doc("isat_geo geometry backend: cuda (default), gpu (alias of cuda), or poselib "
+                   "(CPU, 7-point + LO-RANSAC + bundle; more accurate, slower)."));
   cmd.add(
       make_option(0, geo_thresh_f, "geo-thresh-f")
           .doc("isat_geo -t: F inlier threshold in pixels (default: 16.0). "
@@ -531,7 +558,8 @@ int main(int argc, char* argv[]) {
   cmd.add(make_switch('h', "help").doc("Show help"));
   cmd.add(make_switch(0, "no-log-file").doc("Disable automatic log file in <work-dir>/logs/"));
   cmd.add(make_option(0, io_threads, "io-threads")
-              .doc("CPU threads for extract + retrieval + match I/O stages (default: 4). "
+              .doc("CPU threads for extract + retrieval + match I/O stages "
+                   "(default: -1 = auto detect). "
                    "Forwarded as -j/--threads to those tools."));
   cmd.add(make_option(0, ba_threads, "ba-threads")
               .doc("Ceres thread count for incremental SfM bundle adjustment (default: 0 = use "
@@ -570,8 +598,8 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
-  if (io_threads < 1) {
-    std::cerr << "Error: --io-threads must be >= 1\n\n";
+  if (io_threads != -1 && io_threads < 1) {
+    std::cerr << "Error: --io-threads must be >= 1, or -1 for auto\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -580,6 +608,30 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
+  if (match_impl != "gpu" && match_impl != "cascade" && match_impl != "cascade-gpu") {
+    std::cerr << "Error: --match-impl must be gpu or cascade or cascade-gpu\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (cascade_cpu_preset != "legacy" && cascade_cpu_preset != "modern") {
+    std::cerr << "Error: --cascade-cpu-preset must be legacy or modern\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (cascade_gpu_image_block_size <= 0 || cascade_gpu_sample_images <= 0 ||
+      cascade_gpu_min_output_matches < 0) {
+    std::cerr << "Error: --cascade-gpu-image-block-size must be > 0, "
+                 "--cascade-gpu-sample-images must be > 0, "
+                 "--cascade-gpu-min-output-matches must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (geo_backend != "cuda" && geo_backend != "gpu" && geo_backend != "poselib") {
+    std::cerr << "Error: --geo-backend must be cuda or gpu or poselib\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  const std::string geo_backend_for_isat_geo = (geo_backend == "cuda") ? "gpu" : geo_backend;
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   bool fix_intrinsics = cmd.used("fix-intrinsics");
   exhaustive_match = cmd.used("exhaustive-match");
@@ -592,8 +644,12 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
-  if (!use_pop_sift && !use_sift_gpu) {
+  if (!use_pop_sift && !use_sift_gpu)
     use_pop_sift = true;
+
+  if (io_threads == -1) {
+    const unsigned int hw = std::thread::hardware_concurrency();
+    io_threads = static_cast<int>(hw > 0 ? hw : 4);
   }
 
   // ── Build verbosity args to forward to all sub-tools ────────────────────
@@ -640,7 +696,8 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Threading: io_threads=" << io_threads << "  ba_threads=" << ba_threads
             << (ba_threads > 0 ? "" : " (BA: auto)");
   LOG(INFO) << "SIFT image max dim: " << image_max_dim;
-  LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift (default)" : "sift_gpu");
+  LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
+  LOG(INFO) << "Match implementation: " << match_impl;
 
   auto active_steps = parse_steps(steps_str);
   {
@@ -785,7 +842,7 @@ int main(int argc, char* argv[]) {
                                               "--nfeatures",
                                               "10000",
                                               "--threshold",
-                                              "0.02",
+                                              "0.0067",
                                               "--octaves",
                                               "-1",
                                               "--levels",
@@ -898,10 +955,33 @@ int main(int argc, char* argv[]) {
       fs::create_directories(retrieval_work);
 
       run_or_die("retrieval-match",
-                 {tool_path("isat_retrieval_match"), "-l", images_all.string(), "-f",
-                  feat_ret_dir.string(), "-w", retrieval_work.string(), "-o",
-                  pairs_retrieve.string(), "--match-backend", match_backend, "--max-features",
-                  "4096", "--threads", std::to_string(io_threads)});
+                 {tool_path("isat_retrieval_match"),
+                  "-l",
+                  images_all.string(),
+                  "-f",
+                  feat_ret_dir.string(),
+                  "-w",
+                  retrieval_work.string(),
+                  "-o",
+                  pairs_retrieve.string(),
+                  "--match-impl",
+                  match_impl,
+                  "--match-backend",
+                  match_backend,
+                  "--max-features",
+                  "4096",
+                  "--threads",
+                  std::to_string(io_threads),
+                  "--cascade-gpu-device",
+                  std::to_string(cascade_gpu_device),
+                  "--cascade-image-block-size",
+                  std::to_string(cascade_gpu_image_block_size),
+                  "--cascade-sample-images",
+                  std::to_string(cascade_gpu_sample_images),
+                  "--cascade-min-output-matches",
+                  std::to_string(cascade_gpu_min_output_matches),
+                  "--cascade-cpu-preset",
+                  cascade_cpu_preset});
 
       const fs::path meta_path = feat_dir / "matching_extract_meta.json";
       const std::vector<int> boost_idx = read_low_peak_matching_indices(meta_path);
@@ -917,11 +997,43 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    run_or_die("match",
-               {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),
-                "-o", match_dir_path.string(), "--match-backend", match_backend, "--max-features",
-                "-1", "--threads", std::to_string(io_threads),
-                (use_pop_sift ? "--use-pop-sift" : "--use-sift-gpu")});
+    if (match_impl == "cascade") {
+      run_or_die("match", {tool_path("isat_cpu_cascade_hashing_match"),
+                           "-i",
+                           pairs_retrieve.string(),
+                           "-f",
+                           feat_dir.string(),
+                           "-o",
+                           match_dir_path.string(),
+                           "-j",
+                           std::to_string(io_threads),
+                           "--preset",
+                           cascade_cpu_preset});
+    } else if (match_impl == "cascade-gpu") {
+      run_or_die("match", {tool_path("isat_gpu_cascade_hashing_match"),
+                           "-i",
+                           pairs_retrieve.string(),
+                           "-f",
+                           feat_dir.string(),
+                           "-o",
+                           match_dir_path.string(),
+                           "-j",
+                           std::to_string(io_threads),
+                           "--cuda-device",
+                           std::to_string(cascade_gpu_device),
+                           "--image-block-size",
+                           std::to_string(cascade_gpu_image_block_size),
+                           "--sample-images",
+                           std::to_string(cascade_gpu_sample_images),
+                           "--min-output-matches",
+                           std::to_string(cascade_gpu_min_output_matches)});
+    } else {
+      run_or_die("match",
+                 {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),
+                  "-o", match_dir_path.string(), "--match-backend", match_backend, "--max-features",
+                  "-1", "--threads", std::to_string(io_threads),
+                  (use_pop_sift ? "--use-pop-sift" : "--use-sift-gpu")});
+    }
 
     // Full geometric verification on full-resolution matches
     char geo_tf_buf[64];
@@ -932,7 +1044,7 @@ int main(int argc, char* argv[]) {
                {tool_path("isat_geo"), "-i", pairs_retrieve.string(), "-m", match_dir_path.string(),
                 "-o", geo_dir.string(), "--image-list", images_all.string(), "-t",
                 std::string(geo_tf_buf), "--min-inliers", std::to_string(geo_min_inliers),
-                "--backend", "gpu", "--estimate-h", "--twoview", "--vis"});
+                "--backend", geo_backend_for_isat_geo, "--estimate-h", "--twoview", "--vis"});
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1041,8 +1153,7 @@ int main(int argc, char* argv[]) {
       LOG(INFO) << "  Per-step SfM (Bundlers): " << iv << "/iter_*/";
     }
     LOG(INFO) << "View results:";
-    LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " " << (sfm_out / "bundle.out").string()
-              << " " << (sfm_out / "list.txt").string();
+    LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " " << (sfm_out).string();
     if (cmd.used("output-interval-sfm")) {
       LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " "
                 << (work_path / "sfm_interval" / "iter_0000" / "bundle.out").string() << " ...";

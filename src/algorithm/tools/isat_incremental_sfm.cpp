@@ -17,11 +17,13 @@
  */
 
 #include <cmath>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glog/logging.h>
@@ -40,6 +42,22 @@ using json = nlohmann::json;
 using namespace insight;
 using namespace insight::sfm;
 using namespace insight::tools;
+
+class ScopedTimer {
+public:
+  explicit ScopedTimer(std::string label)
+      : label_(std::move(label)), t0_(std::chrono::steady_clock::now()) {}
+  ~ScopedTimer() {
+    const auto t1 = std::chrono::steady_clock::now();
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0_).count();
+    LOG(INFO) << "[timing] " << label_ << ": " << ms << " ms";
+  }
+
+private:
+  std::string label_;
+  std::chrono::steady_clock::time_point t0_;
+};
 
 static json intrinsics_to_json(const camera::Intrinsics& K) {
   json j;
@@ -246,15 +264,13 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
 // Mean reprojection error (px) for one track: pipeline-consistent with incremental_sfm_pipeline /
 // bundle_adjustment_analytic (distorted pixels, same as collect_reproj_errors).
 static double track_mean_reprojection_error_px(
-    int tid, const TrackStore& store, const Eigen::Vector3d& X,
+    const std::vector<Observation>& track_obs, const Eigen::Vector3d& X,
     const std::vector<Eigen::Matrix3d>& poses_R, const std::vector<Eigen::Vector3d>& poses_C,
     const std::vector<bool>& registered, const std::vector<camera::Intrinsics>& cameras,
     const std::vector<int>& image_to_camera_index, int n_images) {
-  std::vector<Observation> obs_buf;
-  store.get_track_observations(tid, &obs_buf);
   double sum = 0.0;
   int n = 0;
-  for (const auto& o : obs_buf) {
+  for (const auto& o : track_obs) {
     const int im = static_cast<int>(o.image_index);
     if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
       continue;
@@ -299,6 +315,7 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
                          const std::vector<camera::Intrinsics>& cameras,
                          const std::vector<int>& image_to_camera_index,
                          const TrackStore& store) {
+  ScopedTimer total_timer("write_colmap total");
   namespace fs = std::filesystem;
 
   const std::string sparse_dir = out_dir + "/colmap/sparse/0";
@@ -382,6 +399,7 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
   int next_pt_id = 1;
 
   std::vector<Observation> obs_buf;
+  size_t total_obs_for_reproj = 0;
   for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
     const int tid = static_cast<int>(ti);
     if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
@@ -396,9 +414,9 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
     pt.x = px; pt.y = py; pt.z = pz;
     pt.point3d_id = next_pt_id;
     const Eigen::Vector3d Xw(static_cast<double>(px), static_cast<double>(py), static_cast<double>(pz));
-    pt.mean_reproj_px =
-        track_mean_reprojection_error_px(tid, store, Xw, poses_R, poses_C, registered, cameras,
-                                         image_to_camera_index, n_images);
+    total_obs_for_reproj += obs_buf.size();
+    pt.mean_reproj_px = track_mean_reprojection_error_px(
+        obs_buf, Xw, poses_R, poses_C, registered, cameras, image_to_camera_index, n_images);
 
     for (const auto& o : obs_buf) {
       const int im = static_cast<int>(o.image_index);
@@ -485,6 +503,7 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
     }
   }
   LOG(INFO) << "write_colmap: wrote " << pts_path << " (" << colmap_points.size() << " points)";
+  LOG(INFO) << "[timing] write_colmap reproj_eval observations=" << total_obs_for_reproj;
   return true;
 }
 
@@ -555,23 +574,11 @@ int main(int argc, char* argv[]) {
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   ProjectData project;
-  if (!load_project_data(project_path, &project)) {
-    LOG(ERROR) << "Failed to load project from " << project_path;
-    return 1;
-  }
-
-  // Load image paths for Bundler list.txt
-  std::vector<std::string> image_paths;
   {
-    std::ifstream pf(project_path);
-    nlohmann::json pj;
-    try {
-      pf >> pj;
-    } catch (...) {
-    }
-    if (pj.contains("images") && pj["images"].is_array()) {
-      for (const auto& img : pj["images"])
-        image_paths.push_back(img.value("path", ""));
+    ScopedTimer timer("load_project_data");
+    if (!load_project_data(project_path, &project)) {
+      LOG(ERROR) << "Failed to load project from " << project_path;
+      return 1;
     }
   }
 
@@ -589,7 +596,8 @@ int main(int argc, char* argv[]) {
   // ── Default-on optimisations (can be disabled via CLI --xxx 0) ─────────────
   opts.global_ba.skip_2degree_tracks = true;
   opts.global_ba.ba_grid_subset = true;
-  opts.global_ba.ba_grid_target_per_image = 1000;
+  opts.global_ba.ba_grid_target_per_image = 800;
+  opts.global_ba.max_observations_per_track = 8;
   opts.global_ba.ba_fixed_pose_optimize_skipped = true;
   opts.intrinsics.focal_prior_weight = 1.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
@@ -600,6 +608,7 @@ int main(int argc, char* argv[]) {
   opts.local_ba.strategy = LocalBAStrategy::kBatchNeighbor;
   opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
   opts.local_ba.switch_after_n_images = 100;
+  opts.local_ba.max_observations_per_track = 8;
   opts.resection.backend = ResectionBackend::kPoseLib;
   if (ba_threads > 0) {
     opts.global_ba.solver_overrides.num_threads = ba_threads;
@@ -617,6 +626,8 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "[opts] skip_2deg=" << opts.global_ba.skip_2degree_tracks
             << " grid_subset=" << opts.global_ba.ba_grid_subset
             << " grid_target=" << opts.global_ba.ba_grid_target_per_image
+            << " max_obs_per_track(global/local)=" << opts.global_ba.max_observations_per_track
+            << "/" << opts.local_ba.max_observations_per_track
             << " fixed_pose_skip=" << opts.global_ba.ba_fixed_pose_optimize_skipped;
 
   // Per-iteration debug snapshots: write bundle.out + list.txt to debug_dir/iter_NNNN/
@@ -625,7 +636,7 @@ int main(int argc, char* argv[]) {
     opts.debug.snapshot_every_n_iters = (debug_interval > 0) ? debug_interval : 1;
     // Capture by value the data needed for writing (image_paths, cameras, image_to_camera_index).
     // poses_R/C and store are passed by const-ref from the pipeline.
-    const std::vector<std::string> snap_image_paths = image_paths;
+    const std::vector<std::string> snap_image_paths = project.image_paths;
     const std::vector<camera::Intrinsics> snap_cameras = project.cameras;
     const std::vector<int> snap_img2cam = project.image_to_camera_index;
     const int snap_max_cams = bundler_max_cameras;
@@ -649,11 +660,14 @@ int main(int argc, char* argv[]) {
                                                                : "all");
   }
 
-  if (!run_incremental_sfm_pipeline(tracks_path, pairs_path, geo_dir, &project.cameras,
-                                    project.image_to_camera_index, opts, &store, &poses_R, &poses_C,
-                                    &registered)) {
-    LOG(ERROR) << "Incremental SfM pipeline failed";
-    return 1;
+  {
+    ScopedTimer timer("run_incremental_sfm_pipeline");
+    if (!run_incremental_sfm_pipeline(tracks_path, pairs_path, geo_dir, &project.cameras,
+                                      project.image_to_camera_index, opts, &store, &poses_R, &poses_C,
+                                      &registered)) {
+      LOG(ERROR) << "Incremental SfM pipeline failed";
+      return 1;
+    }
   }
 
   int n_reg = 0;
@@ -666,18 +680,27 @@ int main(int argc, char* argv[]) {
   if (!out_path.empty() && out_path.back() != '/')
     out_path += '/';
   out_path += "poses.json";
-  if (!write_poses_json(out_path, poses_R, poses_C, registered, project.cameras,
-                        project.image_to_camera_index)) {
-    LOG(ERROR) << "Failed to write poses";
-    return 1;
+  {
+    ScopedTimer timer("write_poses_json");
+    if (!write_poses_json(out_path, poses_R, poses_C, registered, project.cameras,
+                          project.image_to_camera_index)) {
+      LOG(ERROR) << "Failed to write poses";
+      return 1;
+    }
   }
   LOG(INFO) << "Wrote " << out_path;
 
-  write_bundler(output_dir, image_paths, poses_R, poses_C, registered, project.cameras,
-                project.image_to_camera_index, store);
+  {
+    ScopedTimer timer("write_bundler");
+    write_bundler(output_dir, project.image_paths, poses_R, poses_C, registered, project.cameras,
+                  project.image_to_camera_index, store);
+  }
 
-  write_colmap(output_dir, image_paths, poses_R, poses_C, registered, project.cameras,
-               project.image_to_camera_index, store);
+  {
+    ScopedTimer timer("write_colmap");
+    write_colmap(output_dir, project.image_paths, poses_R, poses_C, registered, project.cameras,
+                 project.image_to_camera_index, store);
+  }
 
   // ── Save TrackStore (3-D points + observation flags) to bundle dir ────────
   // Saved as tracks.isat_tracks in the same output directory so downstream
@@ -696,11 +719,14 @@ int main(int argc, char* argv[]) {
     // num_triangulated / num_inlier auto-counted in save_track_store_to_idc
 
     const std::string tracks_out = output_dir + "/tracks.isat_tracks";
-    if (save_track_store_to_idc(store, img_indices, tracks_out,
-                                /*view_graph=*/nullptr, &sfm_opts)) {
-      LOG(INFO) << "Saved TrackStore → " << tracks_out;
-    } else {
-      LOG(ERROR) << "Failed to save TrackStore to " << tracks_out;
+    {
+      ScopedTimer timer("save_track_store_to_idc");
+      if (save_track_store_to_idc(store, img_indices, tracks_out,
+                                  /*view_graph=*/nullptr, &sfm_opts)) {
+        LOG(INFO) << "Saved TrackStore → " << tracks_out;
+      } else {
+        LOG(ERROR) << "Failed to save TrackStore to " << tracks_out;
+      }
     }
   }
 

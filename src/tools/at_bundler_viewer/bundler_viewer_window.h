@@ -13,11 +13,12 @@
 #include <QSlider>
 #include <QTextEdit>
 
+#include "render/bundler_loader.h"
+
 namespace insight {
 namespace render {
 class RenderTracks;
 class RenderWidget;
-struct BundlerScene;
 } // namespace render
 } // namespace insight
 
@@ -67,7 +68,10 @@ private:
 
   /// Return the BundlerScene for iter idx, from cache or disk (blocking).
   /// Sets *from_cache=true if no disk I/O was needed (either cached or prefetch completed).
-  std::shared_ptr<render::BundlerScene> get_or_load_scene(int idx, bool* from_cache);
+  /// When loading from disk, optional \a parse_progress receives bundle/COLMAP parse callbacks.
+  std::shared_ptr<render::BundlerScene> get_or_load_scene(
+      int idx, bool* from_cache,
+      const render::ReconstructionLoadProgress* parse_progress = nullptr);
 
   /// Launch background loads for idx ± 1..kPrefetchRadius into scene_cache_.
   void start_prefetch(int idx);

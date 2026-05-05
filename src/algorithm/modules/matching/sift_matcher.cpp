@@ -5,6 +5,7 @@
  */
 
 #include "sift_matcher.h"
+#include "match_postprocess.h"
 
 #include <algorithm>
 #include <cmath>
@@ -123,72 +124,6 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
     return MatchResult();
   }
 
-  // Spatially stratified feature selection.
-  // Divides the keypoint bounding box into (grid_rows × grid_cols) cells, sorts each
-  // cell by scale descending, then picks features round-robin across cells until max_n
-  // is reached.  This prevents large-scale features (e.g. tree canopy) from monopolising
-  // the GPU upload budget and ensures building corners / other small-scale structures are
-  // represented.
-  auto top_n_spatial = [](const FeatureData& f, int max_n,
-                          int grid_rows, int grid_cols) -> std::vector<int> {
-    int n = static_cast<int>(f.num_features);
-    if (n == 0) return {};
-
-    // If no cap is requested, return all in original order.
-    if (max_n <= 0 || n <= max_n) {
-      std::vector<int> idx(n);
-      std::iota(idx.begin(), idx.end(), 0);
-      return idx;
-    }
-
-    // Compute bounding box of keypoints.
-    float xmin = f.keypoints[0][0], xmax = xmin;
-    float ymin = f.keypoints[0][1], ymax = ymin;
-    for (int i = 1; i < n; ++i) {
-      xmin = std::min(xmin, f.keypoints[i][0]);
-      xmax = std::max(xmax, f.keypoints[i][0]);
-      ymin = std::min(ymin, f.keypoints[i][1]);
-      ymax = std::max(ymax, f.keypoints[i][1]);
-    }
-    float cell_w = (xmax - xmin + 1.0f) / grid_cols;
-    float cell_h = (ymax - ymin + 1.0f) / grid_rows;
-
-    // Assign each feature to its cell.
-    int n_cells = grid_rows * grid_cols;
-    std::vector<std::vector<int>> cells(n_cells);
-    for (int i = 0; i < n; ++i) {
-      int cx = static_cast<int>((f.keypoints[i][0] - xmin) / cell_w);
-      int cy = static_cast<int>((f.keypoints[i][1] - ymin) / cell_h);
-      cx = std::min(cx, grid_cols - 1);
-      cy = std::min(cy, grid_rows - 1);
-      cells[cy * grid_cols + cx].push_back(i);
-    }
-
-    // Sort each cell by scale descending.
-    for (auto& cell : cells) {
-      std::sort(cell.begin(), cell.end(),
-                [&f](int a, int b) { return f.keypoints[a][2] > f.keypoints[b][2]; });
-    }
-
-    // Round-robin pick across cells until max_n is reached.
-    std::vector<int> result;
-    result.reserve(max_n);
-    std::vector<int> cell_pos(n_cells, 0);
-    int picked = 0;
-    while (picked < max_n) {
-      bool any = false;
-      for (int c = 0; c < n_cells && picked < max_n; ++c) {
-        if (cell_pos[c] < static_cast<int>(cells[c].size())) {
-          result.push_back(cells[c][cell_pos[c]++]);
-          ++picked;
-          any = true;
-        }
-      }
-      if (!any) break; // all cells exhausted
-    }
-    return result;
-  };
-
   auto upload_descriptors = [&](int slot, const FeatureData& f, const std::vector<int>& idx) {
     int cnt = static_cast<int>(idx.size());
     if (f.descriptor_type == DescriptorType::kFloat32) {
@@ -217,8 +152,8 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
   int cap = options.max_features_per_image;
   int grow = options.spatial_grid_rows > 0 ? options.spatial_grid_rows : 4;
   int gcol = options.spatial_grid_cols > 0 ? options.spatial_grid_cols : 4;
-  auto idx1 = top_n_spatial(features1, cap, grow, gcol);
-  auto idx2 = top_n_spatial(features2, cap, grow, gcol);
+  auto idx1 = select_top_n_spatial_indices(features1, cap, grow, gcol);
+  auto idx2 = select_top_n_spatial_indices(features2, cap, grow, gcol);
   int n1 = static_cast<int>(idx1.size());
   int n2 = static_cast<int>(idx2.size());
 
@@ -259,12 +194,12 @@ MatchResult SiftMatcher::match(const FeatureData& features1, const FeatureData& 
   for (int i = 0; i < num_matches; ++i) {
     int orig1 = idx1[match_buffer[i][0]];
     int orig2 = idx2[match_buffer[i][1]];
-    result.indices.emplace_back(static_cast<uint16_t>(orig1), static_cast<uint16_t>(orig2));
-    const auto& kp1 = features1.keypoints[orig1];
-    const auto& kp2 = features2.keypoints[orig2];
-    result.coords_pixel.emplace_back(kp1[0], kp1[1], kp2[0], kp2[1]);
+    append_match(&result, features1, features2,
+                 static_cast<uint16_t>(orig1), static_cast<uint16_t>(orig2),
+                 options.compute_distances);
   }
-  result.num_matches = num_matches;
+  deduplicate_match_indices(&result);
+  result.num_matches = result.indices.size();
   return result;
 }
 
@@ -274,52 +209,6 @@ MatchResult SiftMatcher::match_popsift(const FeatureData& features1, const Featu
   if (features1.num_features == 0 || features2.num_features == 0) {
     return MatchResult();
   }
-
-  auto top_n_spatial = [](const FeatureData& f, int max_n,
-                          int grid_rows, int grid_cols) -> std::vector<int> {
-    int n = static_cast<int>(f.num_features);
-    if (n == 0) return {};
-    if (max_n <= 0 || n <= max_n) {
-      std::vector<int> idx(n);
-      std::iota(idx.begin(), idx.end(), 0);
-      return idx;
-    }
-    float xmin = f.keypoints[0][0], xmax = xmin;
-    float ymin = f.keypoints[0][1], ymax = ymin;
-    for (int i = 1; i < n; ++i) {
-      xmin = std::min(xmin, f.keypoints[i][0]);
-      xmax = std::max(xmax, f.keypoints[i][0]);
-      ymin = std::min(ymin, f.keypoints[i][1]);
-      ymax = std::max(ymax, f.keypoints[i][1]);
-    }
-    float cell_w = (xmax - xmin + 1.0f) / grid_cols;
-    float cell_h = (ymax - ymin + 1.0f) / grid_rows;
-    int n_cells = grid_rows * grid_cols;
-    std::vector<std::vector<int>> cells(n_cells);
-    for (int i = 0; i < n; ++i) {
-      int cx = std::min(static_cast<int>((f.keypoints[i][0] - xmin) / cell_w), grid_cols - 1);
-      int cy = std::min(static_cast<int>((f.keypoints[i][1] - ymin) / cell_h), grid_rows - 1);
-      cells[cy * grid_cols + cx].push_back(i);
-    }
-    for (auto& cell : cells) {
-      std::sort(cell.begin(), cell.end(),
-                [&f](int a, int b) { return f.keypoints[a][2] > f.keypoints[b][2]; });
-    }
-    std::vector<int> out;
-    out.reserve(max_n);
-    std::vector<int> pos(n_cells, 0);
-    while (static_cast<int>(out.size()) < max_n) {
-      bool any = false;
-      for (int c = 0; c < n_cells && static_cast<int>(out.size()) < max_n; ++c) {
-        if (pos[c] < static_cast<int>(cells[c].size())) {
-          out.push_back(cells[c][pos[c]++]);
-          any = true;
-        }
-      }
-      if (!any) break;
-    }
-    return out;
-  };
 
   auto pack_to_float = [](const FeatureData& f, const std::vector<int>& idx) {
     std::vector<float> buf(static_cast<size_t>(idx.size()) * 128, 0.0f);
@@ -340,8 +229,8 @@ MatchResult SiftMatcher::match_popsift(const FeatureData& features1, const Featu
   int cap = options.max_features_per_image;
   int grow = options.spatial_grid_rows > 0 ? options.spatial_grid_rows : 4;
   int gcol = options.spatial_grid_cols > 0 ? options.spatial_grid_cols : 4;
-  auto idx1 = top_n_spatial(features1, cap, grow, gcol);
-  auto idx2 = top_n_spatial(features2, cap, grow, gcol);
+  auto idx1 = select_top_n_spatial_indices(features1, cap, grow, gcol);
+  auto idx2 = select_top_n_spatial_indices(features2, cap, grow, gcol);
 
   auto desc1 = pack_to_float(features1, idx1);
   auto desc2 = pack_to_float(features2, idx2);
@@ -371,14 +260,15 @@ MatchResult SiftMatcher::match_popsift(const FeatureData& features1, const Featu
     }
     int o1 = idx1[qi];
     int o2 = idx2[static_cast<size_t>(r.best_train_idx)];
-    result.indices.emplace_back(static_cast<uint16_t>(o1), static_cast<uint16_t>(o2));
-    const auto& kp1 = features1.keypoints[o1];
-    const auto& kp2 = features2.keypoints[o2];
-    result.coords_pixel.emplace_back(kp1[0], kp1[1], kp2[0], kp2[1]);
-    result.distances.push_back(std::sqrt(std::max(0.0f, r.best_dist_sq)));
+    append_match(&result, features1, features2,
+                 static_cast<uint16_t>(o1), static_cast<uint16_t>(o2), false);
+    if (options.compute_distances) {
+      result.distances.push_back(std::sqrt(std::max(0.0f, r.best_dist_sq)));
+    }
     if (options.max_matches > 0 && static_cast<int>(result.indices.size()) >= options.max_matches) break;
   }
-  result.num_matches = static_cast<int>(result.indices.size());
+  deduplicate_match_indices(&result);
+  result.num_matches = result.indices.size();
   return result;
 #else
   (void)features1;
@@ -468,13 +358,15 @@ MatchResult SiftMatcher::match_guided(const FeatureData& features1, const Featur
 
   VLOG(1) << "Guided matching: " << num_matches << " features";
 
-  return convert_match_result(match_buffer_flat, num_matches, features1, features2);
+  return convert_match_result(match_buffer_flat, num_matches, features1, features2,
+                              options.compute_distances);
 #endif
 }
 
 MatchResult SiftMatcher::convert_match_result(const std::vector<uint32_t>& match_buffer,
                                               int num_matches, const FeatureData& features1,
-                                              const FeatureData& features2) {
+                                              const FeatureData& features2,
+                                              bool compute_distances) {
   MatchResult result;
   result.reserve(num_matches);
 
@@ -488,22 +380,11 @@ MatchResult SiftMatcher::convert_match_result(const std::vector<uint32_t>& match
       continue;
     }
 
-    // Store index pair (convert to uint16_t)
-    result.indices.push_back({static_cast<uint16_t>(idx1), static_cast<uint16_t>(idx2)});
-
-    // Extract pixel coordinates
-    const auto& kp1 = features1.keypoints[idx1];
-    const auto& kp2 = features2.keypoints[idx2];
-
-    Eigen::Vector4f coords;
-    coords << kp1(0), kp1(1), kp2(0), kp2(1); // [x1, y1, x2, y2]
-    result.coords_pixel.push_back(coords);
-
-    // Compute descriptor distance (support both uint8 and float32)
-    float distance = compute_descriptor_distance(features1, features2, idx1, idx2);
-    result.distances.push_back(distance);
+    append_match(&result, features1, features2,
+                 static_cast<uint16_t>(idx1), static_cast<uint16_t>(idx2),
+                 compute_distances);
   }
-
+  deduplicate_match_indices(&result);
   result.num_matches = result.indices.size();
 
   return result;
@@ -512,33 +393,7 @@ MatchResult SiftMatcher::convert_match_result(const std::vector<uint32_t>& match
 float SiftMatcher::compute_descriptor_distance(const FeatureData& features1,
                                                const FeatureData& features2, size_t idx1,
                                                size_t idx2) const {
-  // Both features must have same descriptor type for valid comparison
-  if (features1.descriptor_type != features2.descriptor_type) {
-    LOG(WARNING) << "Descriptor type mismatch in distance computation";
-    return 1e6f; // Large distance
-  }
-
-  float sum = 0.0f;
-
-  if (features1.descriptor_type == DescriptorType::kUInt8) {
-    const uint8_t* desc1 = &features1.descriptors_uint8[idx1 * 128];
-    const uint8_t* desc2 = &features2.descriptors_uint8[idx2 * 128];
-
-    for (int i = 0; i < 128; ++i) {
-      float diff = static_cast<float>(desc1[i]) - static_cast<float>(desc2[i]);
-      sum += diff * diff;
-    }
-  } else {
-    const float* desc1 = &features1.descriptors_float[idx1 * 128];
-    const float* desc2 = &features2.descriptors_float[idx2 * 128];
-
-    for (int i = 0; i < 128; ++i) {
-      float diff = desc1[i] - desc2[i];
-      sum += diff * diff;
-    }
-  }
-
-  return std::sqrt(sum);
+  return descriptor_distance_l2(features1, features2, idx1, idx2);
 }
 
 } // namespace matching

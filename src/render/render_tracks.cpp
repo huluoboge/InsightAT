@@ -5,6 +5,8 @@
 #include "render_context.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <vector>
 
 namespace insight {
 
@@ -331,6 +333,54 @@ bool RenderTracks::world_axis_aligned_bounds(Vec3* bmin, Vec3* bmax) const {
     merge(Vec3(g.x, g.y, g.z));
   }
   return any;
+}
+
+bool RenderTracks::fit_framing_radius_about_origin(const Vec3& origin, double point_quantile,
+                                                  double* out_radius) const {
+  if (!out_radius)
+    return false;
+
+  double R_cam = 0.0;
+  bool any_cam = false;
+  for (const auto& ph : photos_) {
+    double wx = 0, wy = 0, wz = 0;
+    if (ph.refinedPose.centerValid) {
+      wx = ph.refinedPose.data[0];
+      wy = ph.refinedPose.data[1];
+      wz = ph.refinedPose.data[2];
+    } else if (ph.initPose.centerValid) {
+      wx = ph.initPose.data[0];
+      wy = ph.initPose.data[1];
+      wz = ph.initPose.data[2];
+    } else
+      continue;
+    any_cam = true;
+    const Vec3 c(wx, wy, wz);
+    R_cam = std::max(R_cam, (c - origin).norm());
+  }
+
+  std::vector<double> pt_d;
+  pt_d.reserve(tracks_.size() + gcps_.size());
+  for (const auto& t : tracks_)
+    pt_d.push_back((Vec3(t.x, t.y, t.z) - origin).norm());
+  for (const auto& g : gcps_)
+    pt_d.push_back((Vec3(g.x, g.y, g.z) - origin).norm());
+
+  const double q = std::clamp(point_quantile, 0.5, 1.0);
+  double R_pts = 0.0;
+  if (!pt_d.empty()) {
+    const size_t n = pt_d.size();
+    const size_t k =
+        std::min(n - 1, static_cast<size_t>(std::ceil(q * static_cast<double>(n)) - 1));
+    std::nth_element(pt_d.begin(), pt_d.begin() + static_cast<std::ptrdiff_t>(k), pt_d.end());
+    R_pts = pt_d[k];
+  }
+
+  if (!any_cam && pt_d.empty())
+    return false;
+
+  *out_radius = std::max(1.0, std::max(R_cam, R_pts));
+  return true;
 }
 
 void RenderTracks::set_center(double x, double y, double z) {

@@ -95,41 +95,63 @@ def load_image_list(images_json: str) -> dict:
     return {e["image_index"]: e["path"] for e in data["images"]}
 
 
+def load_keypoints_for_image(idx: int, feat_dir: str, max_kp: int = 3000) -> list:
+    """
+    Load keypoints for a single image, capped at max_kp.
+    Returns list of [x, y, s] (orientation dropped — not needed for rendering).
+    Coordinates rounded to 1 decimal to reduce JSON size.
+    """
+    feat_path = Path(feat_dir) / f"{idx}.isat_feat"
+    if not feat_path.exists():
+        return []
+    try:
+        _, fb = read_idc(str(feat_path))
+        kp = fb["keypoints"]  # shape (N, 4): x, y, s, o
+        if len(kp) > max_kp:
+            # Use ceil(N/max_kp) so kp[::step] covers the FULL spatial range.
+            # floor-based step + [:max_kp] truncation would drop the last slice
+            # of the array — which is the bottom of the image after grid NMS
+            # (distribute_keypoints_grid stores features in row-major order).
+            import math
+            step = max(1, math.ceil(len(kp) / max_kp))
+            kp = kp[::step]  # len(kp[::step]) = ceil(N/step) <= max_kp, no truncation needed
+        # Keep only [x, y, s]; round to save JSON space
+        return [[round(float(r[0]), 1), round(float(r[1]), 1), round(float(r[2]), 1)]
+                for r in kp]
+    except Exception:
+        return []
+
+
 def load_pair_data(idx1: int, idx2: int,
                    feat_dir: str, match_dir: str, geo_dir,
                    image_paths: dict):
     """
     Load all data for a pair and return a dict ready for rendering.
     Returns None if any required file is missing.
+    NOTE: kp1/kp2 are NOT included here — keypoints are stored once per image
+    in a separate KP dict to avoid massive duplication across pairs.
     """
     lo, hi = min(idx1, idx2), max(idx1, idx2)
 
-    feat1_path = Path(feat_dir)  / f"{idx1}.isat_feat"
-    feat2_path = Path(feat_dir)  / f"{idx2}.isat_feat"
     match_path = Path(match_dir) / f"{lo}_{hi}.isat_match"
 
-    for p in (feat1_path, feat2_path, match_path):
-        if not p.exists():
-            print(f"  [skip] missing {p}", file=sys.stderr)
-            return None
+    if not match_path.exists():
+        print(f"  [skip] missing {match_path}", file=sys.stderr)
+        return None
 
     try:
-        _, fb1 = read_idc(str(feat1_path))
-        _, fb2 = read_idc(str(feat2_path))
         mhdr, mb = read_idc(str(match_path))
     except Exception as e:
         print(f"  [skip] error reading pair ({idx1},{idx2}): {e}", file=sys.stderr)
         return None
-
-    kp1 = fb1["keypoints"].tolist()
-    kp2 = fb2["keypoints"].tolist()
 
     coords = mb["coords_pixel"]
     # Normalise orientation: stored as (lo,hi), ensure idx1 is image1
     stored_i1 = mhdr["image_pair"]["image1_index"]
     if stored_i1 == idx2:
         coords = coords[:, [2, 3, 0, 1]]
-    coords_list = coords.tolist()
+    # Round to 1 decimal place to reduce JSON size
+    coords_list = [[round(float(v), 1) for v in row] for row in coords.tolist()]
 
     # Geo (optional)
     F_inliers = []
@@ -164,8 +186,7 @@ def load_pair_data(idx1: int, idx2: int,
         "idx2":      idx2,
         "path1":     image_paths.get(idx1, ""),
         "path2":     image_paths.get(idx2, ""),
-        "kp1":       kp1,
-        "kp2":       kp2,
+        # kp1/kp2 intentionally omitted — stored once per image in the KP dict
         "matches":   coords_list,
         "F_inliers": F_inliers,
         "E_inliers": E_inliers,
@@ -188,7 +209,8 @@ def parse_geo_dir_pairs(geo_dir: str):
 # PNG rendering (single pair)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_png(pair: dict, out_path: str, no_feat: bool = False, max_kp: int = 3000):
+def render_png(pair: dict, out_path: str, no_feat: bool = False, max_kp: int = 15000,
+               kp_dict: dict = None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -210,8 +232,9 @@ def render_png(pair: dict, out_path: str, no_feat: bool = False, max_kp: int = 3
     img2 = load_img(pair["path2"])
     canvas, w1 = side_by_side(img1, img2)
 
-    kp1    = np.array(pair["kp1"])    if pair["kp1"]    else np.zeros((0, 4))
-    kp2    = np.array(pair["kp2"])    if pair["kp2"]    else np.zeros((0, 4))
+    kp_dict = kp_dict or {}
+    kp1    = np.array(kp_dict.get(pair["idx1"], pair.get("kp1", [])) or [])
+    kp2    = np.array(kp_dict.get(pair["idx2"], pair.get("kp2", [])) or [])
     coords = np.array(pair["matches"]) if pair["matches"] else np.zeros((0, 4))
     F_mask = np.array(pair["F_inliers"], dtype=bool) if pair["F_inliers"] else None
     E_mask = np.array(pair["E_inliers"], dtype=bool) if pair["E_inliers"] else None
@@ -241,9 +264,12 @@ def render_png(pair: dict, out_path: str, no_feat: bool = False, max_kp: int = 3
         if panel == "feat":
             ax.set_title(f"Keypoints  img{pair['idx1']}:{len(kp1)}  img{pair['idx2']}:{len(kp2)}", fontsize=9)
             def draw_kp(kpts, color, ox=0):
+                if len(kpts) == 0:
+                    return
                 if len(kpts) > max_kp:
                     kpts = kpts[np.random.choice(len(kpts), max_kp, replace=False)]
-                for x, y, s, _ in kpts:
+                for row in kpts:
+                    x, y, s = row[0], row[1], row[2]
                     ax.add_patch(mpatches.Circle((x+ox, y), radius=max(s, 1.5),
                                                   lw=0.4, edgecolor=color, facecolor="none", alpha=0.5))
             draw_kp(kp1, "cyan");  draw_kp(kp2, "yellow", w1)
@@ -371,6 +397,7 @@ body { font-family: monospace; background: #1a1a1a; color: #ddd; }
 
 <script>
 const P = __PAIRS_JSON__;
+const KP = __KP_JSON__;  // {image_idx: [[x,y,s], ...]}
 let cur = -1, mode = 'all', sort = 'id', loaded = 0;
 
 function imgUrl(p){ return p.startsWith('/') ? 'file://'+p : p; }
@@ -488,17 +515,16 @@ function draw(){
   const Fi=p.F_inliers, Ei=p.E_inliers, ms=p.matches;
 
   if(mode==='kp'){
-    const maxK=2000;
+    const kp1=KP[p.idx1]||[], kp2=KP[p.idx2]||[];
     const drawKp=(kps,sx,sy,ox,col)=>{
       ctx.strokeStyle=col; ctx.lineWidth=0.8;
-      const step=Math.max(1,Math.ceil(kps.length/maxK));
-      for(let j=0;j<kps.length;j+=step){
+      for(let j=0;j<kps.length;j++){
         const [x,y,s]=kps[j];
         ctx.beginPath(); ctx.arc(x*sx+ox,y*sy,Math.max(s*sx,1.5),0,Math.PI*2); ctx.stroke();
       }
     };
-    drawKp(p.kp1,sx1,sy1,0,'rgba(0,230,200,.55)');
-    drawKp(p.kp2,sx2,sy2,dw1,'rgba(240,210,0,.55)');
+    drawKp(kp1,sx1,sy1,0,'rgba(0,230,200,.55)');
+    drawKp(kp2,sx2,sy2,dw1,'rgba(240,210,0,.55)');
     return;
   }
 
@@ -549,12 +575,15 @@ buildGrid();
 """
 
 
-def render_html(pairs_data: list, out_path: str):
+def render_html(pairs_data: list, out_path: str, kp_dict: dict = None):
     """Write a single self-contained HTML viewer for all pairs."""
     pairs_json = json.dumps(pairs_data, separators=(',', ':'))
+    kp_json = json.dumps(kp_dict or {}, separators=(',', ':'))
     html = _HTML_TEMPLATE.replace('__PAIRS_JSON__', pairs_json)
+    html = html.replace('__KP_JSON__', kp_json)
     Path(out_path).write_text(html, encoding="utf-8")
-    print(f"Saved HTML → {out_path}  ({len(pairs_data)} pairs)")
+    size_mb = Path(out_path).stat().st_size / 1024 / 1024
+    print(f"Saved HTML → {out_path}  ({len(pairs_data)} pairs, {size_mb:.1f} MB)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -596,9 +625,13 @@ def main():
         data = load_pair_data(idx1, idx2, args.feat, args.match, args.geo, image_paths)
         if data is None:
             sys.exit(f"Failed to load pair ({idx1},{idx2})")
+        kp_dict = {
+            idx1: load_keypoints_for_image(idx1, args.feat, max_kp=args.max_kp),
+            idx2: load_keypoints_for_image(idx2, args.feat, max_kp=args.max_kp),
+        }
         out = args.out or f"viz_{idx1}_{idx2}.png"
         try:
-            render_png(data, out, no_feat=args.no_all_feat, max_kp=args.max_kp)
+            render_png(data, out, no_feat=args.no_all_feat, max_kp=args.max_kp, kp_dict=kp_dict)
         except ImportError:
             sys.exit("PNG mode requires: pip install matplotlib Pillow")
         return
@@ -623,12 +656,20 @@ def main():
 
     if args.html_out:
         pairs_data = []
+        image_indices_needed = set()
         for idx, (lo, hi) in enumerate(all_pairs):
             print(f"  [{idx+1}/{len(all_pairs)}] pair {lo}_{hi}", file=sys.stderr)
             data = load_pair_data(lo, hi, args.feat, args.match, geo_src, image_paths)
             if data is not None:
                 pairs_data.append(data)
-        render_html(pairs_data, args.html_out)
+                image_indices_needed.add(lo)
+                image_indices_needed.add(hi)
+        # Build per-image keypoint dict (each image loaded exactly once)
+        print(f"Loading keypoints for {len(image_indices_needed)} unique images ...", file=sys.stderr)
+        kp_dict = {}
+        for img_idx in sorted(image_indices_needed):
+            kp_dict[img_idx] = load_keypoints_for_image(img_idx, args.feat, max_kp=args.max_kp)
+        render_html(pairs_data, args.html_out, kp_dict=kp_dict)
 
     elif args.out_dir:
         out_dir = Path(args.out_dir)
@@ -637,9 +678,13 @@ def main():
             print(f"  [{idx+1}/{len(all_pairs)}] pair {lo}_{hi}", file=sys.stderr)
             data = load_pair_data(lo, hi, args.feat, args.match, geo_src, image_paths)
             if data is not None:
+                kp_dict = {
+                    lo: load_keypoints_for_image(lo, args.feat, max_kp=args.max_kp),
+                    hi: load_keypoints_for_image(hi, args.feat, max_kp=args.max_kp),
+                }
                 try:
                     render_png(data, str(out_dir / f"viz_{lo}_{hi}.png"),
-                               no_feat=args.no_all_feat, max_kp=args.max_kp)
+                               no_feat=args.no_all_feat, max_kp=args.max_kp, kp_dict=kp_dict)
                 except ImportError:
                     sys.exit("PNG mode requires: pip install matplotlib Pillow")
     else:

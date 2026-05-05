@@ -67,7 +67,7 @@ bool IDCWriter::write() {
   if (padding > 0) {
     std::vector<uint8_t> padding_bytes(padding, 0);
     file.write(reinterpret_cast<const char*>(padding_bytes.data()), padding);
-    LOG(INFO) << "Added " << padding << " bytes padding for alignment";
+    VLOG(1) << "Added " << padding << " bytes padding for alignment";
   }
 
   // Write binary payload (now 8-byte aligned)
@@ -77,7 +77,7 @@ bool IDCWriter::write() {
 
   file.close();
 
-  LOG(INFO) << "IDC file written: " << filepath_ << " (JSON: " << json_size
+  VLOG(1) << "IDC file written: " << filepath_ << " (JSON: " << json_size
             << " bytes, Padding: " << padding << " bytes, Payload: " << payload_.size()
             << " bytes)";
 

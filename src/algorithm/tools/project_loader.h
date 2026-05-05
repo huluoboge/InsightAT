@@ -26,6 +26,7 @@ namespace tools {
 struct ProjectData {
   std::vector<camera::Intrinsics> cameras;
   std::vector<int> image_to_camera_index;
+  std::vector<std::string> image_paths;
 
   int num_images() const {
     return static_cast<int>(image_to_camera_index.size());
@@ -46,6 +47,7 @@ inline bool load_project_data(const std::string& path, ProjectData* out) {
   if (!out || path.empty()) return false;
   out->cameras.clear();
   out->image_to_camera_index.clear();
+  out->image_paths.clear();
 
   std::ifstream f(path);
   if (!f.is_open()) {
@@ -87,12 +89,14 @@ inline bool load_project_data(const std::string& path, ProjectData* out) {
 
   const size_t n_images = j["images"].size();
   out->image_to_camera_index.reserve(n_images);
+  out->image_paths.reserve(n_images);
   for (size_t i = 0; i < n_images; ++i) {
     const auto& img = j["images"][i];
     int cidx = img.value("camera_index", 0);
     if (cidx < 0 || static_cast<size_t>(cidx) >= out->cameras.size())
       cidx = 0;
     out->image_to_camera_index.push_back(cidx);
+    out->image_paths.push_back(img.value("path", std::string()));
   }
   LOG(INFO) << "project_loader: " << out->num_images() << " images, " << out->num_cameras()
             << " cameras from " << path;

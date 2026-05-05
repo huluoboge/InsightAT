@@ -9,8 +9,6 @@
 
 #include "colmap_loader.h"
 
-#include "bundler_loader.h"
-
 #include "ImageIO/gdal_utils.h"
 
 #include <glog/logging.h>
@@ -19,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -111,6 +110,53 @@ static bool parse_camera_intrinsics(const ColmapCameraRow& row, double* focal, d
     return true;
   }
   return false;
+}
+
+/// 写入 BundlerCamera 的像素主点：优先 cameras.txt 内参里的 cx,cy；否则假定主点在图像中心 (W/2,H/2)。
+static void fill_bundler_camera_principal_from_colmap_row(const ColmapCameraRow& row,
+                                                        BundlerCamera* c) {
+  const auto& p = row.params;
+  const double def_cx = 0.5 * static_cast<double>(row.width);
+  const double def_cy = 0.5 * static_cast<double>(row.height);
+  const std::string& m = row.model;
+  bool have = false;
+  if (m == "SIMPLE_PINHOLE" && p.size() >= 3) {
+    c->principal_cx = p[1];
+    c->principal_cy = p[2];
+    have = true;
+  } else if (m == "PINHOLE" && p.size() >= 4) {
+    c->principal_cx = p[2];
+    c->principal_cy = p[3];
+    have = true;
+  } else if (m == "SIMPLE_RADIAL" && p.size() >= 3) {
+    c->principal_cx = p[1];
+    c->principal_cy = p[2];
+    have = true;
+  } else if (m == "RADIAL" && p.size() >= 3) {
+    c->principal_cx = p[1];
+    c->principal_cy = p[2];
+    have = true;
+  } else if (m == "OPENCV" && p.size() >= 4) {
+    c->principal_cx = p[2];
+    c->principal_cy = p[3];
+    have = true;
+  } else if (m == "FULL_OPENCV" && p.size() >= 4) {
+    c->principal_cx = p[2];
+    c->principal_cy = p[3];
+    have = true;
+  } else if (m == "SIMPLE_RADIAL_FISHEYE" && p.size() >= 3) {
+    c->principal_cx = p[1];
+    c->principal_cy = p[2];
+    have = true;
+  } else if (m == "RADIAL_FISHEYE" && p.size() >= 3) {
+    c->principal_cx = p[1];
+    c->principal_cy = p[2];
+    have = true;
+  }
+  if (!have) {
+    c->principal_cx = def_cx;
+    c->principal_cy = def_cy;
+  }
 }
 
 static std::string resolve_image_path(const fs::path& sparse_dir, const std::string& name) {
@@ -208,7 +254,8 @@ static bool parse_points2d_line(const std::string& line,
 
 static bool read_images_txt(const fs::path& path,
                             const std::unordered_map<int, ColmapCameraRow>& cam_rows,
-                            std::vector<ImageBlock>* images_out, std::string* err) {
+                            std::vector<ImageBlock>* images_out, std::string* err,
+                            const ReconstructionLoadProgress* progress) {
   std::ifstream in(path);
   if (!in) {
     *err = "cannot open " + path.string();
@@ -218,6 +265,9 @@ static bool read_images_txt(const fs::path& path,
   std::string line;
   while (std::getline(in, line))
     lines.push_back(std::move(line));
+
+  if (progress && *progress)
+    (*progress)(0, -1, "images");
 
   size_t i = 0;
   while (i < lines.size()) {
@@ -275,6 +325,10 @@ static bool read_images_txt(const fs::path& path,
     }
     ++i;
     images_out->push_back(std::move(blk));
+    if (progress && *progress &&
+        (images_out->size() % 256u == 0u ||
+         images_out->size() == 1u))
+      (*progress)(static_cast<int64_t>(images_out->size()), -1, "images");
   }
 
   if (images_out->empty()) {
@@ -289,7 +343,7 @@ static bool read_images_txt(const fs::path& path,
 static bool read_points3d_txt(
     const fs::path& path, const std::unordered_map<int, int>& image_id_to_cam_idx,
     const std::vector<ImageBlock>& images_by_sorted_idx, std::vector<BundlerPoint>* points_out,
-    std::string* err) {
+    std::string* err, const ReconstructionLoadProgress* progress) {
   std::ifstream in(path);
   if (!in) {
     *err = "cannot open " + path.string();
@@ -312,7 +366,12 @@ static bool read_points3d_txt(
     return true;
   };
 
+  if (progress && *progress)
+    (*progress)(0, -1, "points3D");
+
   std::string line;
+  int64_t n_pts = 0;
+  constexpr int64_t kPtsStride = 2048;
   while (std::getline(in, line)) {
     if (is_comment_or_empty(line))
       continue;
@@ -347,14 +406,20 @@ static bool read_points3d_txt(
       p.observations.push_back(o);
     }
     points_out->push_back(std::move(p));
+    ++n_pts;
+    if (progress && *progress &&
+        (n_pts == 1 || (n_pts % kPtsStride == 0)))
+      (*progress)(n_pts, -1, "points3D");
   }
+  if (progress && *progress && n_pts > 0 && (n_pts % kPtsStride != 0))
+    (*progress)(n_pts, -1, "points3D");
   return true;
 }
 
 } // namespace
 
 bool load_colmap_text_directory(const std::string& colmap_sparse_dir, BundlerScene* scene,
-                                std::string* error_message) {
+                                std::string* error_message, ReconstructionLoadProgress progress) {
   if (!scene || !error_message)
     return false;
 
@@ -381,8 +446,10 @@ bool load_colmap_text_directory(const std::string& colmap_sparse_dir, BundlerSce
   if (!read_cameras_txt(cam_path, &cam_rows, error_message))
     return false;
 
+  const ReconstructionLoadProgress* prog_ptr = progress ? &progress : nullptr;
+
   std::vector<ImageBlock> blocks;
-  if (!read_images_txt(img_path, cam_rows, &blocks, error_message))
+  if (!read_images_txt(img_path, cam_rows, &blocks, error_message, prog_ptr))
     return false;
 
   scene->image_paths.clear();
@@ -406,11 +473,19 @@ bool load_colmap_text_directory(const std::string& colmap_sparse_dir, BundlerSce
     c.t = kColmapCvCameraToBundlerLikeCamera * blk.t;
     c.image_width = blk.width_hint;
     c.image_height = blk.height_hint;
+    auto crow = cam_rows.find(blk.camera_id);
+    if (crow != cam_rows.end())
+      fill_bundler_camera_principal_from_colmap_row(crow->second, &c);
+    else {
+      c.principal_cx = 0.5 * static_cast<double>(blk.width_hint);
+      c.principal_cy = 0.5 * static_cast<double>(blk.height_hint);
+    }
     scene->cameras.push_back(c);
     scene->image_paths.push_back(resolve_image_path(root, blk.name));
   }
 
-  if (!read_points3d_txt(pts_path, image_id_to_cam_idx, blocks, &scene->points, error_message))
+  if (!read_points3d_txt(pts_path, image_id_to_cam_idx, blocks, &scene->points, error_message,
+                         prog_ptr))
     return false;
 
   LOG(INFO) << "colmap text: " << scene->cameras.size() << " cameras, " << scene->points.size()

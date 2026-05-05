@@ -792,30 +792,31 @@ static void agent_log_tri_batch_ndjson(const std::string& data_json) {
 // #endregion
 
 /// Restore soft-deleted (kRestorable) observations on an already-triangulated track.
-/// If only_images is non-null, only observations belonging to those image indices are considered.
+/// If only_image_mask is non-null, only observations on images with mask[im]==1 are considered.
 /// Each candidate observation is checked against the current 3-D point: if the reprojection error
 /// is within restore_strict_reproj_px the observation is marked alive again.
 static int retri_restore_deleted_obs_branch_a(
     TrackStore* store, int track_id, int n_images, const std::vector<Eigen::Matrix3d>& poses_R,
     const std::vector<Eigen::Vector3d>& poses_C, const std::vector<bool>& registered,
     const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& image_to_camera_index,
-    double restore_strict_reproj_px, const std::unordered_set<int>* only_images) {
+    double restore_strict_reproj_px, const std::vector<uint8_t>* only_image_mask) {
   float tx, ty, tz;
   store->get_track_xyz(track_id, &tx, &ty, &tz);
   const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
                           static_cast<double>(tz));
-  std::vector<int> obs_ids_out;
-  store->get_track_all_obs_ids(track_id, &obs_ids_out);
+  static thread_local std::vector<int> obs_ids_tls;
+  obs_ids_tls.clear();
+  store->get_track_all_obs_ids(track_id, &obs_ids_tls);
   int n_restored_obs = 0;
-  for (int oid : obs_ids_out) {
+  Observation obs;
+  for (int oid : obs_ids_tls) {
     if (store->is_obs_valid(oid))
       continue;
-    Observation obs;
     store->get_obs(oid, &obs);
     const int im = static_cast<int>(obs.image_index);
-    if (only_images && !only_images->count(im))
-      continue;
     if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
+      continue;
+    if (only_image_mask && !(*only_image_mask)[static_cast<size_t>(im)])
       continue;
     const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
     const double e =
@@ -850,16 +851,24 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   robust_defaults.min_tri_angle_deg = min_tri_angle_deg;
   robust_defaults.ransac_inlier_px = commit_reproj_px;
 
-  // Build the set of new-image indices for fast lookup inside restore branch.
-  std::unordered_set<int> new_images_set(new_registered_image_indices.begin(),
-                                         new_registered_image_indices.end());
+  // Build image mask for fast lookup inside restore branch.
+  std::vector<uint8_t> new_images_mask(static_cast<size_t>(n_images), 0);
+  for (int im : new_registered_image_indices) {
+    if (im >= 0 && im < n_images)
+      new_images_mask[static_cast<size_t>(im)] = 1;
+  }
 
   // Scan ALL observations (valid + soft-deleted) on each newly registered image so we don't
   // miss tracks whose observation was previously marked kRestorable.
-  std::unordered_set<int> candidate_set;     // no-XYZ tracks: need triangulation
-  std::unordered_set<int> xyz_candidate_set; // already-XYZ tracks: need obs restore
+  std::vector<int> candidate_track_ids;     // no-XYZ tracks: need triangulation
+  std::vector<int> xyz_candidate_track_ids; // already-XYZ tracks: need obs restore
   {
+    const int n_tracks = static_cast<int>(store->num_tracks());
+    std::vector<uint8_t> seen_track_kind(static_cast<size_t>(n_tracks), 0);
+    // 0: unseen, 1: candidate_track_ids, 2: xyz_candidate_track_ids
     std::vector<int> obs_ids_buf;
+    candidate_track_ids.reserve(static_cast<size_t>(n_tracks / 8 + 1));
+    xyz_candidate_track_ids.reserve(static_cast<size_t>(n_tracks / 8 + 1));
     for (int new_im : new_registered_image_indices) {
       obs_ids_buf.clear();
       store->get_image_all_obs_ids(new_im, &obs_ids_buf);
@@ -867,10 +876,16 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
         const int tid = store->obs_track_id(oid);
         if (!store->is_track_valid(tid))
           continue;
-        if (!store->track_has_triangulated_xyz(tid))
-          candidate_set.insert(tid);
+        const size_t tidx = static_cast<size_t>(tid);
+        const bool has_xyz = store->track_has_triangulated_xyz(tid);
+        const uint8_t kind = has_xyz ? 2 : 1;
+        if (seen_track_kind[tidx] == kind)
+          continue;
+        seen_track_kind[tidx] = kind;
+        if (has_xyz)
+          xyz_candidate_track_ids.push_back(tid);
         else
-          xyz_candidate_set.insert(tid);
+          candidate_track_ids.push_back(tid);
       }
     }
   }
@@ -878,15 +893,23 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   int tracks_scanned = 0, tracks_skipped_few_views = 0;
   int tracks_skipped_fail = 0;
   std::array<int, 11> fail_by_code{};
+  const bool collect_debug_stats = VLOG_IS_ON(1);
   std::vector<double> success_max_px;
   std::vector<double> success_mean_px;
-  success_max_px.reserve(static_cast<size_t>(candidate_set.size()));
-  success_mean_px.reserve(static_cast<size_t>(candidate_set.size()));
+  if (collect_debug_stats) {
+    success_max_px.reserve(candidate_track_ids.size());
+    success_mean_px.reserve(candidate_track_ids.size());
+  }
   std::vector<std::pair<double, int>> worst_tracks;
-  worst_tracks.reserve(16);
+  if (collect_debug_stats)
+    worst_tracks.reserve(16);
+  std::vector<int> dbg_roid, dbg_rind;
+  std::vector<Eigen::Vector2d> dbg_rn2;
+  std::vector<double> dbg_up2, dbg_vp2;
+  std::vector<camera::Intrinsics> dbg_Kp2;
 
   auto t0 = Clock::now();
-  for (int track_id : candidate_set) {
+  for (int track_id : candidate_track_ids) {
     ++tracks_scanned;
     TriFailCode fcode = TriFailCode::kOk;
     if (triangulate_track_common(store, track_id, poses_R, poses_C, n_images, registered, cameras,
@@ -895,28 +918,33 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
       ++updated;
       if (new_track_ids_out)
         new_track_ids_out->push_back(track_id);
-      float tx, ty, tz;
-      store->get_track_xyz(track_id, &tx, &ty, &tz);
-      const Eigen::Vector3d Xstore(static_cast<double>(tx), static_cast<double>(ty),
-                                   static_cast<double>(tz));
-      std::vector<int> roid, rind;
-      std::vector<Eigen::Vector2d> rn2;
-      std::vector<double> up2, vp2;
-      std::vector<camera::Intrinsics> Kp2;
-      rebuild_registered_arrays_from_track(store, track_id, n_images, registered, cameras,
-                                           image_to_camera_index, &roid, &rind, &rn2, &up2, &vp2,
-                                           &Kp2);
-      double mpx = 0.0, mxpx = 0.0;
-      reproj_mean_max_for_views(Xstore, rind, up2, vp2, Kp2, poses_R, poses_C, &mpx, &mxpx);
-      success_mean_px.push_back(mpx);
-      success_max_px.push_back(mxpx);
-      worst_tracks.push_back({mxpx, track_id});
-      std::sort(worst_tracks.begin(), worst_tracks.end(),
-                [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
-                  return a.first > b.first;
-                });
-      if (worst_tracks.size() > 12)
-        worst_tracks.resize(12);
+      if (collect_debug_stats) {
+        float tx, ty, tz;
+        store->get_track_xyz(track_id, &tx, &ty, &tz);
+        const Eigen::Vector3d Xstore(static_cast<double>(tx), static_cast<double>(ty),
+                                     static_cast<double>(tz));
+        dbg_roid.clear();
+        dbg_rind.clear();
+        dbg_rn2.clear();
+        dbg_up2.clear();
+        dbg_vp2.clear();
+        dbg_Kp2.clear();
+        rebuild_registered_arrays_from_track(store, track_id, n_images, registered, cameras,
+                                             image_to_camera_index, &dbg_roid, &dbg_rind, &dbg_rn2,
+                                             &dbg_up2, &dbg_vp2, &dbg_Kp2);
+        double mpx = 0.0, mxpx = 0.0;
+        reproj_mean_max_for_views(Xstore, dbg_rind, dbg_up2, dbg_vp2, dbg_Kp2, poses_R, poses_C,
+                                  &mpx, &mxpx);
+        success_mean_px.push_back(mpx);
+        success_max_px.push_back(mxpx);
+        worst_tracks.push_back({mxpx, track_id});
+        std::sort(worst_tracks.begin(), worst_tracks.end(),
+                  [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
+                    return a.first > b.first;
+                  });
+        if (worst_tracks.size() > 12)
+          worst_tracks.resize(12);
+      }
     } else {
       if (fcode == TriFailCode::kInsufficientRegisteredViews)
         ++tracks_skipped_few_views;
@@ -938,12 +966,12 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   // commit_reproj_px to the new image and marks the observation alive again.  Valid observations
   // need no action (BA will automatically include them now that registered[im]=true).
   int n_xyz_restored_obs = 0, n_xyz_restored_tracks = 0;
-  for (int tid : xyz_candidate_set) {
+  for (int tid : xyz_candidate_track_ids) {
     if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
       continue;
     const int n = retri_restore_deleted_obs_branch_a(store, tid, n_images, poses_R, poses_C,
                                                      registered, cameras, image_to_camera_index,
-                                                     commit_reproj_px, &new_images_set);
+                                                     commit_reproj_px, &new_images_mask);
     if (n > 0) {
       n_xyz_restored_obs += n;
       ++n_xyz_restored_tracks;
@@ -952,14 +980,14 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   // ─────────────────────────────────────────────────────────────────────────────
 
   VLOG(1) << "[PERF] run_batch_triangulation: " << ms << "ms"
-          << "  total_tracks=" << store->num_tracks() << "  candidates=" << candidate_set.size()
+          << "  total_tracks=" << store->num_tracks() << "  candidates=" << candidate_track_ids.size()
           << "  scanned=" << tracks_scanned << "  skip_few_views=" << tracks_skipped_few_views
           << "  fail=" << tracks_skipped_fail << "  newly_tri=" << updated
-          << "  xyz_touched=" << xyz_candidate_set.size()
+          << "  xyz_touched=" << xyz_candidate_track_ids.size()
           << "  xyz_restored_tracks=" << n_xyz_restored_tracks
           << "  xyz_restored_obs=" << n_xyz_restored_obs
           << "  commit_reproj_px=" << commit_reproj_px;
-  if (!success_max_px.empty()) {
+  if (collect_debug_stats && !success_max_px.empty()) {
     std::vector<double> sorted_max = success_max_px;
     std::sort(sorted_max.begin(), sorted_max.end());
     double sum_max = 0.0, sum_mean = 0.0;
@@ -994,7 +1022,7 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
     for (size_t i = 0; i < worst_tracks.size() && i < 8; ++i)
       w << "tid=" << worst_tracks[i].second << " max=" << worst_tracks[i].first << "px  ";
     LOG(INFO) << "[tri_debug]" << w.str();
-  } else if (tracks_skipped_fail > 0) {
+  } else if (collect_debug_stats && tracks_skipped_fail > 0) {
     LOG(INFO) << "[tri_debug] fail_reasons: robust=" << fail_by_code[1]
               << "  two_dlt_depth=" << fail_by_code[2] << "  ang_before_gn=" << fail_by_code[3]
               << "  depth_after_gn=" << fail_by_code[4] << "  ang_after_gn=" << fail_by_code[5]
@@ -1005,7 +1033,7 @@ int run_batch_triangulation(TrackStore* store, const std::vector<int>& new_regis
   {
     std::ostringstream dj;
     dj << "{"
-       << "\"candidates\":" << candidate_set.size() << ",\"scanned\":" << tracks_scanned
+       << "\"candidates\":" << candidate_track_ids.size() << ",\"scanned\":" << tracks_scanned
        << ",\"skip_few_views\":" << tracks_skipped_few_views << ",\"fail\":" << tracks_skipped_fail
        << ",\"newly_tri\":" << updated << ",\"min_tri_angle_deg\":" << min_tri_angle_deg
        << ",\"commit_reproj_px\":" << commit_reproj_px << ",\"fail_robust\":" << fail_by_code[1]
@@ -1100,7 +1128,10 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
     int n_nv_hist[8] = {}; // nv=0..6,7+
     reset_robust_tri_diag();
 
-    for (int track_id = 0; track_id < static_cast<int>(store->num_tracks()); ++track_id) {
+    const int n_tracks = static_cast<int>(store->num_tracks());
+    std::vector<int> all_obs_ids_buf;
+    Observation obs_buf;
+    for (int track_id = 0; track_id < n_tracks; ++track_id) {
       if (!store->is_track_valid(track_id)) {
         store->set_track_retriangulation_flag(track_id, false);
         ++n_invalid;
@@ -1119,15 +1150,14 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
           // Count nv for insufficient-views failures
           if (fcode == TriFailCode::kInsufficientRegisteredViews) {
             // Quick count of registered views for this track
-            std::vector<int> ids;
-            store->get_track_all_obs_ids(track_id, &ids);
+            all_obs_ids_buf.clear();
+            store->get_track_all_obs_ids(track_id, &all_obs_ids_buf);
             int nv = 0;
-            for (int oid : ids) {
+            for (int oid : all_obs_ids_buf) {
               if (!store->is_obs_valid(oid) && !store->is_obs_restorable(oid))
                 continue;
-              Observation o;
-              store->get_obs(oid, &o);
-              int im = static_cast<int>(o.image_index);
+              store->get_obs(oid, &obs_buf);
+              int im = static_cast<int>(obs_buf.image_index);
               if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)])
                 ++nv;
             }
@@ -1138,7 +1168,7 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
         ++n_already_tri;
         const int n_obs_rest = retri_restore_deleted_obs_branch_a(
             store, track_id, n_images, poses_R, poses_C, registered, cameras, image_to_camera_index,
-            opts.restore_strict_reproj_px, /*only_images=*/nullptr);
+            opts.restore_strict_reproj_px, /*only_image_mask=*/nullptr);
         if (n_obs_rest > 0) {
           n_restored_obs += n_obs_rest;
           ++n_restored_track;
@@ -1178,47 +1208,62 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
   }
 
   std::vector<int> retri_track_ids;
-  std::unordered_set<int> restrict_set;
-  const std::unordered_set<int>* restrict_ptr = nullptr;
+  std::vector<uint8_t> restrict_mask;
+  const std::vector<uint8_t>* restrict_ptr = nullptr;
+  const int n_tracks = static_cast<int>(store->num_tracks());
+  std::vector<uint8_t> track_seen(static_cast<size_t>(n_tracks), 0);
 
   if (scope == RetriangulationScope::kPendingOnly) {
     store->drain_retriangulation_pending(&retri_track_ids);
-    std::unordered_set<int> seen;
     std::vector<int> uniq;
     uniq.reserve(retri_track_ids.size());
     for (int tid : retri_track_ids) {
-      if (seen.insert(tid).second)
-        uniq.push_back(tid);
+      if (tid < 0 || tid >= n_tracks)
+        continue;
+      const size_t tidx = static_cast<size_t>(tid);
+      if (track_seen[tidx])
+        continue;
+      track_seen[tidx] = 1;
+      uniq.push_back(tid);
     }
-    retri_track_ids = std::move(uniq);
+    retri_track_ids.swap(uniq);
     input_list_size = retri_track_ids.size();
   } else {
     // kNewImages
-    for (int im : opts.restrict_image_indices)
-      restrict_set.insert(im);
-    restrict_ptr = &restrict_set;
-    if (restrict_set.empty()) {
+    restrict_mask.assign(static_cast<size_t>(n_images), 0);
+    int n_restrict_images = 0;
+    for (int im : opts.restrict_image_indices) {
+      if (im < 0 || im >= n_images)
+        continue;
+      if (!restrict_mask[static_cast<size_t>(im)]) {
+        restrict_mask[static_cast<size_t>(im)] = 1;
+        ++n_restrict_images;
+      }
+    }
+    restrict_ptr = &restrict_mask;
+    if (n_restrict_images == 0) {
       LOG(WARNING) << "run_retriangulation: scope=new_images but restrict_image_indices is empty";
       return 0;
     }
-    std::unordered_set<int> seen_tracks;
-    for (int tid = 0; tid < static_cast<int>(store->num_tracks()); ++tid) {
-      if (!store->is_track_valid(tid))
+    // Build candidate tracks from per-image observation index for restricted images.
+    // Equivalent semantics to "tracks that touch restrict images", but avoids scanning all tracks.
+    std::vector<int> obs_ids;
+    retri_track_ids.reserve(static_cast<size_t>(n_restrict_images * 1024));
+    for (int im : opts.restrict_image_indices) {
+      if (im < 0 || im >= n_images)
         continue;
-      std::vector<int> oids;
-      store->get_track_all_obs_ids(tid, &oids);
-      bool touches = false;
-      for (int oid : oids) {
-        Observation obs;
-        store->get_obs(oid, &obs);
-        const int im = static_cast<int>(obs.image_index);
-        if (restrict_set.count(im)) {
-          touches = true;
-          break;
-        }
-      }
-      if (touches && seen_tracks.insert(tid).second)
+      obs_ids.clear();
+      store->get_image_all_obs_ids(im, &obs_ids);
+      for (int oid : obs_ids) {
+        const int tid = store->obs_track_id(oid);
+        if (tid < 0 || !store->is_track_valid(tid))
+          continue;
+        const size_t tidx = static_cast<size_t>(tid);
+        if (track_seen[tidx])
+          continue;
+        track_seen[tidx] = 1;
         retri_track_ids.push_back(tid);
+      }
     }
     input_list_size = retri_track_ids.size();
   }

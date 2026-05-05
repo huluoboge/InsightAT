@@ -25,7 +25,8 @@ namespace insight {
 namespace render {
 
 bool load_reconstruction_directory(const std::string& dir, BundlerScene* scene,
-                                   std::string* error_message) {
+                                   std::string* error_message,
+                                   ReconstructionLoadProgress progress) {
   namespace fs = std::filesystem;
   std::error_code ec;
   const fs::path root = fs::absolute(dir, ec);
@@ -36,8 +37,8 @@ bool load_reconstruction_directory(const std::string& dir, BundlerScene* scene,
   const bool has_colmap = fs::exists(root / "cameras.txt") && fs::exists(root / "images.txt") &&
                           fs::exists(root / "points3D.txt");
   if (has_colmap)
-    return load_colmap_text_directory(dir, scene, error_message);
-  return load_bundler_directory(dir, scene, error_message);
+    return load_colmap_text_directory(dir, scene, error_message, std::move(progress));
+  return load_bundler_directory(dir, scene, error_message, std::move(progress));
 }
 
 namespace {
@@ -65,6 +66,22 @@ bool get_image_dimensions(const std::string& path, int& w, int& h) {
     g_dim_cache[path] = {w, h};
   }
   return true;
+}
+
+/// 假定主点在图像中心：w、h 取为 2*round(cx)、2*round(cy)。无主点信息时用 round(focal) 同时作 cx、cy 的整数近似。
+void estimate_image_wh_from_principal_integers(const BundlerCamera& c, int* w, int* h) {
+  int cx_i;
+  int cy_i;
+  if (c.principal_cx > 0.0 && c.principal_cy > 0.0) {
+    cx_i = std::max(1, static_cast<int>(std::lround(c.principal_cx)));
+    cy_i = std::max(1, static_cast<int>(std::lround(c.principal_cy)));
+  } else {
+    const int d = std::max(1, static_cast<int>(std::lround(std::max(c.focal, 1.0))));
+    cx_i = d;
+    cy_i = d;
+  }
+  *w = std::clamp(2 * cx_i, 2, 32768);
+  *h = std::clamp(2 * cy_i, 2, 32768);
 }
 
 std::string normalize_path_sep(const std::string& p) {
@@ -103,7 +120,15 @@ bool read_list_file(const std::filesystem::path& list_path, std::vector<std::str
 
 bool read_bundle_cameras_points(std::istream& in, int num_cameras, int num_points,
                                 std::vector<BundlerCamera>* cameras,
-                                std::vector<BundlerPoint>* points, std::string* err) {
+                                std::vector<BundlerPoint>* points, std::string* err,
+                                const ReconstructionLoadProgress* progress) {
+  const int64_t total = static_cast<int64_t>(num_cameras) + static_cast<int64_t>(num_points);
+  auto report = [&](int64_t cur) {
+    if (progress && *progress)
+      (*progress)(cur, total, "bundle");
+  };
+  report(0);
+
   cameras->resize(num_cameras);
   for (int i = 0; i < num_cameras; ++i) {
     BundlerCamera& c = (*cameras)[i];
@@ -116,8 +141,12 @@ bool read_bundle_cameras_points(std::istream& in, int num_cameras, int num_point
       *err = "unexpected EOF while reading camera " + std::to_string(i);
       return false;
     }
+    if (progress && *progress &&
+        (((i + 1) % 16 == 0) || (i + 1 == num_cameras)))
+      report(static_cast<int64_t>(i + 1));
   }
 
+  constexpr int kPointStride = 4096;
   points->resize(num_points);
   for (int i = 0; i < num_points; ++i) {
     BundlerPoint& p = (*points)[i];
@@ -140,12 +169,17 @@ bool read_bundle_cameras_points(std::istream& in, int num_cameras, int num_point
       }
       p.observations.push_back(obs);
     }
+    if (progress && *progress &&
+        ((((i + 1) % kPointStride) == 0) || (i + 1 == num_points)))
+      report(static_cast<int64_t>(num_cameras) + static_cast<int64_t>(i + 1));
   }
+  report(total);
   return true;
 }
 
 bool read_bundle_file(const std::filesystem::path& bundle_path, std::vector<BundlerCamera>* cameras,
-                      std::vector<BundlerPoint>* points, std::string* err) {
+                      std::vector<BundlerPoint>* points, std::string* err,
+                      const ReconstructionLoadProgress* progress) {
   std::ifstream in(bundle_path);
   if (!in) {
     *err = "cannot open bundle file: " + bundle_path.string();
@@ -171,7 +205,7 @@ bool read_bundle_file(const std::filesystem::path& bundle_path, std::vector<Bund
     return false;
   }
 
-  return read_bundle_cameras_points(in, num_cameras, num_points, cameras, points, err);
+  return read_bundle_cameras_points(in, num_cameras, num_points, cameras, points, err, progress);
 }
 
 } // namespace
@@ -191,7 +225,7 @@ float compute_initial_photo_scale_from_scene(double avg_observation_depth,
 }
 
 bool load_bundler_directory(const std::string& bundle_dir, BundlerScene* scene,
-                            std::string* error_message) {
+                            std::string* error_message, ReconstructionLoadProgress progress) {
   GdalUtils::InitGDAL();
 
   std::error_code ec;
@@ -216,7 +250,8 @@ bool load_bundler_directory(const std::string& bundle_dir, BundlerScene* scene,
 
   std::vector<BundlerCamera> cameras;
   std::vector<BundlerPoint> points;
-  if (!read_bundle_file(bundle_path, &cameras, &points, error_message))
+  const ReconstructionLoadProgress* prog_ptr = progress ? &progress : nullptr;
+  if (!read_bundle_file(bundle_path, &cameras, &points, error_message, prog_ptr))
     return false;
 
   if (static_cast<int>(rel.size()) != static_cast<int>(cameras.size())) {
@@ -293,16 +328,18 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
     RenderTracks::Photo photo;
     photo.id = static_cast<int>(i);
 
-    int w = (c.image_width > 0) ? c.image_width : 6400;
-    int h = (c.image_height > 0) ? c.image_height : 4800;
-    const int fallback_w = w;
-    const int fallback_h = h;
+    int w = (c.image_width > 0) ? c.image_width : 0;
+    int h = (c.image_height > 0) ? c.image_height : 0;
     const std::string& ip = scene.image_paths[i];
-    if (!get_image_dimensions(ip, w, h)) {
-      w = fallback_w;
-      h = fallback_h;
-      LOG(WARNING) << "GetWidthHeightPixel failed for " << ip << ", using " << w << "x" << h
-                   << (c.image_width > 0 ? " (COLMAP cameras.txt)" : " (defaults)");
+
+    if (w > 0 && h > 0) {
+      // COLMAP（或已写入尺寸的模型）：完全使用 cameras.txt / 内参里的宽高，不调 GDAL。
+    } else {
+      if (!get_image_dimensions(ip, w, h)) {
+        estimate_image_wh_from_principal_integers(c, &w, &h);
+        LOG(WARNING) << "GetWidthHeightPixel failed for " << ip << ", using 2*cx x 2*cy estimate "
+                     << w << "x" << h;
+      }
     }
     photo.w = static_cast<float>(w);
     photo.h = static_cast<float>(h);

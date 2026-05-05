@@ -74,6 +74,12 @@ set(ALGORITHM_SOURCES
     # Modules - Feature Matching
     modules/matching/sift_matcher.h
     modules/matching/sift_matcher.cpp
+    modules/cpu_cascade_hash/cpu_cascade_hash.h
+    modules/cpu_cascade_hash/cpu_cascade_hash.cpp
+    modules/gpu_cascade_hash/gpu_cascade_hash.h
+    modules/gpu_cascade_hash/gpu_cascade_hash.cpp
+    modules/gpu_cascade_hash/cuda_cascade_hash_kernel.h
+    modules/gpu_cascade_hash/cuda_cascade_hash_kernel.cu
     
     # Modules - Image Retrieval
     modules/retrieval/retrieval_types.h
@@ -199,6 +205,8 @@ if(INSIGHTAT_USE_CUDA_PCA)
     target_link_libraries(InsightATAlgorithm PUBLIC ${CUDA_PCA_LIBS})
 endif()
 
+target_link_libraries(InsightATAlgorithm PUBLIC cudart)
+
 # ── Unit test: incremental triangulation (strategy B) ──
 add_executable(test_incremental_triangulation modules/sfm/incremental_triangulation_test.cpp)
 target_link_libraries(test_incremental_triangulation
@@ -242,6 +250,22 @@ target_include_directories(test_sfm_diag2
         ${CMAKE_SOURCE_DIR}/third_party
 )
 set_property(TARGET test_sfm_diag2 PROPERTY FOLDER InsightAT/Tests)
+
+# ── CPU cascade hash test ──
+add_executable(test_cpu_cascade_hash
+    modules/cpu_cascade_hash/cpu_cascade_hash_test.cpp
+)
+target_link_libraries(test_cpu_cascade_hash
+    PRIVATE
+        InsightATAlgorithm
+        glog::glog
+)
+target_include_directories(test_cpu_cascade_hash
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET test_cpu_cascade_hash PROPERTY FOLDER InsightAT/Tests)
 
 # ─────────────────────────────────────────────────────────────
 # CLI Tools (shared logging helper)
@@ -342,6 +366,43 @@ target_include_directories(isat_match
 )
 
 set_property(TARGET isat_match PROPERTY FOLDER InsightAT/Tools)
+
+# isat_cpu_cascade_hashing_match - CPU cascade hashing feature matching tool
+add_executable(isat_cpu_cascade_hashing_match tools/isat_cpu_cascade_hashing_match.cpp)
+
+target_link_libraries(isat_cpu_cascade_hashing_match
+    PRIVATE
+        insightat_tools_logging
+        InsightATAlgorithm
+        glog::glog
+)
+
+target_include_directories(isat_cpu_cascade_hashing_match
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET isat_cpu_cascade_hashing_match PROPERTY FOLDER InsightAT/Tools)
+
+# isat_gpu_cascade_hashing_match - GPU cascade hashing feature matching tool
+add_executable(isat_gpu_cascade_hashing_match tools/isat_gpu_cascade_hashing_match.cpp)
+
+target_link_libraries(isat_gpu_cascade_hashing_match
+    PRIVATE
+        insightat_tools_logging
+        InsightATAlgorithm
+        glog::glog
+        cudart
+)
+
+target_include_directories(isat_gpu_cascade_hashing_match
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+
+set_property(TARGET isat_gpu_cascade_hashing_match PROPERTY FOLDER InsightAT/Tools)
 
 # isat_retrieve - Image pair retrieval tool
 add_executable(isat_retrieve tools/isat_retrieve.cpp)
@@ -592,6 +653,13 @@ target_link_libraries(InsightATAlgorithm
     PUBLIC
         geo_ransac
 )
+
+# CUDA geo is available project-wide when cuda_geo_ransac target exists.
+if(TARGET cuda_geo_ransac)
+  target_link_libraries(isat_geo PRIVATE cuda_geo_ransac CUDA::cudart)
+  add_compile_definitions(INSIGHTAT_HAS_CUDA_GEO=1)
+  message(STATUS "InsightATAlgorithm: INSIGHTAT_HAS_CUDA_GEO=1 (global)")
+endif()
 
 # ─────────────────────────────────────────────────────────────
 # SfM module – two-view reconstruction (CPU/Eigen)

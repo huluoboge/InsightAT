@@ -96,7 +96,8 @@ private:
   std::unique_ptr<SiftMatchGPU> matcher_;
 
   MatchResult convert_match_result(const std::vector<uint32_t>& match_buffer, int num_matches,
-                                  const FeatureData& features1, const FeatureData& features2);
+                                  const FeatureData& features1, const FeatureData& features2,
+                                  bool compute_distances);
   float compute_descriptor_distance(const FeatureData& features1, const FeatureData& features2,
                                    size_t idx1, size_t idx2) const;
   MatchResult match_popsift(const FeatureData& features1, const FeatureData& features2,

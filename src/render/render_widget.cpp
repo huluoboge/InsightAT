@@ -180,24 +180,23 @@ void RenderWidget::fit_scene_to_view() {
     return;
   }
 
-  Vec3 bmin, bmax;
-  if (!tracks->world_axis_aligned_bounds(&bmin, &bmax)) {
+  const Vec3 origin(0, 0, 0);
+  // 点云离群点会撑满 AABB；用点到原点距离的分位数估计主体尺度，相机仍取最大距离以免被裁切。
+  constexpr double kPointDistanceQuantile = 0.88;
+  double R = 1.0;
+  if (!tracks->fit_framing_radius_about_origin(origin, kPointDistanceQuantile, &R)) {
     default_camera();
     update();
     return;
   }
-
-  const Vec3 center = (bmin + bmax) * 0.5;
-  double R = 0.5 * (bmax - bmin).norm();
-  R = std::max(R, 1.0);
 
   constexpr double kMargin = 1.25;
   const double dist =
       std::max(kMargin * R / tan_half_x, kMargin * R / tan_half_y);
   const double dist_clamped = std::max(dist, 10.0);
 
-  const Vec3 eye = center + Vec3(0, 0, dist_clamped);
-  m_camera->look_at(eye, center, Vec3(0, 1, 0));
+  const Vec3 eye = Vec3(0, 0, dist_clamped);
+  m_camera->look_at(eye, Vec3(0, 0, 0), Vec3(0, 1, 0));
   update();
 }
 

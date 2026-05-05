@@ -59,6 +59,29 @@ target_compile_features(geo_ransac PUBLIC cxx_std_17)
 
 set_property(TARGET geo_ransac PROPERTY FOLDER "InsightAT/Modules")
 
+# ── CUDA two-view RANSAC (F / E / H) – same numerics as gpu_geo_ransac shaders ─
+if(CUDAToolkit_FOUND)
+  add_library(cuda_geo_ransac STATIC cuda_geo_ransac.cu cuda_geo_ransac.h)
+  target_link_libraries(cuda_geo_ransac PUBLIC CUDA::cudart)
+  target_include_directories(cuda_geo_ransac PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  set_target_properties(cuda_geo_ransac PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
+  target_compile_features(cuda_geo_ransac PUBLIC cxx_std_17)
+  set_property(TARGET cuda_geo_ransac PROPERTY FOLDER "InsightAT/Modules")
+  message(STATUS "geo_ransac: CUDA F/E/H RANSAC enabled (cuda_geo_ransac)")
+
+  # ── Unit test for the CUDA path ───────────────────────────────────────────
+  add_executable(test_cuda_geo_ransac test_cuda_geo_ransac.cpp)
+  target_link_libraries(test_cuda_geo_ransac
+      PRIVATE
+          cuda_geo_ransac
+          geo_ransac          # for GeoRansacConfig / Match2D types
+  )
+  target_include_directories(test_cuda_geo_ransac
+      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  set_property(TARGET test_cuda_geo_ransac PROPERTY FOLDER "InsightAT/Tests")
+endif()
+
 # ── Test executable ───────────────────────────────────────────────────────────
 add_executable(test_geo_ransac test.cpp)
 

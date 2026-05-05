@@ -8,7 +8,9 @@
  *
  * Pipeline (CPU–GPU async, same Stage/chain pattern as isat_match):
  *   Stage 1  [multi-thread I/O]  Read .isat_match → coords_pixel
- *   Stage 2  [main thread, EGL]  GPU RANSAC F [E] [H]
+ *   Stage 2  [main thread]      GPU RANSAC F [E] [H] — CUDA when built with
+ *                               INSIGHTAT_HAS_CUDA_GEO and --backend gpu;
+ *                               otherwise EGL + OpenGL 4.3 compute (--backend gpu-gl).
  *   Stage 3  [multi-thread I/O]  Write .isat_geo
  *
  * Output .isat_geo (IDC format):
@@ -65,6 +67,9 @@
 
 #include "../modules/camera/camera_types.h"
 #include "../modules/geometry/gpu_geo_ransac.h"
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+#include "../modules/geometry/cuda_geo_ransac.h"
+#endif
 #include "../modules/sfm/gpu_twoview_sfm.h"
 #include "../modules/sfm/two_view_reconstruction.h"
 #include "pair_json_utils.h"
@@ -661,6 +666,7 @@ int main(int argc, char* argv[]) {
   int min_points_twoview = 50;
   int ransac_iter = 2000;
   int num_threads = 4;
+  int cuda_device = 0;
   std::string backend_str = "poselib";
 
   cmd.add(make_option('i', pairs_json, "input")
@@ -692,15 +698,20 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('j', num_threads, "threads")
               .doc("CPU I/O threads for read/write stages. Default: 4"));
   cmd.add(make_option(0, backend_str, "backend")
-              .doc("Geometry backend for F/E/H together: gpu|poselib|cpu. Default: gpu\n"
-                   "  cpu is an alias of poselib."));
+              .doc("Geometry backend for F/E/H together:\n"
+                   "  gpu       — CUDA RANSAC when built with CUDA; else OpenGL compute.\n"
+                   "  gpu-gl    — Force OpenGL 4.3 + EGL (legacy shader path).\n"
+                   "  poselib|cpu — CPU PoseLib. Default: poselib."));
+  cmd.add(make_option(0, cuda_device, "cuda-device")
+              .doc("CUDA device id for --backend gpu (CUDA build only). Default: 0"));
   cmd.add(make_switch(0, "estimate-h")
               .doc("Also estimate Homography H (disabled by default).\n"
                    "  Useful for planar scenes or pure-rotation image pairs."));
   cmd.add(make_switch(0, "twoview")
-              .doc("Run two-view reconstruction: degeneracy check, E→R,t, GPU triangulation,\n"
-                   "  stability metrics. Requires -k/-l. Implies --estimate-h for degeneracy.\n"
-                   "  Outputs R, t, points3d when stable and num_valid_points >= --min-points."));
+              .doc("Run two-view reconstruction: degeneracy check, E→R,t, triangulation, stability.\n"
+                   "  With --backend gpu (CUDA): linear triangulation on CPU (no OpenGL twoview).\n"
+                   "  With --backend gpu-gl: GPU triangulation (EGL). Requires -k/-l.\n"
+                   "  Implies --estimate-h for degeneracy. Outputs R,t,points3d when stable."));
   cmd.add(make_option(0, min_points_twoview, "min-points")
               .doc("Min valid 3D points for --twoview to store. Default: 50"));
   std::string log_level;
@@ -746,7 +757,7 @@ int main(int argc, char* argv[]) {
   FundamentalBackend f_backend = FundamentalBackend::kGpu;
   EssentialBackend e_backend = EssentialBackend::kGpu;
   HomographyBackend h_backend = HomographyBackend::kGpu;
-  if (backend_str == "gpu") {
+  if (backend_str == "gpu" || backend_str == "gpu-gl") {
     f_backend = FundamentalBackend::kGpu;
     e_backend = EssentialBackend::kGpu;
     h_backend = HomographyBackend::kGpu;
@@ -755,10 +766,18 @@ int main(int argc, char* argv[]) {
     e_backend = EssentialBackend::kPoseLib;
     h_backend = HomographyBackend::kPoseLib;
   } else {
-    std::cerr << "Error: --backend must be gpu, poselib, or cpu\n\n";
+    std::cerr << "Error: --backend must be gpu, gpu-gl, poselib, or cpu\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
+
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+  const bool use_cuda_geo_ransac = (backend_str == "gpu");
+#else
+  const bool use_cuda_geo_ransac = false;
+#endif
+  const bool use_gl_geo_ransac =
+      !use_cuda_geo_ransac && (backend_str == "gpu" || backend_str == "gpu-gl");
   if (run_twoview) {
     estimate_H = true; // need H for degeneracy detection
     if (image_list_json.empty()) {
@@ -807,6 +826,11 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  H backend    : " << homography_backend_name(h_backend);
   LOG(INFO) << "  Min inliers  : " << min_inliers;
   LOG(INFO) << "  CPU threads  : " << num_threads;
+  if (use_cuda_geo_ransac) {
+    LOG(INFO) << "  GPU RANSAC   : CUDA (device " << cuda_device << ")";
+  } else if (use_gl_geo_ransac) {
+    LOG(INFO) << "  GPU RANSAC   : OpenGL 4.3 compute (EGL)";
+  }
 
   // ── Validate paths ───────────────────────────────────────────────────────
   if (!fs::is_directory(match_dir)) {
@@ -826,17 +850,27 @@ int main(int argc, char* argv[]) {
                             (estimate_E && e_backend == EssentialBackend::kGpu) ||
                             (estimate_H && h_backend == HomographyBackend::kGpu);
 
-  // ── Initialise GPU RANSAC ────────────────────────────────────────────────
+  // ── Initialise GPU RANSAC (CUDA or EGL+OpenGL) ───────────────────────────
   if (need_gpu_geo) {
     GeoRansacConfig cfg;
     cfg.num_iterations = ransac_iter;
     cfg.local_size_x = 32;
-    if (gpu_geo_init(&cfg) != 0) {
-      LOG(FATAL) << "Failed to initialise GPU RANSAC (EGL + OpenGL 4.3 required)";
-      return 1;
+    if (use_cuda_geo_ransac) {
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+      cuda_geo_set_device(cuda_device);
+      if (cuda_geo_init(&cfg) != 0) {
+        LOG(FATAL) << "Failed to initialise CUDA geometry RANSAC (cuda_geo_init)";
+        return 1;
+      }
+      cuda_geo_set_solver(1);
+#endif
+    } else {
+      if (gpu_geo_init(&cfg) != 0) {
+        LOG(FATAL) << "Failed to initialise GPU RANSAC (EGL + OpenGL 4.3 required)";
+        return 1;
+      }
+      gpu_geo_set_solver(1);
     }
-    // gpu_geo_set_solver(0); // Jacobi slowly
-    gpu_geo_set_solver(1); // Cholesky IPI: ~1ms/pair, ~45× faster than Jacobi
   }
 
   const float thresh_f_sq = thresh_f * thresh_f;
@@ -876,116 +910,14 @@ int main(int argc, char* argv[]) {
     // std::cerr << "PROGRESS: " << prog << "\n";
   });
 
-  // ── Stage 2: GPU RANSAC (single thread = main thread, EGL context) ───────
-  auto estimate_function = [&](int i) {
-    GeoTask& task = tasks[i];
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+  std::vector<int> cuda_f_batch_idx;
+  std::vector<std::vector<Match2D>> cuda_f_batch_pts;
+#endif
 
-    if (task.num_matches < 8) {
-      LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "–" << task.image2_index
-                   << ": too few matches (" << task.num_matches << " < 8), skip";
-      task.coords.clear();
-      return;
-    }
+  auto run_post_f_tail = [&](int ti, std::chrono::high_resolution_clock::time_point t0) {
+    GeoTask& task = tasks[static_cast<size_t>(ti)];
 
-    // Build Match2D array for GPU RANSAC
-    std::vector<Match2D> pts(task.num_matches);
-    for (int k = 0; k < task.num_matches; k++) {
-      pts[k].x1 = task.coords[k * 4 + 0];
-      pts[k].y1 = task.coords[k * 4 + 1];
-      pts[k].x2 = task.coords[k * 4 + 2];
-      pts[k].y2 = task.coords[k * 4 + 3];
-    }
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-
-    // ── Estimate F ───────────────────────────────────────────────────
-    if (f_backend == FundamentalBackend::kGpu) {
-      task.F_inliers = gpu_ransac_F(pts.data(), task.num_matches, task.F, thresh_f_sq);
-      task.F_ok = (task.F_inliers >= min_inliers);
-      if (task.F_ok || task.F_inliers >= kMinInliersForTrack)
-        task.F_mask = compute_f_mask(task.F, task.coords, task.num_matches, thresh_f_sq);
-    } else {
-      if (estimate_fundamental_poselib(task.coords, task.num_matches, thresh_f, ransac_iter, task.F,
-                                       &task.F_mask, &task.F_inliers)) {
-        task.F_ok = (task.F_inliers >= min_inliers);
-        if (!task.F_ok && task.F_inliers < kMinInliersForTrack)
-          task.F_mask.clear();
-      }
-    }
-
-    // ── Estimate E (intrinsics by image index from list) ────────────────────
-    if (estimate_E) {
-      const int i1 = static_cast<int>(task.image1_index);
-      const int i2 = static_cast<int>(task.image2_index);
-      const insight::camera::Intrinsics* pK1 = nullptr;
-      const insight::camera::Intrinsics* pK2 = nullptr;
-      auto intrinsic_valid = [](const insight::camera::Intrinsics& K) {
-        return K.fx > 1e-6 && K.fy > 1e-6;
-      };
-      if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() && i2 >= 0 &&
-          i2 < (int)image_index_intrinsics.size() &&
-          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i1)]) &&
-          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i2)])) {
-        pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
-        pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
-      }
-
-      if (!pK1 || !pK2) {
-        LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "–" << task.image2_index
-                     << ": cannot find K, skipping E";
-      } else {
-        const insight::camera::Intrinsics& K1 = *pK1;
-        const insight::camera::Intrinsics& K2 = *pK2;
-
-        // K-normalise using per-image camera (K1 for img1, K2 for img2)
-        std::vector<Match2D> pts_norm(task.num_matches);
-        for (int k = 0; k < task.num_matches; k++) {
-          pts_norm[k].x1 = static_cast<float>((pts[k].x1 - K1.cx) / K1.fx);
-          pts_norm[k].y1 = static_cast<float>((pts[k].y1 - K1.cy) / K1.fy);
-          pts_norm[k].x2 = static_cast<float>((pts[k].x2 - K2.cx) / K2.fx);
-          pts_norm[k].y2 = static_cast<float>((pts[k].y2 - K2.cy) / K2.fy);
-        }
-
-        // Threshold in normalised coords: use geometric mean of both cameras
-        const double f_avg = std::sqrt(K1.fx * K1.fy * K2.fx * K2.fy);
-        const float thresh_e_norm = static_cast<float>(thresh_f / std::sqrt(f_avg));
-        const float thresh_e_sq = thresh_e_norm * thresh_e_norm;
-
-        if (e_backend == EssentialBackend::kGpu) {
-          task.E_inliers = gpu_ransac_E(pts_norm.data(), task.num_matches, task.E, thresh_e_sq);
-          task.E_ok = (task.E_inliers >= min_inliers);
-          if (task.E_ok || task.E_inliers >= kMinInliersForTrack)
-            task.E_mask =
-                compute_e_mask(task.E, task.coords, task.num_matches, K1, K2, thresh_e_sq);
-        } else {
-          if (estimate_essential_poselib(task.coords, task.num_matches, K1, K2, thresh_f,
-                                         ransac_iter, task.E, &task.E_mask, &task.E_inliers)) {
-            task.E_ok = (task.E_inliers >= min_inliers);
-            if (!task.E_ok && task.E_inliers < kMinInliersForTrack)
-              task.E_mask.clear();
-          }
-        }
-      }
-    }
-
-    // ── Estimate H (if --estimate-h) ─────────────────────────────────
-    if (estimate_H) {
-      if (h_backend == HomographyBackend::kGpu) {
-        task.H_inliers = gpu_ransac_H(pts.data(), task.num_matches, task.H, thresh_h_sq);
-        task.H_ok = (task.H_inliers >= min_inliers);
-        if (task.H_ok || task.H_inliers >= kMinInliersForTrack)
-          task.H_mask = compute_h_mask(task.H, task.coords, task.num_matches, thresh_h_sq);
-      } else {
-        if (estimate_homography_poselib(task.coords, task.num_matches, thresh_h, ransac_iter,
-                                        task.H, &task.H_mask, &task.H_inliers)) {
-          task.H_ok = (task.H_inliers >= min_inliers);
-          if (!task.H_ok && task.H_inliers < kMinInliersForTrack)
-            task.H_mask.clear();
-        }
-      }
-    }
-
-    // ── Degeneracy detection (F vs H) ──────────────────────────────────
     task.degeneracy = insight::sfm::detect_degeneracy(
         task.F_inliers, task.H_ok ? task.H_inliers : 0, task.num_matches);
 
@@ -993,13 +925,12 @@ int main(int argc, char* argv[]) {
                   std::chrono::high_resolution_clock::now() - t0)
                   .count();
 
-    LOG(INFO) << "Geo [" << i << "/" << total << "] " << task.image1_index << "–"
+    LOG(INFO) << "Geo [" << ti << "/" << total << "] " << task.image1_index << "–"
               << task.image2_index << "  n=" << task.num_matches << "  F=" << task.F_inliers
               << (estimate_E ? ("  E=" + std::to_string(task.E_inliers)) : "")
               << (estimate_H ? ("  H=" + std::to_string(task.H_inliers)) : "")
               << (task.degeneracy.is_degenerate ? "  [DEG]" : "") << "  " << ms << "ms";
 
-    // Compute preliminary scoring metrics: median pixel displacement and inlier ratio
     {
       std::vector<float> disps;
       disps.reserve(static_cast<size_t>(task.num_matches));
@@ -1021,12 +952,11 @@ int main(int argc, char* argv[]) {
         best_inliers = task.E_inliers;
       task.inlier_ratio = static_cast<double>(best_inliers) / static_cast<double>(task.num_matches);
 
-      // Preliminary score (weights are tunable)
       const double w_f = 1.0, w_e = 1.0, w_tv = 2.0, w_st = 1.0, w_pt = 0.5, w_par = 2.0,
                    w_ir = 1.0;
       double tin = std::log(1.0 + static_cast<double>(std::max(0, best_inliers)));
       double tpt = std::log(1.0 + static_cast<double>(task.num_valid_points));
-      double tpar = std::tanh(task.median_pixel_disp / 50.0); // scale ~50px
+      double tpar = std::tanh(task.median_pixel_disp / 50.0);
       double tir = std::min(1.0, task.inlier_ratio * 3.0);
       double flag_bonus = (task.E_ok ? 1.0 : 0.0) + (task.H_ok ? 0.5 : 0.0);
       task.score_prelim = w_f * tin + w_e * (task.E_ok ? 1.0 : 0.0) +
@@ -1041,9 +971,376 @@ int main(int argc, char* argv[]) {
     }
   };
 
+  auto estimate_eh_for_task = [&](int ti, bool skip_cuda_gpu_eh) {
+    GeoTask& task = tasks[static_cast<size_t>(ti)];
+    std::vector<Match2D> pts(static_cast<size_t>(task.num_matches));
+    for (int k = 0; k < task.num_matches; k++) {
+      pts[static_cast<size_t>(k)].x1 = task.coords[static_cast<size_t>(k) * 4 + 0];
+      pts[static_cast<size_t>(k)].y1 = task.coords[static_cast<size_t>(k) * 4 + 1];
+      pts[static_cast<size_t>(k)].x2 = task.coords[static_cast<size_t>(k) * 4 + 2];
+      pts[static_cast<size_t>(k)].y2 = task.coords[static_cast<size_t>(k) * 4 + 3];
+    }
+
+    if (estimate_E) {
+      const int i1 = static_cast<int>(task.image1_index);
+      const int i2 = static_cast<int>(task.image2_index);
+      const insight::camera::Intrinsics* pK1 = nullptr;
+      const insight::camera::Intrinsics* pK2 = nullptr;
+      auto intrinsic_valid = [](const insight::camera::Intrinsics& K) {
+        return K.fx > 1e-6 && K.fy > 1e-6;
+      };
+      if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() && i2 >= 0 &&
+          i2 < (int)image_index_intrinsics.size() &&
+          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i1)]) &&
+          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i2)])) {
+        pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
+        pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
+      }
+
+      if (!pK1 || !pK2) {
+        LOG(WARNING) << "Pair [" << ti << "] " << task.image1_index << "–" << task.image2_index
+                     << ": cannot find K, skipping E";
+      } else {
+        const insight::camera::Intrinsics& K1 = *pK1;
+        const insight::camera::Intrinsics& K2 = *pK2;
+
+        std::vector<Match2D> pts_norm(static_cast<size_t>(task.num_matches));
+        for (int k = 0; k < task.num_matches; k++) {
+          pts_norm[static_cast<size_t>(k)].x1 =
+              static_cast<float>((pts[static_cast<size_t>(k)].x1 - K1.cx) / K1.fx);
+          pts_norm[static_cast<size_t>(k)].y1 =
+              static_cast<float>((pts[static_cast<size_t>(k)].y1 - K1.cy) / K1.fy);
+          pts_norm[static_cast<size_t>(k)].x2 =
+              static_cast<float>((pts[static_cast<size_t>(k)].x2 - K2.cx) / K2.fx);
+          pts_norm[static_cast<size_t>(k)].y2 =
+              static_cast<float>((pts[static_cast<size_t>(k)].y2 - K2.cy) / K2.fy);
+        }
+
+        const double f_avg = std::sqrt(K1.fx * K1.fy * K2.fx * K2.fy);
+        const float thresh_e_norm = static_cast<float>(thresh_f / std::sqrt(f_avg));
+        const float thresh_e_sq = thresh_e_norm * thresh_e_norm;
+
+        if (e_backend == EssentialBackend::kGpu) {
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+          if (use_cuda_geo_ransac) {
+            if (!skip_cuda_gpu_eh) {
+              task.E_inliers =
+                  cuda_ransac_E(pts_norm.data(), task.num_matches, task.E, thresh_e_sq);
+              task.E_ok = (task.E_inliers >= min_inliers);
+              if (task.E_ok || task.E_inliers >= kMinInliersForTrack)
+                task.E_mask =
+                    compute_e_mask(task.E, task.coords, task.num_matches, K1, K2, thresh_e_sq);
+            }
+          } else {
+            task.E_inliers = gpu_ransac_E(pts_norm.data(), task.num_matches, task.E, thresh_e_sq);
+            task.E_ok = (task.E_inliers >= min_inliers);
+            if (task.E_ok || task.E_inliers >= kMinInliersForTrack)
+              task.E_mask =
+                  compute_e_mask(task.E, task.coords, task.num_matches, K1, K2, thresh_e_sq);
+          }
+#else
+          task.E_inliers = gpu_ransac_E(pts_norm.data(), task.num_matches, task.E, thresh_e_sq);
+          task.E_ok = (task.E_inliers >= min_inliers);
+          if (task.E_ok || task.E_inliers >= kMinInliersForTrack)
+            task.E_mask =
+                compute_e_mask(task.E, task.coords, task.num_matches, K1, K2, thresh_e_sq);
+#endif
+        } else {
+          if (estimate_essential_poselib(task.coords, task.num_matches, K1, K2, thresh_f,
+                                         ransac_iter, task.E, &task.E_mask, &task.E_inliers)) {
+            task.E_ok = (task.E_inliers >= min_inliers);
+            if (!task.E_ok && task.E_inliers < kMinInliersForTrack)
+              task.E_mask.clear();
+          }
+        }
+      }
+    }
+
+    if (estimate_H) {
+      if (h_backend == HomographyBackend::kGpu) {
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+        if (use_cuda_geo_ransac) {
+          if (!skip_cuda_gpu_eh) {
+            task.H_inliers = cuda_ransac_H(pts.data(), task.num_matches, task.H, thresh_h_sq);
+            task.H_ok = (task.H_inliers >= min_inliers);
+            if (task.H_ok || task.H_inliers >= kMinInliersForTrack)
+              task.H_mask = compute_h_mask(task.H, task.coords, task.num_matches, thresh_h_sq);
+          }
+        } else {
+          task.H_inliers = gpu_ransac_H(pts.data(), task.num_matches, task.H, thresh_h_sq);
+          task.H_ok = (task.H_inliers >= min_inliers);
+          if (task.H_ok || task.H_inliers >= kMinInliersForTrack)
+            task.H_mask = compute_h_mask(task.H, task.coords, task.num_matches, thresh_h_sq);
+        }
+#else
+        task.H_inliers = gpu_ransac_H(pts.data(), task.num_matches, task.H, thresh_h_sq);
+        task.H_ok = (task.H_inliers >= min_inliers);
+        if (task.H_ok || task.H_inliers >= kMinInliersForTrack)
+          task.H_mask = compute_h_mask(task.H, task.coords, task.num_matches, thresh_h_sq);
+#endif
+      } else {
+        if (estimate_homography_poselib(task.coords, task.num_matches, thresh_h, ransac_iter,
+                                        task.H, &task.H_mask, &task.H_inliers)) {
+          task.H_ok = (task.H_inliers >= min_inliers);
+          if (!task.H_ok && task.H_inliers < kMinInliersForTrack)
+            task.H_mask.clear();
+        }
+      }
+    }
+  };
+
+  auto run_post_f_for_task = [&](int ti) {
+    auto t0 = std::chrono::high_resolution_clock::now();
+    estimate_eh_for_task(ti, false);
+    run_post_f_tail(ti, t0);
+  };
+
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+  auto cuda_geo_eh_batch_for_tasks = [&](const std::vector<int>& tis) {
+    if (!use_cuda_geo_ransac)
+      return;
+
+    auto intrinsic_valid = [](const insight::camera::Intrinsics& K) {
+      return K.fx > 1e-6 && K.fy > 1e-6;
+    };
+
+    if (estimate_E && e_backend == EssentialBackend::kGpu) {
+      std::vector<int> e_tis;
+      std::vector<std::vector<Match2D>> e_norm;
+      std::vector<float> e_thresh_sq;
+      std::vector<CudaGeoBatchItem> e_items;
+      e_tis.reserve(tis.size());
+      e_norm.reserve(tis.size());
+      e_thresh_sq.reserve(tis.size());
+      e_items.reserve(tis.size());
+
+      for (int ti : tis) {
+        GeoTask& task = tasks[static_cast<size_t>(ti)];
+        const int i1 = static_cast<int>(task.image1_index);
+        const int i2 = static_cast<int>(task.image2_index);
+        const insight::camera::Intrinsics* pK1 = nullptr;
+        const insight::camera::Intrinsics* pK2 = nullptr;
+        if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() && i2 >= 0 &&
+            i2 < (int)image_index_intrinsics.size() &&
+            intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i1)]) &&
+            intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i2)])) {
+          pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
+          pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
+        }
+        if (!pK1 || !pK2)
+          continue;
+
+        const insight::camera::Intrinsics& K1 = *pK1;
+        const insight::camera::Intrinsics& K2 = *pK2;
+        std::vector<Match2D> pts(static_cast<size_t>(task.num_matches));
+        for (int k = 0; k < task.num_matches; k++) {
+          pts[static_cast<size_t>(k)].x1 = task.coords[static_cast<size_t>(k) * 4 + 0];
+          pts[static_cast<size_t>(k)].y1 = task.coords[static_cast<size_t>(k) * 4 + 1];
+          pts[static_cast<size_t>(k)].x2 = task.coords[static_cast<size_t>(k) * 4 + 2];
+          pts[static_cast<size_t>(k)].y2 = task.coords[static_cast<size_t>(k) * 4 + 3];
+        }
+        std::vector<Match2D> pts_norm(static_cast<size_t>(task.num_matches));
+        for (int k = 0; k < task.num_matches; k++) {
+          pts_norm[static_cast<size_t>(k)].x1 =
+              static_cast<float>((pts[static_cast<size_t>(k)].x1 - K1.cx) / K1.fx);
+          pts_norm[static_cast<size_t>(k)].y1 =
+              static_cast<float>((pts[static_cast<size_t>(k)].y1 - K1.cy) / K1.fy);
+          pts_norm[static_cast<size_t>(k)].x2 =
+              static_cast<float>((pts[static_cast<size_t>(k)].x2 - K2.cx) / K2.fx);
+          pts_norm[static_cast<size_t>(k)].y2 =
+              static_cast<float>((pts[static_cast<size_t>(k)].y2 - K2.cy) / K2.fy);
+        }
+        const double f_avg = std::sqrt(K1.fx * K1.fy * K2.fx * K2.fy);
+        const float thresh_e_norm = static_cast<float>(thresh_f / std::sqrt(f_avg));
+        const float thresh_e_sq = thresh_e_norm * thresh_e_norm;
+
+        e_tis.push_back(ti);
+        e_norm.push_back(std::move(pts_norm));
+        e_thresh_sq.push_back(thresh_e_sq);
+        CudaGeoBatchItem it{};
+        it.matches = e_norm.back().data();
+        it.n = task.num_matches;
+        it.thresh_sq = e_thresh_sq.back();
+        e_items.push_back(it);
+      }
+
+      if (!e_items.empty()) {
+        const int Pe = static_cast<int>(e_items.size());
+        std::vector<float> e_mats(static_cast<size_t>(Pe) * 9u);
+        std::vector<int> e_inls(static_cast<size_t>(Pe));
+        if (cuda_ransac_E_batch(e_items.data(), Pe, e_mats.data(), e_inls.data()) != 0)
+          LOG(FATAL) << "cuda_ransac_E_batch failed";
+        for (int j = 0; j < Pe; ++j) {
+          const int tti = e_tis[static_cast<size_t>(j)];
+          GeoTask& tt = tasks[static_cast<size_t>(tti)];
+          for (int c = 0; c < 9; ++c)
+            tt.E[c] = e_mats[static_cast<size_t>(j) * 9u + static_cast<size_t>(c)];
+          tt.E_inliers = e_inls[static_cast<size_t>(j)];
+          tt.E_ok = (tt.E_inliers >= min_inliers);
+          const int i1 = static_cast<int>(tt.image1_index);
+          const int i2 = static_cast<int>(tt.image2_index);
+          const insight::camera::Intrinsics& K1 = image_index_intrinsics[static_cast<size_t>(i1)];
+          const insight::camera::Intrinsics& K2 = image_index_intrinsics[static_cast<size_t>(i2)];
+          const float te_sq = e_thresh_sq[static_cast<size_t>(j)];
+          if (tt.E_ok || tt.E_inliers >= kMinInliersForTrack)
+            tt.E_mask = compute_e_mask(tt.E, tt.coords, tt.num_matches, K1, K2, te_sq);
+        }
+      }
+    }
+
+    if (estimate_H && h_backend == HomographyBackend::kGpu) {
+      std::vector<std::vector<Match2D>> h_pts;
+      std::vector<CudaGeoBatchItem> h_items;
+      h_pts.reserve(tis.size());
+      h_items.reserve(tis.size());
+      for (int ti : tis) {
+        GeoTask& task = tasks[static_cast<size_t>(ti)];
+        std::vector<Match2D> pts(static_cast<size_t>(task.num_matches));
+        for (int k = 0; k < task.num_matches; k++) {
+          pts[static_cast<size_t>(k)].x1 = task.coords[static_cast<size_t>(k) * 4 + 0];
+          pts[static_cast<size_t>(k)].y1 = task.coords[static_cast<size_t>(k) * 4 + 1];
+          pts[static_cast<size_t>(k)].x2 = task.coords[static_cast<size_t>(k) * 4 + 2];
+          pts[static_cast<size_t>(k)].y2 = task.coords[static_cast<size_t>(k) * 4 + 3];
+        }
+        h_pts.push_back(std::move(pts));
+        CudaGeoBatchItem it{};
+        it.matches = h_pts.back().data();
+        it.n = task.num_matches;
+        it.thresh_sq = thresh_h_sq;
+        h_items.push_back(it);
+      }
+      if (!h_items.empty()) {
+        const int Ph = static_cast<int>(h_items.size());
+        std::vector<float> h_mats(static_cast<size_t>(Ph) * 9u);
+        std::vector<int> h_inls(static_cast<size_t>(Ph));
+        if (cuda_ransac_H_batch(h_items.data(), Ph, h_mats.data(), h_inls.data()) != 0)
+          LOG(FATAL) << "cuda_ransac_H_batch failed";
+        for (int j = 0; j < Ph; ++j) {
+          const int tti = tis[static_cast<size_t>(j)];
+          GeoTask& tt = tasks[static_cast<size_t>(tti)];
+          for (int c = 0; c < 9; ++c)
+            tt.H[c] = h_mats[static_cast<size_t>(j) * 9u + static_cast<size_t>(c)];
+          tt.H_inliers = h_inls[static_cast<size_t>(j)];
+          tt.H_ok = (tt.H_inliers >= min_inliers);
+          if (tt.H_ok || tt.H_inliers >= kMinInliersForTrack)
+            tt.H_mask = compute_h_mask(tt.H, tt.coords, tt.num_matches, thresh_h_sq);
+        }
+      }
+    }
+  };
+
+  auto flush_cuda_f_batch = [&]() {
+    if (cuda_f_batch_idx.empty())
+      return;
+    const int B = static_cast<int>(cuda_f_batch_idx.size());
+    std::vector<CudaGeoBatchItem> items(static_cast<size_t>(B));
+    std::vector<float> mats(static_cast<size_t>(B) * 9u);
+    std::vector<int> inls(static_cast<size_t>(B));
+    for (int j = 0; j < B; ++j) {
+      items[static_cast<size_t>(j)].matches = cuda_f_batch_pts[static_cast<size_t>(j)].data();
+      items[static_cast<size_t>(j)].n =
+          static_cast<int>(cuda_f_batch_pts[static_cast<size_t>(j)].size());
+      items[static_cast<size_t>(j)].thresh_sq = thresh_f_sq;
+    }
+    if (cuda_ransac_F_batch(items.data(), B, mats.data(), inls.data()) != 0)
+      LOG(FATAL) << "cuda_ransac_F_batch failed";
+
+    std::vector<int> order = cuda_f_batch_idx;
+    cuda_f_batch_idx.clear();
+    cuda_f_batch_pts.clear();
+
+    for (int j = 0; j < B; ++j) {
+      const int ti = order[static_cast<size_t>(j)];
+      GeoTask& tt = tasks[static_cast<size_t>(ti)];
+      for (int c = 0; c < 9; ++c)
+        tt.F[c] = mats[static_cast<size_t>(j) * 9u + static_cast<size_t>(c)];
+      tt.F_inliers = inls[static_cast<size_t>(j)];
+      tt.F_ok = (tt.F_inliers >= min_inliers);
+      if (tt.F_ok || tt.F_inliers >= kMinInliersForTrack)
+        tt.F_mask = compute_f_mask(tt.F, tt.coords, tt.num_matches, thresh_f_sq);
+    }
+
+    cuda_geo_eh_batch_for_tasks(order);
+
+    for (int j = 0; j < B; ++j) {
+      const int ti = order[static_cast<size_t>(j)];
+      auto t0 = std::chrono::high_resolution_clock::now();
+      estimate_eh_for_task(ti, true);
+      run_post_f_tail(ti, t0);
+    }
+  };
+#endif
+
+  // ── Stage 2: GPU RANSAC (single thread = main thread, EGL / CUDA) ─────────
+  auto estimate_function = [&](int i) {
+    GeoTask& task = tasks[static_cast<size_t>(i)];
+
+    if (task.num_matches < 8) {
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+      if (use_cuda_geo_ransac && f_backend == FundamentalBackend::kGpu && i == total - 1)
+        flush_cuda_f_batch();
+#endif
+      task.coords.clear();
+      return;
+    }
+
+    std::vector<Match2D> pts(static_cast<size_t>(task.num_matches));
+    for (int k = 0; k < task.num_matches; k++) {
+      pts[static_cast<size_t>(k)].x1 = task.coords[static_cast<size_t>(k) * 4 + 0];
+      pts[static_cast<size_t>(k)].y1 = task.coords[static_cast<size_t>(k) * 4 + 1];
+      pts[static_cast<size_t>(k)].x2 = task.coords[static_cast<size_t>(k) * 4 + 2];
+      pts[static_cast<size_t>(k)].y2 = task.coords[static_cast<size_t>(k) * 4 + 3];
+    }
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // ── Estimate F ───────────────────────────────────────────────────
+    if (f_backend == FundamentalBackend::kGpu) {
+      if (use_cuda_geo_ransac) {
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+        cuda_f_batch_idx.push_back(i);
+        cuda_f_batch_pts.push_back(std::move(pts));
+        const bool flush_f =
+            (static_cast<int>(cuda_f_batch_idx.size()) >= INSIGHTAT_CUDA_GEO_BATCH_MAX_PAIRS) ||
+            (i == total - 1);
+        if (!flush_f)
+          return;
+
+        flush_cuda_f_batch();
+        (void)t0;
+        return;
+#else
+        task.F_inliers = gpu_ransac_F(pts.data(), task.num_matches, task.F, thresh_f_sq);
+        task.F_ok = (task.F_inliers >= min_inliers);
+        if (task.F_ok || task.F_inliers >= kMinInliersForTrack)
+          task.F_mask = compute_f_mask(task.F, task.coords, task.num_matches, thresh_f_sq);
+        run_post_f_for_task(i);
+        return;
+#endif
+      } else {
+        task.F_inliers = gpu_ransac_F(pts.data(), task.num_matches, task.F, thresh_f_sq);
+        task.F_ok = (task.F_inliers >= min_inliers);
+        if (task.F_ok || task.F_inliers >= kMinInliersForTrack)
+          task.F_mask = compute_f_mask(task.F, task.coords, task.num_matches, thresh_f_sq);
+        run_post_f_for_task(i);
+        return;
+      }
+    } else {
+      if (estimate_fundamental_poselib(task.coords, task.num_matches, thresh_f, ransac_iter, task.F,
+                                       &task.F_mask, &task.F_inliers)) {
+        task.F_ok = (task.F_inliers >= min_inliers);
+        if (!task.F_ok && task.F_inliers < kMinInliersForTrack)
+          task.F_mask.clear();
+      }
+    }
+
+    run_post_f_for_task(i);
+    (void)t0;
+  };
+
   StageCurrent* geoStage;
   Stage* cpuGeoStage;
-  if (backend_str == "gpu") {
+  if (use_cuda_geo_ransac || use_gl_geo_ransac) {
     geoStage = new StageCurrent("GeoEstimate", 1, GPU_Q, estimate_function);
     // ── Chain and run ────────────────────────────────────────────────────────
     chain(loadStage, *geoStage);
@@ -1071,94 +1368,112 @@ int main(int argc, char* argv[]) {
       loadStage.push(i);
   });
 
-  if (backend_str == "gpu") {
-    geoStage->run(); // blocks until all GPU work done
+  if (use_cuda_geo_ransac || use_gl_geo_ransac) {
+    geoStage->run(); // blocks until all GPU work done (CUDA or EGL context on main thread)
   }
 
   push_thread.join();
   loadStage.wait();
-  if (backend_str == "gpu") {
+  if (use_cuda_geo_ransac || use_gl_geo_ransac) {
 
   } else {
     cpuGeoStage->wait();
   }
-  // ── Two-view batch (when --twoview): E→R,t, GPU triangulate, stability ───
+  // ── Two-view batch (when --twoview): E→R,t, triangulate, stability ─────────
   if (run_twoview) {
-    LOG(INFO) << "Running two-view reconstruction for " << total << " pairs (GPU) ...";
-    if (need_gpu_geo)
-      gpu_geo_shutdown();
-
-    if (gpu_twoview_init() != 0) {
-      LOG(ERROR) << "gpu_twoview_init failed, skipping two-view reconstruction";
-      exit(1);
+    if (use_cuda_geo_ransac) {
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+      cuda_geo_shutdown();
+#endif
+      LOG(INFO) << "Running two-view reconstruction for " << total
+                << " pairs (CPU linear triangulation, no OpenGL twoview) ...";
     } else {
-      for (int i = 0; i < total; ++i) {
-        GeoTask& task = tasks[i];
-        if (!task.F_ok || task.degeneracy.is_degenerate || task.num_matches < 8)
+      if (need_gpu_geo && use_gl_geo_ransac)
+        gpu_geo_shutdown();
+      LOG(INFO) << "Running two-view reconstruction for " << total << " pairs (GPU triangulation) ...";
+      if (gpu_twoview_init() != 0) {
+        LOG(ERROR) << "gpu_twoview_init failed, skipping two-view reconstruction";
+        return 1;
+      }
+    }
+
+    auto process_twoview_one = [&](int i, bool use_cpu_tri) {
+      GeoTask& task = tasks[static_cast<size_t>(i)];
+      if (!task.F_ok || task.degeneracy.is_degenerate || task.num_matches < 8)
+        return;
+
+      int i1 = static_cast<int>(task.image1_index), i2 = static_cast<int>(task.image2_index);
+      const insight::camera::Intrinsics* pK1 = nullptr;
+      const insight::camera::Intrinsics* pK2 = nullptr;
+      auto intrinsic_valid = [](const insight::camera::Intrinsics& K) {
+        return K.fx > 1e-6 && K.fy > 1e-6;
+      };
+      if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() && i2 >= 0 &&
+          i2 < (int)image_index_intrinsics.size() &&
+          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i1)]) &&
+          intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i2)])) {
+        pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
+        pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
+      }
+      if (!pK1 || !pK2) {
+        LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "-" << task.image2_index
+                     << ": cannot find K, skipping two-view reconstruction";
+        return;
+      }
+
+      const insight::camera::Intrinsics& K1 = *pK1;
+      const insight::camera::Intrinsics& K2 = *pK2;
+
+      Eigen::Matrix3d K1m, K2m, F_mat;
+      F_mat = insight::sfm::float_array_to_matrix3d(task.F);
+      K1m << K1.fx, 0, K1.cx, 0, K1.fy, K1.cy, 0, 0, 1;
+      K2m << K2.fx, 0, K2.cx, 0, K2.fy, K2.cy, 0, 0, 1;
+      Eigen::Matrix3d E_mat = K2m.transpose() * F_mat * K1m;
+      E_mat = insight::sfm::enforce_essential(E_mat);
+
+      const std::vector<uint8_t>& inl_mask = task.F_mask;
+      std::vector<Eigen::Vector2d> pts1_n, pts2_n;
+      for (int k = 0; k < task.num_matches; k++) {
+        if (inl_mask[static_cast<size_t>(k)] == 0)
           continue;
+        pts1_n.emplace_back((task.coords[static_cast<size_t>(k) * 4 + 0] - K1.cx) / K1.fx,
+                            (task.coords[static_cast<size_t>(k) * 4 + 1] - K1.cy) / K1.fy);
+        pts2_n.emplace_back((task.coords[static_cast<size_t>(k) * 4 + 2] - K2.cx) / K2.fx,
+                            (task.coords[static_cast<size_t>(k) * 4 + 3] - K2.cy) / K2.fy);
+      }
+      if ((int)pts1_n.size() < 8)
+        return;
 
-        int i1 = static_cast<int>(task.image1_index), i2 = static_cast<int>(task.image2_index);
-        const insight::camera::Intrinsics* pK1 = nullptr;
-        const insight::camera::Intrinsics* pK2 = nullptr;
-        auto intrinsic_valid = [](const insight::camera::Intrinsics& K) {
-          return K.fx > 1e-6 && K.fy > 1e-6;
-        };
-        if (i1 >= 0 && i1 < (int)image_index_intrinsics.size() && i2 >= 0 &&
-            i2 < (int)image_index_intrinsics.size() &&
-            intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i1)]) &&
-            intrinsic_valid(image_index_intrinsics[static_cast<size_t>(i2)])) {
-          pK1 = &image_index_intrinsics[static_cast<size_t>(i1)];
-          pK2 = &image_index_intrinsics[static_cast<size_t>(i2)];
-        }
-        if (!pK1 || !pK2) {
-          LOG(WARNING) << "Pair [" << i << "] " << task.image1_index << "-" << task.image2_index
-                       << ": cannot find K, skipping two-view reconstruction";
-          continue;
-        }
+      Eigen::Matrix3d R_mat;
+      Eigen::Vector3d t_vec;
+      int cheir = insight::sfm::decompose_essential(E_mat, pts1_n, pts2_n, R_mat, t_vec);
+      if (cheir < 8)
+        return;
 
-        const insight::camera::Intrinsics& K1 = *pK1;
-        const insight::camera::Intrinsics& K2 = *pK2;
+      const int n_pts = static_cast<int>(pts1_n.size());
+      std::vector<Eigen::Vector3d> points3d_eigen;
+      std::vector<Eigen::Vector2d> pts1_valid, pts2_valid;
 
-        // Two-view: always use F decomposition (E = K2^T F K1).
-        // When intrinsics are inaccurate, direct RANSAC E bakes K into inlier selection
-        // and is worse; F is estimated without K, then we apply K only for E decomposition.
-        Eigen::Matrix3d K1m, K2m, F_mat;
-        F_mat = insight::sfm::float_array_to_matrix3d(task.F);
-        K1m << K1.fx, 0, K1.cx, 0, K1.fy, K1.cy, 0, 0, 1;
-        K2m << K2.fx, 0, K2.cx, 0, K2.fy, K2.cy, 0, 0, 1;
-        Eigen::Matrix3d E_mat = K2m.transpose() * F_mat * K1m;
-        E_mat = insight::sfm::enforce_essential(E_mat);
-
-        // Use F inliers for triangulation (consistent with F-derived E)
-        const std::vector<uint8_t>& inl_mask = task.F_mask;
-        std::vector<Eigen::Vector2d> pts1_n, pts2_n;
-        for (int k = 0; k < task.num_matches; k++) {
-          if (inl_mask[k] == 0)
-            continue;
-          pts1_n.emplace_back((task.coords[k * 4 + 0] - K1.cx) / K1.fx,
-                              (task.coords[k * 4 + 1] - K1.cy) / K1.fy);
-          pts2_n.emplace_back((task.coords[k * 4 + 2] - K2.cx) / K2.fx,
-                              (task.coords[k * 4 + 3] - K2.cy) / K2.fy);
-        }
-        if ((int)pts1_n.size() < 8)
-          continue;
-
-        Eigen::Matrix3d R_mat;
-        Eigen::Vector3d t_vec;
-        int cheir = insight::sfm::decompose_essential(E_mat, pts1_n, pts2_n, R_mat, t_vec);
-        if (cheir < 8)
-          continue;
-
-        // GPU triangulate
-        const int n_pts = static_cast<int>(pts1_n.size());
-        std::vector<float> pts_n_flat(n_pts * 4);
+      if (use_cpu_tri) {
+        const std::vector<Eigen::Vector3d> X_all =
+            insight::sfm::triangulate_points(pts1_n, pts2_n, R_mat, t_vec);
         for (int k = 0; k < n_pts; k++) {
-          pts_n_flat[k * 4 + 0] = static_cast<float>(pts1_n[k].x());
-          pts_n_flat[k * 4 + 1] = static_cast<float>(pts1_n[k].y());
-          pts_n_flat[k * 4 + 2] = static_cast<float>(pts2_n[k].x());
-          pts_n_flat[k * 4 + 3] = static_cast<float>(pts2_n[k].y());
+          const Eigen::Vector3d& X = X_all[static_cast<size_t>(k)];
+          if (!X.allFinite() || X.z() <= 1e-9)
+            continue;
+          points3d_eigen.push_back(X);
+          pts1_valid.push_back(pts1_n[static_cast<size_t>(k)]);
+          pts2_valid.push_back(pts2_n[static_cast<size_t>(k)]);
         }
-        std::vector<float> X_out(n_pts * 3);
+      } else {
+        std::vector<float> pts_n_flat(static_cast<size_t>(n_pts) * 4u);
+        for (int k = 0; k < n_pts; k++) {
+          pts_n_flat[static_cast<size_t>(k) * 4u + 0] = static_cast<float>(pts1_n[static_cast<size_t>(k)].x());
+          pts_n_flat[static_cast<size_t>(k) * 4u + 1] = static_cast<float>(pts1_n[static_cast<size_t>(k)].y());
+          pts_n_flat[static_cast<size_t>(k) * 4u + 2] = static_cast<float>(pts2_n[static_cast<size_t>(k)].x());
+          pts_n_flat[static_cast<size_t>(k) * 4u + 3] = static_cast<float>(pts2_n[static_cast<size_t>(k)].y());
+        }
+        std::vector<float> X_out(static_cast<size_t>(n_pts) * 3u);
         float Rf[9], tf[3];
         for (int r = 0; r < 3; r++)
           for (int c = 0; c < 3; c++)
@@ -1166,47 +1481,51 @@ int main(int argc, char* argv[]) {
         tf[0] = static_cast<float>(t_vec.x());
         tf[1] = static_cast<float>(t_vec.y());
         tf[2] = static_cast<float>(t_vec.z());
-
         gpu_triangulate(pts_n_flat.data(), n_pts, Rf, tf, X_out.data());
-
-        std::vector<Eigen::Vector3d> points3d_eigen;
-        std::vector<Eigen::Vector2d> pts1_valid, pts2_valid;
         for (int k = 0; k < n_pts; k++) {
-          float x = X_out[k * 3 + 0], y = X_out[k * 3 + 1], z = X_out[k * 3 + 2];
+          float x = X_out[static_cast<size_t>(k) * 3u + 0];
+          float y = X_out[static_cast<size_t>(k) * 3u + 1];
+          float z = X_out[static_cast<size_t>(k) * 3u + 2];
           if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || z <= 1e-9f)
             continue;
           points3d_eigen.emplace_back(x, y, z);
-          pts1_valid.push_back(pts1_n[k]);
-          pts2_valid.push_back(pts2_n[k]);
-        }
-        const int n_valid = static_cast<int>(points3d_eigen.size());
-        if (n_valid < 10)
-          continue;
-
-        task.stability = insight::sfm::compute_stability_metrics(points3d_eigen, pts1_valid,
-                                                                 pts2_valid, R_mat, t_vec);
-
-        if (task.stability.is_stable && n_valid >= min_points_twoview) {
-          task.twoview_ok = true;
-          task.num_valid_points = n_valid;
-          insight::sfm::matrix3d_to_float_array(R_mat, task.R);
-          task.t[0] = static_cast<float>(t_vec.x());
-          task.t[1] = static_cast<float>(t_vec.y());
-          task.t[2] = static_cast<float>(t_vec.z());
-          task.points3d.resize(n_valid * 3);
-          for (int k = 0; k < n_valid; k++) {
-            task.points3d[k * 3 + 0] = static_cast<float>(points3d_eigen[k].x());
-            task.points3d[k * 3 + 1] = static_cast<float>(points3d_eigen[k].y());
-            task.points3d[k * 3 + 2] = static_cast<float>(points3d_eigen[k].z());
-          }
-          LOG(INFO) << "TwoView [" << i << "] " << task.image1_index << "–" << task.image2_index
-                    << "  pts=" << n_valid << "  parallax=" << task.stability.median_parallax_deg
-                    << "°"
-                    << "  d/b=" << task.stability.median_depth_baseline;
+          pts1_valid.push_back(pts1_n[static_cast<size_t>(k)]);
+          pts2_valid.push_back(pts2_n[static_cast<size_t>(k)]);
         }
       }
-      gpu_twoview_shutdown();
+
+      const int n_valid = static_cast<int>(points3d_eigen.size());
+      if (n_valid < 10)
+        return;
+
+      task.stability = insight::sfm::compute_stability_metrics(points3d_eigen, pts1_valid, pts2_valid,
+                                                               R_mat, t_vec);
+
+      if (task.stability.is_stable && n_valid >= min_points_twoview) {
+        task.twoview_ok = true;
+        task.num_valid_points = n_valid;
+        insight::sfm::matrix3d_to_float_array(R_mat, task.R);
+        task.t[0] = static_cast<float>(t_vec.x());
+        task.t[1] = static_cast<float>(t_vec.y());
+        task.t[2] = static_cast<float>(t_vec.z());
+        task.points3d.resize(static_cast<size_t>(n_valid) * 3u);
+        for (int k = 0; k < n_valid; k++) {
+          task.points3d[static_cast<size_t>(k) * 3u + 0] = static_cast<float>(points3d_eigen[static_cast<size_t>(k)].x());
+          task.points3d[static_cast<size_t>(k) * 3u + 1] = static_cast<float>(points3d_eigen[static_cast<size_t>(k)].y());
+          task.points3d[static_cast<size_t>(k) * 3u + 2] = static_cast<float>(points3d_eigen[static_cast<size_t>(k)].z());
+        }
+        LOG(INFO) << "TwoView [" << i << "] " << task.image1_index << "–" << task.image2_index
+                  << "  pts=" << n_valid << "  parallax=" << task.stability.median_parallax_deg << "°"
+                  << "  d/b=" << task.stability.median_depth_baseline;
+      }
+    };
+
+    for (int i = 0; i < total; ++i) {
+      process_twoview_one(i, use_cuda_geo_ransac);
     }
+
+    if (!use_cuda_geo_ransac)
+      gpu_twoview_shutdown();
 
     // Push all to write stage
     for (int i = 0; i < total; ++i)
@@ -1341,7 +1660,14 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  if (!run_twoview && need_gpu_geo)
-    gpu_geo_shutdown();
+  if (!run_twoview && need_gpu_geo) {
+    if (use_cuda_geo_ransac) {
+#ifdef INSIGHTAT_HAS_CUDA_GEO
+      cuda_geo_shutdown();
+#endif
+    } else {
+      gpu_geo_shutdown();
+    }
+  }
   return 0;
 }

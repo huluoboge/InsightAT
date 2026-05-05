@@ -38,9 +38,9 @@
 // were deprecated in 2.1 and removed in 2.2+.
 // We use a compile-time check so the same source builds with both old and new Ceres.
 #if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 1)
-  #define CERES_HAS_MANIFOLD 1
+#define CERES_HAS_MANIFOLD 1
 #else
-  #define CERES_HAS_MANIFOLD 0
+#define CERES_HAS_MANIFOLD 0
 #endif
 
 namespace insight {
@@ -662,6 +662,106 @@ bool TikhonovIntrCost::Evaluate(double const* const* params, double* residuals,
   return true;
 }
 
+namespace {
+
+// Ceres 2.3+ exposes CUDA_SPARSE (cuDSS / cuSPARSE) for SPARSE_SCHUR / SPARSE_NORMAL_CHOLESKY;
+// CX_SPARSE was removed from the public enum in 2.3+.
+#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 3)
+#define INSIGHTAT_CERES_HAS_CUDA_SPARSE 1
+#else
+#define INSIGHTAT_CERES_HAS_CUDA_SPARSE 0
+#endif
+#if CERES_VERSION_MAJOR < 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR < 3)
+#define INSIGHTAT_CERES_HAS_CX_SPARSE_ENUM 1
+#else
+#define INSIGHTAT_CERES_HAS_CX_SPARSE_ENUM 0
+#endif
+
+void fill_common_solver_options(const BAInput& input, int max_iterations, ceres::Solver::Options* o) {
+  o->max_num_iterations =
+      (input.solver_max_num_iterations > 0) ? input.solver_max_num_iterations : max_iterations;
+  o->minimizer_progress_to_stdout = false;
+  o->num_threads = input.num_threads > 0
+                       ? input.num_threads
+                       : static_cast<int>(std::thread::hardware_concurrency());
+  if (o->num_threads > static_cast<int>(std::thread::hardware_concurrency())) {
+    LOG(WARNING) << "Requested num_threads=" << o->num_threads
+                 << " exceeds hardware concurrency; using max available threads instead.";
+    o->num_threads = static_cast<int>(std::thread::hardware_concurrency());
+  }
+  if (input.solver_gradient_tolerance > 0.0)
+    o->gradient_tolerance = input.solver_gradient_tolerance;
+  if (input.solver_function_tolerance > 0.0)
+    o->function_tolerance = input.solver_function_tolerance;
+  if (input.solver_parameter_tolerance > 0.0)
+    o->parameter_tolerance = input.solver_parameter_tolerance;
+}
+
+void configure_dense_schur_small_camera(ceres::Solver::Options* o) {
+  o->linear_solver_type = ceres::DENSE_SCHUR;
+  o->preconditioner_type = ceres::JACOBI;
+#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
+  if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
+    o->dense_linear_algebra_library_type = ceres::CUDA;
+    LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR + dense CUDA (Ceres " << CERES_VERSION_STRING
+              << ")";
+    return;
+  }
+#endif
+  o->dense_linear_algebra_library_type = ceres::EIGEN;
+  LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR + dense Eigen (CUDA/LAPACK not used)";
+}
+
+void configure_sparse_schur_large_camera(ceres::Solver::Options* o) {
+  o->linear_solver_type = ceres::SPARSE_SCHUR;
+  o->preconditioner_type = ceres::JACOBI;
+
+  auto try_sparse_lib = [&](ceres::SparseLinearAlgebraLibraryType lib, const char* label) -> bool {
+    if (!ceres::IsSparseLinearAlgebraLibraryTypeAvailable(lib))
+      return false;
+    o->sparse_linear_algebra_library_type = lib;
+    LOG(INFO) << "global_bundle_analytic: SPARSE_SCHUR + " << label;
+    return true;
+  };
+
+#if INSIGHTAT_CERES_HAS_CUDA_SPARSE
+  if (try_sparse_lib(ceres::CUDA_SPARSE, "CUDA_SPARSE (cuDSS/cuSPARSE)"))
+    return;
+#endif
+  if (try_sparse_lib(ceres::SUITE_SPARSE, "SUITE_SPARSE (CHOLMOD)"))
+    return;
+#if INSIGHTAT_CERES_HAS_CX_SPARSE_ENUM
+  if (try_sparse_lib(ceres::CX_SPARSE, "CX_SPARSE"))
+    return;
+#endif
+  o->sparse_linear_algebra_library_type = ceres::EIGEN_SPARSE;
+  LOG(INFO) << "global_bundle_analytic: SPARSE_SCHUR + EIGEN_SPARSE (last resort)";
+}
+
+void configure_iterative_schur_retry(ceres::Solver::Options* o) {
+  o->linear_solver_type = ceres::ITERATIVE_SCHUR;
+  o->preconditioner_type = ceres::JACOBI;
+  o->max_linear_solver_iterations = 500;
+  o->eta = 0.01;
+#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
+  if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
+    o->dense_linear_algebra_library_type = ceres::CUDA;
+    LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI + dense CUDA (retry; Ceres "
+              << CERES_VERSION_STRING << ")";
+    return;
+  }
+#endif
+  if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::LAPACK)) {
+    o->dense_linear_algebra_library_type = ceres::LAPACK;
+    LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI + LAPACK (retry)";
+    return;
+  }
+  o->dense_linear_algebra_library_type = ceres::EIGEN;
+  LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI + Eigen dense (retry)";
+}
+
+} // namespace
+
 // ─────────────────────────────────────────────────────────────────────────────
 // global_bundle_analytic
 // ─────────────────────────────────────────────────────────────────────────────
@@ -754,7 +854,8 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     // Quaternion + translation parameterisation for the 7-element pose block
 #if CERES_HAS_MANIFOLD
     problem.SetManifold(
-        pp, new ceres::ProductManifold<ceres::EigenQuaternionManifold, ceres::EuclideanManifold<3>>{});
+        pp,
+        new ceres::ProductManifold<ceres::EigenQuaternionManifold, ceres::EuclideanManifold<3>>{});
 #else
     problem.SetParameterization(
         pp, new ceres::ProductParameterization(new ceres::EigenQuaternionParameterization(),
@@ -860,10 +961,9 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
       // Radial distortion bounds — tight by default; relaxed when observation count is high.
       // When BA uses a subset, input.camera_total_obs provides stable full-scene counts
       // to avoid oscillation between tight/relaxed strategies across BA calls.
-      const int total_obs_c =
-          (input.camera_total_obs.size() > static_cast<size_t>(c))
-              ? input.camera_total_obs[static_cast<size_t>(c)]
-              : obs_per_cam_fallback[static_cast<size_t>(c)];
+      const int total_obs_c = (input.camera_total_obs.size() > static_cast<size_t>(c))
+                                  ? input.camera_total_obs[static_cast<size_t>(c)]
+                                  : obs_per_cam_fallback[static_cast<size_t>(c)];
       const bool use_relaxed_bounds = (input.relax_intrinsics_obs_threshold > 0) &&
                                       (total_obs_c >= input.relax_intrinsics_obs_threshold);
       if (use_relaxed_bounds) {
@@ -969,103 +1069,23 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   }
 
   // ── Solve ─────────────────────────────────────────────────────────────────
-  ceres::Solver::Options options;
-  options.max_num_iterations =
-      (input.solver_max_num_iterations > 0) ? input.solver_max_num_iterations : max_iterations;
-  options.minimizer_progress_to_stdout = false;
-
-  // Auto-select linear solver based on variable camera count.
-  //
-  // DENSE_SCHUR: Schur complement is (6*n_var)×(6*n_var) dense – solved by LAPACK.
-  //   · LAPACK's pivot threshold is more permissive than CHOLMOD's strict PD check,
-  //     so it survives near-degenerate local configurations that kill SPARSE_SCHUR.
-  //   · Very fast for n_var ≤ 300 (Schur ≤ 2700×2700); use as first choice for local BA.
-  //
-  // ITERATIVE_SCHUR + SCHUR_JACOBI: preferred for large problems.
-  //   · No explicit Schur complement factorization — uses PCG (Preconditioned Conjugate
-  //     Gradients) with implicit S·v products.  No CHOLMOD PD requirement.
-  //   · SCHUR_JACOBI preconditioner uses block-diagonal of S — better conditioned than
-  //     plain JACOBI for BA structure, especially when optimizing intrinsics.
-  //   · Ceres ≥ 2.2 can accelerate this path with CUDA (cuSPARSE/cuSOLVER).
-  //
-  // Why NOT SPARSE_SCHUR: it uses CHOLMOD direct Cholesky, which requires the Schur
-  //   complement to be strictly positive definite. When optimizing intrinsics (fx, sigma,
-  //   k1-k3), the near-collinearity of radial polynomial terms at aerial nadir r-ranges
-  //   (0.4–0.7·r_max) makes S indefinite → CHOLMOD fails. ITERATIVE_SCHUR avoids this.
+  // Branch A (small problem): DENSE_SCHUR + dense CUDA if available, else dense Eigen.
+  // Branch B (large problem): SPARSE_SCHUR with sparse backend priority
+  //   CUDA_SPARSE (Ceres ≥ 2.3) → SUITE_SPARSE → CX_SPARSE (Ceres < 2.3 only) → EIGEN_SPARSE.
+  //   If that BA is not usable, retry once with ITERATIVE_SCHUR + JACOBI (legacy large path).
+  // Dense path has no automatic retry: failure is final.
   const int kDenseSchurMaxVariableCams = (input.solver_dense_schur_max_variable_cams > 0)
                                              ? input.solver_dense_schur_max_variable_cams
                                              : 300;
-  int n_variable_cams = 0;
-  for (int i = 0; i < n_cams; ++i) {
-    const bool pose_fixed =
-        (input.fix_pose.size() > static_cast<size_t>(i) && input.fix_pose[static_cast<size_t>(i)]);
-    if (!pose_fixed)
-      ++n_variable_cams;
-  }
+  const bool use_dense_schur_branch = (n_cams < kDenseSchurMaxVariableCams);
 
-  if (n_cams < kDenseSchurMaxVariableCams) {
-    options.linear_solver_type = ceres::DENSE_SCHUR;
-    options.preconditioner_type = ceres::JACOBI;
-    // Ceres ≥ 2.2: CUDA-accelerate the dense Schur complement solve (cuSOLVER),
-    // but only if Ceres was actually built with CUDA support.
-    // Fallback priority: CUDA > LAPACK > EIGEN.
-#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
-    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
-      options.dense_linear_algebra_library_type = ceres::CUDA;
-      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with CUDA (Ceres " << CERES_VERSION_STRING << ")";
-    } else
-#endif
-    // if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::LAPACK)) {
-    //   options.dense_linear_algebra_library_type = ceres::LAPACK;
-    //   LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with LAPACK";
-    // } else {
-      options.dense_linear_algebra_library_type = ceres::EIGEN;
-      LOG(INFO) << "global_bundle_analytic: DENSE_SCHUR with Eigen (no LAPACK)";
-    // }
+  ceres::Solver::Options options;
+  fill_common_solver_options(input, max_iterations, &options);
+  if (use_dense_schur_branch) {
+    configure_dense_schur_small_camera(&options);
   } else {
-    options.linear_solver_type = ceres::ITERATIVE_SCHUR;
-    // JACOBI preconditioner: uses only the scalar diagonal of JᵀJ.
-    //
-    // Why NOT SCHUR_JACOBI:  SCHUR_JACOBI inverts the block-diagonal of the Schur
-    // complement S.  Each block S_ii corresponds to one camera's (pose+intrinsics)
-    // contribution.  When optimizing intrinsics, the fx/sigma/k1/k2/k3 columns of S_ii
-    // are near-collinear (radial polynomial terms at aerial nadir r-range 0.4–0.7·r_max)
-    // → S_ii becomes indefinite → block inversion fails → PCG diverges or Ceres errors.
-    // JACOBI avoids this: scalar diagonals are always ≥ 0 with observations present.
-    // Trade-off: ~1.5–2× more CG iterations, but each iteration is cheaper and robust.
-    options.preconditioner_type = ceres::JACOBI;
-    // PCG inner-loop tuning for large problems.
-    options.max_linear_solver_iterations = 500;
-    options.eta = 0.01; // inexact Newton forcing sequence
-    // Ceres ≥ 2.2: CUDA-accelerate ITERATIVE_SCHUR, if available.
-    // Fallback priority: CUDA > LAPACK > EIGEN.
-#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)
-    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
-      options.dense_linear_algebra_library_type = ceres::CUDA;
-      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR with CUDA (Ceres " << CERES_VERSION_STRING << ")";
-    } else
-#endif
-    if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::LAPACK)) {
-      options.dense_linear_algebra_library_type = ceres::LAPACK;
-      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI with LAPACK";
-    } else {
-      LOG(INFO) << "global_bundle_analytic: ITERATIVE_SCHUR + JACOBI with Eigen";
-    }
+    configure_sparse_schur_large_camera(&options);
   }
-  options.num_threads = input.num_threads > 0
-                            ? input.num_threads
-                            : static_cast<int>(std::thread::hardware_concurrency());
-  if (options.num_threads > static_cast<int>(std::thread::hardware_concurrency())) {
-    LOG(WARNING) << "Requested num_threads=" << options.num_threads
-                 << " exceeds hardware concurrency; using max available threads instead.";
-    options.num_threads = static_cast<int>(std::thread::hardware_concurrency());
-  }
-  if (input.solver_gradient_tolerance > 0.0)
-    options.gradient_tolerance = input.solver_gradient_tolerance;
-  if (input.solver_function_tolerance > 0.0)
-    options.function_tolerance = input.solver_function_tolerance;
-  if (input.solver_parameter_tolerance > 0.0)
-    options.parameter_tolerance = input.solver_parameter_tolerance;
 
   // #region agent log
   if (VLOG_IS_ON(1)) {
@@ -1076,12 +1096,22 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
-  // Fallback: if the chosen solver failed, retry with DENSE_SCHUR (LAPACK – most
-  // numerically robust).  Not needed when we already started with DENSE_SCHUR.
   if (!summary.IsSolutionUsable()) {
-    LOG(INFO) << summary.FullReport();
-    LOG(WARNING) << "global_bundle_analytic: " << summary.message;
-    return false;
+    if (use_dense_schur_branch) {
+      LOG(INFO) << summary.FullReport();
+      LOG(WARNING) << "global_bundle_analytic (dense): " << summary.message;
+      return false;
+    }
+    LOG(WARNING) << "global_bundle_analytic: SPARSE_SCHUR BA not usable (" << summary.message
+                 << "); retrying with ITERATIVE_SCHUR + JACOBI";
+    fill_common_solver_options(input, max_iterations, &options);
+    configure_iterative_schur_retry(&options);
+    ceres::Solve(options, &problem, &summary);
+    if (!summary.IsSolutionUsable()) {
+      LOG(INFO) << summary.FullReport();
+      LOG(WARNING) << "global_bundle_analytic (iterative retry): " << summary.message;
+      return false;
+    }
   }
   LOG(INFO) << summary.FullReport();
 
@@ -1119,7 +1149,7 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     K.p1 = ip[kP1];
     K.p2 = ip[kP2];
     // Preserve width/height from input (not optimised by BA).
-    K.width  = input.cameras[static_cast<size_t>(c)].width;
+    K.width = input.cameras[static_cast<size_t>(c)].width;
     K.height = input.cameras[static_cast<size_t>(c)].height;
   }
 

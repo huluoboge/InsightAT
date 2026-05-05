@@ -42,7 +42,31 @@ Historical design notes and architecture drafts live under [doc/develop/design/]
 
 ---
 
+## [0.2.0] - 2026-05-06
+
+### 构建与依赖
+
+- **CUDA 12.8**：提供与 Ceres 2.3+ **CUDA_SPARSE（cuDSS / cuSPARSE）** 协同的构建路径；默认关闭 **SiftGPU**（上游未适配 CUDA 12）。若需要 SiftGPU，可在 **CUDA 11.8** 下将 `INSIGHTAT_ENABLE_SIFTGPU=ON` 单独构建。参考根目录 `compile_appimage-12.8.sh` 对 `libcudss` 与 `LD_LIBRARY_PATH` 的说明。
+
+### 算法与性能
+
+- **稀疏 BA**：Ceres 线性求解优先尝试 `CUDA_SPARSE`，并按环境回退 SUITE_SPARSE / EIGEN_SPARSE（见 `bundle_adjustment_analytic.cpp`）。
+- **匹配**：新增 **cpu_cascade_hash** / **gpu_cascade_hash**；SfM 默认匹配为 **gpu_cascade_hash**；级联匹配输出 scale 写入修复。
+- **几何验证**：可配置 geo 后端，默认 CUDA；CUDA 批处理 Geo RANSAC 等路径对齐 SfM 默认匹配策略。
+- **流水线**：IDC blob 追加与 GPU cascade 调度、三角化/工程路径热路径、BA 观测采样与日志分析工具等整体提速。
+
+### UI 与打包
+
+- **at_bundler_viewer**：重建加载进度、主点/取景与 Qt 部署（含 AppImage 场景）相关修复。
+
+### 基准与发布说明
+
+- ETH3D 训练子集 13 scenes 批跑对比表与作图脚本： [doc/dev-notes/release-v0.2.0.md](release-v0.2.0.md)、`benchmarks/sfm_compare/plot_eth3d_release_triple.py`。
+
+---
+
 ## 版本说明
 
 - **Unreleased**：当前开发状态，API 与数据格式可能变动，不建议用于生产环境。
-- 未来版本号将随首个稳定发布或语义化版本（如 0.1.0）一起引入。
+- **0.2.0**：见上文与 [release-v0.2.0.md](release-v0.2.0.md)。
+- **0.1.0**：首个带 AppImage/CLI 打包与公开版本说明的标签版本。

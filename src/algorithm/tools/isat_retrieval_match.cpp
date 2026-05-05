@@ -4,8 +4,12 @@
  *
  * Strategy (Wu, VisualSFM style):
  *   1. Generate exhaustive pairs from the image list
- *   2. Run isat_match on low-resolution retrieval features (GPU)
- *   3. Run isat_geo with --min-inliers 1 (F-matrix only, lenient)
+ *   2. Run matching on low-resolution retrieval features:
+ *      - isat_match (--match-impl gpu)
+ *      - isat_cpu_cascade_hashing_match (--match-impl cascade)
+ *      - isat_gpu_cascade_hashing_match (default, --match-impl cascade-gpu)
+ *   3. Run isat_geo: F RANSAC with -t 16 px, --min-inliers 6 (aligned with isat_sfm defaults;
+ *      pairs.json / neighbour graph use F_ok only — downstream SfM trusts F)
  *   4. Read geo output pairs.json, count neighbours per image
  *   5. Images with < K neighbours (default 5): add exhaustive pairs to all other images
  *   6. Merge and output final pairs.json
@@ -13,7 +17,8 @@
  * Usage:
  *   isat_retrieval_match -l images_all.json -f feat_retrieval/ -w retrieval_work/ -o pairs.json
  *
- * The tool invokes sibling isat_match and isat_geo as subprocesses.
+ * The tool invokes sibling matchers (isat_match, isat_cpu_cascade_hashing_match, or
+ * isat_gpu_cascade_hashing_match) and isat_geo as subprocesses.
  */
 
 #include <algorithm>
@@ -35,6 +40,11 @@
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+
+// isat_geo (retrieval step): same F Sampson threshold and min-inlier gate as isat_sfm defaults
+// (--geo-thresh-f / --geo-min-inliers). pairs.json lists only F_ok pairs.
+static constexpr int kRetrievalGeoMinInliers = 6;
+static constexpr const char* kRetrievalGeoThreshFPx = "16";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Subprocess
@@ -173,20 +183,42 @@ int main(int argc, char* argv[]) {
   std::string work_dir;
   std::string output_path;
   std::string match_backend = "cuda";
+  std::string match_impl = "cascade-gpu";
   std::string log_level;
   int min_neighbours = 5;
   int match_threads = 4;
   int max_features = 4096;
+  // Cascade (CPU or GPU): shared tuning; GPU-only where noted.
+  int cascade_sample_images = 256;
+  int cascade_image_block_size = 1000;
+  int cascade_min_output_matches = 0;
+  std::string cascade_cpu_preset = "modern";
+  int cascade_gpu_device = 0;
 
   CmdLine cmd("InsightAT Retrieval-by-Matching – discover pairs via exhaustive low-res matching + F verification");
   cmd.add(make_option('l', image_list, "image-list").doc("Image list JSON (images_all.json)"));
   cmd.add(make_option('f', feat_dir, "feat-dir").doc("Feature directory (.isat_feat files)"));
   cmd.add(make_option('w', work_dir, "work-dir").doc("Working directory for intermediate match/geo results"));
   cmd.add(make_option('o', output_path, "output").doc("Output pairs JSON path"));
-  cmd.add(make_option(0, match_backend, "match-backend").doc("Matching backend: cuda or glsl (default: cuda)"));
+  cmd.add(make_option(0, match_impl, "match-impl")
+              .doc("Matcher: gpu | cascade | cascade-gpu (default: cascade-gpu; "
+                   "gpu=isat_match, cascade=CPU hash, cascade-gpu=GPU hash)"));
+  cmd.add(make_option(0, match_backend, "match-backend")
+              .doc("For --match-impl=gpu only: cuda or glsl (default: cuda)"));
   cmd.add(make_option('k', min_neighbours, "min-neighbours").doc("Min neighbours; images below this get exhaustive pairs added (default: 5)"));
-  cmd.add(make_option(0, max_features, "max-features").doc("Max features per image for matching (default: 4096)"));
-  cmd.add(make_option(0, match_threads, "threads").doc("Matching threads (default: 4)"));
+  cmd.add(make_option(0, max_features, "max-features")
+              .doc("For --match-impl=gpu only: max features per image (default: 4096)"));
+  cmd.add(make_option(0, match_threads, "threads").doc("Matching worker threads (default: 4)"));
+  cmd.add(make_option(0, cascade_sample_images, "cascade-sample-images")
+              .doc("For cascade / cascade-gpu: sample images for global mean (default: 256)"));
+  cmd.add(make_option(0, cascade_image_block_size, "cascade-image-block-size")
+              .doc("For cascade / cascade-gpu: max unique images per block (default: 1000)"));
+  cmd.add(make_option(0, cascade_min_output_matches, "cascade-min-output-matches")
+              .doc("For cascade / cascade-gpu: skip writing .isat_match if matches below this (default: 0 for retrieval)"));
+  cmd.add(make_option(0, cascade_cpu_preset, "cascade-cpu-preset")
+              .doc("For --match-impl=cascade: legacy or modern (default: modern)"));
+  cmd.add(make_option(0, cascade_gpu_device, "cascade-gpu-device")
+              .doc("For --match-impl=cascade-gpu: CUDA device id (default: 0)"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
@@ -201,6 +233,22 @@ int main(int argc, char* argv[]) {
   if (cmd.checkHelp(argv[0])) return 0;
   if (image_list.empty() || feat_dir.empty() || work_dir.empty() || output_path.empty()) {
     std::cerr << "Error: -l, -f, -w, -o are all required\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (match_impl != "gpu" && match_impl != "cascade" && match_impl != "cascade-gpu") {
+    std::cerr << "Error: --match-impl must be gpu, cascade, or cascade-gpu\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (cascade_image_block_size <= 0 || cascade_sample_images <= 0 || cascade_min_output_matches < 0) {
+    std::cerr << "Error: --cascade-image-block-size and --cascade-sample-images must be > 0; "
+                 "--cascade-min-output-matches must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (match_impl == "cascade" && cascade_cpu_preset != "legacy" && cascade_cpu_preset != "modern") {
+    std::cerr << "Error: --cascade-cpu-preset must be legacy or modern\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -228,27 +276,82 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "=== Step 1/3: Generate exhaustive pairs ===";
   write_exhaustive_pairs(exhaustive_pairs.string(), n_images);
 
-  // ── Step 2: Match (low-res features, GPU) ────────────────────────────────
-  LOG(INFO) << "=== Step 2/3: Exhaustive matching (low-res) ===";
-  run_or_die("match",
-    {tool_path("isat_match"),
-     "-i", exhaustive_pairs.string(),
-     "-f", feat_dir,
-     "-o", match_dir.string(),
-     "--match-backend", match_backend,
-     "--max-features", std::to_string(max_features),
-     "--threads", std::to_string(match_threads)});
+  // ── Step 2: Match (low-res features) ─────────────────────────────────────
+  LOG(INFO) << "=== Step 2/3: Exhaustive matching (low-res, impl=" << match_impl << ") ===";
+  if (match_impl == "gpu") {
+    run_or_die("match",
+               {tool_path("isat_match"),
+                "-i",
+                exhaustive_pairs.string(),
+                "-f",
+                feat_dir,
+                "-o",
+                match_dir.string(),
+                "--match-backend",
+                match_backend,
+                "--max-features",
+                std::to_string(max_features),
+                "--threads",
+                std::to_string(match_threads)});
+  } else if (match_impl == "cascade") {
+    run_or_die("match",
+               {tool_path("isat_cpu_cascade_hashing_match"),
+                "-i",
+                exhaustive_pairs.string(),
+                "-f",
+                feat_dir,
+                "-o",
+                match_dir.string(),
+                "-j",
+                std::to_string(match_threads),
+                "--sample-images",
+                std::to_string(cascade_sample_images),
+                "--image-block-size",
+                std::to_string(cascade_image_block_size),
+                "--min-output-matches",
+                std::to_string(cascade_min_output_matches),
+                "--preset",
+                cascade_cpu_preset});
+  } else {
+    run_or_die("match",
+               {tool_path("isat_gpu_cascade_hashing_match"),
+                "-i",
+                exhaustive_pairs.string(),
+                "-f",
+                feat_dir,
+                "-o",
+                match_dir.string(),
+                "-j",
+                std::to_string(match_threads),
+                "--cuda-device",
+                std::to_string(cascade_gpu_device),
+                "--sample-images",
+                std::to_string(cascade_sample_images),
+                "--image-block-size",
+                std::to_string(cascade_image_block_size),
+                "--min-output-matches",
+                std::to_string(cascade_min_output_matches)});
+  }
 
-  // ── Step 3: Geometric verification (F only, lenient) ─────────────────────
-  LOG(INFO) << "=== Step 3/3: Geometric verification (F, min-inliers=1) ===";
+  // ── Step 3: Geometric verification (F; pairs.json = F_ok only) ────────────
+  LOG(INFO) << "=== Step 3/3: Geometric verification (F, -t=" << kRetrievalGeoThreshFPx
+            << "px, min-inliers=" << kRetrievalGeoMinInliers << ") ===";
   run_or_die("geo",
-    {tool_path("isat_geo"),
-     "-i", exhaustive_pairs.string(),
-     "-m", match_dir.string(),
-     "-o", geo_dir.string(),
-     "--image-list", image_list,
-     "--min-inliers", "1",
-     "--backend", "poselib"});
+             {tool_path("isat_geo"),
+              "-i",
+              exhaustive_pairs.string(),
+              "-m",
+              match_dir.string(),
+              "-o",
+              geo_dir.string(),
+              "--image-list",
+              image_list,
+              "-t",
+              kRetrievalGeoThreshFPx,
+              "--min-inliers",
+              std::to_string(kRetrievalGeoMinInliers),
+              "--backend",
+              "gpu"});
 
   // ── Analyse results ──────────────────────────────────────────────────────
   std::set<std::pair<int,int>> verified_pairs;
