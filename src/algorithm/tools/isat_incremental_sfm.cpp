@@ -609,6 +609,7 @@ int main(int argc, char* argv[]) {
   opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
   opts.local_ba.switch_after_n_images = 100;
   opts.local_ba.max_observations_per_track = 8;
+  opts.local_ba.max_iterations = 250;
   opts.resection.backend = ResectionBackend::kPoseLib;
   if (ba_threads > 0) {
     opts.global_ba.solver_overrides.num_threads = ba_threads;

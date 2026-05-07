@@ -925,7 +925,7 @@ int main(int argc, char* argv[]) {
                   std::chrono::high_resolution_clock::now() - t0)
                   .count();
 
-    LOG(INFO) << "Geo [" << ti << "/" << total << "] " << task.image1_index << "–"
+    VLOG(1) << "Geo [" << ti << "/" << total << "] " << task.image1_index << "–"
               << task.image2_index << "  n=" << task.num_matches << "  F=" << task.F_inliers
               << (estimate_E ? ("  E=" + std::to_string(task.E_inliers)) : "")
               << (estimate_H ? ("  H=" + std::to_string(task.H_inliers)) : "")

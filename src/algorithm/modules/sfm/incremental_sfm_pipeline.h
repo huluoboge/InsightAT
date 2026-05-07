@@ -249,7 +249,7 @@ struct LocalBAOptions {
   /// When true, run the local-BA phase after switch_after_n_images (periodic global + local BA).
   /// Default false: global-only loop until you opt in.
   bool enable = false;
-  int max_iterations = 25;
+  int max_iterations = 250;
   /// Cap per-track observations inserted into local BA (0 = no cap).
   int max_observations_per_track = 8;
 };
@@ -272,7 +272,7 @@ struct GlobalBAOptions {
   bool enabled = true;
   bool optimize_intrinsics = true;
   int optimize_intrinsics_min_images = 10; ///< Gate: don't touch intrinsics below this count.
-  int max_iterations = 50;
+  int max_iterations = 500;
   int every_n_images = 1;             ///< Early-phase: run global BA every N registrations.
   int periodic_every_n_images = 100;   ///< Local-BA phase: mid-freq global BA every N images.
   BASolverOverrides solver_overrides; ///< Ceres solver parameter overrides.

@@ -15,6 +15,7 @@
  *   isat_sfm -i /photos -w work/                              # run all steps
  *   isat_sfm -i /photos -w work/ --exhaustive-match           # 跳过检索，全图像对全分辨率匹配
  *   isat_sfm -i /photos -w work/ --no-grid                    # 提取不传 --nms（关空间网格）
+ *   isat_sfm -i /photos -w work/ --sift-threshold 0.0067     # 全分辨率 SIFT 特征提取阈值
  *   isat_sfm -i /photos -w work/ --geo-thresh-f 3             # 更严 F 内点（像素，见 --help）
  *   isat_sfm -i /photos -w work/ --io-threads 8 --ba-threads 8  # I/O 与 Ceres 线程数
  *   isat_sfm -i /photos -w work/ --steps create,extract       # 只跑 create + extract
@@ -472,6 +473,7 @@ int main(int argc, char* argv[]) {
   int cascade_gpu_image_block_size = 1000;
   int cascade_gpu_sample_images = 256;
   int cascade_gpu_min_output_matches = 16;
+  int retrieval_min_output_matches = 16;
   std::string cascade_cpu_preset = "modern";
   bool use_pop_sift = false;
   bool use_sift_gpu = false;
@@ -480,6 +482,7 @@ int main(int argc, char* argv[]) {
   int max_sample = 5;
   // int image_max_dim = 6000;
   int image_max_dim = 3200;
+  double sift_threshold = 0.067;
   bool exhaustive_match = false;
   /// When not using --exhaustive-match: if image count < this, skip retrieval and use full
   /// exhaustive pairs (same as manual exhaustive for small sets).
@@ -523,6 +526,10 @@ int main(int argc, char* argv[]) {
               .doc("Sample images for GPU cascade global mean descriptor (default: 256)"));
   cmd.add(make_option(0, cascade_gpu_min_output_matches, "cascade-gpu-min-output-matches")
               .doc("Minimum matches per pair for GPU cascade output (default: 16)"));
+  cmd.add(make_option(0, retrieval_min_output_matches, "retrieval-min-output-matches")
+              .doc("Minimum matches per pair written during retrieval-stage low-resolution "
+                   "matching (default: 16). Forwarded to isat_retrieval_match "
+                   "--cascade-min-output-matches."));
   cmd.add(make_option(0, cascade_cpu_preset, "cascade-cpu-preset")
               .doc("Preset for --match-impl=cascade: legacy or modern (default: modern)"));
   cmd.add(make_option(0, ext, "ext")
@@ -532,6 +539,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, image_max_dim, "image-max-dim")
               .doc("Forwarded to isat_extract --image-max-dim (default: 6000); "
                    "reduce to lower PopSift GPU memory usage, e.g. 4096"));
+      cmd.add(make_option(0, sift_threshold, "sift-threshold")
+            .doc("Full-resolution SIFT feature extraction threshold forwarded to "
+              "isat_extract --threshold (default: 0.067). Lower values increase recall "
+              "in weak-texture scenes but may admit more unstable features."));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Hold camera intrinsics fixed during BA"));
   cmd.add(make_switch(0, "exhaustive-match")
               .doc("Skip isat_retrieval_match; generate all image pairs and run full-resolution "
@@ -593,6 +604,11 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
+  if (!(sift_threshold > 0.0)) {
+    std::cerr << "Error: --sift-threshold must be > 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
   if (auto_exhaustive_max_images < 0) {
     std::cerr << "Error: --auto-exhaustive-max-images must be >= 0 (0 disables)\n\n";
     cmd.printHelp(std::cerr, argv[0]);
@@ -623,6 +639,11 @@ int main(int argc, char* argv[]) {
     std::cerr << "Error: --cascade-gpu-image-block-size must be > 0, "
                  "--cascade-gpu-sample-images must be > 0, "
                  "--cascade-gpu-min-output-matches must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (retrieval_min_output_matches < 0) {
+    std::cerr << "Error: --retrieval-min-output-matches must be >= 0\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -696,8 +717,10 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Threading: io_threads=" << io_threads << "  ba_threads=" << ba_threads
             << (ba_threads > 0 ? "" : " (BA: auto)");
   LOG(INFO) << "SIFT image max dim: " << image_max_dim;
+  LOG(INFO) << "SIFT threshold: " << sift_threshold;
   LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
   LOG(INFO) << "Match implementation: " << match_impl;
+  LOG(INFO) << "Retrieval min output matches: " << retrieval_min_output_matches;
 
   auto active_steps = parse_steps(steps_str);
   {
@@ -731,6 +754,7 @@ int main(int argc, char* argv[]) {
   fs::path feat_dir = work_path / "feat";
   fs::path feat_ret_dir = work_path / "feat_retrieval";
   fs::path pairs_retrieve = work_path / "pairs_retrieve.json";
+  fs::path pairs_matched = work_path / "pairs_matched.json";
   fs::path match_dir_path = work_path / "match";
   fs::path geo_dir = work_path / "geo";
   fs::path pairs_json = geo_dir / "pairs.json";
@@ -832,6 +856,8 @@ int main(int argc, char* argv[]) {
     }
     { // 无论是否retrieval，都需要先全分辨率取特征一次
       LOG(INFO) << "Exhaustive full-res matching + Geometry";
+      char sift_threshold_buf[64];
+      std::snprintf(sift_threshold_buf, sizeof(sift_threshold_buf), "%.9g", sift_threshold);
       std::vector<std::string> extract_cmd = {tool_path("isat_extract"),
                                               "-i",
                                               images_all.string(),
@@ -842,7 +868,7 @@ int main(int argc, char* argv[]) {
                                               "--nfeatures",
                                               "10000",
                                               "--threshold",
-                                              "0.0067",
+                                              std::string(sift_threshold_buf),
                                               "--octaves",
                                               "-1",
                                               "--levels",
@@ -930,6 +956,10 @@ int main(int argc, char* argv[]) {
               << "  manual_exhaustive=" << (manual_exhaustive ? "yes" : "no")
               << "  auto_exhaustive=" << (auto_exhaustive ? "yes" : "no") << " (threshold "
               << auto_exhaustive_max_images << ")";
+    LOG(INFO) << "Pair JSONs:";
+    LOG(INFO) << "  candidate_pairs : " << pairs_retrieve.string();
+    LOG(INFO) << "  matched_pairs   : " << pairs_matched.string();
+    LOG(INFO) << "  verified_pairs  : " << pairs_json.string();
 
     if (use_exhaustive_pairs) {
       const long long n_pairs = static_cast<long long>(n_img) * (n_img - 1) / 2;
@@ -979,7 +1009,7 @@ int main(int argc, char* argv[]) {
                   "--cascade-sample-images",
                   std::to_string(cascade_gpu_sample_images),
                   "--cascade-min-output-matches",
-                  std::to_string(cascade_gpu_min_output_matches),
+                  std::to_string(retrieval_min_output_matches),
                   "--cascade-cpu-preset",
                   cascade_cpu_preset});
 
@@ -1005,6 +1035,8 @@ int main(int argc, char* argv[]) {
                            feat_dir.string(),
                            "-o",
                            match_dir_path.string(),
+                           "--output-pairs-json",
+                           pairs_matched.string(),
                            "-j",
                            std::to_string(io_threads),
                            "--preset",
@@ -1017,6 +1049,8 @@ int main(int argc, char* argv[]) {
                            feat_dir.string(),
                            "-o",
                            match_dir_path.string(),
+                           "--output-pairs-json",
+                           pairs_matched.string(),
                            "-j",
                            std::to_string(io_threads),
                            "--cuda-device",
@@ -1030,8 +1064,9 @@ int main(int argc, char* argv[]) {
     } else {
       run_or_die("match",
                  {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),
-                  "-o", match_dir_path.string(), "--match-backend", match_backend, "--max-features",
-                  "-1", "--threads", std::to_string(io_threads),
+                  "-o", match_dir_path.string(), "--output-pairs-json", pairs_matched.string(),
+                  "--match-backend", match_backend, "--max-features", "-1", "--threads",
+                  std::to_string(io_threads),
                   (use_pop_sift ? "--use-pop-sift" : "--use-sift-gpu")});
     }
 
@@ -1040,8 +1075,12 @@ int main(int argc, char* argv[]) {
     std::snprintf(geo_tf_buf, sizeof(geo_tf_buf), "%.9g", geo_thresh_f);
     LOG(INFO) << "isat_geo thresholds: min-inliers=" << geo_min_inliers
               << "  thresh-f(px)=" << geo_tf_buf;
+    LOG(INFO) << "Final full-res pair flow:";
+    LOG(INFO) << "  candidate_pairs : " << pairs_retrieve.string();
+    LOG(INFO) << "  matched_pairs   : " << pairs_matched.string();
+    LOG(INFO) << "  verified_pairs  : " << pairs_json.string();
     run_or_die("geo",
-               {tool_path("isat_geo"), "-i", pairs_retrieve.string(), "-m", match_dir_path.string(),
+               {tool_path("isat_geo"), "-i", pairs_matched.string(), "-m", match_dir_path.string(),
                 "-o", geo_dir.string(), "--image-list", images_all.string(), "-t",
                 std::string(geo_tf_buf), "--min-inliers", std::to_string(geo_min_inliers),
                 "--backend", geo_backend_for_isat_geo, "--estimate-h", "--twoview", "--vis"});

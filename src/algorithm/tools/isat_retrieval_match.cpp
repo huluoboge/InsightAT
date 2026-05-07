@@ -191,7 +191,7 @@ int main(int argc, char* argv[]) {
   // Cascade (CPU or GPU): shared tuning; GPU-only where noted.
   int cascade_sample_images = 256;
   int cascade_image_block_size = 1000;
-  int cascade_min_output_matches = 0;
+  int cascade_min_output_matches = 16;
   std::string cascade_cpu_preset = "modern";
   int cascade_gpu_device = 0;
 
@@ -214,7 +214,7 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, cascade_image_block_size, "cascade-image-block-size")
               .doc("For cascade / cascade-gpu: max unique images per block (default: 1000)"));
   cmd.add(make_option(0, cascade_min_output_matches, "cascade-min-output-matches")
-              .doc("For cascade / cascade-gpu: skip writing .isat_match if matches below this (default: 0 for retrieval)"));
+              .doc("For cascade / cascade-gpu: skip writing .isat_match if matches below this threshold (default: 16)"));
   cmd.add(make_option(0, cascade_cpu_preset, "cascade-cpu-preset")
               .doc("For --match-impl=cascade: legacy or modern (default: modern)"));
   cmd.add(make_option(0, cascade_gpu_device, "cascade-gpu-device")
@@ -269,8 +269,15 @@ int main(int argc, char* argv[]) {
   fs::path match_dir = wp / "match";
   fs::path geo_dir   = wp / "geo";
   fs::path exhaustive_pairs = wp / "exhaustive_pairs.json";
+  fs::path matched_pairs = wp / "matched_pairs.json";
   fs::create_directories(match_dir);
   fs::create_directories(geo_dir);
+
+  LOG(INFO) << "Retrieval pair JSONs:";
+  LOG(INFO) << "  candidate_pairs : " << exhaustive_pairs.string();
+  LOG(INFO) << "  matched_pairs   : " << matched_pairs.string();
+  LOG(INFO) << "  verified_pairs  : " << (geo_dir / "pairs.json").string();
+  LOG(INFO) << "  final_pairs     : " << output_path;
 
   // ── Step 1: Generate exhaustive pairs ────────────────────────────────────
   LOG(INFO) << "=== Step 1/3: Generate exhaustive pairs ===";
@@ -287,6 +294,8 @@ int main(int argc, char* argv[]) {
                 feat_dir,
                 "-o",
                 match_dir.string(),
+                "--output-pairs-json",
+                matched_pairs.string(),
                 "--match-backend",
                 match_backend,
                 "--max-features",
@@ -302,6 +311,8 @@ int main(int argc, char* argv[]) {
                 feat_dir,
                 "-o",
                 match_dir.string(),
+                "--output-pairs-json",
+                matched_pairs.string(),
                 "-j",
                 std::to_string(match_threads),
                 "--sample-images",
@@ -321,6 +332,8 @@ int main(int argc, char* argv[]) {
                 feat_dir,
                 "-o",
                 match_dir.string(),
+                "--output-pairs-json",
+                matched_pairs.string(),
                 "-j",
                 std::to_string(match_threads),
                 "--cuda-device",
@@ -332,14 +345,13 @@ int main(int argc, char* argv[]) {
                 "--min-output-matches",
                 std::to_string(cascade_min_output_matches)});
   }
-
   // ── Step 3: Geometric verification (F; pairs.json = F_ok only) ────────────
   LOG(INFO) << "=== Step 3/3: Geometric verification (F, -t=" << kRetrievalGeoThreshFPx
             << "px, min-inliers=" << kRetrievalGeoMinInliers << ") ===";
   run_or_die("geo",
              {tool_path("isat_geo"),
               "-i",
-              exhaustive_pairs.string(),
+              matched_pairs.string(),
               "-m",
               match_dir.string(),
               "-o",
@@ -357,6 +369,12 @@ int main(int argc, char* argv[]) {
   std::set<std::pair<int,int>> verified_pairs;
   std::map<int,int> neighbour_count;
   read_geo_pairs((geo_dir / "pairs.json").string(), verified_pairs, neighbour_count, n_images);
+
+  LOG(INFO) << "Retrieval pair flow complete:";
+  LOG(INFO) << "  candidate_pairs : " << exhaustive_pairs.string();
+  LOG(INFO) << "  matched_pairs   : " << matched_pairs.string();
+  LOG(INFO) << "  verified_pairs  : " << (geo_dir / "pairs.json").string();
+  LOG(INFO) << "  final_pairs     : " << output_path;
 
   LOG(INFO) << "Verified pairs: " << verified_pairs.size() << " / " << n_exhaustive;
 

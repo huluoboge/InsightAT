@@ -55,15 +55,25 @@ struct BACameraDistancePrior {
   double weight = 0.0;   ///< If ≤ 0, ignored. Quadratic cost uses weight as σ⁻² scale (see impl).
 };
 
-/// Single observation for BA: image index, point index, 2D pixel, optional scale for weighting.
-/// Residual weight = 1/scale (scale > 0); scale <= 0 or omitted is treated as 1.0 (unit weight).
+/// Single observation for BA: image index, point index, 2D pixel, optional observation stddev.
+/// std_sigma_obs_px is the pixel-domain observation standard deviation used for weighting.
 struct BAObservation {
   int image_index = 0;
   int point_index = 0;
   double u = 0.0;
   double v = 0.0;
-  double scale = 1.0;  ///< Observation scale; weight in cost = 1/scale (e.g. SIFT sigma or feature scale).
+  double std_sigma_obs_px = 1.0;  ///< Pixel-domain observation stddev consumed by BA weighting.
 };
+
+inline double sigma_to_ba_stddev(double sigma_feat) {
+  if (sigma_feat < 2.0)
+    return 1.0;
+  if (sigma_feat < 4.0)
+    return 1.2;
+  if (sigma_feat < 8.0)
+    return 1.4;
+  return 1.6;
+}
 
 /// Bitmask for per-parameter fix of intrinsics (matches analytic layout: fx, sigma, cx, cy, k1, k2, k3, p1, p2).
 enum FixIntrinsicsMask : uint32_t {
@@ -177,14 +187,15 @@ private:
 };
 
 /**
- * Same as ReprojectionCostAnalytic but residuals and Jacobians are scaled by 1/scale
- * (observation weight). scale must be > 0; typically feature scale or sigma (weight = 1/scale).
+ * Same as ReprojectionCostAnalytic but residuals and Jacobians are scaled by 1/std_sigma_obs_px.
+ * std_sigma_obs_px must be > 0 and represents pixel-domain observation noise.
  */
 class ReprojectionCostAnalyticWeighted
     : public ceres::SizedCostFunction<2, kAnalyticIntrCount, 7, 3> {
 public:
-  ReprojectionCostAnalyticWeighted(double u_obs, double v_obs, double scale)
-      : u_obs_(u_obs), v_obs_(v_obs), weight_(scale > 1e-12 ? 1.0 / scale : 1.0) {}
+  ReprojectionCostAnalyticWeighted(double u_obs, double v_obs, double std_sigma_obs_px)
+      : u_obs_(u_obs), v_obs_(v_obs),
+        weight_(std_sigma_obs_px > 1e-12 ? 1.0 / std_sigma_obs_px : 1.0) {}
 
   bool Evaluate(double const* const* params, double* residuals,
                 double** jacobians) const override;
@@ -212,7 +223,7 @@ private:
  * @param max_iterations Ceres solver iteration limit.
  * @return true if Ceres reports a usable solution.
  */
-bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iterations = 50);
+bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iterations = 500);
 
 // ─── Tikhonov regularization cost functions (exposed for unit testing) ───────
 

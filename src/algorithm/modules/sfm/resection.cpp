@@ -362,7 +362,7 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
   opt.max_error = ransac_thresh_px;
   opt.ransac.max_iterations = 10000;
   opt.ransac.min_iterations = 1000;
-  opt.bundle.max_iterations = 25;
+  opt.bundle.max_iterations = 250;
   opt.bundle.loss_type = poselib::BundleOptions::CAUCHY;
   opt.bundle.loss_scale = std::max(1.0, ransac_thresh_px);
 
