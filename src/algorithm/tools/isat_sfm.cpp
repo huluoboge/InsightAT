@@ -482,7 +482,7 @@ int main(int argc, char* argv[]) {
   int max_sample = 5;
   // int image_max_dim = 6000;
   int image_max_dim = 3200;
-  double sift_threshold = 0.067;
+  double sift_threshold = 0.0067;
   bool exhaustive_match = false;
   /// When not using --exhaustive-match: if image count < this, skip retrieval and use full
   /// exhaustive pairs (same as manual exhaustive for small sets).
@@ -541,7 +541,7 @@ int main(int argc, char* argv[]) {
                    "reduce to lower PopSift GPU memory usage, e.g. 4096"));
       cmd.add(make_option(0, sift_threshold, "sift-threshold")
             .doc("Full-resolution SIFT feature extraction threshold forwarded to "
-              "isat_extract --threshold (default: 0.067). Lower values increase recall "
+              "isat_extract --threshold (default: 0.0067). Lower values increase recall "
               "in weak-texture scenes but may admit more unstable features."));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Hold camera intrinsics fixed during BA"));
   cmd.add(make_switch(0, "exhaustive-match")
