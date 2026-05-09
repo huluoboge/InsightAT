@@ -17,8 +17,12 @@
 
 cmake_minimum_required(VERSION 3.16)
 
+# Enable CUDA language
+enable_language(CUDA)
+
 find_package(Eigen3 REQUIRED)
 find_package(Ceres REQUIRED)
+find_package(CUDA REQUIRED)
 
 if(NOT OPENGL_FOUND)
     find_package(OpenGL REQUIRED)
@@ -31,11 +35,17 @@ if(NOT EGL_FOUND)
     message(FATAL_ERROR "EGL not found. sfm_module requires EGL for GPU triangulation.")
 endif()
 
+# Set CUDA architecture (volta, turing, ampere)
+if(NOT CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 75 80 86)  # Turing, Ampere, RTX 3000
+endif()
+
 add_library(sfm_module STATIC
     two_view_reconstruction.cpp
     two_view_reconstruction.h
     gpu_twoview_sfm.cpp
     gpu_twoview_sfm.h
+    gpu_twoview_sfm_cuda.cu
     track_store.cpp
     track_store.h
     scene_normalization.cpp
@@ -103,6 +113,7 @@ target_link_libraries(sfm_module
         algorithm_camera
         ${OPENGL_LIBRARIES}
         ${GLEW_LIBRARIES}
+        ${CUDA_LIBRARIES}
     PRIVATE
         glog::glog
 )

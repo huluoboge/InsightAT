@@ -110,6 +110,66 @@ void gpu_ba_residuals(const float* pts_px, const float* X, int n, const float R[
                       const float t[3], float f, float cx, float cy, float huber_k,
                       float* residuals_out, float* wrss_out, int* valid_out);
 
+/* ── CUDA Batch API (parallel backend for many pairs) ──────────────────── */
+
+/**
+ * Initialize CUDA device (same effect as gpu_twoview_cuda_init in cuda .cu file).
+ * @return 0 on success, negative on failure.
+ */
+int gpu_twoview_cuda_init(void);
+
+/** Release CUDA resources. */
+void gpu_twoview_cuda_shutdown(void);
+
+/**
+ * Batch triangulation: one kernel call processes 1000+ image pair correspondences.
+ *
+ * @param pts_n_flat   Flattened normalised coordinates [x1n, y1n, x2n, y2n, ...],
+ *                     sorted by pair_id, float[4 * total_corrs].
+ * @param pair_offsets Array of offsets: [offset_start_0, offset_end_0, 
+ *                     offset_start_1, offset_end_1, ..., final_offset].
+ *                     Size: 2*num_pairs + 1.
+ * @param num_pairs    Number of (R,t) pairs.
+ * @param pair_Rt      Array[num_pairs*12]: [R[9], t[3], R[9], t[3], ...] row-major.
+ * @param X_out        Output 3D points, float[3 * total_corrs] = [X, Y, Z, ...].
+ * @return             Total number of valid points.
+ */
+int gpu_triangulate_batch(const float* pts_n_flat, const int* pair_offsets, int num_pairs,
+                          const float* pair_Rt, float* X_out);
+
+/**
+ * Batch BA residuals: compute Huber-weighted residuals for multiple pairs + points.
+ *
+ * @param pts_px_flat    Pixel observations [u1, v1, u2, v2, ...], float[4 * total_corrs].
+ * @param X_flat         3D points [X, Y, Z, ...], float[3 * total_corrs].
+ *                       Layout matches gpu_triangulate_batch() output.
+ * @param pair_offsets   Same as gpu_triangulate_batch().
+ * @param num_pairs      Number of (R,t) pairs.
+ * @param pair_Rt        Array[num_pairs*12]: [R[9], t[3], ...].
+ * @param focal_length   Focal length (pixels), same for both cameras.
+ * @param cx, cy         Principal point (pixels), same for both cameras.
+ * @param huber_k        Huber threshold (pixels).
+ * @param residuals_out  Output [r0, r1, r2, r3] per point, float[4 * total_corrs].
+ *                       May be NULL (stats still computed).
+ * @param wrss_out       Output weighted residual sum-of-squares / valid_count.
+ * @param valid_out      Output count of valid (positive-depth, finite) points.
+ */
+void gpu_ba_residuals_batch(const float* pts_px_flat, const float* X_flat,
+                            const int* pair_offsets, int num_pairs, const float* pair_Rt,
+                            float focal_length, float cx, float cy, float huber_k,
+                            float* residuals_out, float* wrss_out, int* valid_out);
+
+/* ── Async Stream API (optional for future pipelining) ─────────────────── */
+
+typedef void* GpuTwoviewStream;
+
+GpuTwoviewStream gpu_twoview_create_stream(void);
+void gpu_twoview_destroy_stream(GpuTwoviewStream stream);
+int gpu_triangulate_batch_async(GpuTwoviewStream stream, const float* pts_n_flat,
+                                 const int* pair_offsets, int num_pairs,
+                                 const float* pair_Rt, float* X_out);
+int gpu_twoview_stream_synchronize(GpuTwoviewStream stream);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
