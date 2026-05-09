@@ -139,6 +139,22 @@ if(INSIGHTAT_USE_CUDA_PCA)
     )
 endif()
 
+# Add SfM CUDA kernels when CUDAToolkit is present
+if(CUDAToolkit_FOUND)
+    list(APPEND ALGORITHM_SOURCES
+        modules/sfm/cuda/cuda_sfm_common.cuh
+        modules/sfm/cuda/cuda_triangulation.cuh
+        modules/sfm/cuda/cuda_triangulation.cu
+        modules/sfm/cuda/cuda_reproj.cuh
+        modules/sfm/cuda/cuda_reproj.cu
+        modules/sfm/cuda/cuda_resection.cuh
+        modules/sfm/cuda/cuda_resection.cu
+    )
+    message(STATUS "InsightATAlgorithm: SfM CUDA kernels enabled (triangulation / reproj / resection)")
+else()
+    message(STATUS "InsightATAlgorithm: SfM CUDA kernels disabled (CUDAToolkit not found)")
+endif()
+
 # ─────────────────────────────────────────────────────────────
 # 创建库目标
 # ─────────────────────────────────────────────────────────────
