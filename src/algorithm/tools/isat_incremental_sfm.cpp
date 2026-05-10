@@ -600,6 +600,8 @@ int main(int argc, char* argv[]) {
   opts.global_ba.max_observations_per_track = 8;
   opts.global_ba.ba_fixed_pose_optimize_skipped = true;
   opts.intrinsics.focal_prior_weight = 1.f;
+  opts.init.min_angle_deg = 4.f;
+  opts.init.min_median_angle_deg = 10.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
   // constant = top-K co-visible neighbors. Historical camera observations are NEVER deleted
   // in local BA — only global BA (with full scene context) performs outlier rejection.
@@ -609,6 +611,7 @@ int main(int argc, char* argv[]) {
   opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
   opts.local_ba.switch_after_n_images = 100;
   opts.local_ba.max_observations_per_track = 8;
+  opts.local_ba.max_iterations = 250;
   opts.resection.backend = ResectionBackend::kPoseLib;
   if (ba_threads > 0) {
     opts.global_ba.solver_overrides.num_threads = ba_threads;

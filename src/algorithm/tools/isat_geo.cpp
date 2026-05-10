@@ -925,7 +925,7 @@ int main(int argc, char* argv[]) {
                   std::chrono::high_resolution_clock::now() - t0)
                   .count();
 
-    LOG(INFO) << "Geo [" << ti << "/" << total << "] " << task.image1_index << "–"
+    VLOG(1) << "Geo [" << ti << "/" << total << "] " << task.image1_index << "–"
               << task.image2_index << "  n=" << task.num_matches << "  F=" << task.F_inliers
               << (estimate_E ? ("  E=" + std::to_string(task.E_inliers)) : "")
               << (estimate_H ? ("  H=" + std::to_string(task.H_inliers)) : "")
@@ -1344,17 +1344,11 @@ int main(int argc, char* argv[]) {
     geoStage = new StageCurrent("GeoEstimate", 1, GPU_Q, estimate_function);
     // ── Chain and run ────────────────────────────────────────────────────────
     chain(loadStage, *geoStage);
-    if (!run_twoview) {
-      chain(*geoStage, writeStage);
-    }
     geoStage->setTaskCount(total);
   } else {
     cpuGeoStage = new Stage("GeoEstimateCPU", num_threads, GPU_Q * 2, estimate_function);
     // ── Chain and run ────────────────────────────────────────────────────────
     chain(loadStage, *cpuGeoStage);
-    if (!run_twoview) {
-      chain(*cpuGeoStage, writeStage);
-    }
     cpuGeoStage->setTaskCount(total);
   }
   loadStage.setTaskCount(total);
@@ -1379,6 +1373,15 @@ int main(int argc, char* argv[]) {
   } else {
     cpuGeoStage->wait();
   }
+
+  // Push all pairs to write stage only after geometry stage has fully completed.
+  // This avoids a race in CUDA batched-F mode where pre-flush tasks can reach
+  // WriteStage before F/E/H fields are populated.
+  if (!run_twoview) {
+    for (int i = 0; i < total; ++i)
+      writeStage.push(i);
+  }
+
   // ── Two-view batch (when --twoview): E→R,t, triangulate, stability ─────────
   if (run_twoview) {
     if (use_cuda_geo_ransac) {

@@ -837,12 +837,13 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     double* pp = poses_data.data() + static_cast<size_t>(obs.image_index) * 7;
     double* xp = result->points3d[static_cast<size_t>(obs.point_index)].data();
 
-    const double scale = (obs.scale > 1e-12) ? obs.scale : 1.0;
+    const double std_sigma_obs_px =
+      (obs.std_sigma_obs_px > 1e-12) ? obs.std_sigma_obs_px : 1.0;
     ceres::CostFunction* cost =
-        (scale == 1.0)
+      (std_sigma_obs_px == 1.0)
             ? static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v))
             : static_cast<ceres::CostFunction*>(
-                  new ReprojectionCostAnalyticWeighted(obs.u, obs.v, scale));
+            new ReprojectionCostAnalyticWeighted(obs.u, obs.v, std_sigma_obs_px));
     problem.AddResidualBlock(cost, loss, ip, pp, xp);
   }
 

@@ -1066,7 +1066,7 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
     opt.max_error = outlier_thresh_px;
     opt.ransac.max_iterations = 2000;
     opt.ransac.min_iterations = 100;
-    opt.bundle.max_iterations = 25;
+    opt.bundle.max_iterations = 250;
     opt.bundle.loss_type = poselib::BundleOptions::CAUCHY;
     opt.bundle.loss_scale = outlier_thresh_px;
 
@@ -1169,12 +1169,14 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
     store.get_track_observations(track_ids[i], &obs_buf);
     const int pt_idx = static_cast<int>(i);
     for (const auto& o : obs_buf) {
+      const double sigma_feat = (o.scale > 1e-6f) ? static_cast<double>(o.scale) : 1.0;
+      const double std_sigma_obs_px = sigma_to_ba_stddev(sigma_feat);
       if (o.image_index == uim0)
-        ba_in.observations.push_back({0, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v),
-                                      static_cast<double>(o.scale > 1e-6f ? o.scale : 1.0f)});
+        ba_in.observations.push_back(
+            {0, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v), std_sigma_obs_px});
       else if (o.image_index == uim1)
-        ba_in.observations.push_back({1, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v),
-                                      static_cast<double>(o.scale > 1e-6f ? o.scale : 1.0f)});
+        ba_in.observations.push_back(
+            {1, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v), std_sigma_obs_px});
     }
   }
 
@@ -3041,13 +3043,13 @@ static bool build_ba_input_batch_neighbor(
       ++tracks_with_required;
     ++tracks_sampled;
     for (const auto& c : selected_obs) {
-      const double scale = (c.obs.scale > 1e-6f) ? static_cast<double>(c.obs.scale) : 1.0;
+      const double sigma_feat = (c.obs.scale > 1e-6f) ? static_cast<double>(c.obs.scale) : 1.0;
       BAObservation bo;
       bo.image_index = c.ba_image_index;
       bo.point_index = pt_idx;
       bo.u = static_cast<double>(c.obs.u);
       bo.v = static_cast<double>(c.obs.v);
-      bo.scale = scale;
+      bo.std_sigma_obs_px = sigma_to_ba_stddev(sigma_feat);
       ba.observations.push_back(bo);
     }
   }

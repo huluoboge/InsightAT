@@ -675,6 +675,27 @@ if(TARGET cuda_geo_ransac)
   target_link_libraries(isat_geo PRIVATE cuda_geo_ransac CUDA::cudart)
   add_compile_definitions(INSIGHTAT_HAS_CUDA_GEO=1)
   message(STATUS "InsightATAlgorithm: INSIGHTAT_HAS_CUDA_GEO=1 (global)")
+
+  # isat_geo_cuda — pure CUDA pipeline: F+E+H RANSAC, E decompose, triangulate all on GPU
+  add_executable(isat_geo_cuda tools/isat_geo_cuda.cpp)
+  target_link_libraries(isat_geo_cuda
+      PRIVATE
+          insightat_tools_logging
+          InsightATAlgorithm
+          cuda_geo_ransac
+          sfm_module
+          glog::glog
+          CUDA::cudart
+  )
+  target_include_directories(isat_geo_cuda
+      PRIVATE
+          ${CMAKE_CURRENT_SOURCE_DIR}/..
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+          ${CMAKE_CURRENT_SOURCE_DIR}/modules/geometry
+  )
+  target_compile_definitions(isat_geo_cuda PRIVATE INSIGHTAT_HAS_CUDA_GEO=1)
+  set_property(TARGET isat_geo_cuda PROPERTY FOLDER InsightAT/Tools)
+  message(STATUS "InsightATAlgorithm: isat_geo_cuda enabled (CUDA E decompose + triangulate)")
 endif()
 
 # ─────────────────────────────────────────────────────────────

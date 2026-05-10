@@ -64,6 +64,7 @@ cmake "${SCRIPT_DIR}" \
     -DCMAKE_CUDA_COMPILER="${NVCC}" \
     -DCUDAToolkit_ROOT=/usr/local/cuda-12.8 \
     -DCMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89;90-virtual" \
+    -DPopSift_BUILD_EXAMPLES=OFF \
     -Dcudss_DIR="${INSIGHTAT_CUDSS_DIR}" \
     -DCeres_DIR="${INSIGHTAT_CERES_DIR}" \
     -DSIFTGPU_ENABLE_CUDA=OFF \
