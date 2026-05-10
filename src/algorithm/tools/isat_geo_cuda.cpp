@@ -32,11 +32,17 @@
 #include <fstream>
 #include <functional>
 #include <numeric>
+#include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <Eigen/Core>
+
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <glog/logging.h>
 #include <iostream>
@@ -291,6 +297,102 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
     LOG(ERROR) << "Failed to write: " << out;
   else
     VLOG(1) << "Wrote " << out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Visualization: match connectivity graph as a heatmap image
+// ─────────────────────────────────────────────────────────────────────────────
+
+using InlierFn = std::function<std::pair<bool, int>(const GeoTask&)>;
+
+static void write_match_matrix(const std::vector<GeoTask>& tasks, const std::string& output_path,
+                               const std::string& model_label, InlierFn inlier_fn) {
+  std::set<uint32_t> id_set;
+  for (const auto& t : tasks) {
+    id_set.insert(t.image1_index);
+    id_set.insert(t.image2_index);
+  }
+  std::vector<uint32_t> ids(id_set.begin(), id_set.end());
+  std::sort(ids.begin(), ids.end());
+
+  const int N = static_cast<int>(ids.size());
+  if (N == 0)
+    return;
+
+  std::unordered_map<uint32_t, int> id_idx;
+  for (int i = 0; i < N; ++i)
+    id_idx[ids[static_cast<size_t>(i)]] = i;
+
+  cv::Mat mat(N, N, CV_32F, cv::Scalar(0.0f));
+  int max_inliers = 0;
+  int pairs_ok = 0;
+  for (const auto& t : tasks) {
+    auto [ok, count] = inlier_fn(t);
+    if (!ok)
+      continue;
+    const int i = id_idx.at(t.image1_index);
+    const int j = id_idx.at(t.image2_index);
+    const float val = static_cast<float>(count);
+    mat.at<float>(i, j) = val;
+    mat.at<float>(j, i) = val;
+    if (count > max_inliers)
+      max_inliers = count;
+    ++pairs_ok;
+  }
+
+  if (pairs_ok == 0) {
+    LOG(WARNING) << "No valid " << model_label << " pairs to visualise, skipping "
+                 << output_path;
+    return;
+  }
+
+  cv::Mat norm8;
+  mat.convertTo(norm8, CV_8U, max_inliers > 0 ? 255.0 / max_inliers : 0.0);
+
+  cv::Mat colored;
+  cv::applyColorMap(norm8, colored, cv::COLORMAP_VIRIDIS);
+  colored.setTo(cv::Scalar(0, 0, 0), (norm8 == 0));
+
+  const int cell = std::max(1, std::min(16, 1000 / N));
+  cv::Mat big;
+  cv::resize(colored, big, cv::Size(N * cell, N * cell), 0, 0, cv::INTER_NEAREST);
+
+  const int cb_w = 40;
+  const int cb_h = big.rows;
+  cv::Mat colorbar(cb_h, cb_w, CV_8UC3);
+  for (int row = 0; row < cb_h; ++row) {
+    const uint8_t v = static_cast<uint8_t>(255 - row * 255 / cb_h);
+    cv::Mat strip = colorbar.row(row);
+    strip.setTo(cv::Scalar(v, v, v));
+  }
+  cv::applyColorMap(colorbar, colorbar, cv::COLORMAP_VIRIDIS);
+
+  cv::Mat legend(cb_h, cb_w + 60, CV_8UC3, cv::Scalar(30, 30, 30));
+  colorbar.copyTo(legend(cv::Rect(0, 0, cb_w, cb_h)));
+  cv::putText(legend, std::to_string(max_inliers), {cb_w + 4, 14}, cv::FONT_HERSHEY_SIMPLEX,
+              0.4, cv::Scalar(200, 200, 200), 1);
+  cv::putText(legend, "0", {cb_w + 4, cb_h - 4}, cv::FONT_HERSHEY_SIMPLEX, 0.4,
+              cv::Scalar(200, 200, 200), 1);
+  cv::putText(legend, model_label, {cb_w + 4, 30}, cv::FONT_HERSHEY_SIMPLEX, 0.4,
+              cv::Scalar(180, 255, 180), 1);
+
+  cv::Mat canvas;
+  cv::hconcat(big, legend, canvas);
+
+  if (!cv::imwrite(output_path, canvas)) {
+    LOG(ERROR) << "Failed to write match matrix image: " << output_path;
+  } else {
+    LOG(INFO) << "Match graph [" << model_label << "] saved: " << output_path << "  (" << N
+              << "x" << N << " images"
+              << ", pairs=" << pairs_ok << ", max_inliers=" << max_inliers << ")";
+  }
+}
+
+static std::string make_vis_path(const std::string& base_path, const std::string& suffix) {
+  fs::path p(base_path);
+  std::string stem = p.stem().string();
+  std::string ext = p.extension().string();
+  return (p.parent_path() / (stem + "_" + suffix + ext)).string();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -689,6 +791,8 @@ int main(int argc, char* argv[]) {
   int num_threads = 4;
   int batch_size  = 10000;  // I/O grouping granularity; CUDA kernel auto-chunks at INSIGHTAT_CUDA_GEO_BATCH_MAX_PAIRS
   int cuda_device = 0;
+  bool write_vis = false;
+  std::string vis_output;
 
   cmd.add(make_option('i', pairs_json, "input").doc("Input pairs JSON"));
   cmd.add(make_option('m', match_dir, "match-dir").doc("Directory with .isat_match files"));
@@ -706,6 +810,13 @@ int main(int argc, char* argv[]) {
                    "CUDA kernel auto-chunks internally at INSIGHTAT_CUDA_GEO_BATCH_MAX_PAIRS "
                    "so any value is safe; larger values use more RAM but reduce load overhead."));
   cmd.add(make_option(0, cuda_device, "cuda-device").doc("CUDA device id. Default: 0"));
+  cmd.add(make_switch(0, "vis").doc(
+      "Generate adjacency matrix heatmap images (PNG) per model.\n"
+      "  Outputs: match_graph_F.png match_graph_E.png match_graph_H.png"));
+  cmd.add(make_option(0, vis_output, "vis-output")
+              .doc("Base path for adjacency matrix images.\n"
+                   "  Default: <output_dir>/match_graph.png\n"
+                   "  Actual files: <stem>_F.png, <stem>_E.png, <stem>_H.png"));
   std::string log_level;
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
@@ -720,6 +831,7 @@ int main(int argc, char* argv[]) {
   }
   if (cmd.checkHelp(argv[0])) return 0;
   cmd.print(std::cerr);
+  write_vis = cmd.used("vis");
 
   if (pairs_json.empty() || match_dir.empty() || output_dir.empty()) {
     std::cerr << "Error: -i, -m, -o are required\n\n";
@@ -886,9 +998,62 @@ int main(int argc, char* argv[]) {
     if (t.twoview_ok) pairs_tv++;
   }
 
+  json summary_pairs = json::array();
+  json filtered_pairs = json::array();
+  for (const auto& t : tasks) {
+    summary_pairs.push_back({{"image1_index", t.image1_index},
+                             {"image2_index", t.image2_index},
+                             {"F_inliers", t.F_inliers},
+                             {"E_inliers", t.E_inliers},
+                             {"H_inliers", t.H_inliers},
+                             {"degenerate", t.degeneracy.is_degenerate},
+                             {"median_pixel_disp", t.median_pixel_disp},
+                             {"inlier_ratio", t.inlier_ratio},
+                             {"score_prelim", t.score_prelim}});
+    if (t.F_ok) {
+      filtered_pairs.push_back(
+          {{"image1_index", t.image1_index}, {"image2_index", t.image2_index}});
+    }
+  }
+
+  const std::string adjacency_path = output_dir + "/adjacency.json";
+  {
+    json summary_json = {{"pairs", summary_pairs}};
+    std::ofstream adj_out(adjacency_path);
+    if (adj_out)
+      adj_out << summary_json.dump(2) << "\n";
+    else
+      LOG(WARNING) << "Failed to write " << adjacency_path;
+  }
+
+  const std::string pairs_path = output_dir + "/pairs.json";
+  {
+    json pairs_out_json = {{"pairs", filtered_pairs}};
+    std::ofstream pairs_out(pairs_path);
+    if (pairs_out)
+      pairs_out << pairs_out_json.dump(2) << "\n";
+    else
+      LOG(WARNING) << "Failed to write " << pairs_path;
+  }
+
+  if (write_vis) {
+    const std::string vis_base =
+        vis_output.empty() ? (output_dir + "/match_graph.png") : vis_output;
+    write_match_matrix(
+        tasks, make_vis_path(vis_base, "F"), "F",
+        [](const GeoTask& t) -> std::pair<bool, int> { return {t.F_ok, t.F_inliers}; });
+    write_match_matrix(
+        tasks, make_vis_path(vis_base, "E"), "E",
+        [](const GeoTask& t) -> std::pair<bool, int> { return {t.E_ok, t.E_inliers}; });
+    write_match_matrix(
+        tasks, make_vis_path(vis_base, "H"), "H",
+        [](const GeoTask& t) -> std::pair<bool, int> { return {t.H_ok, t.H_inliers}; });
+  }
+
   json ev_done;
-  ev_done["type"] = "geo_cuda.done";
+  ev_done["type"] = "geo.complete";
   ev_done["ok"] = true;
+  ev_done["data"]["backend"] = "cuda";
   ev_done["data"]["total_pairs"] = total;
   ev_done["data"]["pairs_F"] = pairs_F;
   ev_done["data"]["pairs_E"] = pairs_E;
@@ -897,6 +1062,8 @@ int main(int argc, char* argv[]) {
   ev_done["data"]["avg_F_inliers"] = (pairs_F > 0) ? sum_F / pairs_F : 0;
   ev_done["data"]["avg_E_inliers"] = (pairs_E > 0) ? sum_E / pairs_E : 0;
   ev_done["data"]["elapsed_ms"] = total_ms;
+  ev_done["data"]["adjacency_json"] = adjacency_path;
+  ev_done["data"]["pairs_json"] = pairs_path;
   print_event(ev_done);
 
   LOG(INFO) << "=== Done ===  " << total_ms << " ms";

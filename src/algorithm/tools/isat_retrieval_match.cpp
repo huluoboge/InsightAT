@@ -8,7 +8,8 @@
  *      - isat_match (--match-impl gpu)
  *      - isat_cpu_cascade_hashing_match (--match-impl cascade)
  *      - isat_gpu_cascade_hashing_match (default, --match-impl cascade-gpu)
- *   3. Run isat_geo: F RANSAC with -t 16 px, --min-inliers 6 (aligned with isat_sfm defaults;
+ *   3. Run geometry verification: prefer isat_geo_cuda; fallback to isat_geo --backend gpu-gl.
+ *      Uses F RANSAC with -t 16 px, --min-inliers 6 (aligned with isat_sfm defaults;
  *      pairs.json / neighbour graph use F_ok only — downstream SfM trusts F)
  *   4. Read geo output pairs.json, count neighbours per image
  *   5. Images with < K neighbours (default 5): add exhaustive pairs to all other images
@@ -18,7 +19,7 @@
  *   isat_retrieval_match -l images_all.json -f feat_retrieval/ -w retrieval_work/ -o pairs.json
  *
  * The tool invokes sibling matchers (isat_match, isat_cpu_cascade_hashing_match, or
- * isat_gpu_cascade_hashing_match) and isat_geo as subprocesses.
+ * isat_gpu_cascade_hashing_match) and geometry tools (isat_geo_cuda / isat_geo) as subprocesses.
  */
 
 #include <algorithm>
@@ -348,22 +349,46 @@ int main(int argc, char* argv[]) {
   // ── Step 3: Geometric verification (F; pairs.json = F_ok only) ────────────
   LOG(INFO) << "=== Step 3/3: Geometric verification (F, -t=" << kRetrievalGeoThreshFPx
             << "px, min-inliers=" << kRetrievalGeoMinInliers << ") ===";
-  run_or_die("geo",
-             {tool_path("isat_geo"),
-              "-i",
-              matched_pairs.string(),
-              "-m",
-              match_dir.string(),
-              "-o",
-              geo_dir.string(),
-              "--image-list",
-              image_list,
-              "-t",
-              kRetrievalGeoThreshFPx,
-              "--min-inliers",
-              std::to_string(kRetrievalGeoMinInliers),
-              "--backend",
-              "gpu"});
+  const fs::path geo_cuda_bin = fs::path(g_bin_dir) / "isat_geo_cuda";
+  if (fs::exists(geo_cuda_bin)) {
+    LOG(INFO) << "Geometry backend resolved: cuda (isat_geo_cuda)";
+    run_or_die("geo",
+               {tool_path("isat_geo_cuda"),
+                "-i",
+                matched_pairs.string(),
+                "-m",
+                match_dir.string(),
+                "-o",
+                geo_dir.string(),
+                "-l",
+                image_list,
+                "-t",
+                kRetrievalGeoThreshFPx,
+                "--min-inliers",
+                std::to_string(kRetrievalGeoMinInliers),
+                "--vis"});
+  } else {
+    LOG(WARNING) << "Geometry backend downgrade: requested cuda, but isat_geo_cuda not found at "
+                 << geo_cuda_bin.string() << "; falling back to isat_geo --backend gpu-gl";
+    LOG(INFO) << "Geometry backend resolved: gpu-gl (isat_geo)";
+    run_or_die("geo",
+               {tool_path("isat_geo"),
+                "-i",
+                matched_pairs.string(),
+                "-m",
+                match_dir.string(),
+                "-o",
+                geo_dir.string(),
+                "--image-list",
+                image_list,
+                "-t",
+                kRetrievalGeoThreshFPx,
+                "--min-inliers",
+                std::to_string(kRetrievalGeoMinInliers),
+                "--backend",
+                "gpu-gl",
+                "--vis"});
+  }
 
   // ── Analyse results ──────────────────────────────────────────────────────
   std::set<std::pair<int,int>> verified_pairs;
