@@ -147,6 +147,8 @@ void null_vector(in float A[72], out float x[9])
 
     for (int i = 0; i < 9; i++) x[i] = V[i*9+imin];
 }
+)GLSL"
+R"GLSL(
 
 // ════════════════════════════════════════════════════════════════════════════
 // PART 1b – Fast null-vector solver:  Inverse Power Iteration (via Cholesky factorisation)
@@ -225,6 +227,8 @@ void null_vector_ipi(in float A[72], out float x[9])
         for (int i = 0; i < 9; i++) x[i] /= nrm;
     }
 }
+)GLSL"
+R"GLSL(
 
 // ════════════════════════════════════════════════════════════════════════════
 // PART 2 – 3×3 one-sided Jacobi SVD
@@ -374,6 +378,8 @@ void build_dlt(in vec2 p[8], in vec2 q[8], int K, out float A[72])
         }
     }
 }
+)GLSL"
+R"GLSL(
 
 // ════════════════════════════════════════════════════════════════════════════
 // PART 4 – Geometric constraint enforcement
@@ -571,6 +577,8 @@ void svd3x3(in float M[9], out float U[9], out float S[3], out float Vt[9]) {
     }
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) Vt[i*3+j]=V[j*3+i];
 }
+)GLSL"
+R"GLSL(
 
 // ════════════════════════════════════════════════════════════════════════════
 // 12×12 symmetric Jacobi eigendecomposition  → null vector of AᵀA
@@ -709,6 +717,8 @@ void null_vec12_ipi(inout float B[144], out float x[12])
     nrm2 = sqrt(nrm2) + 1e-30;
     for (int i = 0; i < 12; i++) x[i] /= nrm2;
 }
+)GLSL"
+R"GLSL(
 
 void main() {
     uint tid = gl_GlobalInvocationID.x;
@@ -1460,11 +1470,12 @@ static int run_ransac(int model, int K, const Match2D* matches_raw, int n, float
   // ── Optional: GL timer queries for profiling ──────────────────────────────
   // Measures: upload / GPU dispatch / readback separately.
   // Enabled by gpu_geo_set_verbose(1).
-  struct timespec _cpu0, _cpu1, _cpu2, _cpu3;
+  using ProfileClock = std::chrono::steady_clock;
+  ProfileClock::time_point _cpu0, _cpu1, _cpu2, _cpu3;
   GLuint _tq = 0;
   if (s_verbose) {
     glGenQueries(1, &_tq);
-    clock_gettime(CLOCK_MONOTONIC, &_cpu0);
+    _cpu0 = ProfileClock::now();
   }
 
   if (_tq)
@@ -1473,13 +1484,13 @@ static int run_ransac(int model, int K, const Match2D* matches_raw, int n, float
   glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   if (_tq) {
     glEndQuery(GL_TIME_ELAPSED);
-    clock_gettime(CLOCK_MONOTONIC, &_cpu1);
+    _cpu1 = ProfileClock::now();
   }
 
   // ── Read back results and find best ──────────────────────────────────────
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_ssbo_res);
   if (s_verbose)
-    clock_gettime(CLOCK_MONOTONIC, &_cpu2);
+    _cpu2 = ProfileClock::now();
   const float* res = (const float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
   if (!res) {
     check_gl("glMapBuffer");
@@ -1500,12 +1511,11 @@ static int run_ransac(int model, int K, const Match2D* matches_raw, int n, float
 
   // ── Print profiling breakdown ─────────────────────────────────────────────
   if (_tq) {
-    clock_gettime(CLOCK_MONOTONIC, &_cpu3);
+    _cpu3 = ProfileClock::now();
     // CPU-side time from dispatch call to glMemoryBarrier return
-    double t_barrier = (_cpu1.tv_sec - _cpu0.tv_sec) * 1e3 + (_cpu1.tv_nsec - _cpu0.tv_nsec) * 1e-6;
+    double t_barrier = std::chrono::duration<double, std::milli>(_cpu1 - _cpu0).count();
     // CPU-side time for glMapBuffer (includes actual readback DMA)
-    double t_readback =
-        (_cpu3.tv_sec - _cpu2.tv_sec) * 1e3 + (_cpu3.tv_nsec - _cpu2.tv_nsec) * 1e-6;
+    double t_readback = std::chrono::duration<double, std::milli>(_cpu3 - _cpu2).count();
     // GPU-side elapsed (wall-clock inside the GPU pipeline)
     GLuint64 gpu_ns = 0;
     glGetQueryObjectui64v(_tq, GL_QUERY_RESULT, &gpu_ns);

@@ -16,6 +16,9 @@
 #include <random>
 #include <set>
 #include <unordered_map>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #if defined(__AVX2__)
 #include <immintrin.h>
 #elif defined(__SSE2__)
@@ -61,10 +64,17 @@ inline float descriptor_value(const matching::FeatureData& f, int desc_idx, int 
   return static_cast<float>(f.descriptors_uint8[static_cast<size_t>(desc_idx) * kDescriptorDim + dim]);
 }
 
+inline int popcount_u64(uint64_t value) {
+#if defined(_MSC_VER)
+  return static_cast<int>(__popcnt64(value));
+#else
+  return __builtin_popcountll(value);
+#endif
+}
+
 inline int hamming_distance(const std::array<uint64_t, kCompressedWords>& lhs,
                             const std::array<uint64_t, kCompressedWords>& rhs) {
-  return static_cast<int>(__builtin_popcountll(lhs[0] ^ rhs[0]) +
-                          __builtin_popcountll(lhs[1] ^ rhs[1]));
+  return popcount_u64(lhs[0] ^ rhs[0]) + popcount_u64(lhs[1] ^ rhs[1]);
 }
 
 inline size_t bucket_index(int group, int bucket, int bucket_count) {

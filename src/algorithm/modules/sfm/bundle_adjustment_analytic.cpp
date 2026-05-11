@@ -664,17 +664,11 @@ bool TikhonovIntrCost::Evaluate(double const* const* params, double* residuals,
 
 namespace {
 
-// Ceres 2.3+ exposes CUDA_SPARSE (cuDSS / cuSPARSE) for SPARSE_SCHUR / SPARSE_NORMAL_CHOLESKY;
-// CX_SPARSE was removed from the public enum in 2.3+.
+// Ceres 2.3+ exposes CUDA_SPARSE (cuDSS / cuSPARSE) for SPARSE_SCHUR / SPARSE_NORMAL_CHOLESKY.
 #if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 3)
 #define INSIGHTAT_CERES_HAS_CUDA_SPARSE 1
 #else
 #define INSIGHTAT_CERES_HAS_CUDA_SPARSE 0
-#endif
-#if CERES_VERSION_MAJOR < 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR < 3)
-#define INSIGHTAT_CERES_HAS_CX_SPARSE_ENUM 1
-#else
-#define INSIGHTAT_CERES_HAS_CX_SPARSE_ENUM 0
 #endif
 
 void fill_common_solver_options(const BAInput& input, int max_iterations, ceres::Solver::Options* o) {
@@ -730,10 +724,6 @@ void configure_sparse_schur_large_camera(ceres::Solver::Options* o) {
 #endif
   if (try_sparse_lib(ceres::SUITE_SPARSE, "SUITE_SPARSE (CHOLMOD)"))
     return;
-#if INSIGHTAT_CERES_HAS_CX_SPARSE_ENUM
-  if (try_sparse_lib(ceres::CX_SPARSE, "CX_SPARSE"))
-    return;
-#endif
   o->sparse_linear_algebra_library_type = ceres::EIGEN_SPARSE;
   LOG(INFO) << "global_bundle_analytic: SPARSE_SCHUR + EIGEN_SPARSE (last resort)";
 }

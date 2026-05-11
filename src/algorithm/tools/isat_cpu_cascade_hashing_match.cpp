@@ -386,7 +386,7 @@ static bool accumulate_sample_mean_async(const std::vector<std::string>& sample_
 
   const int queue_size = 16;
   Stage sample_stage("SampleMeanAccumulation", num_threads, queue_size,
-                     [&sample_files, &thread_accumulators, num_threads](int index) {
+                     [&sample_files, &thread_accumulators, num_threads, kDescriptorDim](int index) {
                        const int thread_slot = task_queue_context::current_worker_index();
                        if (thread_slot < 0 || thread_slot >= num_threads) {
                          LOG(FATAL) << "Invalid worker index from task_queue: " << thread_slot;
