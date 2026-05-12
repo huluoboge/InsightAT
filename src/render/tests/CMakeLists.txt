@@ -34,6 +34,9 @@ FetchContent_Declare(
 )
 
 set(RC_ENABLE_GTEST ON CACHE BOOL "Enable rapidcheck GTest integration" FORCE)
+set(FETCHCONTENT_UPDATES_DISCONNECTED_RAPIDCHECK ON CACHE BOOL
+    "Avoid network updates for the cached RapidCheck dependency"
+    FORCE)
 FetchContent_MakeAvailable(rapidcheck)
 
 # ── Eigen3 ───────────────────────────────────────────────────────────────────

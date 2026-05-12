@@ -70,6 +70,8 @@
 
 ### Step 0.2 — 未畸变坐标缓存（Undistortion Cache）
 
+> **与全 CUDA 增量 pipeline 的关系**：下文描述的是 **CPU TrackStore 侧** 的预计算缓存，用于 CPU 三角化路径加速。`CudaSfMState` / `incremental_sfm_cuda_pipeline` 则以 **GPU 上整表、按内参版本按需重算** `d_obs_xn`/`d_obs_yn` 为准（BA 优化畸变后必须失效并重算），二者勿混读为「只做一次」。
+
 **文件**：`src/algorithm/modules/sfm/track_store.h/.cpp`
 
 **方案**：

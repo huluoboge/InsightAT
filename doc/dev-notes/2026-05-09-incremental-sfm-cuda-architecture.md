@@ -218,16 +218,17 @@ __global__ void kernel_update_params(
 );
 ```
 
-### 3.3 Undistortion Cache on GPU
+### 3.3 Undistortion 派生字段 on GPU（按需、版本化）
 
-在 `GpuSfMState` 中增加：
+在 `GpuSfMState` / `CudaSfMState` 中持有：
 ```cpp
-float* d_obs_u_undist;  // [M] 预计算的去畸变归一化坐标
+float* d_obs_u_undist;  // [M] 由当前 d_intrinsics 派生的去畸变归一化坐标
 float* d_obs_v_undist;  // [M]
-uint32_t intrinsics_version;
+uint32_t intrinsics_version;  // BA 每写回一次内参可递增；与缓存代数比较
 ```
 
-每次 BA 完成后（内参变化超过阈值），触发：
+**语义**：这是**派生缓存**，不是静态预处理。BA 会优化 fx、cy、畸变等，只要内参与生成该缓存时不一致，就必须在 GPU 上重算（全表 `kernel_precompute_undistorted` / `undistort_all` 一次通常仍可接受）。
+
 ```cuda
 __global__ void kernel_precompute_undistorted(
     const float* d_obs_u, d_obs_v,
@@ -236,11 +237,10 @@ __global__ void kernel_precompute_undistorted(
     float* d_obs_u_undist, d_obs_v_undist,
     int n_obs
 );
-// 每个 thread: 一个 obs → fixed-point undistort (5 iter 即可，不需要 CPU 的 15 iter)
-// 全 FP32，结果精度 < 0.05px，够三角化用
+// 每个 thread: 一个 obs → fixed-point undistort（FP32，迭代次数可参数化）
 ```
 
-这样三角化内循环完全避免 undistort 调用，直接读缓存。
+触发：pipeline 启动后首次、以及**每次 BA 更新内参之后**（或按多项系数阈值判定变化）。三角化 / resection 内循环只读与当前 K 一致的缓存，不在内核里重复做 undistort。
 
 ### 3.4 全 GPU BA 循环（消除 LM 迭代内的 PCIe 传输）
 

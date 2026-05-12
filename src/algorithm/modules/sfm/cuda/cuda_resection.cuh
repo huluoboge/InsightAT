@@ -80,6 +80,8 @@ struct GpuResectionContext {
 // Lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @param max_pts  Upper bound on @p n_pts for any single gpu_resection_upload / gpu_resection_refine
+///                 (one camera / one image at a time), not a sum over a multi-image batch.
 GpuResectionContext* gpu_resection_ctx_create(int max_pts);
 void                 gpu_resection_ctx_free(GpuResectionContext* ctx);
 
