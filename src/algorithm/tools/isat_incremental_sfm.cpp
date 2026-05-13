@@ -36,6 +36,7 @@
 #include "../io/track_store_idc.h"
 #include "../modules/camera/camera_utils.h"
 #include "../modules/sfm/incremental_sfm_pipeline.h"
+#include "../modules/sfm/incremental_sfm_cuda_pipeline.h"
 #include "../modules/sfm/track_store.h"
 
 using json = nlohmann::json;
@@ -548,6 +549,7 @@ int main(int argc, char* argv[]) {
               .doc("Fixed-pose Ceres solve for skipped tracks after global BA (1=on [default], 0=off)."));
   cmd.add(make_option(0, ba_threads, "ba-threads")
               .doc("Ceres num_threads for BA solves (default: 0 = use hardware concurrency)."));
+  cmd.add(make_switch(0, "cuda-pipeline").doc("Use GPU-accelerated CUDA pipeline (triangulation + outlier rejection on GPU)."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -589,10 +591,24 @@ int main(int argc, char* argv[]) {
   IncrementalSfMOptions opts;
   opts.global_ba.max_iterations = 500;
   opts.global_ba.early_phase_max_cameras = 100;
-  opts.global_ba.periodic_every_n_images = 50; // global BA every 50 registered cameras (was 100)
-  opts.global_ba.every_n_images = 3;
-  opts.global_ba.early_phase_global_only_images = 35;
-  opts.global_ba.intermediate_loose_after_images = 60; // must be > early_phase to avoid loose BA before intrinsics stabilise
+  // ── Global BA cadence (three phases; see incremental_sfm_pipeline.cpp [ba_phase]) ──────────
+  // Intrinsics: per-camera n∈[3,10) → fx+k1; n≥10 → +k2 (see IntrinsicsSchedule).
+  // n < early_phase_global_only_images (=41): global BA every registration (first 40 registered imgs).
+  // n ≥ 41: mid-phase linear globals + local BA until switch_after_n_images; then late periodic.
+  opts.global_ba.early_phase_global_only_images = 41;
+  opts.global_ba.periodic_every_n_images = 100; ///< Late-phase fallback when periodic linear off.
+  opts.global_ba.every_n_images = 5; ///< Mid-phase fallback when mid_phase_global_linear_spacing is false.
+  opts.global_ba.mid_phase_global_linear_spacing = true;
+  opts.global_ba.mid_global_spacing_a = 5.0;
+  opts.global_ba.mid_global_spacing_b = 0.12;
+  // Late phase (n >= switch_after_n_images): full global every ceil(a+b*n) registrations after each
+  // periodic global. Keep gap moderate when switch≈100 so long local-only runs do not precede one
+  // huge joint solve (Schur complement indefinite / not PSD).
+  opts.global_ba.periodic_global_spacing_a = 22.0;
+  opts.global_ba.periodic_global_spacing_b = 0.06;
+  // intermediate_loose_after_images: cleanup rounds (r>0) use looser Ceres tol once n_registered
+  // hits this.
+  opts.global_ba.intermediate_loose_after_images = 35;
   // ── Default-on optimisations (can be disabled via CLI --xxx 0) ─────────────
   opts.global_ba.skip_2degree_tracks = true;
   opts.global_ba.ba_grid_subset = true;
@@ -603,13 +619,16 @@ int main(int argc, char* argv[]) {
   opts.init.min_angle_deg = 4.f;
   opts.init.min_median_angle_deg = 10.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
-  // constant = top-K co-visible neighbors. Historical camera observations are NEVER deleted
-  // in local BA — only global BA (with full scene context) performs outlier rejection.
-  // This prevents the cascading observation-loss that kColmap can cause.
+  // constant = top-K co-visible neighbors. Intrinsics are fixed in local BA.
+  // Batch cameras: MAD tight rejection after local BA. Constant neighbors: default no gross delete
+  // (set constant_cam_gross_outlier_px e.g. 80+ only if you want late-stage cleanup; low values
+  // can strip too many constraints and worsen BA conditioning).
   opts.local_ba.enable = true;
   opts.local_ba.strategy = LocalBAStrategy::kBatchNeighbor;
   opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
   opts.local_ba.switch_after_n_images = 100;
+  opts.local_ba.constant_cam_gross_outlier_px = 0.0; ///< 0 = off (recommended default).
+  opts.local_ba.constant_cam_gross_outlier_min_registered = 0;
   opts.local_ba.max_observations_per_track = 8;
   opts.local_ba.max_iterations = 250;
   opts.resection.backend = ResectionBackend::kPoseLib;
@@ -632,6 +651,21 @@ int main(int argc, char* argv[]) {
             << " max_obs_per_track(global/local)=" << opts.global_ba.max_observations_per_track
             << "/" << opts.local_ba.max_observations_per_track
             << " fixed_pose_skip=" << opts.global_ba.ba_fixed_pose_optimize_skipped;
+  LOG(INFO) << "[opts][ba_cadence] early_global_until_n<"
+            << opts.global_ba.early_phase_global_only_images
+            << " | mid: linear_gap=max(1,ceil(a+b*n)) a=" << opts.global_ba.mid_global_spacing_a
+            << " b=" << opts.global_ba.mid_global_spacing_b
+            << " (fallback fixed step=" << opts.global_ba.every_n_images << ") until n="
+            << opts.local_ba.switch_after_n_images
+            << " | late: periodic linear late_spacing a=" << opts.global_ba.periodic_global_spacing_a
+            << " b=" << opts.global_ba.periodic_global_spacing_b;
+  if (opts.local_ba.constant_cam_gross_outlier_px > 0.0) {
+    const int gross_min = opts.local_ba.constant_cam_gross_outlier_min_registered > 0
+                              ? opts.local_ba.constant_cam_gross_outlier_min_registered
+                              : opts.local_ba.switch_after_n_images;
+    LOG(INFO) << "[opts][local_ba] const_neighbor_gross_reproj_px="
+              << opts.local_ba.constant_cam_gross_outlier_px << " min_registered=" << gross_min;
+  }
 
   // Per-iteration debug snapshots: write bundle.out + list.txt to debug_dir/iter_NNNN/
   if (!debug_dir.empty()) {
@@ -664,10 +698,22 @@ int main(int argc, char* argv[]) {
   }
 
   {
-    ScopedTimer timer("run_incremental_sfm_pipeline");
-    if (!run_incremental_sfm_pipeline(tracks_path, pairs_path, geo_dir, &project.cameras,
-                                      project.image_to_camera_index, opts, &store, &poses_R, &poses_C,
-                                      &registered)) {
+    const bool use_cuda_pipeline = cmd.used("cuda-pipeline");
+    if (use_cuda_pipeline)
+      LOG(INFO) << "--cuda-pipeline: using GPU-accelerated incremental SfM";
+    ScopedTimer timer(use_cuda_pipeline ? "run_incremental_sfm_pipeline_cuda"
+                                        : "run_incremental_sfm_pipeline");
+    bool ok = false;
+    if (use_cuda_pipeline) {
+      ok = run_incremental_sfm_pipeline_cuda(tracks_path, pairs_path, geo_dir, &project.cameras,
+                                              project.image_to_camera_index, opts, &store,
+                                              &poses_R, &poses_C, &registered);
+    } else {
+      ok = run_incremental_sfm_pipeline(tracks_path, pairs_path, geo_dir, &project.cameras,
+                                         project.image_to_camera_index, opts, &store, &poses_R,
+                                         &poses_C, &registered);
+    }
+    if (!ok) {
       LOG(ERROR) << "Incremental SfM pipeline failed";
       return 1;
     }

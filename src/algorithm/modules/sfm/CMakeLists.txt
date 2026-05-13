@@ -23,6 +23,7 @@ enable_language(CUDA)
 find_package(Eigen3 REQUIRED)
 find_package(Ceres REQUIRED)
 find_package(CUDA REQUIRED)
+find_package(OpenMP REQUIRED)
 
 if(NOT OPENGL_FOUND)
     find_package(OpenGL REQUIRED)
@@ -116,6 +117,7 @@ target_link_libraries(sfm_module
         ${CUDA_LIBRARIES}
     PRIVATE
         glog::glog
+        OpenMP::OpenMP_CXX
 )
 
 target_compile_features(sfm_module PUBLIC cxx_std_17)

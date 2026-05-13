@@ -82,10 +82,12 @@ struct GpuTrackStore {
   int* d_img_obs_ptr;    // [N+1]
   int* d_img_obs_idx;    // [M]   obs global id，按 image 排列
 
-  // ── Undistortion 缓存（GPU 可写，内参变化时重建）────────────────────
-  float* d_obs_u_n;   // [M] 去畸变归一化坐标（供三角化用）
+  // ── Undistortion 派生缓存（GPU 可写，随内参按需重建）────────────────
+  // d_obs_u_n / d_obs_v_n 不是「上传一次管终身」：BA 会优化 fx、cy 与畸变系数，
+  // 只要当前优化使用的内参与上一次生成该缓存时不一致，就必须在 GPU 上整表重算。
+  float* d_obs_u_n;   // [M] 去畸变归一化坐标（供三角化 / resection 用）
   float* d_obs_v_n;   // [M]
-  uint32_t undist_epoch;  // 与 intrinsics_version 对比，决定是否需要重建
+  uint32_t undist_epoch;  // 与 intrinsics_version（或 BA epoch）对比，不等则 kernel 重算
 
   // ── 相机 / 内参（与 GpuSfMState 共享指针）───────────────────────────
   // BA 结束后更新，直接使用 GpuSfMState 的 d_poses / d_intrinsics
@@ -203,11 +205,13 @@ __global__ void kernel_undistort_obs(
 }
 ```
 
-调用时机：
-- 首次进入 pipeline 后
-- Global BA 结束后，若内参变化 > 阈值（`|Δfx/fx| > 1e-4` 或 `|Δk1| > 1e-5`）
+调用时机（按需，**不是**「只在 Track 上传时算一次」）：
+- 首次进入 pipeline、完成内参上传之后；
+- **每次** Bundle Adjustment 若优化了相机内参/畸变（或保守策略：每次 BA 后都重算一次），在 GPU 上执行 `kernel_undistort_obs` / `undistort_all`，使 `d_obs_u_n` 与当前 `d_intrinsics` 一致。
 
-这样三角化 kernel 中不再有任何 undistort 逻辑，直接读 `d_obs_u_n`。
+仅比较 `|Δfx/fx|` 容易漏掉「fx 几乎不变但 k1/p1 变了」的情况；全 CUDA pipeline 推荐在 BA 写回内参后**无条件或按多项参数阈值**触发 GPU 重算。
+
+这样三角化 / resection kernel 中不再内嵌 undistort 迭代，只读与当前 K 一致的 `d_obs_u_n`。
 
 ### 4.2 批量三角化
 
