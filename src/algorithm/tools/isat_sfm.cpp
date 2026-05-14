@@ -49,6 +49,11 @@
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
 static void printEvent(const json& j) {
   std::cout << "ISAT_EVENT " << j.dump() << "\n";
   std::cout.flush();

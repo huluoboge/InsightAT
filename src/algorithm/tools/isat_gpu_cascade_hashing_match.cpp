@@ -287,7 +287,7 @@ static bool accumulate_sample_mean_async(const std::vector<std::string>& sample_
   std::vector<int> thread_valid(static_cast<size_t>(num_threads), 0);
   Stage sample_stage(
       "GpuSampleMean", num_threads, 16,
-      [&sample_files, &thread_sum, &thread_count, &thread_valid, num_threads](int index) {
+      [&sample_files, &thread_sum, &thread_count, &thread_valid, num_threads, kDim](int index) {
         const int slot = task_queue_context::current_worker_index();
         if (slot < 0 || slot >= num_threads) return;
         const FeatureData features = load_features_idc(sample_files[static_cast<size_t>(index)]);

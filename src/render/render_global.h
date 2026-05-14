@@ -28,8 +28,16 @@
 // ── 第三方库（OpenGL / GLEW） ─────────────────────────────────────────────────
 #if defined(WIN32) || defined(WIN64) || defined(_WIN32) || defined(_WIN64)
 #include "gl/glew.h"
+#ifndef APIENTRY
+#define APIENTRY __stdcall
+#endif
+#ifndef CALLBACK
+#define CALLBACK __stdcall
+#endif
+#include <GL/glu.h>
 #else
 #include "GL/glew.h"
+#include <GL/glu.h>
 #endif
 
 // ── 编译器警告抑制 ────────────────────────────────────────────────────────────

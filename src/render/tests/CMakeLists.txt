@@ -37,7 +37,11 @@ set(RC_ENABLE_GTEST ON CACHE BOOL "Enable rapidcheck GTest integration" FORCE)
 set(FETCHCONTENT_UPDATES_DISCONNECTED_RAPIDCHECK ON CACHE BOOL
     "Avoid network updates for the cached RapidCheck dependency"
     FORCE)
+set(_INSIGHTAT_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(rapidcheck)
+set(BUILD_SHARED_LIBS ${_INSIGHTAT_BUILD_SHARED_LIBS})
+unset(_INSIGHTAT_BUILD_SHARED_LIBS)
 
 # ── Eigen3 ───────────────────────────────────────────────────────────────────
 if(NOT TARGET Eigen3::Eigen)

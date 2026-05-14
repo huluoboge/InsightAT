@@ -4,7 +4,10 @@
 
 if (MSVC)
   # Disable warning about size_t conversions for all third_party libraries.
-  add_compile_options(/wd4267)
+  add_compile_options(
+    "$<$<COMPILE_LANGUAGE:C>:/wd4267>"
+    "$<$<COMPILE_LANGUAGE:CXX>:/wd4267>"
+  )
 endif()
 
 
@@ -38,7 +41,11 @@ else()
 endif()
 
 # PoseLib for alternate resection / absolute-pose backend
+set(_INSIGHTAT_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 add_subdirectory(PoseLib)
+set(BUILD_SHARED_LIBS ${_INSIGHTAT_BUILD_SHARED_LIBS} CACHE BOOL "Build shared libraries" FORCE)
+unset(_INSIGHTAT_BUILD_SHARED_LIBS)
 
 list(APPEND directories cereal cmdLine progress stlplus3) 
 foreach(inDirectory ${directories})

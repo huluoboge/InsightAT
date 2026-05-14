@@ -652,9 +652,15 @@ target_include_directories(CameraEstimator
 # ─────────────────────────────────────────────────────────────
 
 if(MSVC)
-    target_compile_options(InsightATAlgorithm PRIVATE /W4)
+    target_compile_options(InsightATAlgorithm PRIVATE
+        "$<$<COMPILE_LANGUAGE:C>:/W4>"
+        "$<$<COMPILE_LANGUAGE:CXX>:/W4>"
+    )
 else()
-    target_compile_options(InsightATAlgorithm PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(InsightATAlgorithm PRIVATE
+        "$<$<COMPILE_LANGUAGE:C>:-Wall;-Wextra;-Wpedantic>"
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
+    )
 endif()
 
 set_property(TARGET InsightATAlgorithm PROPERTY FOLDER InsightAT/Algorithm)

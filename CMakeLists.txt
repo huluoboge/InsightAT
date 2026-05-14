@@ -117,6 +117,13 @@ endif()
 #vs2017 error
 if(IS_MSVC)
     register_definitions(-D_DISABLE_EXTENDED_ALIGNED_STORAGE)
+    register_definitions(-D_USE_MATH_DEFINES)
+    register_definitions(-DNOMINMAX)
+    register_definitions(-DWIN32_LEAN_AND_MEAN)
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:C>:/utf-8>"
+        "$<$<COMPILE_LANGUAGE:CXX>:/utf-8>"
+    )
 endif()
 
 # ==============================================================================

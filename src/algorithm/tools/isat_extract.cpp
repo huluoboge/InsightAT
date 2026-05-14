@@ -624,7 +624,7 @@ int main(int argc, char* argv[]) {
 
           // Write matching features
           if (process_matching) {
-            std::string output_path = fs::path(output_dir) / base_filename;
+            std::string output_path = (fs::path(output_dir) / base_filename).string();
             if (write_features(output_path, task.keypoints, task.descriptors,
                                task.descriptors_uchar, sift_params, "matching")) {
               LOG(INFO) << "Written matching features [" << index << "]: " << output_path;
@@ -633,7 +633,7 @@ int main(int argc, char* argv[]) {
 
           // Write retrieval features
           if (process_retrieval) {
-            std::string output_path = fs::path(output_retrieval_dir) / base_filename;
+            std::string output_path = (fs::path(output_retrieval_dir) / base_filename).string();
             if (write_features(output_path, task.keypoints_retrieval, task.descriptors_retrieval,
                                task.descriptors_uchar_retrieval, sift_params_retrieval,
                                "retrieval")) {

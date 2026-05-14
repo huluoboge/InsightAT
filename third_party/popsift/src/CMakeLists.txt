@@ -41,6 +41,10 @@ add_library(popsift
         popsift/common/vec_macros.h
         popsift/common/clamp.h)
 
+if(NOT TARGET PopSift::popsift)
+  add_library(PopSift::popsift ALIAS popsift)
+endif()
+
 set(_popsift_cuda_devrt_lib "")
 if(TARGET CUDA::cudadevrt)
   set(_popsift_cuda_devrt_lib CUDA::cudadevrt)

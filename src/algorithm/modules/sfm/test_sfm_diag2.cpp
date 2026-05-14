@@ -858,7 +858,7 @@ static bool save_bundler_format(
 int main(int argc, char** argv)
 {
     google::InitGoogleLogging(argv[0]);
-    google::SetStderrLogging(google::INFO);
+    google::SetStderrLogging(google::GLOG_INFO);
 
     // ── Argument parsing ──────────────────────────────────────────────────────
     std::string tracks_path, project_path, poses_path, output_path;
@@ -912,8 +912,8 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (quiet)        google::SetStderrLogging(google::ERROR);
-    else if (verbose) google::SetStderrLogging(google::INFO);
+    if (quiet)        google::SetStderrLogging(google::GLOG_ERROR);
+    else if (verbose) google::SetStderrLogging(google::GLOG_INFO);
 
     // ── 1. Load TrackStore + ViewGraph ────────────────────────────────────────
     TrackStore store;
