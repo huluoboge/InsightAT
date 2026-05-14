@@ -31,8 +31,10 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <numeric>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -50,6 +52,7 @@
 
 #include "../io/idc_reader.h"
 #include "../io/idc_writer.h"
+#include "../io/geopack_index.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"
@@ -69,9 +72,25 @@ static constexpr const char* kEventPrefix = "ISAT_EVENT ";
 static constexpr int kMinInliersForTrack = 4;
 static constexpr int kMinCheir = 8; // minimum positive-depth count to accept (R,t)
 
+enum class GeoOutputFormat {
+  kGeo,
+  kGeopack,
+  kBoth,
+};
+
 static void print_event(const json& j) {
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
+}
+
+static GeoOutputFormat parse_output_format(const std::string& s) {
+  if (s == "geo")
+    return GeoOutputFormat::kGeo;
+  if (s == "geopack")
+    return GeoOutputFormat::kGeopack;
+  if (s == "both")
+    return GeoOutputFormat::kBoth;
+  return GeoOutputFormat::kGeo;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +135,22 @@ struct GeoTask {
   double median_pixel_disp = 0.0;
   double inlier_ratio = 0.0;
 };
+
+static bool task_has_any_geometry(const GeoTask& task) {
+  return task.F_ok || task.E_ok || task.H_ok;
+}
+
+static std::string make_pair_blob_prefix(const GeoTask& task) {
+  uint32_t lo = std::min(task.image1_index, task.image2_index);
+  uint32_t hi = std::max(task.image1_index, task.image2_index);
+  return "pair/" + std::to_string(lo) + "_" + std::to_string(hi);
+}
+
+static std::string geopack_file_name(int block_index) {
+  std::ostringstream oss;
+  oss << "geo_block_" << std::setfill('0') << std::setw(6) << block_index << ".isat_geopack";
+  return oss.str();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pairs loading
@@ -228,10 +263,7 @@ static int count_inliers(const std::vector<uint8_t>& mask) {
 // Stage 3: write .isat_geo
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void write_geo(const GeoTask& task, const std::string& output_dir, int ransac_iter) {
-  const std::string out = output_dir + "/" + std::to_string(task.image1_index) + "_" +
-                          std::to_string(task.image2_index) + ".isat_geo";
-
+static json build_geo_metadata(const GeoTask& task, int ransac_iter) {
   json meta;
   meta["schema_version"] = "1.0";
   meta["task_type"] = "two_view_geometry";
@@ -271,6 +303,14 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
     tv["median_parallax_deg"] = task.stability.median_parallax_deg;
     tv["median_depth_baseline"] = task.stability.median_depth_baseline;
   }
+  return meta;
+}
+
+static void write_geo(const GeoTask& task, const std::string& output_dir, int ransac_iter) {
+  const std::string out = output_dir + "/" + std::to_string(task.image1_index) + "_" +
+                          std::to_string(task.image2_index) + ".isat_geo";
+
+  json meta = build_geo_metadata(task, ransac_iter);
 
   IDCWriter writer(out);
   writer.set_metadata(meta);
@@ -297,6 +337,115 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
     LOG(ERROR) << "Failed to write: " << out;
   else
     VLOG(1) << "Wrote " << out;
+}
+
+static std::string write_geopack_blocks(const std::vector<GeoTask>& tasks,
+                                        const std::string& output_dir, int block_size,
+                                        int ransac_iter) {
+  const int safe_block_size = std::max(1, block_size);
+  std::vector<const GeoTask*> valid_tasks;
+  valid_tasks.reserve(tasks.size());
+  for (const auto& task : tasks) {
+    if (task_has_any_geometry(task))
+      valid_tasks.push_back(&task);
+  }
+
+  std::vector<insight::io::GeoPackIndexRecordV1> records;
+  records.reserve(valid_tasks.size());
+
+  int block_idx = 0;
+  for (size_t begin = 0; begin < valid_tasks.size(); begin += static_cast<size_t>(safe_block_size)) {
+    const size_t end = std::min(begin + static_cast<size_t>(safe_block_size), valid_tasks.size());
+    const std::string pack_name = geopack_file_name(block_idx);
+    const std::string pack_path = (fs::path(output_dir) / pack_name).string();
+
+    json pack_meta;
+    pack_meta["schema_version"] = "1.0";
+    pack_meta["task_type"] = "two_view_geometry_pack";
+    pack_meta["algorithm"]["name"] = "isat_geo_cuda";
+    pack_meta["algorithm"]["iterations"] = ransac_iter;
+    pack_meta["pack"]["block_index"] = block_idx;
+    pack_meta["pack"]["pair_count"] = static_cast<int>(end - begin);
+
+    IDCWriter writer(pack_path);
+    writer.set_metadata(pack_meta);
+    for (size_t i = begin; i < end; ++i) {
+      const GeoTask& task = *valid_tasks[i];
+      const std::string prefix = make_pair_blob_prefix(task);
+
+      json pair_meta = build_geo_metadata(task, ransac_iter);
+
+      const std::string pair_meta_str = pair_meta.dump();
+      writer.add_blob(prefix + "/meta_json", pair_meta_str.data(), pair_meta_str.size(), "char",
+                      {static_cast<int>(pair_meta_str.size())});
+
+      if (task.F_ok)
+        writer.add_blob(prefix + "/F_matrix", task.F, 9 * sizeof(float), "float32", {3, 3});
+      if (static_cast<int>(task.F_mask.size()) == task.num_matches)
+        writer.add_blob(prefix + "/F_inliers", task.F_mask.data(), task.num_matches, "uint8",
+                        {task.num_matches});
+      if (task.E_ok)
+        writer.add_blob(prefix + "/E_matrix", task.E, 9 * sizeof(float), "float32", {3, 3});
+      if (static_cast<int>(task.E_mask.size()) == task.num_matches)
+        writer.add_blob(prefix + "/E_inliers", task.E_mask.data(), task.num_matches, "uint8",
+                        {task.num_matches});
+      if (task.H_ok)
+        writer.add_blob(prefix + "/H_matrix", task.H, 9 * sizeof(float), "float32", {3, 3});
+      if (static_cast<int>(task.H_mask.size()) == task.num_matches)
+        writer.add_blob(prefix + "/H_inliers", task.H_mask.data(), task.num_matches, "uint8",
+                        {task.num_matches});
+      if (task.twoview_ok) {
+        writer.add_blob(prefix + "/R_matrix", task.R, 9 * sizeof(float), "float32", {3, 3});
+        writer.add_blob(prefix + "/t_vector", task.t, 3 * sizeof(float), "float32", {3});
+        writer.add_blob(prefix + "/points3d", task.points3d.data(),
+                        task.points3d.size() * sizeof(float), "float32",
+                        {task.num_valid_points, 3});
+      }
+
+      insight::io::GeoPackIndexRecordV1 rec{};
+      rec.image1_index = std::min(task.image1_index, task.image2_index);
+      rec.image2_index = std::max(task.image1_index, task.image2_index);
+      rec.block_index = static_cast<uint32_t>(block_idx);
+      rec.flags = 0;
+      if (task.F_ok)
+        rec.flags |= (1u << 0);
+      if (task.H_ok)
+        rec.flags |= (1u << 1);
+      if (task.degeneracy.is_degenerate)
+        rec.flags |= (1u << 2);
+      if (task.E_ok)
+        rec.flags |= (1u << 3);
+      if (task.twoview_ok)
+        rec.flags |= (1u << 4);
+      if (task.stability.is_stable)
+        rec.flags |= (1u << 5);
+      rec.F_inliers = task.F_inliers;
+      rec.F_inlier_ratio =
+          (task.num_matches > 0) ? static_cast<float>(task.F_inliers) / task.num_matches : 0.0f;
+      rec.H_inliers = task.H_inliers;
+      rec.E_inliers = task.E_inliers;
+      rec.num_valid_points = task.num_valid_points;
+      rec.median_pixel_disp = static_cast<float>(task.median_pixel_disp);
+      rec.score_prelim = static_cast<float>(task.score_prelim);
+      rec.median_parallax_deg = static_cast<float>(task.stability.median_parallax_deg);
+      rec.median_depth_baseline = static_cast<float>(task.stability.median_depth_baseline);
+      records.push_back(rec);
+    }
+
+    if (!writer.write())
+      LOG(ERROR) << "Failed to write geopack: " << pack_path;
+
+    ++block_idx;
+  }
+
+  if (!insight::io::GeoPackIndex::write_binary_index(output_dir, records, safe_block_size))
+    return "";
+
+  const std::string index_path =
+      (fs::path(output_dir) / insight::io::GeoPackIndex::kBinaryIndexFileName).string();
+  LOG(INFO) << "GeoPack binary index written: " << index_path
+            << " pairs=" << records.size() << " blocks=" << block_idx;
+  return index_path;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -793,6 +942,8 @@ int main(int argc, char* argv[]) {
   int cuda_device = 0;
   bool write_vis = false;
   std::string vis_output;
+  std::string output_format_str = "geopack";
+  int geopack_block_size = 100000;
 
   cmd.add(make_option('i', pairs_json, "input").doc("Input pairs JSON"));
   cmd.add(make_option('m', match_dir, "match-dir").doc("Directory with .isat_match files"));
@@ -810,6 +961,13 @@ int main(int argc, char* argv[]) {
                    "CUDA kernel auto-chunks internally at INSIGHTAT_CUDA_GEO_BATCH_MAX_PAIRS "
                    "so any value is safe; larger values use more RAM but reduce load overhead."));
   cmd.add(make_option(0, cuda_device, "cuda-device").doc("CUDA device id. Default: 0"));
+  cmd.add(make_option(0, output_format_str, "output-format")
+          .doc("Output geometry format: geo|geopack|both. Default: geopack.\n"
+                   "  geo     -> per-pair .isat_geo files (legacy).\n"
+            "  geopack -> block .isat_geopack + geopack_index.isat_gpkx.\n"
+                   "  both    -> write both formats."));
+  cmd.add(make_option(0, geopack_block_size, "geopack-block-size")
+          .doc("Pairs per .isat_geopack block when output-format is geopack/both. Default: 100000"));
   cmd.add(make_switch(0, "vis").doc(
       "Generate adjacency matrix heatmap images (PNG) per model.\n"
       "  Outputs: match_graph_F.png match_graph_E.png match_graph_H.png"));
@@ -838,6 +996,21 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 2;
   }
+  if (output_format_str != "geo" && output_format_str != "geopack" &&
+      output_format_str != "both") {
+    std::cerr << "Error: --output-format must be geo, geopack, or both\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 2;
+  }
+  if (geopack_block_size <= 0) {
+    std::cerr << "Error: --geopack-block-size must be > 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 2;
+  }
+
+  const GeoOutputFormat output_format = parse_output_format(output_format_str);
+  const bool write_geo_files = (output_format != GeoOutputFormat::kGeopack);
+  const bool write_geopack_files = (output_format != GeoOutputFormat::kGeo);
 
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
@@ -866,6 +1039,9 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  Batch size   : " << batch_size;
   LOG(INFO) << "  CPU threads  : " << num_threads;
   LOG(INFO) << "  CUDA device  : " << cuda_device;
+  LOG(INFO) << "  Output format: " << output_format_str;
+  if (write_geopack_files)
+    LOG(INFO) << "  Geopack blk  : " << geopack_block_size;
 
   if (!fs::is_directory(match_dir)) { LOG(ERROR) << "Match dir not found: " << match_dir; return 1; }
   fs::create_directories(output_dir);
@@ -950,7 +1126,9 @@ int main(int argc, char* argv[]) {
   // disk I/O alive while GpuStage + LoadStage work on the next batch.
   Stage write_stage(
       "GeoWrite", num_threads, /*capacity=*/4,
-      [&tasks, &batch_size, &total, &output_dir, ransac_iter](int batch_idx) {
+      [&tasks, &batch_size, &total, &output_dir, ransac_iter, write_geo_files](int batch_idx) {
+        if (!write_geo_files)
+          return;
         const int bs = batch_idx * batch_size;
         const int be = std::min(bs + batch_size, total);
         for (int i = bs; i < be; ++i) {
@@ -981,6 +1159,12 @@ int main(int argc, char* argv[]) {
   push_thread.join();
   load_stage.wait();
   write_stage.wait();
+
+  std::string geopack_index_path;
+  if (write_geopack_files) {
+    geopack_index_path =
+        write_geopack_blocks(tasks, output_dir, geopack_block_size, ransac_iter);
+  }
 
   cuda_geo_shutdown();
 
@@ -1062,8 +1246,13 @@ int main(int argc, char* argv[]) {
   ev_done["data"]["avg_F_inliers"] = (pairs_F > 0) ? sum_F / pairs_F : 0;
   ev_done["data"]["avg_E_inliers"] = (pairs_E > 0) ? sum_E / pairs_E : 0;
   ev_done["data"]["elapsed_ms"] = total_ms;
+  ev_done["data"]["output_format"] = output_format_str;
   ev_done["data"]["adjacency_json"] = adjacency_path;
   ev_done["data"]["pairs_json"] = pairs_path;
+  if (!geopack_index_path.empty())
+    ev_done["data"]["geopack_index_file"] = geopack_index_path;
+  if (!geopack_index_path.empty())
+    ev_done["data"]["geopack_index_json"] = geopack_index_path;
   print_event(ev_done);
 
   LOG(INFO) << "=== Done ===  " << total_ms << " ms";

@@ -208,7 +208,9 @@ int reject_outliers_multiview(TrackStore* store, const std::vector<Eigen::Matrix
     const Eigen::Vector3d& C = poses_C[static_cast<size_t>(im)];
     const camera::Intrinsics& K =
         cameras[static_cast<size_t>(image_to_camera_index[static_cast<size_t>(im)])];
-    std::vector<int> obs_ids;
+    // Reuse per-thread vector to avoid repeated heap allocation across OMP iterations.
+    thread_local std::vector<int> obs_ids;
+    obs_ids.clear();
     store->get_image_observation_indices(im, &obs_ids);
     auto& local = to_delete[static_cast<size_t>(omp_get_thread_num())];
     for (int obs_id : obs_ids) {
@@ -373,7 +375,9 @@ int reject_outliers_depth(TrackStore* store, const std::vector<Eigen::Matrix3d>&
   for (int im = 0; im < n_images; ++im) {
     if (!registered[static_cast<size_t>(im)])
       continue;
-    std::vector<int> obs_ids;
+    // Reuse per-thread vector to avoid repeated heap allocation across OMP iterations.
+    thread_local std::vector<int> obs_ids;
+    obs_ids.clear();
     store->get_image_observation_indices(im, &obs_ids);
     auto& local = per_thread_depths[static_cast<size_t>(omp_get_thread_num())];
     for (int obs_id : obs_ids) {
@@ -411,10 +415,11 @@ int reject_outliers_depth(TrackStore* store, const std::vector<Eigen::Matrix3d>&
   // Pass 2 (serial): mark observations violating depth bounds.
   int marked = 0;
   std::unordered_set<int> dirty_tracks;
+  std::vector<int> obs_ids; // hoisted outside loop — reused across images
   for (int im = 0; im < n_images; ++im) {
     if (!registered[static_cast<size_t>(im)])
       continue;
-    std::vector<int> obs_ids;
+    obs_ids.clear();
     store->get_image_observation_indices(im, &obs_ids);
     for (int obs_id : obs_ids) {
       const int tid = store->obs_track_id(obs_id);
@@ -487,7 +492,9 @@ static std::vector<double> collect_reproj_errors(const TrackStore& store,
     const Eigen::Vector3d& C = poses_C[static_cast<size_t>(im)];
     const camera::Intrinsics& K =
         cameras[static_cast<size_t>(image_to_camera_index[static_cast<size_t>(im)])];
-    std::vector<int> obs_ids;
+    // Reuse per-thread vector to avoid repeated heap allocation across OMP iterations.
+    thread_local std::vector<int> obs_ids;
+    obs_ids.clear();
     store.get_image_observation_indices(im, &obs_ids);
     auto& local = per_thread[static_cast<size_t>(omp_get_thread_num())];
     for (int obs_id : obs_ids) {
@@ -880,18 +887,20 @@ std::vector<int> choose_local_ba_indices_by_connectivity(
   if (reg_list.size() <= static_cast<size_t>(local_ba_window))
     return reg_list;
   std::unordered_map<int, int> shared_count;
+  std::vector<int> track_ids_conn;        // hoisted — reused across images
+  std::vector<Observation> obs_buf_conn;  // hoisted — reused across tracks
   for (int im : reg_list) {
     if (optimize_set.count(im))
       continue;
-    std::vector<int> track_ids;
-    store.get_image_track_observations(im, &track_ids, nullptr);
+    track_ids_conn.clear();
+    store.get_image_track_observations(im, &track_ids_conn, nullptr);
     int count = 0;
-    for (int tid : track_ids) {
+    for (int tid : track_ids_conn) {
       if (!store.track_has_triangulated_xyz(tid))
         continue;
-      std::vector<Observation> obs_buf;
-      store.get_track_observations(tid, &obs_buf);
-      for (const auto& o : obs_buf) {
+      obs_buf_conn.clear();
+      store.get_track_observations(tid, &obs_buf_conn);
+      for (const auto& o : obs_buf_conn) {
         int oim = static_cast<int>(o.image_index);
         if (optimize_set.count(oim)) {
           ++count;
@@ -2297,6 +2306,7 @@ static bool build_ba_input_colmap_local(
   if (ba.points3d.empty())
     return false;
   ba.fix_point.resize(ba.points3d.size(), false);
+  ba.observations.reserve(ba.points3d.size() * static_cast<size_t>(max_observations_per_track));
 
   // ── Observations ─────────────────────────────────────────────────────────
   int obs_before_sampling = 0;
@@ -3097,6 +3107,8 @@ static bool build_ba_input_batch_neighbor(
   if (ba.points3d.empty())
     return false;
 
+  ba.observations.reserve(ba.points3d.size() * static_cast<size_t>(max_observations_per_track));
+
   // ── Observations ─────────────────────────────────────────────────────────
   int obs_before_sampling = 0;
   int obs_after_sampling = 0;
@@ -3868,6 +3880,14 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                                   std::vector<bool>* registered_out) {
   if (!store_out || !poses_R_out || !poses_C_out || !registered_out || !cameras)
     return false;
+
+  // Apply OMP thread count if explicitly set (> 0).
+  // -1 (default) leaves the system/OMP default unchanged (typically = hardware threads).
+  if (opts.omp_num_threads > 0) {
+    omp_set_num_threads(opts.omp_num_threads);
+    LOG(INFO) << "run_incremental_sfm_pipeline: omp_num_threads=" << opts.omp_num_threads;
+  }
+
   ViewGraph view_graph;
   if (!load_track_store_from_idc(tracks_idc_path, store_out, nullptr, &view_graph)) {
     LOG(ERROR) << "run_incremental_sfm_pipeline: failed to load tracks from " << tracks_idc_path;
@@ -3993,6 +4013,12 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   for (;;) {
     ++sfm_iter;
     auto iter_start = Clock::now();
+    const uint64_t iter_ms_choose_t0 = ms_choose_candidates;
+    const uint64_t iter_ms_resect_t0 = ms_resection;
+    const uint64_t iter_ms_tri_t0    = ms_triangulation;
+    const uint64_t iter_ms_lba_t0    = ms_local_ba;
+    const uint64_t iter_ms_gba_t0    = ms_global_ba;
+    const uint64_t iter_ms_retri_t0  = ms_retriangulation;
     LOG(INFO) << "════ SfM iter #" << sfm_iter << ": registered=" << num_registered << "/"
               << n_images << ", tri_tracks=" << count_tri_tracks() << " ════";
 
@@ -4522,10 +4548,23 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                              *store_out);
     }
 
-    VLOG(1)
-        << "[PERF] iter #" << sfm_iter << " total: "
-        << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - iter_start).count()
-        << "ms";
+    {
+      const uint64_t d_ch  = ms_choose_candidates - iter_ms_choose_t0;
+      const uint64_t d_re  = ms_resection         - iter_ms_resect_t0;
+      const uint64_t d_tr  = ms_triangulation     - iter_ms_tri_t0;
+      const uint64_t d_lb  = ms_local_ba          - iter_ms_lba_t0;
+      const uint64_t d_gb  = ms_global_ba         - iter_ms_gba_t0;
+      const uint64_t d_rt  = ms_retriangulation   - iter_ms_retri_t0;
+      const uint64_t d_tot = d_ch + d_re + d_tr + d_lb + d_gb + d_rt;
+      LOG(INFO) << "[timing][iter] iter=" << sfm_iter << "  n_reg=" << num_registered
+                << "  total=" << d_tot << "ms"
+                << "  choose=" << d_ch << "ms"
+                << "  resect=" << d_re << "ms"
+                << "  tri=" << d_tr << "ms"
+                << "  lba=" << d_lb << "ms"
+                << "  gba=" << d_gb << "ms"
+                << "  retri=" << d_rt << "ms";
+    }
   }
   VLOG(1) << "[PERF] main_loop total: "
           << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - pipeline_start)
@@ -4570,18 +4609,9 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // ── Post-BA cleanup ───────────────────────────────────────────────────────
   // No kFullScan retriangulation here: final BA already rejected outliers at a tight threshold
   // (~4 px); a kFullScan pass would attempt to re-triangulate those same cleared tracks at a
-  // looser commit_reproj_px (16 px default), causing tug-of-war.  Instead we only:
-  //   (a) refine kSkipFromBA track positions with fixed-pose Ceres (they never entered BA),
-  //   (b) apply the same strict outlier rejection to any newly refined points.
-  if (opts.global_ba.ba_fixed_pose_optimize_skipped &&
-      (opts.global_ba.ba_grid_subset || opts.global_ba.skip_2degree_tracks)) {
-    double skip_rmse = 0.0;
-    retri_skipped_tracks_fixed_pose(store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                    image_to_camera_index, *cameras,
-                                    opts.global_ba.ba_fixed_pose_max_iterations, &skip_rmse,
-                                    opts.global_ba.solver_overrides.num_threads);
-    LOG(INFO) << "Post-final fixed-pose BA (skipped tracks): RMSE=" << skip_rmse << " px";
-  }
+  // looser commit_reproj_px (16 px default), causing tug-of-war.
+  // kSkipFromBA track refinement (fixed-pose Ceres) is performed internally by
+  // run_ba_with_outlier_detection; calling it again here is redundant.
   {
     const double strict_thr = opts.outlier.threshold_px;
     int rej = 0;

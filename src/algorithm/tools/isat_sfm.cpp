@@ -583,10 +583,6 @@ int main(int argc, char* argv[]) {
               .doc("During incremental SfM, write per-iteration Bundler bundle.out + list.txt under "
                    "<work-dir>/sfm_interval/iter_NNNN/ (interval fixed at 1; view with "
                    "at_bundler_viewer). No need to set paths manually."));
-  cmd.add(make_switch(0, "cuda-sfm")
-              .doc("Use GPU-accelerated CUDA incremental SfM pipeline (triangulation + outlier "
-                   "rejection on GPU, Ceres BA on CPU). Forwarded as --cuda-pipeline to "
-                   "isat_incremental_sfm."));
 
   try {
     cmd.process(argc, argv);
@@ -1169,8 +1165,6 @@ int main(int argc, char* argv[]) {
                                         sfm_out.string()};
     if (fix_intrinsics)
       sfm_cmd.push_back("--fix-intrinsics");
-    if (cmd.used("cuda-sfm"))
-      sfm_cmd.push_back("--cuda-pipeline");
     if (ba_threads > 0) {
       sfm_cmd.push_back("--ba-threads");
       sfm_cmd.push_back(std::to_string(ba_threads));

@@ -56,6 +56,8 @@ set(ALGORITHM_SOURCES
     io/idc_writer.cpp
     io/idc_reader.h
     io/idc_reader.cpp
+    io/geopack_index.h
+    io/geopack_index.cpp
     io/track_store_idc.h
     io/track_store_idc.cpp
     io/exif/exif.h

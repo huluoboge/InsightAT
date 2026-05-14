@@ -494,6 +494,12 @@ struct IncrementalSfMOptions {
   OutlierOptions outlier;
   TriangulationOptions triangulation;
   DebugOptions debug; ///< Per-iteration debug snapshots (disabled by default).
+
+  /// Number of OpenMP threads for parallel loops (outlier rejection, select_ba_subset, etc.).
+  /// -1 (default) means use the system/OMP default (typically all hardware threads).
+  /// Set to a positive value to cap parallelism, e.g. when multiple pipeline instances run
+  /// concurrently and you want to divide cores evenly.
+  int omp_num_threads = -1;
 };
 
 /// One BA + iterative outlier-rejection call (global or local). Keeps

@@ -40,7 +40,9 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <numeric>
+#include <sstream>
 #include <set>
 #include <string>
 #include <thread>
@@ -61,6 +63,7 @@
 
 #include "../io/idc_reader.h"
 #include "../io/idc_writer.h"
+#include "../io/geopack_index.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"
@@ -95,6 +98,12 @@ enum class EssentialBackend {
 enum class HomographyBackend {
   kGpu,
   kPoseLib,
+};
+
+enum class GeoOutputFormat {
+  kGeo,
+  kGeopack,
+  kBoth,
 };
 
 static const char* fundamental_backend_name(FundamentalBackend backend) {
@@ -178,6 +187,32 @@ struct GeoTask {
 /// Minimum inlier count to still write inlier mask to IDC for track building (degenerate pairs keep
 /// inlier data)
 static constexpr int kMinInliersForTrack = 4;
+
+static bool task_has_any_geometry(const GeoTask& task) {
+  return task.F_ok || task.E_ok || task.H_ok;
+}
+
+static std::string make_pair_blob_prefix(const GeoTask& task) {
+  uint32_t lo = std::min(task.image1_index, task.image2_index);
+  uint32_t hi = std::max(task.image1_index, task.image2_index);
+  return "pair/" + std::to_string(lo) + "_" + std::to_string(hi);
+}
+
+static std::string geopack_file_name(int block_index) {
+  std::ostringstream oss;
+  oss << "geo_block_" << std::setfill('0') << std::setw(6) << block_index << ".isat_geopack";
+  return oss.str();
+}
+
+static GeoOutputFormat parse_output_format(const std::string& s) {
+  if (s == "geo")
+    return GeoOutputFormat::kGeo;
+  if (s == "geopack")
+    return GeoOutputFormat::kGeopack;
+  if (s == "both")
+    return GeoOutputFormat::kBoth;
+  return GeoOutputFormat::kGeo;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pairs loading (reuses same JSON schema as isat_match / isat_retrieve)
@@ -456,13 +491,8 @@ static bool estimate_homography_poselib(const std::vector<float>& coords, int nu
 // Stage 3 helper – write .isat_geo
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void write_geo(const GeoTask& task, const std::string& output_dir, int ransac_iter,
-                      FundamentalBackend f_backend, EssentialBackend e_backend,
-                      HomographyBackend h_backend) {
-  std::string out = output_dir + "/" + std::to_string(task.image1_index) + "_" +
-                    std::to_string(task.image2_index) + ".isat_geo";
-
-  // ── JSON metadata ──────────────────────────────────────────────────────
+static json build_geo_metadata(const GeoTask& task, int ransac_iter, FundamentalBackend f_backend,
+                               EssentialBackend e_backend, HomographyBackend h_backend) {
   json meta;
   meta["schema_version"] = "1.0";
   meta["task_type"] = "two_view_geometry";
@@ -478,7 +508,7 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
 
   auto& gm = meta["geometry"];
   gm["F"]["estimated"] = task.F_ok;
-  gm["F"]["num_inliers"] = task.F_inliers; // always actual count (degenerate is only a flag)
+  gm["F"]["num_inliers"] = task.F_inliers;
   gm["F"]["inlier_ratio"] =
       (task.num_matches > 0) ? static_cast<float>(task.F_inliers) / task.num_matches : 0.0f;
 
@@ -507,6 +537,17 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
     tv["median_depth_baseline"] = task.stability.median_depth_baseline;
   }
 
+  return meta;
+}
+
+static void write_geo(const GeoTask& task, const std::string& output_dir, int ransac_iter,
+                      FundamentalBackend f_backend, EssentialBackend e_backend,
+                      HomographyBackend h_backend) {
+  std::string out = output_dir + "/" + std::to_string(task.image1_index) + "_" +
+                    std::to_string(task.image2_index) + ".isat_geo";
+
+  json meta = build_geo_metadata(task, ransac_iter, f_backend, e_backend, h_backend);
+
   IDCWriter writer(out);
   writer.set_metadata(meta);
 
@@ -534,6 +575,127 @@ static void write_geo(const GeoTask& task, const std::string& output_dir, int ra
   } else {
     VLOG(1) << "Wrote " << out;
   }
+}
+
+// NOTE: mutates tasks — frees per-task large buffers (masks, points3d, coords) as each
+// pair's blobs are copied into IDCWriter, to keep peak RAM at O(block_size) rather than O(N).
+static std::string write_geopack_blocks(std::vector<GeoTask>& tasks,
+                                        const std::string& output_dir, int block_size,
+                                        int ransac_iter, FundamentalBackend f_backend,
+                                        EssentialBackend e_backend,
+                                        HomographyBackend h_backend) {
+  const int safe_block_size = std::max(1, block_size);
+  std::vector<GeoTask*> valid_tasks;
+  valid_tasks.reserve(tasks.size());
+  for (auto& task : tasks) {
+    if (task_has_any_geometry(task))
+      valid_tasks.push_back(&task);
+  }
+
+  std::vector<insight::io::GeoPackIndexRecordV1> records;
+  records.reserve(valid_tasks.size());
+
+  int block_idx = 0;
+  for (size_t begin = 0; begin < valid_tasks.size(); begin += static_cast<size_t>(safe_block_size)) {
+    const size_t end = std::min(begin + static_cast<size_t>(safe_block_size), valid_tasks.size());
+    const std::string pack_name = geopack_file_name(block_idx);
+    const std::string pack_path = (fs::path(output_dir) / pack_name).string();
+
+    json pack_meta;
+    pack_meta["schema_version"] = "1.0";
+    pack_meta["task_type"] = "two_view_geometry_pack";
+    pack_meta["algorithm"]["name"] = "isat_geo";
+    pack_meta["algorithm"]["iterations"] = ransac_iter;
+    pack_meta["pack"]["block_index"] = block_idx;
+    pack_meta["pack"]["pair_count"] = static_cast<int>(end - begin);
+
+    IDCWriter writer(pack_path);
+    writer.set_metadata(pack_meta);
+    for (size_t i = begin; i < end; ++i) {
+      GeoTask& task = *valid_tasks[i];
+      const std::string prefix = make_pair_blob_prefix(task);
+
+      json pair_meta = build_geo_metadata(task, ransac_iter, f_backend, e_backend, h_backend);
+
+      const std::string pair_meta_str = pair_meta.dump();
+      writer.add_blob(prefix + "/meta_json", pair_meta_str.data(), pair_meta_str.size(), "char",
+              {static_cast<int>(pair_meta_str.size())});
+
+      if (task.F_ok)
+        writer.add_blob(prefix + "/F_matrix", task.F, 9 * sizeof(float), "float32", {3, 3});
+      if (static_cast<int>(task.F_mask.size()) == task.num_matches)
+        writer.add_blob(prefix + "/F_inliers", task.F_mask.data(), task.num_matches, "uint8",
+                        {task.num_matches});
+      if (task.E_ok)
+        writer.add_blob(prefix + "/E_matrix", task.E, 9 * sizeof(float), "float32", {3, 3});
+      if (static_cast<int>(task.E_mask.size()) == task.num_matches)
+        writer.add_blob(prefix + "/E_inliers", task.E_mask.data(), task.num_matches, "uint8",
+                        {task.num_matches});
+      if (task.H_ok)
+        writer.add_blob(prefix + "/H_matrix", task.H, 9 * sizeof(float), "float32", {3, 3});
+      if (static_cast<int>(task.H_mask.size()) == task.num_matches)
+        writer.add_blob(prefix + "/H_inliers", task.H_mask.data(), task.num_matches, "uint8",
+                        {task.num_matches});
+      if (task.twoview_ok) {
+        writer.add_blob(prefix + "/R_matrix", task.R, 9 * sizeof(float), "float32", {3, 3});
+        writer.add_blob(prefix + "/t_vector", task.t, 3 * sizeof(float), "float32", {3});
+        writer.add_blob(prefix + "/points3d", task.points3d.data(),
+                        task.points3d.size() * sizeof(float), "float32",
+                        {task.num_valid_points, 3});
+      }
+
+      insight::io::GeoPackIndexRecordV1 rec{};
+      rec.image1_index = std::min(task.image1_index, task.image2_index);
+      rec.image2_index = std::max(task.image1_index, task.image2_index);
+      rec.block_index = static_cast<uint32_t>(block_idx);
+      rec.flags = 0;
+      if (task.F_ok)
+        rec.flags |= (1u << 0);
+      if (task.H_ok)
+        rec.flags |= (1u << 1);
+      if (task.degeneracy.is_degenerate)
+        rec.flags |= (1u << 2);
+      if (task.E_ok)
+        rec.flags |= (1u << 3);
+      if (task.twoview_ok)
+        rec.flags |= (1u << 4);
+      if (task.stability.is_stable)
+        rec.flags |= (1u << 5);
+      rec.F_inliers = task.F_inliers;
+      rec.F_inlier_ratio =
+          (task.num_matches > 0) ? static_cast<float>(task.F_inliers) / task.num_matches : 0.0f;
+      rec.H_inliers = task.H_inliers;
+      rec.E_inliers = task.E_inliers;
+      rec.num_valid_points = task.num_valid_points;
+      rec.median_pixel_disp = static_cast<float>(task.median_pixel_disp);
+      rec.score_prelim = static_cast<float>(task.score_prelim);
+      rec.median_parallax_deg = static_cast<float>(task.stability.median_parallax_deg);
+      rec.median_depth_baseline = static_cast<float>(task.stability.median_depth_baseline);
+      records.push_back(rec);
+
+      // IDCWriter::add_blob copies data — free per-task large buffers now to reduce peak RAM.
+      // Scalar fields (F_ok, F_inliers, etc.) are kept for summary/vis after this function.
+      task.F_mask.clear();    task.F_mask.shrink_to_fit();
+      task.E_mask.clear();    task.E_mask.shrink_to_fit();
+      task.H_mask.clear();    task.H_mask.shrink_to_fit();
+      task.points3d.clear();  task.points3d.shrink_to_fit();
+      task.coords.clear();    task.coords.shrink_to_fit();
+    }
+
+    if (!writer.write())
+      LOG(ERROR) << "Failed to write geopack: " << pack_path;
+
+    ++block_idx;
+  }
+
+  if (!insight::io::GeoPackIndex::write_binary_index(output_dir, records, safe_block_size))
+    return "";
+
+  const std::string index_path =
+      (fs::path(output_dir) / insight::io::GeoPackIndex::kBinaryIndexFileName).string();
+  LOG(INFO) << "GeoPack binary index written: " << index_path
+            << " pairs=" << records.size() << " blocks=" << block_idx;
+  return index_path;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -668,6 +830,8 @@ int main(int argc, char* argv[]) {
   int num_threads = 4;
   int cuda_device = 0;
   std::string backend_str = "poselib";
+  std::string output_format_str = "geopack";
+  int geopack_block_size = 100000;
 
   cmd.add(make_option('i', pairs_json, "input")
               .doc("Input pairs JSON (same format as isat_retrieve / isat_match output)"));
@@ -702,6 +866,13 @@ int main(int argc, char* argv[]) {
                    "  gpu       — CUDA RANSAC when built with CUDA; else OpenGL compute.\n"
                    "  gpu-gl    — Force OpenGL 4.3 + EGL (legacy shader path).\n"
                    "  poselib|cpu — CPU PoseLib. Default: poselib."));
+    cmd.add(make_option(0, output_format_str, "output-format")
+          .doc("Output geometry format: geo|geopack|both. Default: geopack.\n"
+            "  geo     -> per-pair .isat_geo files (legacy).\n"
+            "  geopack -> block .isat_geopack + geopack_index.isat_gpkx.\n"
+            "  both    -> write both formats."));
+    cmd.add(make_option(0, geopack_block_size, "geopack-block-size")
+          .doc("Pairs per .isat_geopack block when output-format is geopack/both. Default: 100000"));
   cmd.add(make_option(0, cuda_device, "cuda-device")
               .doc("CUDA device id for --backend gpu (CUDA build only). Default: 0"));
   cmd.add(make_switch(0, "estimate-h")
@@ -771,6 +942,21 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (output_format_str != "geo" && output_format_str != "geopack" &&
+      output_format_str != "both") {
+    std::cerr << "Error: --output-format must be geo, geopack, or both\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (geopack_block_size <= 0) {
+    std::cerr << "Error: --geopack-block-size must be > 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  const GeoOutputFormat output_format = parse_output_format(output_format_str);
+  const bool write_geo_files = (output_format != GeoOutputFormat::kGeopack);
+  const bool write_geopack_files = (output_format != GeoOutputFormat::kGeo);
+
 #ifdef INSIGHTAT_HAS_CUDA_GEO
   const bool use_cuda_geo_ransac = (backend_str == "gpu");
 #else
@@ -826,6 +1012,9 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  H backend    : " << homography_backend_name(h_backend);
   LOG(INFO) << "  Min inliers  : " << min_inliers;
   LOG(INFO) << "  CPU threads  : " << num_threads;
+  LOG(INFO) << "  Output format: " << output_format_str;
+  if (write_geopack_files)
+    LOG(INFO) << "  Geopack blk  : " << geopack_block_size;
   if (use_cuda_geo_ransac) {
     LOG(INFO) << "  GPU RANSAC   : CUDA (device " << cuda_device << ")";
   } else if (use_gl_geo_ransac) {
@@ -906,8 +1095,17 @@ int main(int argc, char* argv[]) {
                   .count();
     VLOG(2) << "  [write] pair " << i << "  " << ms << "ms";
 
-    float prog = static_cast<float>(i + 1) / total;
-    // std::cerr << "PROGRESS: " << prog << "\n";
+    // Free large per-task buffers after write.
+    // In kBoth mode (write_geopack_files=true), write_geopack_blocks owns freeing
+    // (it runs after writeStage completes and needs the data to still be valid).
+    if (!write_geopack_files) {
+      GeoTask& mt = tasks[static_cast<size_t>(i)];
+      mt.F_mask.clear();    mt.F_mask.shrink_to_fit();
+      mt.E_mask.clear();    mt.E_mask.shrink_to_fit();
+      mt.H_mask.clear();    mt.H_mask.shrink_to_fit();
+      mt.points3d.clear();  mt.points3d.shrink_to_fit();
+      mt.coords.clear();    mt.coords.shrink_to_fit();
+    }
   });
 
 #ifdef INSIGHTAT_HAS_CUDA_GEO
@@ -1352,7 +1550,7 @@ int main(int argc, char* argv[]) {
     cpuGeoStage->setTaskCount(total);
   }
   loadStage.setTaskCount(total);
-  writeStage.setTaskCount(total);
+  writeStage.setTaskCount(write_geo_files ? total : 0);
 
   auto t_start = std::chrono::high_resolution_clock::now();
 
@@ -1377,7 +1575,7 @@ int main(int argc, char* argv[]) {
   // Push all pairs to write stage only after geometry stage has fully completed.
   // This avoids a race in CUDA batched-F mode where pre-flush tasks can reach
   // WriteStage before F/E/H fields are populated.
-  if (!run_twoview) {
+  if (!run_twoview && write_geo_files) {
     for (int i = 0; i < total; ++i)
       writeStage.push(i);
   }
@@ -1525,17 +1723,28 @@ int main(int argc, char* argv[]) {
 
     for (int i = 0; i < total; ++i) {
       process_twoview_one(i, use_cuda_geo_ransac);
+      // coords no longer needed after triangulation — free immediately to reduce peak RAM
+      tasks[static_cast<size_t>(i)].coords.clear();
+      tasks[static_cast<size_t>(i)].coords.shrink_to_fit();
     }
 
     if (!use_cuda_geo_ransac)
       gpu_twoview_shutdown();
 
     // Push all to write stage
-    for (int i = 0; i < total; ++i)
-      writeStage.push(i);
+    if (write_geo_files) {
+      for (int i = 0; i < total; ++i)
+        writeStage.push(i);
+    }
   }
 
   writeStage.wait();
+
+  std::string geopack_index_path;
+  if (write_geopack_files) {
+    geopack_index_path = write_geopack_blocks(tasks, output_dir, geopack_block_size, ransac_iter,
+                                              f_backend, e_backend, h_backend);
+  }
 
   auto t_end = std::chrono::high_resolution_clock::now();
   auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
@@ -1627,7 +1836,8 @@ int main(int argc, char* argv[]) {
                {"pairs_with_F", pairs_F},
                {"total_time_ms", total_ms},
                {"total_time_s", total_ms / 1000.0},
-               {"output_dir", output_dir}};
+               {"output_dir", output_dir},
+               {"output_format", output_format_str}};
   if (estimate_E)
     data["pairs_with_E"] = pairs_E;
   if (estimate_H)
@@ -1636,6 +1846,10 @@ int main(int argc, char* argv[]) {
     data["pairs_twoview_ok"] = pairs_tv;
   data["adjacency_json"] = adjacency_path;
   data["pairs_json"] = pairs_path;
+  if (!geopack_index_path.empty())
+    data["geopack_index_file"] = geopack_index_path;
+  if (!geopack_index_path.empty())
+    data["geopack_index_json"] = geopack_index_path;
   print_event({{"type", "geo.complete"}, {"ok", true}, {"data", data}});
 
   // ── Optional: match-graph matrix visualization ───────────────────────────

@@ -16,8 +16,8 @@
  *   --ba-threads N   Ceres solver thread count for bundle adjustment (0 = hardware default).
  */
 
-#include <cmath>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -36,7 +36,6 @@
 #include "../io/track_store_idc.h"
 #include "../modules/camera/camera_utils.h"
 #include "../modules/sfm/incremental_sfm_pipeline.h"
-#include "../modules/sfm/incremental_sfm_cuda_pipeline.h"
 #include "../modules/sfm/track_store.h"
 
 using json = nlohmann::json;
@@ -50,8 +49,7 @@ public:
       : label_(std::move(label)), t0_(std::chrono::steady_clock::now()) {}
   ~ScopedTimer() {
     const auto t1 = std::chrono::steady_clock::now();
-    const auto ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0_).count();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0_).count();
     LOG(INFO) << "[timing] " << label_ << ": " << ms << " ms";
   }
 
@@ -86,7 +84,7 @@ static bool write_poses_json(const std::string& path, const std::vector<Eigen::M
     if (!registered[i])
       continue;
     json pose;
-    pose["image_index"]  = static_cast<int>(i);
+    pose["image_index"] = static_cast<int>(i);
     pose["camera_index"] = image_to_camera_index[i];
     pose["R"] = std::vector<double>{poses_R[i](0, 0), poses_R[i](0, 1), poses_R[i](0, 2),
                                     poses_R[i](1, 0), poses_R[i](1, 1), poses_R[i](1, 2),
@@ -137,11 +135,9 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
 
   // Uniformly subsample if requested
   std::vector<int> reg_indices;
-  if (bundler_max_cameras > 0 &&
-      static_cast<int>(all_reg_indices.size()) > bundler_max_cameras) {
+  if (bundler_max_cameras > 0 && static_cast<int>(all_reg_indices.size()) > bundler_max_cameras) {
     reg_indices.reserve(static_cast<size_t>(bundler_max_cameras));
-    const double step =
-        static_cast<double>(all_reg_indices.size() - 1) / (bundler_max_cameras - 1);
+    const double step = static_cast<double>(all_reg_indices.size() - 1) / (bundler_max_cameras - 1);
     for (int k = 0; k < bundler_max_cameras; ++k) {
       const int idx = static_cast<int>(std::round(k * step));
       reg_indices.push_back(all_reg_indices[static_cast<size_t>(idx)]);
@@ -299,9 +295,10 @@ static double track_mean_reprojection_error_px(
 
 // ─── COLMAP sparse text output ────────────────────────────────────────────────
 // Writes three text files to <out_dir>/colmap/sparse/0/:
-//   cameras.txt  – OPENCV only (OpenCV tangential order; p1/p2 swapped from internal ContextCapture)
-//   images.txt   – registered images: pose as quaternion + translation, with per-image 2D points
-//   points3D.txt – triangulated 3D points with full track (IMAGE_ID POINT2D_IDX pairs);
+//   cameras.txt  – OPENCV only (OpenCV tangential order; p1/p2 swapped from internal
+//   ContextCapture) images.txt   – registered images: pose as quaternion + translation, with
+//   per-image 2D points points3D.txt – triangulated 3D points with full track (IMAGE_ID POINT2D_IDX
+//   pairs);
 //                  ERROR column = mean reprojection error (px) over track observations
 //
 // COLMAP conventions:
@@ -314,8 +311,7 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
                          const std::vector<Eigen::Vector3d>& poses_C,
                          const std::vector<bool>& registered,
                          const std::vector<camera::Intrinsics>& cameras,
-                         const std::vector<int>& image_to_camera_index,
-                         const TrackStore& store) {
+                         const std::vector<int>& image_to_camera_index, const TrackStore& store) {
   ScopedTimer total_timer("write_colmap total");
   namespace fs = std::filesystem;
 
@@ -354,7 +350,10 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
   const std::string cams_path = sparse_dir + "/cameras.txt";
   {
     std::ofstream f(cams_path);
-    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << cams_path; return false; }
+    if (!f.is_open()) {
+      LOG(ERROR) << "Cannot write " << cams_path;
+      return false;
+    }
     f << "# Camera list with one line of data per camera:\n"
       << "#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n"
       << "# Number of cameras: " << (next_cam_id - 1) << "\n";
@@ -384,15 +383,18 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
 
   // ── Build per-image 2D → 3D observation lists (for images.txt + points3D.txt) ────
   // obs2d[global_image_index] = list of (u, v, point3d_id_1based, track_id)
-  struct Obs2D { float u, v; int point3d_id; };
+  struct Obs2D {
+    float u, v;
+    int point3d_id;
+  };
   std::vector<std::vector<Obs2D>> img_obs(static_cast<size_t>(n_images));
 
   // Collect valid tracks and assign 1-based COLMAP point3D IDs
   struct ColmapPoint3D {
     float x, y, z;
-    int point3d_id; // 1-based
-    double mean_reproj_px; ///< COLMAP points3D.txt ERROR field
-    std::vector<std::pair<int,int>> track; // (colmap_image_id, point2d_idx)
+    int point3d_id;                         // 1-based
+    double mean_reproj_px;                  ///< COLMAP points3D.txt ERROR field
+    std::vector<std::pair<int, int>> track; // (colmap_image_id, point2d_idx)
   };
 
   std::vector<ColmapPoint3D> colmap_points;
@@ -412,12 +414,15 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
     store.get_track_observations(tid, &obs_buf);
 
     ColmapPoint3D pt;
-    pt.x = px; pt.y = py; pt.z = pz;
+    pt.x = px;
+    pt.y = py;
+    pt.z = pz;
     pt.point3d_id = next_pt_id;
-    const Eigen::Vector3d Xw(static_cast<double>(px), static_cast<double>(py), static_cast<double>(pz));
+    const Eigen::Vector3d Xw(static_cast<double>(px), static_cast<double>(py),
+                             static_cast<double>(pz));
     total_obs_for_reproj += obs_buf.size();
-    pt.mean_reproj_px = track_mean_reprojection_error_px(
-        obs_buf, Xw, poses_R, poses_C, registered, cameras, image_to_camera_index, n_images);
+    pt.mean_reproj_px = track_mean_reprojection_error_px(obs_buf, Xw, poses_R, poses_C, registered,
+                                                         cameras, image_to_camera_index, n_images);
 
     for (const auto& o : obs_buf) {
       const int im = static_cast<int>(o.image_index);
@@ -442,7 +447,10 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
   const std::string imgs_path = sparse_dir + "/images.txt";
   {
     std::ofstream f(imgs_path);
-    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << imgs_path; return false; }
+    if (!f.is_open()) {
+      LOG(ERROR) << "Cannot write " << imgs_path;
+      return false;
+    }
     f << "# Image list with two lines of data per image:\n"
       << "#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n"
       << "#   POINTS2D[] as (X, Y, POINT3D_ID)\n"
@@ -456,17 +464,17 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
       const int cmap_cam_id = cam_to_colmap_id[static_cast<size_t>(ci)];
 
       const Eigen::Quaterniond q(poses_R[static_cast<size_t>(i)]);
-      const Eigen::Vector3d t = poses_R[static_cast<size_t>(i)] * (-poses_C[static_cast<size_t>(i)]);
+      const Eigen::Vector3d t =
+          poses_R[static_cast<size_t>(i)] * (-poses_C[static_cast<size_t>(i)]);
 
-      const std::string name = (i < static_cast<int>(image_paths.size()))
-          ? fs::path(image_paths[static_cast<size_t>(i)]).filename().string()
-          : "image_" + std::to_string(i) + ".jpg";
+      const std::string name =
+          (i < static_cast<int>(image_paths.size()))
+              ? fs::path(image_paths[static_cast<size_t>(i)]).filename().string()
+              : "image_" + std::to_string(i) + ".jpg";
 
       // Line 1: pose
-      f << cmap_img_id
-        << " " << q.w() << " " << q.x() << " " << q.y() << " " << q.z()
-        << " " << t(0) << " " << t(1) << " " << t(2)
-        << " " << cmap_cam_id << " " << name << "\n";
+      f << cmap_img_id << " " << q.w() << " " << q.x() << " " << q.y() << " " << q.z() << " "
+        << t(0) << " " << t(1) << " " << t(2) << " " << cmap_cam_id << " " << name << "\n";
 
       // Line 2: 2D points (X Y POINT3D_ID, -1 if not triangulated)
       const auto& obs = img_obs[static_cast<size_t>(i)];
@@ -475,7 +483,8 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
       } else {
         f << std::setprecision(2);
         for (size_t oi = 0; oi < obs.size(); ++oi) {
-          if (oi > 0) f << " ";
+          if (oi > 0)
+            f << " ";
           f << obs[oi].u << " " << obs[oi].v << " " << obs[oi].point3d_id;
         }
         f << "\n";
@@ -489,15 +498,17 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
   const std::string pts_path = sparse_dir + "/points3D.txt";
   {
     std::ofstream f(pts_path);
-    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << pts_path; return false; }
+    if (!f.is_open()) {
+      LOG(ERROR) << "Cannot write " << pts_path;
+      return false;
+    }
     f << "# 3D point list with one line of data per point:\n"
       << "#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[]\n"
       << "# Number of points: " << colmap_points.size() << "\n";
     f << std::fixed << std::setprecision(6);
     for (const auto& pt : colmap_points) {
-      f << pt.point3d_id
-        << " " << pt.x << " " << pt.y << " " << pt.z
-        << " 128 128 128 " << pt.mean_reproj_px;
+      f << pt.point3d_id << " " << pt.x << " " << pt.y << " " << pt.z << " 128 128 128 "
+        << pt.mean_reproj_px;
       for (const auto& [img_id, pt2d_idx] : pt.track)
         f << " " << img_id << " " << pt2d_idx;
       f << "\n";
@@ -546,10 +557,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, ba_grid_target, "ba-grid-target")
               .doc("Target BA tracks per image for grid-NMS (default 1000)."));
   cmd.add(make_option(0, flag_fixed_pose, "ba-fixed-pose-skip")
-              .doc("Fixed-pose Ceres solve for skipped tracks after global BA (1=on [default], 0=off)."));
+              .doc("Fixed-pose Ceres solve for skipped tracks after global BA (1=on [default], "
+                   "0=off)."));
   cmd.add(make_option(0, ba_threads, "ba-threads")
               .doc("Ceres num_threads for BA solves (default: 0 = use hardware concurrency)."));
-  cmd.add(make_switch(0, "cuda-pipeline").doc("Use GPU-accelerated CUDA pipeline (triangulation + outlier rejection on GPU)."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -593,11 +604,13 @@ int main(int argc, char* argv[]) {
   opts.global_ba.early_phase_max_cameras = 100;
   // ── Global BA cadence (three phases; see incremental_sfm_pipeline.cpp [ba_phase]) ──────────
   // Intrinsics: per-camera n∈[3,10) → fx+k1; n≥10 → +k2 (see IntrinsicsSchedule).
-  // n < early_phase_global_only_images (=41): global BA every registration (first 40 registered imgs).
-  // n ≥ 41: mid-phase linear globals + local BA until switch_after_n_images; then late periodic.
+  // n < early_phase_global_only_images (=41): global BA every registration (first 40 registered
+  // imgs). n ≥ 41: mid-phase linear globals + local BA until switch_after_n_images; then late
+  // periodic.
   opts.global_ba.early_phase_global_only_images = 41;
   opts.global_ba.periodic_every_n_images = 100; ///< Late-phase fallback when periodic linear off.
-  opts.global_ba.every_n_images = 5; ///< Mid-phase fallback when mid_phase_global_linear_spacing is false.
+  opts.global_ba.every_n_images =
+      5; ///< Mid-phase fallback when mid_phase_global_linear_spacing is false.
   opts.global_ba.mid_phase_global_linear_spacing = true;
   opts.global_ba.mid_global_spacing_a = 5.0;
   opts.global_ba.mid_global_spacing_b = 0.12;
@@ -616,8 +629,8 @@ int main(int argc, char* argv[]) {
   opts.global_ba.max_observations_per_track = 8;
   opts.global_ba.ba_fixed_pose_optimize_skipped = true;
   opts.intrinsics.focal_prior_weight = 1.f;
-  opts.init.min_angle_deg = 4.f;
-  opts.init.min_median_angle_deg = 10.f;
+  opts.init.min_angle_deg = 10.f;
+  opts.init.min_median_angle_deg = 30.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
   // constant = top-K co-visible neighbors. Intrinsics are fixed in local BA.
   // Batch cameras: MAD tight rejection after local BA. Constant neighbors: default no gross delete
@@ -625,7 +638,7 @@ int main(int argc, char* argv[]) {
   // can strip too many constraints and worsen BA conditioning).
   opts.local_ba.enable = true;
   opts.local_ba.strategy = LocalBAStrategy::kBatchNeighbor;
-  opts.local_ba.neighbor_k = 8;            // co-visible anchor neighbors per batch camera
+  opts.local_ba.neighbor_k = 8; // co-visible anchor neighbors per batch camera
   opts.local_ba.switch_after_n_images = 100;
   opts.local_ba.constant_cam_gross_outlier_px = 0.0; ///< 0 = off (recommended default).
   opts.local_ba.constant_cam_gross_outlier_min_registered = 0;
@@ -641,10 +654,10 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "--fix-intrinsics: camera intrinsics will be held constant in all BA runs.";
   }
   // Apply CLI overrides (default 1; pass 0 to disable).
-  opts.global_ba.skip_2degree_tracks       = (flag_skip_2deg  != 0);
-  opts.global_ba.ba_grid_subset            = (flag_grid_subset != 0);
+  opts.global_ba.skip_2degree_tracks = (flag_skip_2deg != 0);
+  opts.global_ba.ba_grid_subset = (flag_grid_subset != 0);
   opts.global_ba.ba_fixed_pose_optimize_skipped = (flag_fixed_pose != 0);
-  opts.global_ba.ba_grid_target_per_image  = ba_grid_target;
+  opts.global_ba.ba_grid_target_per_image = ba_grid_target;
   LOG(INFO) << "[opts] skip_2deg=" << opts.global_ba.skip_2degree_tracks
             << " grid_subset=" << opts.global_ba.ba_grid_subset
             << " grid_target=" << opts.global_ba.ba_grid_target_per_image
@@ -655,9 +668,10 @@ int main(int argc, char* argv[]) {
             << opts.global_ba.early_phase_global_only_images
             << " | mid: linear_gap=max(1,ceil(a+b*n)) a=" << opts.global_ba.mid_global_spacing_a
             << " b=" << opts.global_ba.mid_global_spacing_b
-            << " (fallback fixed step=" << opts.global_ba.every_n_images << ") until n="
-            << opts.local_ba.switch_after_n_images
-            << " | late: periodic linear late_spacing a=" << opts.global_ba.periodic_global_spacing_a
+            << " (fallback fixed step=" << opts.global_ba.every_n_images
+            << ") until n=" << opts.local_ba.switch_after_n_images
+            << " | late: periodic linear late_spacing a="
+            << opts.global_ba.periodic_global_spacing_a
             << " b=" << opts.global_ba.periodic_global_spacing_b;
   if (opts.local_ba.constant_cam_gross_outlier_px > 0.0) {
     const int gross_min = opts.local_ba.constant_cam_gross_outlier_min_registered > 0
@@ -689,30 +703,20 @@ int main(int argc, char* argv[]) {
       std::filesystem::create_directories(iter_dir);
       write_bundler(iter_dir, snap_image_paths, R, C, reg, snap_cameras, snap_img2cam, store,
                     snap_max_cams);
-      LOG(INFO) << "[debug] iter=" << sfm_iter << " n_reg=" << num_registered
-                << " snapshot → " << iter_dir;
+      LOG(INFO) << "[debug] iter=" << sfm_iter << " n_reg=" << num_registered << " snapshot → "
+                << iter_dir;
     };
     LOG(INFO) << "--debug-dir=" << debug_dir << "  interval=" << opts.debug.snapshot_every_n_iters
-              << "  max_cameras=" << (bundler_max_cameras > 0 ? std::to_string(bundler_max_cameras)
-                                                               : "all");
+              << "  max_cameras="
+              << (bundler_max_cameras > 0 ? std::to_string(bundler_max_cameras) : "all");
   }
 
   {
-    const bool use_cuda_pipeline = cmd.used("cuda-pipeline");
-    if (use_cuda_pipeline)
-      LOG(INFO) << "--cuda-pipeline: using GPU-accelerated incremental SfM";
-    ScopedTimer timer(use_cuda_pipeline ? "run_incremental_sfm_pipeline_cuda"
-                                        : "run_incremental_sfm_pipeline");
+    ScopedTimer timer("run_incremental_sfm_pipeline");
     bool ok = false;
-    if (use_cuda_pipeline) {
-      ok = run_incremental_sfm_pipeline_cuda(tracks_path, pairs_path, geo_dir, &project.cameras,
-                                              project.image_to_camera_index, opts, &store,
-                                              &poses_R, &poses_C, &registered);
-    } else {
-      ok = run_incremental_sfm_pipeline(tracks_path, pairs_path, geo_dir, &project.cameras,
-                                         project.image_to_camera_index, opts, &store, &poses_R,
-                                         &poses_C, &registered);
-    }
+    ok = run_incremental_sfm_pipeline(tracks_path, pairs_path, geo_dir, &project.cameras,
+                                      project.image_to_camera_index, opts, &store, &poses_R,
+                                      &poses_C, &registered);
     if (!ok) {
       LOG(ERROR) << "Incremental SfM pipeline failed";
       return 1;
@@ -763,7 +767,7 @@ int main(int argc, char* argv[]) {
       img_indices[static_cast<size_t>(i)] = static_cast<uint32_t>(i);
 
     TrackSaveOptions sfm_opts;
-    sfm_opts.is_sfm_result         = true;
+    sfm_opts.is_sfm_result = true;
     sfm_opts.num_registered_images = n_reg;
     // num_triangulated / num_inlier auto-counted in save_track_store_to_idc
 
