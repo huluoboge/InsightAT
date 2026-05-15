@@ -827,8 +827,9 @@ bool global_bundle_analytic(const BAInput& input, BAResult* result, int max_iter
     double* pp = poses_data.data() + static_cast<size_t>(obs.image_index) * 7;
     double* xp = result->points3d[static_cast<size_t>(obs.point_index)].data();
 
-    const double std_sigma_obs_px =
-      (obs.std_sigma_obs_px > 1e-12) ? obs.std_sigma_obs_px : 1.0;
+    // const double std_sigma_obs_px =
+    //   (obs.std_sigma_obs_px > 1e-12) ? obs.std_sigma_obs_px : 1.0;
+    const double std_sigma_obs_px = 1.0;
     ceres::CostFunction* cost =
       (std_sigma_obs_px == 1.0)
             ? static_cast<ceres::CostFunction*>(new ReprojectionCostAnalytic(obs.u, obs.v))

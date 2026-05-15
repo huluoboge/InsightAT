@@ -626,11 +626,11 @@ int main(int argc, char* argv[]) {
   opts.global_ba.skip_2degree_tracks = true;
   opts.global_ba.ba_grid_subset = true;
   opts.global_ba.ba_grid_target_per_image = 800;
-  opts.global_ba.max_observations_per_track = 8;
+  opts.global_ba.max_observations_per_track = 12;
   opts.global_ba.ba_fixed_pose_optimize_skipped = true;
   opts.intrinsics.focal_prior_weight = 1.f;
-  opts.init.min_angle_deg = 10.f;
-  opts.init.min_median_angle_deg = 30.f;
+  opts.init.min_angle_deg = 2.f;
+  opts.init.min_median_angle_deg = 10.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
   // constant = top-K co-visible neighbors. Intrinsics are fixed in local BA.
   // Batch cameras: MAD tight rejection after local BA. Constant neighbors: default no gross delete
