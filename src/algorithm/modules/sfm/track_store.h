@@ -214,6 +214,8 @@ public:
 
   size_t num_tracks() const { return track_xyz_.size() / 3u; }
   size_t num_observations() const { return obs_track_id_.size(); }
+  /// O(1): number of alive (valid) observations.
+  int num_valid_observations() const { return n_valid_obs_; }
   /// O(1): number of alive tracks that have been triangulated.
   int num_triangulated_tracks() const { return num_triangulated_; }
 
@@ -236,7 +238,8 @@ private:
 
   std::vector<std::vector<int>> image_obs_ids_; // image_index -> list of global obs indices
 
-  int num_triangulated_ = 0; ///< Maintained by set_track_xyz (+1 on first XYZ) and mark_track_deleted (-1 if triangulated).
+  int num_triangulated_ = 0; ///< Maintained by set_track_xyz (+1 on first XYZ) and mark_track_deleted (-1 if triangulated)
+  int n_valid_obs_ = 0;      ///< Maintained incrementally: +1 in add_observation, -1 in mark_observation_deleted/mark_observation_deleted_restorable..
   std::vector<int> retri_pending_ids_; ///< Accumulates track ids whenever kNeedsRetriangulation is set; drained by drain_retriangulation_pending().
   std::vector<uint8_t> retri_pending_mark_; ///< 0/1 marker to avoid duplicate enqueue in retri_pending_ids_.
 

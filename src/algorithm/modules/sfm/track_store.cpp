@@ -107,6 +107,7 @@ int TrackStore::add_observation(int track_id, uint32_t image_index, uint32_t fea
   obs_v_.push_back(v);
   obs_scale_.push_back(scale);
   obs_flags_.push_back(obs_flags::kAlive);
+  ++n_valid_obs_;
 
   track_obs_ids_[static_cast<size_t>(track_id)].push_back(obs_id);
   if (static_cast<size_t>(image_index) < image_obs_ids_.size())
@@ -489,6 +490,7 @@ void TrackStore::mark_observation_deleted(int obs_id) {
   if (!(obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kAlive))
     return;
   obs_flags_[static_cast<size_t>(obs_id)] &= ~obs_flags::kAlive;
+  if (n_valid_obs_ > 0) --n_valid_obs_;
   const int tid = obs_track_id_[static_cast<size_t>(obs_id)];
   // If the parent track has XYZ, this observation was contributing to image_n_tri_.
   if (track_has_triangulated_xyz(tid)) {
@@ -512,6 +514,7 @@ void TrackStore::mark_observation_deleted_restorable(int obs_id) {
   }
   // If alive and parent track has XYZ, this was contributing to image_n_tri_.
   if ((obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kAlive)) {
+    if (n_valid_obs_ > 0) --n_valid_obs_;
     const int tid2 = obs_track_id_[static_cast<size_t>(obs_id)];
     if (track_has_triangulated_xyz(tid2)) {
       const int im2 = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
@@ -535,6 +538,7 @@ void TrackStore::mark_observation_restored(int obs_id) {
   if (obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kAlive)
     return;
   obs_flags_[static_cast<size_t>(obs_id)] |= obs_flags::kAlive;
+  ++n_valid_obs_;
   const int tid = obs_track_id_[static_cast<size_t>(obs_id)];
   // Observation is alive again and parent track may have XYZ → restore image_n_tri_.
   if (track_has_triangulated_xyz(tid)) {
@@ -565,6 +569,11 @@ int TrackStore::image_tri_count(int image_index) const {
 
 void TrackStore::rebuild_image_n_tri() {
   image_n_tri_.assign(static_cast<size_t>(num_images_), 0);
+  n_valid_obs_ = 0;
+  for (size_t oi = 0; oi < obs_flags_.size(); ++oi) {
+    if (obs_flags_[oi] & obs_flags::kAlive)
+      ++n_valid_obs_;
+  }
   for (size_t t = 0; t < num_tracks(); ++t) {
     const int tid = static_cast<int>(t);
     if (!is_track_valid(tid) || !track_has_triangulated_xyz(tid))

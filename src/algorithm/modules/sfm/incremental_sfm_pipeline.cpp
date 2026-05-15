@@ -296,101 +296,140 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
     return 0;
   const double min_angle_rad = min_angle_deg * (3.141592653589793 / 180.0);
   const double max_angle_rad = max_angle_deg * (3.141592653589793 / 180.0);
+  const int n_tracks = static_cast<int>(store->num_tracks());
 
-  // ── Parallel phase: O(N_tracks × k²) angle computation ────────────────────────────────────────
-  // Each track is independent — no shared mutable state between tracks.
-  // Results are collected into per-thread vectors and applied serially.
+  // ── CSR build: two-pass over registered images → contiguous per-track obs/image arrays ────────
+  // Pass 0: count registered valid triangulated obs per track.
+  std::vector<int> track_obs_count(static_cast<size_t>(n_tracks), 0);
+  {
+    std::vector<int> img_obs;
+    for (int im = 0; im < n_images; ++im) {
+      if (!registered[static_cast<size_t>(im)])
+        continue;
+      img_obs.clear();
+      store->get_image_observation_indices(im, &img_obs);
+      for (int obs_id : img_obs) {
+        const int tid = store->obs_track_id(obs_id);
+        if (tid < 0 || tid >= n_tracks)
+          continue;
+        if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+          continue;
+        ++track_obs_count[static_cast<size_t>(tid)];
+      }
+    }
+  }
+
+  // Build compact list of active tracks (count ≥ 2) to avoid O(n_total_tracks) loop in Pass B.
+  // n_total_tracks includes all feature tracks (millions); active tracks are O(n_tri) ≪ n_total.
+  std::vector<int> active_tracks;
+  active_tracks.reserve(static_cast<size_t>(200000));
+  for (int tid = 0; tid < n_tracks; ++tid)
+    if (track_obs_count[static_cast<size_t>(tid)] >= 2)
+      active_tracks.push_back(tid);
+
+  // Prefix-sum → CSR start offsets (only needs to cover active tids, but full array is fine since
+  // track_obs_count[] is already populated and inactive entries are 0).
+  std::vector<int> track_start(static_cast<size_t>(n_tracks + 1), 0);
+  for (int tid = 0; tid < n_tracks; ++tid)
+    track_start[static_cast<size_t>(tid + 1)] =
+        track_start[static_cast<size_t>(tid)] + track_obs_count[static_cast<size_t>(tid)];
+  const int total_obs = track_start[static_cast<size_t>(n_tracks)];
+
+  std::vector<int> obs_flat(static_cast<size_t>(total_obs));
+  std::vector<int> image_flat(static_cast<size_t>(total_obs));
+
+  // Pass A: fill CSR arrays.  Write cursors start at track_start[tid].
+  {
+    std::vector<int> fill_ptr(track_start.begin(), track_start.begin() + n_tracks);
+    std::vector<int> img_obs;
+    for (int im = 0; im < n_images; ++im) {
+      if (!registered[static_cast<size_t>(im)])
+        continue;
+      img_obs.clear();
+      store->get_image_observation_indices(im, &img_obs);
+      for (int obs_id : img_obs) {
+        const int tid = store->obs_track_id(obs_id);
+        if (tid < 0 || tid >= n_tracks)
+          continue;
+        if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+          continue;
+        const int wp = fill_ptr[static_cast<size_t>(tid)]++;
+        obs_flat[static_cast<size_t>(wp)] = obs_id;
+        image_flat[static_cast<size_t>(wp)] = im;
+      }
+    }
+  }
+
+  // ── Pass B (OMP-parallel over active tracks): angle check ────────────────────────────────────
+  // Iterate only active_tracks (O(n_tri)), not all n_tracks (O(millions)).
+  const int n_active = static_cast<int>(active_tracks.size());
   const int n_threads = omp_get_max_threads();
-  std::vector<std::vector<int>> to_mark(static_cast<size_t>(n_threads));    // obs_id → kRestorable
-  std::vector<std::vector<int>> dirty_tids(static_cast<size_t>(n_threads)); // tracks with ≥1 mark
+  std::vector<std::vector<int>> per_thread_marked(static_cast<size_t>(n_threads));
+  std::vector<std::vector<int>> per_thread_dirty(static_cast<size_t>(n_threads));
 
-  struct RegObs {
-    int obs_id;
-    Eigen::Vector3d ray;
-  };
-
-#pragma omp parallel for schedule(dynamic, 16)
-  for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
-    const int tid = static_cast<int>(ti);
-    if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
-      continue;
+#pragma omp parallel for schedule(dynamic, 64)
+  for (int ai = 0; ai < n_active; ++ai) {
+    const int tid = active_tracks[static_cast<size_t>(ai)];
+    const int k = track_obs_count[static_cast<size_t>(tid)];
     float tx, ty, tz;
     store->get_track_xyz(tid, &tx, &ty, &tz);
     const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
                             static_cast<double>(tz));
-    // Reuse per-thread buffers to avoid repeated heap allocation across iterations.
-    thread_local std::vector<int> obs_ids_buf;
-    obs_ids_buf.clear();
-    store->get_track_obs_ids(tid, &obs_ids_buf);
-    if (obs_ids_buf.size() < 2)
-      continue;
-    // Build (obs_id, ray) for registered observations only.
-    thread_local std::vector<RegObs> reg;
-    reg.clear();
-    for (int oid : obs_ids_buf) {
-      Observation obs;
-      store->get_obs(oid, &obs);
-      const int im = static_cast<int>(obs.image_index);
-      if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
-        continue;
-      reg.push_back({oid, (X - poses_C[static_cast<size_t>(im)]).normalized()});
-    }
-    if (reg.size() < 2)
-      continue;
-    // For each registered obs compute max angle against all others; collect if outside bounds.
-    const int thr_id = omp_get_thread_num();
-    auto& local_mark = to_mark[static_cast<size_t>(thr_id)];
+    const int start = track_start[static_cast<size_t>(tid)];
+
+    thread_local std::vector<Eigen::Vector3d> rays;
+    rays.resize(static_cast<size_t>(k));
+    for (int i = 0; i < k; ++i)
+      rays[static_cast<size_t>(i)] =
+          (X - poses_C[static_cast<size_t>(image_flat[static_cast<size_t>(start + i)])]).normalized();
+
+    const int th = omp_get_thread_num();
     bool any_marked = false;
-    for (size_t i = 0; i < reg.size(); ++i) {
+    for (int i = 0; i < k; ++i) {
       double max_angle = 0.0;
-      for (size_t j = 0; j < reg.size(); ++j) {
+      for (int j = 0; j < k; ++j) {
         if (j == i)
           continue;
-        const double cos_a = std::max(-1.0, std::min(1.0, reg[i].ray.dot(reg[j].ray)));
+        const double cos_a = std::max(-1.0, std::min(1.0,
+            rays[static_cast<size_t>(i)].dot(rays[static_cast<size_t>(j)])));
         const double angle = std::acos(cos_a);
         if (angle > max_angle)
           max_angle = angle;
       }
       if (max_angle < min_angle_rad || max_angle > max_angle_rad) {
-        // Angle violations are geometry-context-dependent: small angle means poor baseline
-        // *right now* but may recover as more cameras register and poses refine; large angle
-        // (> max_angle_deg) is unusual in aerial but still re-evaluatable after re-triangulation.
-        // BA ignores kRestorable obs, so this is safe; kFullScan can restore if angle improves.
-        local_mark.push_back(reg[i].obs_id);
+        per_thread_marked[static_cast<size_t>(th)].push_back(
+            obs_flat[static_cast<size_t>(start + i)]);
         any_marked = true;
       }
     }
     if (any_marked)
-      dirty_tids[static_cast<size_t>(thr_id)].push_back(tid);
+      per_thread_dirty[static_cast<size_t>(th)].push_back(tid);
   }
 
-  // ── Serial phase 1: apply kRestorable deletions ───────────────────────────────────────────────
+  // ── Merge & apply ─────────────────────────────────────────────────────────────────────────────
   int marked = 0;
-  std::unordered_set<int> dirty_track_set;
-  for (int t = 0; t < n_threads; ++t) {
-    for (int oid : to_mark[static_cast<size_t>(t)]) {
+  std::vector<bool> track_dirty(static_cast<size_t>(n_tracks), false);
+  for (int th = 0; th < n_threads; ++th) {
+    for (int oid : per_thread_marked[static_cast<size_t>(th)]) {
       store->mark_observation_deleted_restorable(oid);
       ++marked;
     }
-    for (int tid : dirty_tids[static_cast<size_t>(t)])
-      dirty_track_set.insert(tid);
+    for (int tid : per_thread_dirty[static_cast<size_t>(th)])
+      track_dirty[static_cast<size_t>(tid)] = true;
   }
 
-  // ── Serial phase 2: clear XYZ for tracks with fewer than 2 valid registered views ─────────────
-  std::vector<int> obs_ids_chk;
-  for (int tid : dirty_track_set) {
+  // Clear XYZ for dirty tracks that now have <2 valid registered views.
+  for (int ai = 0; ai < n_active; ++ai) {
+    const int tid = active_tracks[static_cast<size_t>(ai)];
+    if (!track_dirty[static_cast<size_t>(tid)])
+      continue;
     if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
       continue;
-    obs_ids_chk.clear();
-    store->get_track_obs_ids(tid, &obs_ids_chk);
+    const int start = track_start[static_cast<size_t>(tid)];
+    const int k = track_obs_count[static_cast<size_t>(tid)];
     int still_valid = 0;
-    for (int oid : obs_ids_chk) {
-      if (!store->is_obs_valid(oid))
-        continue;
-      Observation o;
-      store->get_obs(oid, &o);
-      const int im = static_cast<int>(o.image_index);
-      if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)])
+    for (int i = 0; i < k; ++i) {
+      if (store->is_obs_valid(obs_flat[static_cast<size_t>(start + i)]))
         ++still_valid;
     }
     if (still_valid < 2)
@@ -1758,38 +1797,53 @@ static void select_ba_subset(const TrackStore& store, const std::vector<Eigen::V
   const int n_tracks = static_cast<int>(store.num_tracks());
 
   // ── Pass 1: per-track registered degree + sin²(θ) for 2-degree tracks ────────────────────────
+  // Old: iterate N_total_tracks, for each tri track scan all obs → O(N_tri_tracks × avg_obs).
+  // New: iterate registered images, accumulate degree per track → O(N_registered_obs).
   std::vector<int> track_degree(static_cast<size_t>(n_tracks), 0);
   std::vector<float> track_S(static_cast<size_t>(n_tracks), 1.0f);
-  for (int tid = 0; tid < n_tracks; ++tid) {
-    if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
-      continue;
-    const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
-    int deg = 0;
-    int reg_im0 = -1, reg_im1 = -1;
-    for (int obs_id : track_obs_ids) {
-      if (!store.is_obs_valid(obs_id))
+  std::vector<int> track_reg_im0(static_cast<size_t>(n_tracks), -1);
+  std::vector<int> track_reg_im1(static_cast<size_t>(n_tracks), -1);
+  {
+    std::vector<int> img_obs_ids;
+    for (int im = 0; im < n_images; ++im) {
+      if (!registered[static_cast<size_t>(im)])
         continue;
-      const int im = static_cast<int>(store.obs_image_index(obs_id));
-      if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)]) {
+      img_obs_ids.clear();
+      store.get_image_observation_indices(im, &img_obs_ids);
+      for (int obs_id : img_obs_ids) {
+        const int tid = store.obs_track_id(obs_id);
+        if (tid < 0 || tid >= n_tracks)
+          continue;
+        if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+          continue;
+        const int deg = track_degree[static_cast<size_t>(tid)];
         if (deg == 0)
-          reg_im0 = im;
-        if (deg == 1)
-          reg_im1 = im;
-        ++deg;
+          track_reg_im0[static_cast<size_t>(tid)] = im;
+        else if (deg == 1)
+          track_reg_im1[static_cast<size_t>(tid)] = im;
+        ++track_degree[static_cast<size_t>(tid)];
       }
     }
-    track_degree[static_cast<size_t>(tid)] = deg;
-    if (deg == 2 && reg_im0 >= 0 && reg_im1 >= 0) {
-      float tx, ty, tz;
-      store.get_track_xyz(tid, &tx, &ty, &tz);
-      const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
-                              static_cast<double>(tz));
-      const Eigen::Vector3d r0 = (X - poses_C[static_cast<size_t>(reg_im0)]).normalized();
-      const Eigen::Vector3d r1 = (X - poses_C[static_cast<size_t>(reg_im1)]).normalized();
-      const double cos_a = std::max(-1.0, std::min(1.0, r0.dot(r1)));
-      const double sin_a = std::sqrt(1.0 - cos_a * cos_a);
-      track_S[static_cast<size_t>(tid)] = static_cast<float>(sin_a * sin_a);
-    }
+  }
+  // Compute sin²(θ) for degree-2 tracks (needed for grid NMS scoring).
+  for (int tid = 0; tid < n_tracks; ++tid) {
+    if (track_degree[static_cast<size_t>(tid)] != 2)
+      continue;
+    if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+      continue;
+    const int reg_im0 = track_reg_im0[static_cast<size_t>(tid)];
+    const int reg_im1 = track_reg_im1[static_cast<size_t>(tid)];
+    if (reg_im0 < 0 || reg_im1 < 0)
+      continue;
+    float tx, ty, tz;
+    store.get_track_xyz(tid, &tx, &ty, &tz);
+    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
+                            static_cast<double>(tz));
+    const Eigen::Vector3d r0 = (X - poses_C[static_cast<size_t>(reg_im0)]).normalized();
+    const Eigen::Vector3d r1 = (X - poses_C[static_cast<size_t>(reg_im1)]).normalized();
+    const double cos_a = std::max(-1.0, std::min(1.0, r0.dot(r1)));
+    const double sin_a = std::sqrt(1.0 - cos_a * cos_a);
+    track_S[static_cast<size_t>(tid)] = static_cast<float>(sin_a * sin_a);
   }
 
   // ── Pass 2: per-image grid NMS → collect winning track IDs ───────────────────────────────────
@@ -2069,7 +2123,6 @@ bool build_ba_input_from_store(
   if (global_indices.empty())
     return false;
 
-  std::set<int> ba_global_set(global_indices.begin(), global_indices.end());
   *ba_image_index_to_global_out = global_indices;
 
   BAInput& ba = *ba_input_out;
@@ -2092,9 +2145,64 @@ bool build_ba_input_from_store(
   }
   const int n_ba_images = static_cast<int>(global_indices.size());
 
-  // Single-pass: iterate tracks once, build points and observations in the same loop.
-  // Halves get_track_observations calls compared to the old two-pass approach.
-  std::vector<int> track_id_to_point_index(store.num_tracks(), -1);
+  // ── Image-indexed two-pass approach ──────────────────────────────────────────────────────────
+  // Old: iterate N_total_tracks (~400K), load obs for every tri+non-skip track to count
+  //      how many obs land in BA window → O(N_tri_tracks × avg_obs_per_track).
+  //      At n_reg=383 with 70K BA tracks out of 400K tri tracks, 90%+ obs loads are wasted.
+  //
+  // New:
+  //   Pass A – iterate BA-window images (n_reg images × avg_obs/img),
+  //            build track_ba_degree[tid] and track_ba_im_a/b for each tid seen ≥1 times.
+  //            Cost: O(N_window_obs) — e.g. 383×~10K = ~3.8M ops, vs 400K×10 = 4M (similar)
+  //            but memory access pattern is image_obs_ids_[] which is sequential/warm.
+  //   Pass B – iterate only tids with track_ba_degree[tid] >= 2 (the accepted tracks),
+  //            load track_all_obs_ids_view for those tracks only → O(N_accepted × avg_obs).
+  //            Saves loading obs for N_tri_tracks - N_accepted ≈ 330K tracks.
+
+  const int n_tracks = static_cast<int>(store.num_tracks());
+  // Per-track BA-window visibility counters. -1 = unseen. Use a flat vector for O(1) access.
+  // We also store the first two BA images that see each track (needed for 2-deg check and
+  // select_track_observations_for_ba which sorts by view angle).
+  std::vector<int8_t> track_ba_degree(static_cast<size_t>(n_tracks), 0);
+  std::vector<int> track_ba_im_a(static_cast<size_t>(n_tracks), -1);
+  std::vector<int> track_ba_im_b(static_cast<size_t>(n_tracks), -1);
+
+  // Pass A: accumulate per-track BA-window degree by iterating registered images.
+  {
+    std::vector<int> img_obs_ids;
+    for (int im : global_indices) {
+      img_obs_ids.clear();
+      store.get_image_observation_indices(im, &img_obs_ids);
+      for (int obs_id : img_obs_ids) {
+        const int tid = store.obs_track_id(obs_id);
+        if (tid < 0 || tid >= n_tracks)
+          continue;
+        if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
+          continue;
+        if (store.is_track_skip_ba(tid))
+          continue;
+        const int8_t deg = track_ba_degree[static_cast<size_t>(tid)];
+        if (deg == 0) {
+          track_ba_im_a[static_cast<size_t>(tid)] = im;
+        } else if (deg == 1) {
+          track_ba_im_b[static_cast<size_t>(tid)] = im;
+        }
+        // Cap at 127 to avoid int8_t overflow (only degree < 2 and == 2 matter for logic).
+        if (deg < 127)
+          track_ba_degree[static_cast<size_t>(tid)] = deg + 1;
+      }
+    }
+  }
+
+  // Count grid-skipped tracks for reporting (Pass A already skips them above; count them once).
+  if (n_skipped_grid_out) {
+    for (int tid = 0; tid < n_tracks; ++tid) {
+      if (store.is_track_valid(tid) && store.track_has_triangulated_xyz(tid) &&
+          store.is_track_skip_ba(tid))
+        ++(*n_skipped_grid_out);
+    }
+  }
+
   point_index_to_track_id_out->clear();
   std::vector<Observation> obs_buf;
 
@@ -2102,50 +2210,16 @@ bool build_ba_input_from_store(
   int obs_after_sampling = 0;
   int tracks_sampled = 0;
 
-  for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
-    const int track_id = static_cast<int>(ti);
-    if (!store.is_track_valid(track_id) || !store.track_has_triangulated_xyz(track_id))
+  // Pass B: process only tracks with BA-window degree >= 2.
+  for (int track_id = 0; track_id < n_tracks; ++track_id) {
+    if (track_ba_degree[static_cast<size_t>(track_id)] < 2)
       continue;
 
-    // Grid-NMS: skip early to avoid loading observations.
-    if (store.is_track_skip_ba(track_id)) {
-      if (n_skipped_grid_out)
-        ++(*n_skipped_grid_out);
-      continue;
-    }
+    const int im_a = track_ba_im_a[static_cast<size_t>(track_id)];
+    const int im_b = track_ba_im_b[static_cast<size_t>(track_id)];
+    const int visible_in_ba = static_cast<int>(track_ba_degree[static_cast<size_t>(track_id)]);
 
-    obs_buf.clear();
-    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
-    obs_buf.reserve(track_obs_ids.size());
-    for (int obs_id : track_obs_ids) {
-      if (!store.is_obs_valid(obs_id))
-        continue;
-      Observation o;
-      o.image_index = store.obs_image_index(obs_id);
-      o.feature_id = store.obs_feature_id(obs_id);
-      o.u = store.obs_u(obs_id);
-      o.v = store.obs_v(obs_id);
-      o.scale = store.obs_scale(obs_id);
-      obs_buf.push_back(o);
-    }
-
-    // Count BA-visible observations and collect which BA images observe this track.
-    int visible_in_ba = 0;
-    int im_a = -1, im_b = -1; // for 2-degree check
-    for (const auto& o : obs_buf) {
-      const int im = static_cast<int>(o.image_index);
-      if (ba_global_set.count(im)) {
-        ++visible_in_ba;
-        if (im_a < 0)
-          im_a = im;
-        else if (im_b < 0)
-          im_b = im;
-      }
-    }
-    if (visible_in_ba < 2)
-      continue;
-
-    // 2-degree track pruning.
+    // 2-degree track pruning: only when exactly 2 BA images see the track.
     if (skip_2deg_image_stable && !skip_2deg_image_stable->empty() && visible_in_ba == 2) {
       if (im_a >= 0 && im_b >= 0 && static_cast<size_t>(im_a) < skip_2deg_image_stable->size() &&
           static_cast<size_t>(im_b) < skip_2deg_image_stable->size() &&
@@ -2167,16 +2241,30 @@ bool build_ba_input_from_store(
       }
     }
 
+    // Load all obs for this accepted track (needed by select_track_observations_for_ba).
+    obs_buf.clear();
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    obs_buf.reserve(track_obs_ids.size());
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store.obs_image_index(obs_id);
+      o.feature_id = store.obs_feature_id(obs_id);
+      o.u = store.obs_u(obs_id);
+      o.v = store.obs_v(obs_id);
+      o.scale = store.obs_scale(obs_id);
+      obs_buf.push_back(o);
+    }
+
     // Register point.
     const int pt_idx = static_cast<int>(point_index_to_track_id_out->size());
-    track_id_to_point_index[track_id] = pt_idx;
     point_index_to_track_id_out->push_back(track_id);
     float x, y, z;
     store.get_track_xyz(track_id, &x, &y, &z);
     ba.points3d.emplace_back(static_cast<double>(x), static_cast<double>(y),
                              static_cast<double>(z));
 
-    // Add observations using the already-loaded obs_buf.
     const Eigen::Vector3d X = ba.points3d.back();
     int n_considered = 0;
     const auto selected_obs = select_track_observations_for_ba(
@@ -2917,82 +3005,86 @@ static int reject_outliers_local_colmap(
     }
   }
 
-  // Pass 2: delete outlier observations
+  // Pass 2: delete outlier observations.
+  // Iterate only over BA-window images (not the full global obs array) to stay O(N_window_obs).
   int marked = 0;
   std::unordered_set<int> dirty_tracks;
-  for (size_t i = 0; i < store->num_observations(); ++i) {
-    const int obs_id = static_cast<int>(i);
-    if (!store->is_obs_valid(obs_id))
-      continue;
-    Observation obs;
-    store->get_obs(obs_id, &obs);
-    const int g = static_cast<int>(obs.image_index);
-    const auto it = global_to_ba_local.find(g);
-    if (it == global_to_ba_local.end())
-      continue; // outside BA window — never touch
-    const int ba_local = it->second;
-    const bool is_constant =
-        (ba_local < static_cast<int>(fix_pose.size())) && fix_pose[static_cast<size_t>(ba_local)];
-    const int track_id = store->obs_track_id(obs_id);
-    if (!store->is_track_valid(track_id) || !store->track_has_triangulated_xyz(track_id))
-      continue;
-    const double err = compute_error(g, obs.u, obs.v, track_id);
-    if (err < 0.0)
-      continue;
+  {
+    std::vector<int> img_obs_ids_p2;
+    for (const auto& kv : global_to_ba_local) {
+      const int g = kv.first;
+      const int ba_local = kv.second;
+      const bool is_constant =
+          (ba_local < static_cast<int>(fix_pose.size())) && fix_pose[static_cast<size_t>(ba_local)];
 
-    if (is_constant) {
-      if (!gross_constant || err <= constant_cam_gross_outlier_px)
-        continue;
-      auto gc_it = constant_cam_valid_obs.find(g);
-      if (gc_it != constant_cam_valid_obs.end() && gc_it->second <= kMinObsProtect)
-        continue;
-      store->mark_observation_deleted_restorable(obs_id);
-      if (gc_it != constant_cam_valid_obs.end())
-        gc_it->second--;
-      dirty_tracks.insert(track_id);
-      ++marked;
-      continue;
-    }
+      img_obs_ids_p2.clear();
+      store->get_image_observation_indices(g, &img_obs_ids_p2);
+      for (int obs_id : img_obs_ids_p2) {
+        if (!store->is_obs_valid(obs_id))
+          continue;
+        const int track_id = store->obs_track_id(obs_id);
+        if (!store->is_track_valid(track_id) || !store->track_has_triangulated_xyz(track_id))
+          continue;
+        const double err =
+            compute_error(g, store->obs_u(obs_id), store->obs_v(obs_id), track_id);
+        if (err < 0.0)
+          continue;
 
-    const bool is_batch = batch_global_set.count(g) > 0;
-    const bool is_variable_track = variable_track_set.count(track_id) > 0;
+        if (is_constant) {
+          if (!gross_constant || err <= constant_cam_gross_outlier_px)
+            continue;
+          auto gc_it = constant_cam_valid_obs.find(g);
+          if (gc_it != constant_cam_valid_obs.end() && gc_it->second <= kMinObsProtect)
+            continue;
+          store->mark_observation_deleted_restorable(obs_id);
+          if (gc_it != constant_cam_valid_obs.end())
+            gc_it->second--;
+          dirty_tracks.insert(track_id);
+          ++marked;
+          continue;
+        }
 
-    // Historical cameras only get pruned for VARIABLE (newly triangulated) tracks.
-    // Observations on CONSTANT (old established) tracks are left for global BA to evaluate.
-    // Batch cameras are always pruned for all tracks (their PnP pose may have errors anywhere).
-    if (!is_batch && !is_variable_track)
-      continue;
+        const bool is_batch = batch_global_set.count(g) > 0;
+        const bool is_variable_track = variable_track_set.count(track_id) > 0;
 
-    const double thresh = is_batch ? tight_thresh : loose_thresh;
-    if (err > thresh) {
-      // Protect historical cameras with few remaining valid observations.
-      if (!is_batch) {
-        auto cnt_it = cam_valid_obs.find(g);
-        if (cnt_it != cam_valid_obs.end() && cnt_it->second <= kMinObsProtect)
-          continue; // protected: let global BA handle this camera
+        // Historical cameras only get pruned for VARIABLE (newly triangulated) tracks.
+        // Observations on CONSTANT (old established) tracks are left for global BA to evaluate.
+        // Batch cameras are always pruned for all tracks (their PnP pose may have errors anywhere).
+        if (!is_batch && !is_variable_track)
+          continue;
+
+        const double thresh = is_batch ? tight_thresh : loose_thresh;
+        if (err > thresh) {
+          // Protect historical cameras with few remaining valid observations.
+          if (!is_batch) {
+            auto cnt_it = cam_valid_obs.find(g);
+            if (cnt_it != cam_valid_obs.end() && cnt_it->second <= kMinObsProtect)
+              continue; // protected: let global BA handle this camera
+          }
+          // Mark as kRestorable (not permanently deleted) so that kPendingOnly/kFullScan
+          // retriangulation can still use this observation via include_deleted_restorable_obs=true.
+          //
+          // Why: local-BA reproj errors can be inflated by a poor initial focal-length estimate —
+          // observations rejected here might be geometrically correct but show up as outliers
+          // only because intrinsics haven't converged yet.  Permanently deleting them cuts off the
+          // observation chain for unregistered images whose tracks rely on these registered views,
+          // causing those images to be missed by choose_resection_candidates and never registered.
+          //
+          // With kRestorable the observation is excluded from BA (deleted) but is still used
+          // by triangulate_track_common(include_deleted_restorable=true), allowing kPendingOnly
+          // to re-triangulate the track once better poses/intrinsics are available.  Truly bad
+          // matches will still fail the robust triangulation angle/reproj test.
+          store->mark_observation_deleted_restorable(obs_id);
+          // Track remaining valid obs count for the protection check above.
+          if (!is_batch) {
+            auto cnt_it = cam_valid_obs.find(g);
+            if (cnt_it != cam_valid_obs.end())
+              cnt_it->second--;
+          }
+          dirty_tracks.insert(track_id);
+          ++marked;
+        }
       }
-      // Mark as kRestorable (not permanently deleted) so that kPendingOnly/kFullScan
-      // retriangulation can still use this observation via include_deleted_restorable_obs=true.
-      //
-      // Why: local-BA reproj errors can be inflated by a poor initial focal-length estimate —
-      // observations rejected here might be geometrically correct but show up as outliers
-      // only because intrinsics haven't converged yet.  Permanently deleting them cuts off the
-      // observation chain for unregistered images whose tracks rely on these registered views,
-      // causing those images to be missed by choose_resection_candidates and never registered.
-      //
-      // With kRestorable the observation is excluded from BA (deleted) but is still used
-      // by triangulate_track_common(include_deleted_restorable=true), allowing kPendingOnly
-      // to re-triangulate the track once better poses/intrinsics are available.  Truly bad
-      // matches will still fail the robust triangulation angle/reproj test.
-      store->mark_observation_deleted_restorable(obs_id);
-      // Track remaining valid obs count for the protection check above.
-      if (!is_batch) {
-        auto cnt_it = cam_valid_obs.find(g);
-        if (cnt_it != cam_valid_obs.end())
-          cnt_it->second--;
-      }
-      dirty_tracks.insert(track_id);
-      ++marked;
     }
   }
 
@@ -3861,13 +3953,8 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
     return 0.0;
   }();
 
-  // Fix B + Fix C: total valid observations before the fine-rounds loop.
-  // Fix B: dynamic min_for_retry = max(static, 0.02% of total_obs_before).
-  // Fix C: rejection_rate = last_rejected / total_obs_before → decides rebuild vs. cache reuse.
-  int total_obs_before = 0;
-  for (size_t oi = 0; oi < store->num_observations(); ++oi)
-    if (store->is_obs_valid(static_cast<int>(oi)))
-      ++total_obs_before;
+  // O(1): use the incrementally-maintained counter instead of scanning all observations.
+  int total_obs_before = store->num_valid_observations();
   int last_rejected_count = 0; // updated after each fine round's outlier rejection
 
   // run_one_ba: build (or incrementally update) BA input, apply options, run Ceres, write back.
@@ -4201,17 +4288,28 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
 
     auto t_rej = Clock::now();
     int rejected = 0;
+    auto t_r0 = Clock::now();
     rejected += reject_outliers_multiview(store, *poses_R, *poses_C, registered, *cameras,
                                           image_to_camera_index, outlier_threshold);
+    auto t_r1 = Clock::now();
     rejected +=
         reject_outliers_angle_multiview(store, *poses_R, *poses_C, registered,
                                         opts.outlier.min_angle_deg, opts.outlier.max_angle_deg);
+    auto t_r2 = Clock::now();
     rejected +=
         reject_outliers_depth(store, *poses_R, *poses_C, registered, opts.outlier.max_depth_factor);
+    auto t_r3 = Clock::now();
     add_ms_u(&ms_outlier_reject, t_rej, Clock::now());
+    const int ms_multiview = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(t_r1 - t_r0).count());
+    const int ms_angle    = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(t_r2 - t_r1).count());
+    const int ms_depth    = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(t_r3 - t_r2).count());
 
     LOG(INFO) << "  [ba_outlier] fine round " << r << ": MAD reproj_thr=" << thr
-              << " px  rejected=" << rejected;
+              << " px  rejected=" << rejected
+              << "  [diag] collect=" << ms_collect_reproj << "ms"
+              << " multiview=" << ms_multiview << "ms"
+              << " angle=" << ms_angle << "ms"
+              << " depth=" << ms_depth << "ms";
     // Fix B: dynamic threshold scales with scene size (0.02% of total obs).
     // 476 imgs (399K obs): max(100, 80) = 100 → unchanged.
     // 3000 imgs (10.5M obs): max(100, 2100) = 2100 → ~2-3 fewer rounds per global BA call.
