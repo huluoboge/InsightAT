@@ -165,6 +165,11 @@ static std::vector<PairTask> load_pairs_json(const std::string& json_path,
   }
   json j;
   file >> j;
+  
+  if (!j.contains("pairs")) {
+    LOG(FATAL) << "Input JSON does not contain 'pairs' array: " << json_path;
+  }
+  
   std::vector<PairTask> pairs;
   for (const auto& pair : j["pairs"]) {
     PairTask task;
@@ -174,8 +179,18 @@ static std::vector<PairTask> load_pairs_json(const std::string& json_path,
       task.feature1_file = feature_dir + "/" + std::to_string(task.image1_index) + ".isat_feat";
       task.feature2_file = feature_dir + "/" + std::to_string(task.image2_index) + ".isat_feat";
     } else {
-      task.feature1_file = pair["feature1_file"];
-      task.feature2_file = pair["feature2_file"];
+      if (pair.contains("feature1_file")) {
+        task.feature1_file = pair["feature1_file"];
+      } else {
+        LOG(ERROR) << "Missing feature1_file in pair JSON";
+        continue;
+      }
+      if (pair.contains("feature2_file")) {
+        task.feature2_file = pair["feature2_file"];
+      } else {
+        LOG(ERROR) << "Missing feature2_file in pair JSON";
+        continue;
+      }
     }
     pairs.push_back(std::move(task));
   }
@@ -188,20 +203,34 @@ static FeatureData load_features_idc(const std::string& idc_path) {
   const auto keypoints_raw = reader.read_blob<float>("keypoints");
   if (keypoints_raw.empty()) return FeatureData();
   const auto desc_blob = reader.get_blob_descriptor("descriptors");
+  if (desc_blob.is_null() || !desc_blob.contains("dtype")) {
+    LOG(ERROR) << "Missing descriptors blob or dtype in " << idc_path;
+    return FeatureData();
+  }
   const std::string dtype = desc_blob["dtype"];
   const size_t num_features = keypoints_raw.size() / 4;
   DescriptorType descriptor_type =
       (dtype == "float32") ? DescriptorType::kFloat32 : DescriptorType::kUInt8;
-  FeatureData features(num_features, descriptor_type);
-  for (size_t i = 0; i < num_features; ++i) {
+
+  FeatureData features;
+  features.num_features = static_cast<int>(num_features);
+  features.descriptor_type = descriptor_type;
+  features.keypoints.resize(num_features);
+  for (int i = 0; i < static_cast<int>(num_features); ++i) {
     features.keypoints[i] << keypoints_raw[i * 4], keypoints_raw[i * 4 + 1],
         keypoints_raw[i * 4 + 2], keypoints_raw[i * 4 + 3];
   }
+
   if (descriptor_type == DescriptorType::kUInt8) {
-    features.descriptors_uint8 = reader.read_blob<uint8_t>("descriptors");
+    const auto desc_raw = reader.read_blob<uint8_t>("descriptors");
+    features.descriptors_uint8.resize(desc_raw.size());
+    std::copy(desc_raw.begin(), desc_raw.end(), features.descriptors_uint8.begin());
   } else {
-    features.descriptors_float = reader.read_blob<float>("descriptors");
+    const auto desc_raw = reader.read_blob<float>("descriptors");
+    features.descriptors_float.resize(desc_raw.size());
+    std::copy(desc_raw.begin(), desc_raw.end(), features.descriptors_float.begin());
   }
+
   return features;
 }
 

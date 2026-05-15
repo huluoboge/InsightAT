@@ -87,7 +87,17 @@ nlohmann::json IDCReader::get_blob_descriptor(const std::string& blob_name) cons
   if (it == blob_index_.end()) {
     return nlohmann::json();
   }
-  // Reconstruct minimal descriptor for callers that need JSON fields
+
+  // Find the original blob entry to preserve all original fields like dtype
+  if (metadata_.contains("blobs") && metadata_["blobs"].is_array()) {
+    for (const auto& blob : metadata_["blobs"]) {
+      if (blob.contains("name") && blob["name"] == blob_name) {
+        return blob;  // Return the original blob descriptor with all fields intact
+      }
+    }
+  }
+
+  // Fallback: reconstruct basic descriptor if original not found
   nlohmann::json desc;
   desc["name"] = blob_name;
   desc["offset"] = it->second.offset;

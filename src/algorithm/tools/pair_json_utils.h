@@ -14,6 +14,10 @@ namespace tools {
 
 /** Read a numeric field from pair JSON (number or string). */
 inline uint32_t get_image_index_from_pair(const nlohmann::json& pair, const char* key) {
+  if (!pair.contains(key)) {
+    throw std::runtime_error(std::string("Missing key '") + key + "' in pair JSON");
+  }
+  
   const auto& v = pair[key];
   if (v.is_number_unsigned())
     return v.get<uint32_t>();

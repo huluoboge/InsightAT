@@ -91,7 +91,19 @@ Implementation: `error` / `warn` / `info` map to glog `minloglevel`; `debug` als
 
 ---
 
-## 5. Progress (optional)
+## 5. Data Container Format (IDC) Considerations
+
+When modifying the InsightAT Data Container (IDC) readers/writers ([IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L30-L68)/[IDCWriter](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_writer.h#L77-L97)), special care must be taken to preserve all original blob descriptor fields:
+
+- **Always preserve original blob fields** - When optimizing [IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L30-L68) for performance (e.g., O(1) lookups), ensure the [get_blob_descriptor](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L53-L53) method returns all original fields from the JSON descriptor, especially critical ones like `dtype`.
+- **Critical fields** - The `dtype`, `shape`, `offset`, and `size` fields are essential for downstream components to properly interpret binary data.
+- **Backward compatibility** - Changes should maintain compatibility with existing data files.
+
+See [13_idc_format_spec.md](13_idc_format_spec.md) for the complete specification.
+
+---
+
+## 6. Progress (optional)
 
 If a tool reports progress:
 
@@ -106,7 +118,7 @@ Value in `[0, 1]`.
 
 ---
 
-## 6. Migration
+## 7. Migration
 
 Legacy tools that emit raw JSON (no prefix) can migrate to `ISAT_EVENT` over time. During migration:
 
