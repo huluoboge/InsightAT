@@ -3899,7 +3899,7 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
       registered, image_to_camera_index, static_cast<int>(cameras->size()));
 
   // Grid-NMS BA subset selection: recompute every ba_grid_reselect_every_n calls.
-  if (opts.global_ba.ba_grid_subset) {
+  if (opts.global_ba.ba_grid_subset && num_registered > 50) {
     static thread_local int ba_grid_call_count = 0;
     ++ba_grid_call_count;
     if ((ba_grid_call_count - 1) % std::max(1, opts.global_ba.ba_grid_reselect_every_n) == 0) {
@@ -4614,23 +4614,24 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     const bool in_late_phase = opts.local_ba.enable && num_registered >= mid_end;
     const bool in_mid_phase = opts.local_ba.enable && early_end > 0 &&
                               num_registered >= early_end && num_registered < mid_end;
-    bool use_local_ba = false;
-    if (in_late_phase) {
-      use_local_ba = true;
-    } else if (in_mid_phase) {
-      const bool mid_lin =
-          opts.global_ba.mid_phase_global_linear_spacing &&
-          (opts.global_ba.mid_global_spacing_a > 0.0 || opts.global_ba.mid_global_spacing_b > 0.0);
-      if (mid_lin) {
-        if (next_mid_global_registered < 0)
-          next_mid_global_registered = early_end;
-        // Full global when registration count reaches milestone; otherwise local BA only.
-        use_local_ba = (num_registered < next_mid_global_registered);
-      } else {
-        const int n = std::max(1, opts.global_ba.every_n_images);
-        use_local_ba = ((num_registered - early_end) % n != n - 1);
-      }
-    }
+    // bool use_local_ba = false;
+    bool use_local_ba = num_registered >  opts.local_ba.switch_after_n_images;
+    // if (in_late_phase) {
+    //   use_local_ba = true;
+    // } else if (in_mid_phase) {
+    //   const bool mid_lin =
+    //       opts.global_ba.mid_phase_global_linear_spacing &&
+    //       (opts.global_ba.mid_global_spacing_a > 0.0 || opts.global_ba.mid_global_spacing_b > 0.0);
+    //   if (mid_lin) {
+    //     if (next_mid_global_registered < 0)
+    //       next_mid_global_registered = early_end;
+    //     // Full global when registration count reaches milestone; otherwise local BA only.
+    //     use_local_ba = (num_registered < next_mid_global_registered);
+    //   } else {
+    //     const int n = std::max(1, opts.global_ba.every_n_images);
+    //     use_local_ba = ((num_registered - early_end) % n != n - 1);
+    //   }
+    // }
     VLOG(1) << "  [ba_phase] n_reg=" << num_registered
             << (in_late_phase  ? " late"
                 : in_mid_phase ? " mid"
