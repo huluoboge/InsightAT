@@ -82,15 +82,14 @@ static std::string tri_diag_format_reproj_per_view(const std::vector<double>& e_
 static std::string tri_diag_track_registered_obs_summary(TrackStore* store, int track_id,
                                                          int n_images,
                                                          const std::vector<bool>& registered) {
-  std::vector<int> ids;
-  store->get_track_obs_ids(track_id, &ids);
   int n_in_reg = 0;
   std::ostringstream reg_imgs;
   std::ostringstream all_imgs;
+  const auto& ids = store->track_all_obs_ids_view(track_id);
   for (int oid : ids) {
-    Observation o;
-    store->get_obs(oid, &o);
-    const int im = static_cast<int>(o.image_index);
+    if (!store->is_obs_valid(oid))
+      continue;
+    const int im = static_cast<int>(store->obs_image_index(oid));
     if (im < 0 || im >= n_images)
       continue;
     if (!all_imgs.str().empty())
@@ -104,7 +103,9 @@ static std::string tri_diag_track_registered_obs_summary(TrackStore* store, int 
     }
   }
   std::ostringstream out;
-  out << "n_valid_obs=" << ids.size() << " n_in_registered_images=" << n_in_reg << " reg_imgs=["
+  out << "n_valid_obs=" << std::count_if(ids.begin(), ids.end(),
+                                          [store](int oid) { return store->is_obs_valid(oid); })
+      << " n_in_registered_images=" << n_in_reg << " reg_imgs=["
       << reg_imgs.str() << "] all_imgs=[" << all_imgs.str() << "]";
   return out.str();
 }
@@ -597,23 +598,18 @@ static bool rebuild_registered_arrays_from_track(
   u_px->clear();
   v_px->clear();
   K_per_view->clear();
-  std::vector<int> ids;
-  if (!include_deleted_restorable) {
-    store->get_track_obs_ids(track_id, &ids);
-  } else {
-    store->get_track_all_obs_ids(track_id, &ids);
-  }
+  const auto& ids = store->track_all_obs_ids_view(track_id);
   for (int oid : ids) {
-    if (!store->is_obs_valid(oid)) {
+    const bool obs_valid = store->is_obs_valid(oid);
+    if (!obs_valid) {
       if (!include_deleted_restorable || !store->is_obs_restorable(oid))
         continue;
     }
-    Observation o;
-    store->get_obs(oid, &o);
-    const int im = static_cast<int>(o.image_index);
+    const int im = static_cast<int>(store->obs_image_index(oid));
     if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
       continue;
-    const double u_raw = static_cast<double>(o.u), v_raw = static_cast<double>(o.v);
+    const double u_raw = static_cast<double>(store->obs_u(oid));
+    const double v_raw = static_cast<double>(store->obs_v(oid));
     const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
     // Undistort for ray computation (DLT needs undistorted normalized rays).
     // u_px/v_px keep the ORIGINAL distorted pixel coordinates so that
@@ -804,16 +800,12 @@ static int retri_restore_deleted_obs_branch_a(
   store->get_track_xyz(track_id, &tx, &ty, &tz);
   const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
                           static_cast<double>(tz));
-  static thread_local std::vector<int> obs_ids_tls;
-  obs_ids_tls.clear();
-  store->get_track_all_obs_ids(track_id, &obs_ids_tls);
   int n_restored_obs = 0;
-  Observation obs;
-  for (int oid : obs_ids_tls) {
+  const auto& obs_ids = store->track_all_obs_ids_view(track_id);
+  for (int oid : obs_ids) {
     if (store->is_obs_valid(oid))
       continue;
-    store->get_obs(oid, &obs);
-    const int im = static_cast<int>(obs.image_index);
+    const int im = static_cast<int>(store->obs_image_index(oid));
     if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
       continue;
     if (only_image_mask && !(*only_image_mask)[static_cast<size_t>(im)])
@@ -821,7 +813,8 @@ static int retri_restore_deleted_obs_branch_a(
     const camera::Intrinsics& K = cameras[static_cast<size_t>(image_to_camera_index[im])];
     const double e =
         reproj_error_px(X, poses_R[static_cast<size_t>(im)], poses_C[static_cast<size_t>(im)], K,
-                        static_cast<double>(obs.u), static_cast<double>(obs.v));
+                        static_cast<double>(store->obs_u(oid)),
+                        static_cast<double>(store->obs_v(oid)));
     if (e <= restore_strict_reproj_px) {
       store->mark_observation_restored(oid);
       ++n_restored_obs;
@@ -1129,8 +1122,6 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
     reset_robust_tri_diag();
 
     const int n_tracks = static_cast<int>(store->num_tracks());
-    std::vector<int> all_obs_ids_buf;
-    Observation obs_buf;
     for (int track_id = 0; track_id < n_tracks; ++track_id) {
       if (!store->is_track_valid(track_id)) {
         store->set_track_retriangulation_flag(track_id, false);
@@ -1150,14 +1141,12 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
           // Count nv for insufficient-views failures
           if (fcode == TriFailCode::kInsufficientRegisteredViews) {
             // Quick count of registered views for this track
-            all_obs_ids_buf.clear();
-            store->get_track_all_obs_ids(track_id, &all_obs_ids_buf);
+            const auto& all_obs_ids_buf = store->track_all_obs_ids_view(track_id);
             int nv = 0;
             for (int oid : all_obs_ids_buf) {
               if (!store->is_obs_valid(oid) && !store->is_obs_restorable(oid))
                 continue;
-              store->get_obs(oid, &obs_buf);
-              int im = static_cast<int>(obs_buf.image_index);
+              const int im = static_cast<int>(store->obs_image_index(oid));
               if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)])
                 ++nv;
             }
@@ -1166,6 +1155,13 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
         }
       } else {
         ++n_already_tri;
+        // Epoch-gate: skip tracks whose observing poses have not changed since they
+        // were last triangulated.  When the pipeline calls full-scan twice in a row
+        // without bumping the pose epoch, the second pass is essentially O(1).
+        if (!store->is_track_tri_stale(track_id)) {
+          store->set_track_retriangulation_flag(track_id, false);
+          continue;
+        }
         const int n_obs_rest = retri_restore_deleted_obs_branch_a(
             store, track_id, n_images, poses_R, poses_C, registered, cameras, image_to_camera_index,
             opts.restore_strict_reproj_px, /*only_image_mask=*/nullptr);

@@ -10,16 +10,63 @@
 namespace insight {
 namespace sfm {
 
+namespace {
+
+const std::vector<int>& empty_obs_id_view() {
+  static const std::vector<int> kEmpty;
+  return kEmpty;
+}
+
+} // namespace
+
+void TrackStore::mark_dirty_image(int image_index) {
+  if (image_index < 0 || static_cast<size_t>(image_index) >= dirty_image_mark_.size())
+    return;
+  auto& m = dirty_image_mark_[static_cast<size_t>(image_index)];
+  if (!m) {
+    m = 1;
+    dirty_images_.push_back(image_index);
+  }
+}
+
+void TrackStore::mark_dirty_track(int track_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= dirty_track_mark_.size())
+    return;
+  auto& m = dirty_track_mark_[static_cast<size_t>(track_id)];
+  if (!m) {
+    m = 1;
+    dirty_tracks_.push_back(track_id);
+  }
+}
+
+void TrackStore::mark_track_observation_images_dirty(int track_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_obs_ids_.size())
+    return;
+  const auto& obs_ids = track_obs_ids_[static_cast<size_t>(track_id)];
+  for (int obs_id : obs_ids) {
+    if (!is_obs_valid(obs_id))
+      continue;
+    const int image_index = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+    mark_dirty_image(image_index);
+  }
+}
+
 void TrackStore::set_num_images(int n) {
   assert(n >= 0);
   num_images_ = n;
   image_obs_ids_.resize(static_cast<size_t>(n));
+  dirty_image_mark_.assign(static_cast<size_t>(n), 0u);
+  dirty_images_.clear();
+  image_n_tri_.assign(static_cast<size_t>(n), 0);
 }
 
 void TrackStore::reserve_tracks(size_t cap) {
   track_xyz_.reserve(cap * 3);
   track_flags_.reserve(cap);
   track_obs_ids_.reserve(cap);
+  dirty_track_mark_.reserve(cap);
+  retri_pending_mark_.reserve(cap);
+  track_last_tri_epoch_.reserve(cap);
 }
 
 void TrackStore::reserve_observations(size_t cap) {
@@ -39,6 +86,11 @@ int TrackStore::add_track(float x, float y, float z) {
   track_xyz_.push_back(z);
   track_flags_.push_back(track_flags::kAlive);
   track_obs_ids_.emplace_back();
+  dirty_track_mark_.push_back(0u);
+  retri_pending_mark_.push_back(0u);
+  track_last_tri_epoch_.push_back(0u); // 0 < global_pose_epoch_(=1) → stale by default
+  mark_dirty_track(track_id);
+  ++registration_epoch_;
   return track_id;
 }
 
@@ -59,6 +111,16 @@ int TrackStore::add_observation(int track_id, uint32_t image_index, uint32_t fea
   track_obs_ids_[static_cast<size_t>(track_id)].push_back(obs_id);
   if (static_cast<size_t>(image_index) < image_obs_ids_.size())
     image_obs_ids_[image_index].push_back(obs_id);
+
+  // If the parent track already has XYZ, this new observation immediately contributes to n_tri.
+  if (static_cast<size_t>(image_index) < image_n_tri_.size() &&
+      track_has_triangulated_xyz(track_id))
+    image_n_tri_[image_index]++;
+
+  mark_dirty_track(track_id);
+  mark_dirty_image(static_cast<int>(image_index));
+  ++obs_epoch_;
+  ++registration_epoch_;
 
   return obs_id;
 }
@@ -106,24 +168,66 @@ void TrackStore::get_track_xyz(int track_id, float* x, float* y, float* z) const
 void TrackStore::set_track_xyz(int track_id, float x, float y, float z) {
   assert(track_id >= 0 && static_cast<size_t>(track_id) < num_tracks());
   const size_t i = static_cast<size_t>(track_id) * 3u;
+  const bool xyz_changed = (track_xyz_[i] != x) || (track_xyz_[i + 1] != y) || (track_xyz_[i + 2] != z);
   track_xyz_[i] = x;
   track_xyz_[i + 1] = y;
   track_xyz_[i + 2] = z;
   auto& f = track_flags_[static_cast<size_t>(track_id)];
+  bool tri_flag_changed = false;
   if (!(f & track_flags::kHasTriangulated)) {
     // First time this track gets a 3D point; maintain the O(1) counter.
     f |= track_flags::kHasTriangulated;
     ++num_triangulated_;
+    tri_flag_changed = true;
   }
+  if (xyz_changed || tri_flag_changed) {
+    ++xyz_epoch_;
+    mark_dirty_track(track_id);
+    if (tri_flag_changed) {
+      // Only propagate image-dirty and update image_n_tri_ when tri status actually changed.
+      // Pure XYZ value updates (BA refinement) do NOT alter the pyramid score.
+      ++tri_status_epoch_;
+      mark_track_observation_images_dirty(track_id);
+      for (int obs_id : track_obs_ids_[static_cast<size_t>(track_id)]) {
+        if (!is_obs_valid(obs_id))
+          continue;
+        const int im = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+        if (im >= 0 && static_cast<size_t>(im) < image_n_tri_.size())
+          image_n_tri_[static_cast<size_t>(im)]++;
+      }
+    }
+  }
+  // Update per-track triangulation epoch so full-scan can skip stable tracks.
+  if (static_cast<size_t>(track_id) < track_last_tri_epoch_.size())
+    track_last_tri_epoch_[static_cast<size_t>(track_id)] = global_pose_epoch_;
 }
 
 void TrackStore::clear_track_xyz(int track_id) {
   if (track_id < 0 || static_cast<size_t>(track_id) >= num_tracks())
     return;
   auto& f = track_flags_[static_cast<size_t>(track_id)];
+  bool changed = false;
   if (f & track_flags::kHasTriangulated) {
     f &= ~track_flags::kHasTriangulated;
     --num_triangulated_;
+    changed = true;
+  }
+  if (changed) {
+    ++xyz_epoch_;
+    ++tri_status_epoch_;
+    mark_dirty_track(track_id);
+    mark_track_observation_images_dirty(track_id);
+    // Decrement image_n_tri_ for all valid observers of this track.
+    for (int obs_id : track_obs_ids_[static_cast<size_t>(track_id)]) {
+      if (!is_obs_valid(obs_id))
+        continue;
+      const int im = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+      if (im >= 0 && static_cast<size_t>(im) < image_n_tri_.size() && image_n_tri_[static_cast<size_t>(im)] > 0)
+        image_n_tri_[static_cast<size_t>(im)]--;
+    }
+    // Reset per-track epoch so full-scan will re-process this track.
+    if (static_cast<size_t>(track_id) < track_last_tri_epoch_.size())
+      track_last_tri_epoch_[static_cast<size_t>(track_id)] = 0;
   }
   // run_retriangulation only drains retri_pending_ids_.  Many call sites (angle/depth/resection
   // rejection, etc.) clear XYZ without going through set_track_retriangulation_flag — enqueue here
@@ -137,17 +241,100 @@ void TrackStore::set_track_retriangulation_flag(int track_id, bool value) {
   auto& f = track_flags_[static_cast<size_t>(track_id)];
   if (value) {
     f |= track_flags::kNeedsRetriangulation;
-    retri_pending_ids_.push_back(track_id); // O(1) append; duplicates OK, drained lazily
+    auto& pending_m = retri_pending_mark_[static_cast<size_t>(track_id)];
+    if (!pending_m) {
+      pending_m = 1;
+      retri_pending_ids_.push_back(track_id);
+    }
   } else {
     f &= ~track_flags::kNeedsRetriangulation;
+    retri_pending_mark_[static_cast<size_t>(track_id)] = 0;
   }
 }
 
 void TrackStore::drain_retriangulation_pending(std::vector<int>* out) {
+  for (int tid : retri_pending_ids_) {
+    if (tid >= 0 && static_cast<size_t>(tid) < retri_pending_mark_.size())
+      retri_pending_mark_[static_cast<size_t>(tid)] = 0;
+  }
   if (out)
     *out = std::move(retri_pending_ids_);
   // After move, retri_pending_ids_ is valid-but-unspecified; reset to empty.
   retri_pending_ids_.clear();
+}
+
+int TrackStore::consume_dirty_images(std::vector<int>* out) {
+  for (int im : dirty_images_) {
+    if (im >= 0 && static_cast<size_t>(im) < dirty_image_mark_.size())
+      dirty_image_mark_[static_cast<size_t>(im)] = 0;
+  }
+  const int n = static_cast<int>(dirty_images_.size());
+  if (out)
+    *out = std::move(dirty_images_);
+  dirty_images_.clear();
+  return n;
+}
+
+int TrackStore::consume_dirty_tracks(std::vector<int>* out) {
+  for (int tid : dirty_tracks_) {
+    if (tid >= 0 && static_cast<size_t>(tid) < dirty_track_mark_.size())
+      dirty_track_mark_[static_cast<size_t>(tid)] = 0;
+  }
+  const int n = static_cast<int>(dirty_tracks_.size());
+  if (out)
+    *out = std::move(dirty_tracks_);
+  dirty_tracks_.clear();
+  return n;
+}
+
+void TrackStore::clear_dirty_sets() {
+  for (int im : dirty_images_) {
+    if (im >= 0 && static_cast<size_t>(im) < dirty_image_mark_.size())
+      dirty_image_mark_[static_cast<size_t>(im)] = 0;
+  }
+  for (int tid : dirty_tracks_) {
+    if (tid >= 0 && static_cast<size_t>(tid) < dirty_track_mark_.size())
+      dirty_track_mark_[static_cast<size_t>(tid)] = 0;
+  }
+  dirty_images_.clear();
+  dirty_tracks_.clear();
+}
+
+const std::vector<int>& TrackStore::track_all_obs_ids_view(int track_id) const {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_obs_ids_.size())
+    return empty_obs_id_view();
+  return track_obs_ids_[static_cast<size_t>(track_id)];
+}
+
+const std::vector<int>& TrackStore::image_all_obs_ids_view(int image_index) const {
+  if (image_index < 0 || static_cast<size_t>(image_index) >= image_obs_ids_.size())
+    return empty_obs_id_view();
+  return image_obs_ids_[static_cast<size_t>(image_index)];
+}
+
+uint32_t TrackStore::obs_image_index(int obs_id) const {
+  assert(obs_id >= 0 && static_cast<size_t>(obs_id) < obs_image_id_.size());
+  return obs_image_id_[static_cast<size_t>(obs_id)];
+}
+
+uint32_t TrackStore::obs_feature_id(int obs_id) const {
+  assert(obs_id >= 0 && static_cast<size_t>(obs_id) < obs_feature_id_.size());
+  return obs_feature_id_[static_cast<size_t>(obs_id)];
+}
+
+float TrackStore::obs_u(int obs_id) const {
+  assert(obs_id >= 0 && static_cast<size_t>(obs_id) < obs_u_.size());
+  return obs_u_[static_cast<size_t>(obs_id)];
+}
+
+float TrackStore::obs_v(int obs_id) const {
+  assert(obs_id >= 0 && static_cast<size_t>(obs_id) < obs_v_.size());
+  return obs_v_[static_cast<size_t>(obs_id)];
+}
+
+float TrackStore::obs_scale(int obs_id) const {
+  assert(obs_id >= 0 && static_cast<size_t>(obs_id) < obs_scale_.size());
+  return obs_scale_[static_cast<size_t>(obs_id)];
 }
 
 bool TrackStore::track_needs_retriangulation(int track_id) const {
@@ -277,33 +464,88 @@ void TrackStore::mark_track_deleted(int track_id) {
   auto& f = track_flags_[static_cast<size_t>(track_id)];
   if (f & track_flags::kAlive) {
     // If this track had a triangulated 3D point, decrement the counter.
-    if (f & track_flags::kHasTriangulated)
+    if (f & track_flags::kHasTriangulated) {
       --num_triangulated_;
+      ++tri_status_epoch_;
+      // Decrement image_n_tri_ for all valid observers.
+      for (int obs_id : track_obs_ids_[static_cast<size_t>(track_id)]) {
+        if (!is_obs_valid(obs_id))
+          continue;
+        const int im = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+        if (im >= 0 && static_cast<size_t>(im) < image_n_tri_.size() && image_n_tri_[static_cast<size_t>(im)] > 0)
+          image_n_tri_[static_cast<size_t>(im)]--;
+      }
+    }
     f &= ~track_flags::kAlive;
+    ++registration_epoch_;
+    mark_dirty_track(track_id);
+    mark_track_observation_images_dirty(track_id);
   }
 }
 
 void TrackStore::mark_observation_deleted(int obs_id) {
   if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
     return;
+  if (!(obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kAlive))
+    return;
   obs_flags_[static_cast<size_t>(obs_id)] &= ~obs_flags::kAlive;
   const int tid = obs_track_id_[static_cast<size_t>(obs_id)];
+  // If the parent track has XYZ, this observation was contributing to image_n_tri_.
+  if (track_has_triangulated_xyz(tid)) {
+    const int im = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+    if (im >= 0 && static_cast<size_t>(im) < image_n_tri_.size() && image_n_tri_[static_cast<size_t>(im)] > 0)
+      image_n_tri_[static_cast<size_t>(im)]--;
+  }
+  mark_dirty_track(tid);
+  mark_dirty_image(static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]));
+  ++obs_epoch_;
+  ++registration_epoch_;
   set_track_retriangulation_flag(tid, true);
 }
 
 void TrackStore::mark_observation_deleted_restorable(int obs_id) {
   if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
     return;
+  if (!(obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kAlive) &&
+      (obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kRestorable)) {
+    return;
+  }
+  // If alive and parent track has XYZ, this was contributing to image_n_tri_.
+  if ((obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kAlive)) {
+    const int tid2 = obs_track_id_[static_cast<size_t>(obs_id)];
+    if (track_has_triangulated_xyz(tid2)) {
+      const int im2 = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+      if (im2 >= 0 && static_cast<size_t>(im2) < image_n_tri_.size() && image_n_tri_[static_cast<size_t>(im2)] > 0)
+        image_n_tri_[static_cast<size_t>(im2)]--;
+    }
+  }
   obs_flags_[static_cast<size_t>(obs_id)] =
       (obs_flags_[static_cast<size_t>(obs_id)] & ~obs_flags::kAlive) | obs_flags::kRestorable;
   const int tid = obs_track_id_[static_cast<size_t>(obs_id)];
+  mark_dirty_track(tid);
+  mark_dirty_image(static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]));
+  ++obs_epoch_;
+  ++registration_epoch_;
   set_track_retriangulation_flag(tid, true);
 }
 
 void TrackStore::mark_observation_restored(int obs_id) {
   if (obs_id < 0 || static_cast<size_t>(obs_id) >= obs_flags_.size())
     return;
+  if (obs_flags_[static_cast<size_t>(obs_id)] & obs_flags::kAlive)
+    return;
   obs_flags_[static_cast<size_t>(obs_id)] |= obs_flags::kAlive;
+  const int tid = obs_track_id_[static_cast<size_t>(obs_id)];
+  // Observation is alive again and parent track may have XYZ → restore image_n_tri_.
+  if (track_has_triangulated_xyz(tid)) {
+    const int im = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+    if (im >= 0 && static_cast<size_t>(im) < image_n_tri_.size())
+      image_n_tri_[static_cast<size_t>(im)]++;
+  }
+  mark_dirty_track(tid);
+  mark_dirty_image(static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]));
+  ++obs_epoch_;
+  ++registration_epoch_;
   // kRestorable is left in place; it is harmless on an alive observation and avoids
   // the need to track "was this previously restorable" after restoration.
 }
@@ -313,6 +555,34 @@ bool TrackStore::is_obs_restorable(int obs_id) const {
     return false;
   const uint8_t f = obs_flags_[static_cast<size_t>(obs_id)];
   return !(f & obs_flags::kAlive) && (f & obs_flags::kRestorable);
+}
+
+int TrackStore::image_tri_count(int image_index) const {
+  if (image_index < 0 || static_cast<size_t>(image_index) >= image_n_tri_.size())
+    return 0;
+  return image_n_tri_[static_cast<size_t>(image_index)];
+}
+
+void TrackStore::rebuild_image_n_tri() {
+  image_n_tri_.assign(static_cast<size_t>(num_images_), 0);
+  for (size_t t = 0; t < num_tracks(); ++t) {
+    const int tid = static_cast<int>(t);
+    if (!is_track_valid(tid) || !track_has_triangulated_xyz(tid))
+      continue;
+    for (int obs_id : track_obs_ids_[t]) {
+      if (!is_obs_valid(obs_id))
+        continue;
+      const int im = static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]);
+      if (im >= 0 && im < num_images_)
+        image_n_tri_[static_cast<size_t>(im)]++;
+    }
+  }
+}
+
+bool TrackStore::is_track_tri_stale(int track_id) const {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_last_tri_epoch_.size())
+    return true;
+  return track_last_tri_epoch_[static_cast<size_t>(track_id)] != global_pose_epoch_;
 }
 
 } // namespace sfm

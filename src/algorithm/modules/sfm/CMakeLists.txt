@@ -84,6 +84,15 @@ target_link_libraries(test_track_ray_lambda_ceres
 )
 set_property(TARGET test_track_ray_lambda_ceres PROPERTY FOLDER InsightAT/Tests)
 
+# ── Unit test: TrackStore incremental state helpers ───────────────────────
+add_executable(test_track_store_state_cache test_track_store_state_cache.cpp)
+target_link_libraries(test_track_store_state_cache
+    PRIVATE
+        sfm_module
+        glog::glog
+)
+set_property(TARGET test_track_store_state_cache PROPERTY FOLDER InsightAT/Tests)
+
 # ── Unit test: PnP resection ──────────────────────────────────────────────
 # add_executable(test_pnp_resection test_pnp_resection.cpp resection.cpp resection.h)
 # target_link_libraries(test_pnp_resection

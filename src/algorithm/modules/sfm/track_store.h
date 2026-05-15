@@ -120,6 +120,55 @@ public:
   /// on each element to handle duplicates and already-cleared entries.
   void drain_retriangulation_pending(std::vector<int>* out);
 
+  // ── Incremental state cache helpers (for query engines / schedulers) ─────
+  /// Monotonic counters for observation/XYZ/topology changes.
+  uint64_t obs_epoch() const { return obs_epoch_; }
+  uint64_t xyz_epoch() const { return xyz_epoch_; }
+  uint64_t registration_epoch() const { return registration_epoch_; }
+  /// Bumps only when kHasTriangulated flag transitions on any track (not on BA xyz-value updates).
+  /// Use this instead of xyz_epoch() for resection/pyramid score cache invalidation.
+  uint64_t tri_status_epoch() const { return tri_status_epoch_; }
+
+  /// O(1) count of alive observations pointing to a triangulated track for a given image.
+  /// Maintained incrementally — use instead of iterating image observations to count.
+  int image_tri_count(int image_index) const;
+
+  /// Recompute image_n_tri_[] from scratch (O(N_obs)). Call after loading a TrackStore
+  /// that already has some triangulated XYZ (e.g., resume from checkpoint).
+  void rebuild_image_n_tri();
+
+  // ── Pose epoch (for epoch-gate on full-scan retriangulation) ─────────────
+  /// Monotonically increasing; bumped by the pipeline after BA updates poses significantly.
+  /// When the epoch does not change between two full-scan calls, already-stable tracks
+  /// (whose last_tri_epoch == global_pose_epoch) are skipped in O(1).
+  uint64_t global_pose_epoch() const { return global_pose_epoch_; }
+  /// Increment the pose epoch (call after global/local BA if poses changed significantly).
+  void bump_global_pose_epoch() { ++global_pose_epoch_; }
+  /// Returns true if the track may need re-triangulation because poses have changed
+  /// since it was last successfully triangulated (or it has never been triangulated).
+  bool is_track_tri_stale(int track_id) const;
+
+  /// Consume and clear dirty image/track ids accumulated since last consume.
+  int consume_dirty_images(std::vector<int>* out);
+  int consume_dirty_tracks(std::vector<int>* out);
+
+  /// Clear all pending dirty ids without consuming.
+  void clear_dirty_sets();
+
+  /// Zero-copy read-only views over structural observation lists.
+  /// These return all observation ids for the owner (alive + deleted). Callers that only want
+  /// alive observations must filter with is_obs_valid(). They are intended for query engines
+  /// that want to avoid repeatedly materializing temporary vectors.
+  const std::vector<int>& track_all_obs_ids_view(int track_id) const;
+  const std::vector<int>& image_all_obs_ids_view(int image_index) const;
+
+  /// Zero-copy scalar accessors for observation SoA fields.
+  uint32_t obs_image_index(int obs_id) const;
+  uint32_t obs_feature_id(int obs_id) const;
+  float obs_u(int obs_id) const;
+  float obs_v(int obs_id) const;
+  float obs_scale(int obs_id) const;
+
   /// Iterate valid observations of a track (writes to obs_out; returns count).
   int get_track_observations(int track_id, std::vector<Observation>* obs_out) const;
 
@@ -169,6 +218,10 @@ public:
   int num_triangulated_tracks() const { return num_triangulated_; }
 
 private:
+  void mark_dirty_image(int image_index);
+  void mark_dirty_track(int track_id);
+  void mark_track_observation_images_dirty(int track_id);
+
   int num_images_ = 0;
   std::vector<float> track_xyz_;
   std::vector<uint8_t> track_flags_;
@@ -185,6 +238,22 @@ private:
 
   int num_triangulated_ = 0; ///< Maintained by set_track_xyz (+1 on first XYZ) and mark_track_deleted (-1 if triangulated).
   std::vector<int> retri_pending_ids_; ///< Accumulates track ids whenever kNeedsRetriangulation is set; drained by drain_retriangulation_pending().
+  std::vector<uint8_t> retri_pending_mark_; ///< 0/1 marker to avoid duplicate enqueue in retri_pending_ids_.
+
+  uint64_t obs_epoch_ = 0;
+  uint64_t xyz_epoch_ = 0;
+  uint64_t registration_epoch_ = 0;
+  uint64_t tri_status_epoch_ = 0; ///< Bumps only on kHasTriangulated flag transitions (not on xyz value changes).
+
+  std::vector<int> dirty_images_;
+  std::vector<int> dirty_tracks_;
+  std::vector<uint8_t> dirty_image_mark_; ///< 0/1 marker to avoid duplicate dirty_images_ entries.
+  std::vector<uint8_t> dirty_track_mark_; ///< 0/1 marker to avoid duplicate dirty_tracks_ entries.
+
+  std::vector<int> image_n_tri_; ///< Per-image count of alive obs whose track has kHasTriangulated. Maintained incrementally.
+
+  uint64_t global_pose_epoch_ = 1; ///< Starts at 1; track_last_tri_epoch_ starts at 0 so all tracks are stale initially.
+  std::vector<uint64_t> track_last_tri_epoch_; ///< Per-track epoch at which XYZ was last written. 0 = never triangulated.
 };
 
 } // namespace sfm

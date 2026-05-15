@@ -269,6 +269,21 @@ target_include_directories(test_sfm_diag2
 )
 set_property(TARGET test_sfm_diag2 PROPERTY FOLDER InsightAT/Tests)
 
+# ── Resection candidate cache unit test ────────────────────────────────────
+add_executable(test_resection_candidate_cache modules/sfm/test_resection_candidate_cache.cpp)
+target_link_libraries(test_resection_candidate_cache
+    PRIVATE
+        InsightATAlgorithm
+        PoseLib
+        glog::glog
+)
+target_include_directories(test_resection_candidate_cache
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET test_resection_candidate_cache PROPERTY FOLDER InsightAT/Tests)
+
 # ── CPU cascade hash test ──
 add_executable(test_cpu_cascade_hash
     modules/cpu_cascade_hash/cpu_cascade_hash_test.cpp

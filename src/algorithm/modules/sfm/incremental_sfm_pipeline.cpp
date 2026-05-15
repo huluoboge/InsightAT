@@ -932,7 +932,6 @@ std::vector<int> choose_local_ba_indices_by_connectivity(
     return reg_list;
   std::unordered_map<int, int> shared_count;
   std::vector<int> track_ids_conn;        // hoisted — reused across images
-  std::vector<Observation> obs_buf_conn;  // hoisted — reused across tracks
   for (int im : reg_list) {
     if (optimize_set.count(im))
       continue;
@@ -942,10 +941,11 @@ std::vector<int> choose_local_ba_indices_by_connectivity(
     for (int tid : track_ids_conn) {
       if (!store.track_has_triangulated_xyz(tid))
         continue;
-      obs_buf_conn.clear();
-      store.get_track_observations(tid, &obs_buf_conn);
-      for (const auto& o : obs_buf_conn) {
-        int oim = static_cast<int>(o.image_index);
+      const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
+      for (int obs_id : track_obs_ids) {
+        if (!store.is_obs_valid(obs_id))
+          continue;
+        const int oim = static_cast<int>(store.obs_image_index(obs_id));
         if (optimize_set.count(oim)) {
           ++count;
           break;
@@ -970,18 +970,19 @@ std::vector<int> choose_local_ba_indices_by_connectivity(
 int count_two_view_valid_tracks(const TrackStore& store, int im0, int im1) {
   const uint32_t uim0 = static_cast<uint32_t>(im0), uim1 = static_cast<uint32_t>(im1);
   int n = 0;
-  std::vector<Observation> obs_buf;
   for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
     const int tid = static_cast<int>(ti);
     if (!store.is_track_valid(tid))
       continue;
-    obs_buf.clear();
-    store.get_track_observations(tid, &obs_buf);
     bool has0 = false, has1 = false;
-    for (const auto& o : obs_buf) {
-      if (o.image_index == uim0)
+    const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const uint32_t image_index = store.obs_image_index(obs_id);
+      if (image_index == uim0)
         has0 = true;
-      if (o.image_index == uim1)
+      if (image_index == uim1)
         has1 = true;
     }
     if (has0 && has1)
@@ -1033,9 +1034,13 @@ std::vector<std::pair<int, int>> find_initial_first_images(const TrackStore& sto
     for (int tid : track_ids) {
       if (!store.is_track_valid(tid))
         continue;
-      std::vector<Observation> obs;
-      store.get_track_observations(tid, &obs);
-      corr_count += std::max(0, static_cast<int>(obs.size()) - 1);
+      int n_alive_obs = 0;
+      const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
+      for (int obs_id : track_obs_ids) {
+        if (store.is_obs_valid(obs_id))
+          ++n_alive_obs;
+      }
+      corr_count += std::max(0, n_alive_obs - 1);
     }
     if (corr_count > 0)
       result.push_back({im, corr_count});
@@ -1088,24 +1093,25 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
   };
   std::vector<TrackCorr> corrs;
   std::vector<Observation> obs_buf;
-
   for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
     const int tid = static_cast<int>(ti);
     if (!store.is_track_valid(tid))
       continue;
-    obs_buf.clear();
-    store.get_track_observations(tid, &obs_buf);
     double u0 = 0, v0 = 0, u1 = 0, v1 = 0;
     bool has0 = false, has1 = false;
-    for (const auto& o : obs_buf) {
-      if (o.image_index == uim0) {
-        u0 = static_cast<double>(o.u);
-        v0 = static_cast<double>(o.v);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const uint32_t image_index = store.obs_image_index(obs_id);
+      if (image_index == uim0) {
+        u0 = static_cast<double>(store.obs_u(obs_id));
+        v0 = static_cast<double>(store.obs_v(obs_id));
         has0 = true;
       }
-      if (o.image_index == uim1) {
-        u1 = static_cast<double>(o.u);
-        v1 = static_cast<double>(o.v);
+      if (image_index == uim1) {
+        u1 = static_cast<double>(store.obs_u(obs_id));
+        v1 = static_cast<double>(store.obs_v(obs_id));
         has1 = true;
       }
     }
@@ -1240,17 +1246,40 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
 
   for (size_t i = 0; i < track_ids.size(); ++i) {
     obs_buf.clear();
-    store.get_track_observations(track_ids[i], &obs_buf);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_ids[i]);
+    obs_buf.reserve(track_obs_ids.size());
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store.obs_image_index(obs_id);
+      o.feature_id = store.obs_feature_id(obs_id);
+      o.u = store.obs_u(obs_id);
+      o.v = store.obs_v(obs_id);
+      o.scale = store.obs_scale(obs_id);
+      obs_buf.push_back(o);
+    }
     const int pt_idx = static_cast<int>(i);
     for (const auto& o : obs_buf) {
       const double sigma_feat = (o.scale > 1e-6f) ? static_cast<double>(o.scale) : 1.0;
       const double std_sigma_obs_px = sigma_to_ba_stddev(sigma_feat);
-      if (o.image_index == uim0)
-        ba_in.observations.push_back(
-            {0, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v), std_sigma_obs_px});
-      else if (o.image_index == uim1)
-        ba_in.observations.push_back(
-            {1, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v), std_sigma_obs_px});
+      if (o.image_index == uim0) {
+        BAObservation bo;
+        bo.image_index = 0;
+        bo.point_index = pt_idx;
+        bo.u = static_cast<double>(o.u);
+        bo.v = static_cast<double>(o.v);
+        bo.std_sigma_obs_px = std_sigma_obs_px;
+        ba_in.observations.push_back(bo);
+      } else if (o.image_index == uim1) {
+        BAObservation bo;
+        bo.image_index = 1;
+        bo.point_index = pt_idx;
+        bo.u = static_cast<double>(o.u);
+        bo.v = static_cast<double>(o.v);
+        bo.std_sigma_obs_px = std_sigma_obs_px;
+        ba_in.observations.push_back(bo);
+      }
     }
   }
 
@@ -1325,7 +1354,19 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
 
     // TODO，这里图像内参应该加上图像的宽高，这样可以剔除外面的点
     obs_buf.clear();
-    store.get_track_observations(track_ids[i], &obs_buf);
+    const auto& track_obs_ids_q = store.track_all_obs_ids_view(track_ids[i]);
+    obs_buf.reserve(track_obs_ids_q.size());
+    for (int obs_id : track_obs_ids_q) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store.obs_image_index(obs_id);
+      o.feature_id = store.obs_feature_id(obs_id);
+      o.u = store.obs_u(obs_id);
+      o.v = store.obs_v(obs_id);
+      o.scale = store.obs_scale(obs_id);
+      obs_buf.push_back(o);
+    }
     double max_e = 0.0;
     for (const auto& o : obs_buf) {
       double u_pred, v_pred;
@@ -1629,18 +1670,18 @@ static std::vector<bool> compute_image_stability(const TrackStore& store,
   const int n = store.num_images();
   std::vector<int> obs_count(static_cast<size_t>(n), 0);
   std::vector<int> stable_count(static_cast<size_t>(n), 0);
-  std::vector<Observation> obs_buf;
   for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
     const int tid = static_cast<int>(ti);
     if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
       continue;
-    obs_buf.clear();
-    store.get_track_observations(tid, &obs_buf);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
     // Collect registered observer image indices.
     int reg_imgs[2];
     int n_reg = 0;
-    for (const auto& o : obs_buf) {
-      const int im = static_cast<int>(o.image_index);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const int im = static_cast<int>(store.obs_image_index(obs_id));
       if (im >= 0 && im < n && registered[static_cast<size_t>(im)]) {
         if (n_reg < 2)
           reg_imgs[n_reg] = im;
@@ -1663,12 +1704,18 @@ static std::vector<bool> compute_image_stability(const TrackStore& store,
       S = sin_a * sin_a;
     }
     // Accumulate per-image stats (cap n_reg at actual array size for higher-degree tracks).
-    const int cap = std::min(n_reg, static_cast<int>(obs_buf.size()));
+    int alive_obs_count = 0;
+    for (int obs_id : track_obs_ids)
+      if (store.is_obs_valid(obs_id))
+        ++alive_obs_count;
+    const int cap = std::min(n_reg, alive_obs_count);
     int counted = 0;
-    for (const auto& o : obs_buf) {
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
       if (counted >= cap)
         break;
-      const int im = static_cast<int>(o.image_index);
+      const int im = static_cast<int>(store.obs_image_index(obs_id));
       if (im >= 0 && im < n && registered[static_cast<size_t>(im)]) {
         obs_count[static_cast<size_t>(im)]++;
         if (S >= min_angle_score)
@@ -1713,16 +1760,16 @@ static void select_ba_subset(const TrackStore& store, const std::vector<Eigen::V
   // ── Pass 1: per-track registered degree + sin²(θ) for 2-degree tracks ────────────────────────
   std::vector<int> track_degree(static_cast<size_t>(n_tracks), 0);
   std::vector<float> track_S(static_cast<size_t>(n_tracks), 1.0f);
-  std::vector<Observation> obs_buf;
   for (int tid = 0; tid < n_tracks; ++tid) {
     if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
       continue;
-    obs_buf.clear();
-    store.get_track_observations(tid, &obs_buf);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
     int deg = 0;
     int reg_im0 = -1, reg_im1 = -1;
-    for (const auto& o : obs_buf) {
-      const int im = static_cast<int>(o.image_index);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const int im = static_cast<int>(store.obs_image_index(obs_id));
       if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)]) {
         if (deg == 0)
           reg_im0 = im;
@@ -1869,7 +1916,6 @@ static bool build_ba_input_skipped_tracks_fixed_pose(
   };
   std::vector<SkipEntry> entries;
   std::unordered_set<int> relevant_imgs;
-  std::vector<Observation> obs_buf;
 
   for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
     const int tid = static_cast<int>(ti);
@@ -1877,11 +1923,18 @@ static bool build_ba_input_skipped_tracks_fixed_pose(
       continue;
     if (!store.is_track_skip_ba(tid))
       continue;
-    obs_buf.clear();
-    store.get_track_observations(tid, &obs_buf);
     SkipEntry e;
     e.track_id = tid;
-    for (const auto& o : obs_buf) {
+    const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store.obs_image_index(obs_id);
+      o.feature_id = store.obs_feature_id(obs_id);
+      o.u = store.obs_u(obs_id);
+      o.v = store.obs_v(obs_id);
+      o.scale = store.obs_scale(obs_id);
       const int im = static_cast<int>(o.image_index);
       if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)]) {
         e.obs.emplace_back(im, o);
@@ -2062,7 +2115,19 @@ bool build_ba_input_from_store(
     }
 
     obs_buf.clear();
-    store.get_track_observations(track_id, &obs_buf);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    obs_buf.reserve(track_obs_ids.size());
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store.obs_image_index(obs_id);
+      o.feature_id = store.obs_feature_id(obs_id);
+      o.u = store.obs_u(obs_id);
+      o.v = store.obs_v(obs_id);
+      o.scale = store.obs_scale(obs_id);
+      obs_buf.push_back(o);
+    }
 
     // Count BA-visible observations and collect which BA images observe this track.
     int visible_in_ba = 0;
@@ -2122,8 +2187,13 @@ bool build_ba_input_from_store(
     ++tracks_sampled;
     for (const auto& c : selected_obs) {
       const double scale = (c.obs.scale > 1e-6f) ? static_cast<double>(c.obs.scale) : 1.0;
-      ba.observations.push_back({c.ba_image_index, pt_idx, static_cast<double>(c.obs.u),
-                                 static_cast<double>(c.obs.v), scale});
+      BAObservation bo;
+      bo.image_index = c.ba_image_index;
+      bo.point_index = pt_idx;
+      bo.u = static_cast<double>(c.obs.u);
+      bo.v = static_cast<double>(c.obs.v);
+      bo.std_sigma_obs_px = scale;
+      ba.observations.push_back(bo);
     }
   }
 
@@ -2206,15 +2276,15 @@ static bool build_ba_input_colmap_local(
   std::set<int> batch_set(batch.begin(), batch.end());
   std::vector<int> seed_track_ids;
   seed_track_ids.reserve(n_tracks / 4);
-  std::vector<Observation> obs_buf;
   for (size_t ti = 0; ti < n_tracks; ++ti) {
     const int track_id = static_cast<int>(ti);
     if (!store.is_track_valid(track_id) || !store.track_has_triangulated_xyz(track_id))
       continue;
-    obs_buf.clear();
-    store.get_track_observations(track_id, &obs_buf);
-    for (const auto& o : obs_buf) {
-      if (batch_set.count(static_cast<int>(o.image_index))) {
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      if (batch_set.count(static_cast<int>(store.obs_image_index(obs_id)))) {
         seed_track_ids.push_back(track_id);
         break;
       }
@@ -2226,10 +2296,11 @@ static bool build_ba_input_colmap_local(
   // ── Hop 2: score cameras by number of seed tracks observed ───────────────
   std::unordered_map<int, int> cam_score;
   for (int track_id : seed_track_ids) {
-    obs_buf.clear();
-    store.get_track_observations(track_id, &obs_buf);
-    for (const auto& o : obs_buf) {
-      int g = static_cast<int>(o.image_index);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const int g = static_cast<int>(store.obs_image_index(obs_id));
       if (g >= 0 && g < n_images && registered[static_cast<size_t>(g)])
         cam_score[g]++;
     }
@@ -2324,13 +2395,15 @@ static bool build_ba_input_colmap_local(
   // variables we actually want to optimize.
   std::vector<int> track_id_to_point_index(n_tracks, -1);
   point_index_to_track_id_out->clear();
+  std::vector<Observation> obs_buf;
   for (int track_id : seed_track_ids) {
-    obs_buf.clear();
-    store.get_track_observations(track_id, &obs_buf);
     int visible_in_ba = 0;
     int visible_in_variable = 0;
-    for (const auto& o : obs_buf) {
-      const int g = static_cast<int>(o.image_index);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const int g = static_cast<int>(store.obs_image_index(obs_id));
       if (all_image_set.count(g)) {
         ++visible_in_ba;
         if (variable_set.count(g))
@@ -2365,7 +2438,19 @@ static bool build_ba_input_colmap_local(
     if (pt_idx < 0)
       continue;
     obs_buf.clear();
-    store.get_track_observations(track_id, &obs_buf);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    obs_buf.reserve(track_obs_ids.size());
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store.obs_image_index(obs_id);
+      o.feature_id = store.obs_feature_id(obs_id);
+      o.u = store.obs_u(obs_id);
+      o.v = store.obs_v(obs_id);
+      o.scale = store.obs_scale(obs_id);
+      obs_buf.push_back(o);
+    }
     float tx, ty, tz;
     store.get_track_xyz(track_id, &tx, &ty, &tz);
     const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty), static_cast<double>(tz));
@@ -2385,8 +2470,13 @@ static bool build_ba_input_colmap_local(
     ++tracks_sampled;
     for (const auto& c : selected_obs) {
       const double scale = (c.obs.scale > 1e-6f) ? static_cast<double>(c.obs.scale) : 1.0;
-      ba.observations.push_back({c.ba_image_index, pt_idx, static_cast<double>(c.obs.u),
-                                 static_cast<double>(c.obs.v), scale});
+      BAObservation bo;
+      bo.image_index = c.ba_image_index;
+      bo.point_index = pt_idx;
+      bo.u = static_cast<double>(c.obs.u);
+      bo.v = static_cast<double>(c.obs.v);
+      bo.std_sigma_obs_px = scale;
+      ba.observations.push_back(bo);
     }
   }
   if (tracks_sampled > 0 && obs_before_sampling > 0) {
@@ -2560,6 +2650,11 @@ bool run_global_ba(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                        poses_C, cameras_in_out);
   // Log current intrinsics so drift / optimisation progress is visible
   log_cameras(cameras_in_out ? *cameras_in_out : cameras, "run_global_ba");
+  // Epoch-gate: bump pose epoch so that the next full-scan retriangulation knows
+  // poses have changed and all stable tracks are stale.  Between two GBA calls,
+  // local BA does NOT bump the epoch, so periodic full scans can skip tracks
+  // that were successfully triangulated after the last GBA.
+  store->bump_global_pose_epoch();
   if (rmse_px_out)
     *rmse_px_out = ba_out.rmse_px;
   return true;
@@ -2723,7 +2818,19 @@ static int reject_outliers_local_colmap(
     if (!store->is_track_valid(track_id) || !store->track_has_triangulated_xyz(track_id))
       continue;
     obs_buf.clear();
-    store->get_track_observations(track_id, &obs_buf);
+    const auto& track_obs_ids = store->track_all_obs_ids_view(track_id);
+    obs_buf.reserve(track_obs_ids.size());
+    for (int obs_id : track_obs_ids) {
+      if (!store->is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store->obs_image_index(obs_id);
+      o.feature_id = store->obs_feature_id(obs_id);
+      o.u = store->obs_u(obs_id);
+      o.v = store->obs_v(obs_id);
+      o.scale = store->obs_scale(obs_id);
+      obs_buf.push_back(o);
+    }
     for (const auto& o : obs_buf) {
       const int g = static_cast<int>(o.image_index);
       if (!global_to_ba_local.count(g) || !batch_global_set.count(g))
@@ -3020,20 +3127,22 @@ static bool build_ba_input_batch_neighbor(
 
   // ── Per-batch-image top-K neighbors ──────────────────────────────────────
   std::set<int> constant_set;
-  std::vector<int> track_ids_buf;
   std::vector<Observation> obs_buf;
   for (int b : batch) {
     // Count shared triangulated tracks between b and each registered historical image.
     std::unordered_map<int, int> neighbor_score;
-    track_ids_buf.clear();
-    store.get_image_track_observations(b, &track_ids_buf, nullptr);
-    for (int tid : track_ids_buf) {
+    const auto& batch_obs_ids = store.image_all_obs_ids_view(b);
+    for (int obs_id : batch_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const int tid = store.obs_track_id(obs_id);
       if (!store.is_track_valid(tid) || !store.track_has_triangulated_xyz(tid))
         continue;
-      obs_buf.clear();
-      store.get_track_observations(tid, &obs_buf);
-      for (const auto& o : obs_buf) {
-        int g = static_cast<int>(o.image_index);
+      const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
+      for (int track_obs_id : track_obs_ids) {
+        if (!store.is_obs_valid(track_obs_id))
+          continue;
+        const int g = static_cast<int>(store.obs_image_index(track_obs_id));
         if (g >= 0 && g < n_images && registered[static_cast<size_t>(g)] && !batch_set.count(g))
           neighbor_score[g]++;
       }
@@ -3101,12 +3210,14 @@ static bool build_ba_input_batch_neighbor(
   auto try_add_track = [&](int track_id, bool fix_pt) -> bool {
     if (!store.is_track_valid(track_id) || !store.track_has_triangulated_xyz(track_id))
       return false;
-    obs_buf.clear();
-    store.get_track_observations(track_id, &obs_buf);
     int vis = 0;
-    for (const auto& o : obs_buf)
-      if (all_image_set.count(static_cast<int>(o.image_index)))
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      if (all_image_set.count(static_cast<int>(store.obs_image_index(obs_id))))
         ++vis;
+    }
     if (vis < 2)
       return false;
     const int pt_idx = static_cast<int>(point_index_to_track_id_out->size());
@@ -3128,22 +3239,27 @@ static bool build_ba_input_batch_neighbor(
   // Collect candidates from constant cameras' reverse index, then check batch visibility.
   std::unordered_set<int> old_candidates;
   for (int c : constant_set) {
-    track_ids_buf.clear();
-    store.get_image_track_observations(c, &track_ids_buf, nullptr);
-    for (int tid : track_ids_buf)
+    const auto& const_obs_ids = store.image_all_obs_ids_view(c);
+    for (int obs_id : const_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const int tid = store.obs_track_id(obs_id);
       if (!new_track_set.count(tid))
         old_candidates.insert(tid);
+    }
   }
   for (int tid : old_candidates) {
     // Must also be visible from at least one batch image to constrain the new camera pose.
-    obs_buf.clear();
-    store.get_track_observations(tid, &obs_buf);
     bool seen_from_batch = false;
-    for (const auto& o : obs_buf)
-      if (batch_set.count(static_cast<int>(o.image_index))) {
+    const auto& track_obs_ids = store.track_all_obs_ids_view(tid);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      if (batch_set.count(static_cast<int>(store.obs_image_index(obs_id)))) {
         seen_from_batch = true;
         break;
       }
+    }
     if (seen_from_batch)
       try_add_track(tid, true);
   }
@@ -3166,7 +3282,19 @@ static bool build_ba_input_batch_neighbor(
     if (pt_idx < 0)
       continue;
     obs_buf.clear();
-    store.get_track_observations(track_id, &obs_buf);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(track_id);
+    obs_buf.reserve(track_obs_ids.size());
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      Observation o;
+      o.image_index = store.obs_image_index(obs_id);
+      o.feature_id = store.obs_feature_id(obs_id);
+      o.u = store.obs_u(obs_id);
+      o.v = store.obs_v(obs_id);
+      o.scale = store.obs_scale(obs_id);
+      obs_buf.push_back(o);
+    }
     float tx, ty, tz;
     store.get_track_xyz(track_id, &tx, &ty, &tz);
     const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty), static_cast<double>(tz));
@@ -3371,16 +3499,16 @@ static void diagnose_track_structure(const TrackStore& store, const std::vector<
   // We use a flat upper-triangle map to avoid O(n^2) memory for large n
   std::unordered_map<uint64_t, int> covis_map;
 
-  std::vector<Observation> obs_buf;
   for (int t = 0; t < n_tracks; ++t) {
     if (!store.is_track_valid(t) || !store.track_has_triangulated_xyz(t))
       continue;
-    obs_buf.clear();
-    store.get_track_observations(t, &obs_buf);
     // Count only registered images
     std::vector<int> reg_imgs;
-    for (const auto& o : obs_buf) {
-      const int im = static_cast<int>(o.image_index);
+    const auto& track_obs_ids = store.track_all_obs_ids_view(t);
+    for (int obs_id : track_obs_ids) {
+      if (!store.is_obs_valid(obs_id))
+        continue;
+      const int im = static_cast<int>(store.obs_image_index(obs_id));
       if (im >= 0 && im < n_images && registered[static_cast<size_t>(im)])
         reg_imgs.push_back(im);
     }
@@ -4899,15 +5027,16 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         // Expensive deep diagnostics are only enabled at verbose level.
         std::vector<int> match_3d2d(static_cast<size_t>(n_total), 0);
         const int n_tracks = static_cast<int>(store_out->num_tracks());
-        std::vector<Observation> obs;
         for (int t = 0; t < n_tracks; ++t) {
           if (!store_out->is_track_valid(t) || !store_out->track_has_triangulated_xyz(t))
             continue;
-          obs.clear();
-          store_out->get_track_observations(t, &obs);
-          for (const auto& o : obs) {
-            if (static_cast<int>(o.image_index) < n_total)
-              match_3d2d[o.image_index]++;
+          const auto& track_obs_ids = store_out->track_all_obs_ids_view(t);
+          for (int obs_id : track_obs_ids) {
+            if (!store_out->is_obs_valid(obs_id))
+              continue;
+            const int image_index = static_cast<int>(store_out->obs_image_index(obs_id));
+            if (image_index >= 0 && image_index < n_total)
+              match_3d2d[static_cast<size_t>(image_index)]++;
           }
         }
         VLOG(1) << "[unregistered_diag] verbose pair-wise diagnostics:";
