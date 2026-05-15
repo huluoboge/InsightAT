@@ -4612,6 +4612,22 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   // looser commit_reproj_px (16 px default), causing tug-of-war.
   // kSkipFromBA track refinement (fixed-pose Ceres) is performed internally by
   // run_ba_with_outlier_detection; calling it again here is redundant.
+// ── Post-BA cleanup ───────────────────────────────────────────────────────
+  // No kFullScan retriangulation here: final BA already rejected outliers at a tight threshold
+  // (~4 px); a kFullScan pass would attempt to re-triangulate those same cleared tracks at a
+  // looser commit_reproj_px (16 px default), causing tug-of-war.  Instead we only:
+  //   (a) refine kSkipFromBA track positions with fixed-pose Ceres (they never entered BA),
+  //   (b) apply the same strict outlier rejection to any newly refined points.
+  if (opts.global_ba.ba_fixed_pose_optimize_skipped &&
+      (opts.global_ba.ba_grid_subset || opts.global_ba.skip_2degree_tracks)) {
+    double skip_rmse = 0.0;
+    retri_skipped_tracks_fixed_pose(store_out, *poses_R_out, *poses_C_out, *registered_out,
+                                    image_to_camera_index, *cameras,
+                                    opts.global_ba.ba_fixed_pose_max_iterations, &skip_rmse,
+                                    opts.global_ba.solver_overrides.num_threads);
+    LOG(INFO) << "Post-final fixed-pose BA (skipped tracks): RMSE=" << skip_rmse << " px";
+  }
+
   {
     const double strict_thr = opts.outlier.threshold_px;
     int rej = 0;
