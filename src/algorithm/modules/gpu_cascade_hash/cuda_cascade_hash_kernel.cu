@@ -10,7 +10,7 @@ namespace gpu_cascade_hash {
 namespace {
 
 constexpr int kDescriptorDim = 128;
-constexpr int kCompressedWords = 2;
+constexpr int kCompressedWords = 2;  // Number of 64-bit words per compressed hash
 // Slightly above candidate_top_max default (10) for safe headroom.
 // Keeping this tight is critical for GPU occupancy: each extra slot costs
 // 2 registers per thread (cand_idx + cand_ham) and reduces active warps

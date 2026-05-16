@@ -1,22 +1,26 @@
 #!/bin/bash
-# Build an InsightAT AppImage. All scratch output goes under build-appimage/ (gitignored via build-*).
+# Generic InsightAT AppImage builder script.
+# This script reads configuration from environment variables and builds the AppImage.
+#
+# Required env:
+#   INSIGHTAT_BUILD_DIR  — CMake build directory containing compiled binaries
+#   CUDA_LIBS_DIR        — CUDA libraries directory (e.g., /usr/local/cuda-11.8/lib64)
 #
 # Optional env:
-#   INSIGHTAT_BUILD_DIR  — CMake build directory (default: build-ceres-11.8)
 #   INSIGHTAT_QMAKE     — path to `qmake` for the *same* Qt that linked at_bundler_viewer (default: from CMakeCache Qt5Core_QMAKE_EXECUTABLE, else first of qmake-qt5, qmake on PATH). Required for consistent Qt in the AppImage; wrong/missing QMAKE can cause "Cannot mix incompatible Qt library" at runtime.
 #   BUNDLE_PYTHON=1|0   — copy host python3 + stdlib into AppDir (default: 1). Set 0 to skip (smaller image).
-#   CUDA_LIBS_DIR        — e.g. /usr/local/cuda-11.8/lib64
+#   VERSION             — Version string for the AppImage (default: 0.1.0)
+#   APPIMAGE_OUT_DIR    — Output directory for the AppImage (default: build-appimage)
+#   BUNDLE_PYTHON_DIST  — Copy dist-packages (default: 0)
 #
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT_DIR="${REPO_ROOT}/build-appimage"
-TOOLS_DIR="${OUT_DIR}/.tools"
-APPDIR="${OUT_DIR}/InsightAT.AppDir"
+APPIMAGE_OUT_DIR="${APPIMAGE_OUT_DIR:-${REPO_ROOT}/build-appimage}"
+TOOLS_DIR="${APPIMAGE_OUT_DIR}/.tools"
+APPDIR="${APPIMAGE_OUT_DIR}/InsightAT.AppDir"
 APPNAME=InsightAT
-VERSION="${INSIGHTAT_VERSION:-0.1.0}"
-INSIGHTAT_BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build-ceres-11.8}"
-CUDA_LIBS_DIR="${CUDA_LIBS_DIR:-/usr/local/cuda-11.8/lib64}"
+VERSION="${VERSION:-0.1.0}"
 DESKTOP_SRC="${REPO_ROOT}/packaging/appimage/insightat.desktop"
 ICON_SRC="${REPO_ROOT}/packaging/appimage/app.png"
 BUNDLE_PYTHON="${BUNDLE_PYTHON:-1}"
@@ -31,6 +35,22 @@ if [[ ! -f "$DESKTOP_SRC" ]]; then
   echo "Missing $DESKTOP_SRC"
   exit 1
 fi
+
+if [[ -z "${INSIGHTAT_BUILD_DIR:-}" ]]; then
+  echo "ERROR: INSIGHTAT_BUILD_DIR environment variable is not set"
+  echo "Please source a configuration script or set this variable directly."
+  exit 1
+fi
+
+if [[ -z "${CUDA_LIBS_DIR:-}" ]]; then
+  echo "ERROR: CUDA_LIBS_DIR environment variable is not set"
+  echo "Please source a configuration script or set this variable directly."
+  exit 1
+fi
+
+echo "Building AppImage with:"
+echo "  INSIGHTAT_BUILD_DIR: $INSIGHTAT_BUILD_DIR"
+echo "  CUDA_LIBS_DIR: $CUDA_LIBS_DIR"
 
 rm -rf "$APPDIR"
 mkdir -p \
@@ -141,7 +161,7 @@ cp -a "$DESKTOP_SRC" "$APPDIR/usr/share/applications/insightat.desktop"
 cp -a "$DESKTOP_SRC" "$APPDIR/${APPNAME}.desktop"
 
 # AppRun (source outside AppDir for linuxdeploy --custom-apprun; then copy into AppDir)
-APPRUN_SRC="${OUT_DIR}/insightat_AppRun.in"
+APPRUN_SRC="${APPIMAGE_OUT_DIR}/insightat_AppRun.in"
 cat > "$APPRUN_SRC" <<'EOF'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "${0}")")"
@@ -219,7 +239,7 @@ else
 fi
 
 (
-  cd "$OUT_DIR"
+  cd "$APPIMAGE_OUT_DIR"
   export ARCH=x86_64
   ./.tools/linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
     --appdir "$APPDIR" \
@@ -231,12 +251,12 @@ fi
     --output appimage
 )
 
-OUT_IMG=$(ls -1t "${OUT_DIR}/"*.AppImage 2>/dev/null | head -1 || true)
+OUT_IMG=$(ls -1t "${APPIMAGE_OUT_DIR}/"*.AppImage 2>/dev/null | head -1 || true)
 if [[ -n "$OUT_IMG" ]]; then
   echo "AppImage: $OUT_IMG"
   echo "No-arg default:  $OUT_IMG  → runs isat_tools (list CLIs in this image)"
 else
-  echo "Expected an *.AppImage under ${OUT_DIR}/"
+  echo "Expected an *.AppImage under ${APPIMAGE_OUT_DIR}/"
   exit 1
 fi
 

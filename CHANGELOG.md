@@ -7,6 +7,24 @@ For detailed implementation notes, see [`doc/dev-notes/CHANGELOG.md`](doc/dev-no
 
 See [`doc/dev-notes/CHANGELOG.md`](doc/dev-notes/CHANGELOG.md).
 
+## 0.2.2 - 2026-05-16
+
+### 中文（要点）
+
+- 修复了多项 BUG：IDC 序列化问题、GPU 内存泄漏、几何验证边界条件等。
+- 大幅优化 I/O 性能：IDC 文件读写并行化、特征点批量加载、异步磁盘写入。
+- 整体效率提升：GPU 调度优化、内存重用策略、特征匹配缓存改进。
+- 改进 CLI 工具的错误提示和日志输出。
+- 增强 Windows CUDA 12.8 构建稳定性。
+
+### English (highlights)
+
+- Fixed critical bugs: IDC serialization issues, GPU memory leaks, edge cases in geometric verification.
+- Major I/O performance improvements: parallelized IDC file I/O, batch feature loading, asynchronous disk writes.
+- Overall efficiency gains: GPU scheduling optimization, memory reuse strategies, enhanced feature matching cache.
+- Improved CLI error messages and logging verbosity.
+- Enhanced Windows CUDA 12.8 build stability.
+
 ## 0.2.1-rc.1 - 2026-05-08
 
 ### English (pre-release highlights)

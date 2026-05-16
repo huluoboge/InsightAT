@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 WORKDIR /workspace/insightat
 
 # Ceres (apt) + SuiteSparse/METIS/TBB: required by the project; Boost: PopSift
-# PopSift (third_party) requires CMake >= 3.24; jammy’s cmake is 3.22 — install a newer one via pip.
+# PopSift (third_party) requires CMake >= 3.24; jammy's cmake is 3.22 — install a newer one via pip.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
@@ -49,7 +49,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 # Broad GPU coverage; adjust for your deployment (e.g. only 80;86 for datacenter A100s)
-ARG CMAKE_CUDA_ARCHITECTURES="60;70;75;80;86;89-virtual"
+# Updated to match compile-12.8-1060.sh script for consistency
+ARG CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89;90-virtual"
 RUN cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES}" \

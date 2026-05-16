@@ -10,8 +10,10 @@
 
 #include <Eigen/Dense>
 #include <algorithm>
+#include <chrono>  // 添加chrono头文件以支持时间测量
 #include <cmath>
 #include <glog/logging.h>
+#include <omp.h>   // 添加OpenMP头文件
 #include <vector>
 
 namespace insight {
