@@ -8,7 +8,8 @@
  *      - isat_match (--match-impl gpu)
  *      - isat_cpu_cascade_hashing_match (--match-impl cascade)
  *      - isat_gpu_cascade_hashing_match (default, --match-impl cascade-gpu)
- *   3. Run isat_geo: F RANSAC with -t 16 px, --min-inliers 6 (aligned with isat_sfm defaults;
+ *   3. Run geometry verification: prefer isat_geo_cuda; fallback to isat_geo --backend gpu-gl.
+ *      Uses F RANSAC with -t 16 px, --min-inliers 6 (aligned with isat_sfm defaults;
  *      pairs.json / neighbour graph use F_ok only — downstream SfM trusts F)
  *   4. Read geo output pairs.json, count neighbours per image
  *   5. Images with < K neighbours (default 5): add exhaustive pairs to all other images
@@ -18,7 +19,7 @@
  *   isat_retrieval_match -l images_all.json -f feat_retrieval/ -w retrieval_work/ -o pairs.json
  *
  * The tool invokes sibling matchers (isat_match, isat_cpu_cascade_hashing_match, or
- * isat_gpu_cascade_hashing_match) and isat_geo as subprocesses.
+ * isat_gpu_cascade_hashing_match) and geometry tools (isat_geo_cuda / isat_geo) as subprocesses.
  */
 
 #include <algorithm>
@@ -191,7 +192,7 @@ int main(int argc, char* argv[]) {
   // Cascade (CPU or GPU): shared tuning; GPU-only where noted.
   int cascade_sample_images = 256;
   int cascade_image_block_size = 1000;
-  int cascade_min_output_matches = 0;
+  int cascade_min_output_matches = 16;
   std::string cascade_cpu_preset = "modern";
   int cascade_gpu_device = 0;
 
@@ -214,7 +215,7 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, cascade_image_block_size, "cascade-image-block-size")
               .doc("For cascade / cascade-gpu: max unique images per block (default: 1000)"));
   cmd.add(make_option(0, cascade_min_output_matches, "cascade-min-output-matches")
-              .doc("For cascade / cascade-gpu: skip writing .isat_match if matches below this (default: 0 for retrieval)"));
+              .doc("For cascade / cascade-gpu: skip writing .isat_match if matches below this threshold (default: 16)"));
   cmd.add(make_option(0, cascade_cpu_preset, "cascade-cpu-preset")
               .doc("For --match-impl=cascade: legacy or modern (default: modern)"));
   cmd.add(make_option(0, cascade_gpu_device, "cascade-gpu-device")
@@ -269,8 +270,15 @@ int main(int argc, char* argv[]) {
   fs::path match_dir = wp / "match";
   fs::path geo_dir   = wp / "geo";
   fs::path exhaustive_pairs = wp / "exhaustive_pairs.json";
+  fs::path matched_pairs = wp / "matched_pairs.json";
   fs::create_directories(match_dir);
   fs::create_directories(geo_dir);
+
+  LOG(INFO) << "Retrieval pair JSONs:";
+  LOG(INFO) << "  candidate_pairs : " << exhaustive_pairs.string();
+  LOG(INFO) << "  matched_pairs   : " << matched_pairs.string();
+  LOG(INFO) << "  verified_pairs  : " << (geo_dir / "pairs.json").string();
+  LOG(INFO) << "  final_pairs     : " << output_path;
 
   // ── Step 1: Generate exhaustive pairs ────────────────────────────────────
   LOG(INFO) << "=== Step 1/3: Generate exhaustive pairs ===";
@@ -287,6 +295,8 @@ int main(int argc, char* argv[]) {
                 feat_dir,
                 "-o",
                 match_dir.string(),
+                "--output-pairs-json",
+                matched_pairs.string(),
                 "--match-backend",
                 match_backend,
                 "--max-features",
@@ -302,6 +312,8 @@ int main(int argc, char* argv[]) {
                 feat_dir,
                 "-o",
                 match_dir.string(),
+                "--output-pairs-json",
+                matched_pairs.string(),
                 "-j",
                 std::to_string(match_threads),
                 "--sample-images",
@@ -321,6 +333,8 @@ int main(int argc, char* argv[]) {
                 feat_dir,
                 "-o",
                 match_dir.string(),
+                "--output-pairs-json",
+                matched_pairs.string(),
                 "-j",
                 std::to_string(match_threads),
                 "--cuda-device",
@@ -332,31 +346,60 @@ int main(int argc, char* argv[]) {
                 "--min-output-matches",
                 std::to_string(cascade_min_output_matches)});
   }
-
   // ── Step 3: Geometric verification (F; pairs.json = F_ok only) ────────────
   LOG(INFO) << "=== Step 3/3: Geometric verification (F, -t=" << kRetrievalGeoThreshFPx
             << "px, min-inliers=" << kRetrievalGeoMinInliers << ") ===";
-  run_or_die("geo",
-             {tool_path("isat_geo"),
-              "-i",
-              exhaustive_pairs.string(),
-              "-m",
-              match_dir.string(),
-              "-o",
-              geo_dir.string(),
-              "--image-list",
-              image_list,
-              "-t",
-              kRetrievalGeoThreshFPx,
-              "--min-inliers",
-              std::to_string(kRetrievalGeoMinInliers),
-              "--backend",
-              "gpu"});
+  const fs::path geo_cuda_bin = fs::path(g_bin_dir) / "isat_geo_cuda";
+  if (fs::exists(geo_cuda_bin)) {
+    LOG(INFO) << "Geometry backend resolved: cuda (isat_geo_cuda)";
+    run_or_die("geo",
+               {tool_path("isat_geo_cuda"),
+                "-i",
+                matched_pairs.string(),
+                "-m",
+                match_dir.string(),
+                "-o",
+                geo_dir.string(),
+                "-l",
+                image_list,
+                "-t",
+                kRetrievalGeoThreshFPx,
+                "--min-inliers",
+                std::to_string(kRetrievalGeoMinInliers),
+                "--vis"});
+  } else {
+    LOG(WARNING) << "Geometry backend downgrade: requested cuda, but isat_geo_cuda not found at "
+                 << geo_cuda_bin.string() << "; falling back to isat_geo --backend gpu-gl";
+    LOG(INFO) << "Geometry backend resolved: gpu-gl (isat_geo)";
+    run_or_die("geo",
+               {tool_path("isat_geo"),
+                "-i",
+                matched_pairs.string(),
+                "-m",
+                match_dir.string(),
+                "-o",
+                geo_dir.string(),
+                "--image-list",
+                image_list,
+                "-t",
+                kRetrievalGeoThreshFPx,
+                "--min-inliers",
+                std::to_string(kRetrievalGeoMinInliers),
+                "--backend",
+                "gpu-gl",
+                "--vis"});
+  }
 
   // ── Analyse results ──────────────────────────────────────────────────────
   std::set<std::pair<int,int>> verified_pairs;
   std::map<int,int> neighbour_count;
   read_geo_pairs((geo_dir / "pairs.json").string(), verified_pairs, neighbour_count, n_images);
+
+  LOG(INFO) << "Retrieval pair flow complete:";
+  LOG(INFO) << "  candidate_pairs : " << exhaustive_pairs.string();
+  LOG(INFO) << "  matched_pairs   : " << matched_pairs.string();
+  LOG(INFO) << "  verified_pairs  : " << (geo_dir / "pairs.json").string();
+  LOG(INFO) << "  final_pairs     : " << output_path;
 
   LOG(INFO) << "Verified pairs: " << verified_pairs.size() << " / " << n_exhaustive;
 

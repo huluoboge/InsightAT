@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,7 +21,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 static int s_num_iter = 2000;
-static int s_local_size = 256;  // kept for API compatibility; CUDA uses kCudaBlock=128
 static int s_verbose = 0;
 static int s_solver = 1;
 static int s_cuda_device = 0;
@@ -45,16 +45,13 @@ static constexpr int kIdxMaxK = 8;  // F/E use 8; H uses 4 — allocate idx row 
 
 // ── Batch path (separate buffers from single-pair) ───────────────────────────
 static float4* s_db_matches = nullptr;
-static int* s_db_idx = nullptr;
 static float* s_db_res = nullptr;
 static int* s_db_match_off = nullptr;
-static int* s_db_idx_off = nullptr;
 static int* s_db_res_off = nullptr;
 static int* s_db_pair_n = nullptr;
 static float* s_db_thresh = nullptr;
 static int* s_db_best = nullptr;
 static size_t s_db_cap_nfloat4 = 0;
-static size_t s_db_cap_idx = 0;
 static size_t s_db_cap_res = 0;
 static bool s_db_aux_ok = false;
 
@@ -571,18 +568,44 @@ __global__ void find_best_ransac_iter_kernel(const float* __restrict__ results, 
 
 // ════════════════════════════════════════════════════════════════════════════
 // Batch RANSAC: one block per image pair (blockIdx.x == pair id)
+//
+// In-kernel LCG random sampling: eliminates CPU index pre-generation and the
+// enormous H2D transfer (P × iter × K ints).  Each thread runs its own LCG
+// seeded by (pair, tid, global_seed) — statistically independent streams.
+// Unique-sample guarantee: rejection loop; for K≤8, n≥K the expected extra
+// draws per sample are K/n ≈ 4% overhead at n=200.  Inner loop has zero
+// divergence after the first accepted draw because samp[] fits registers.
 // ════════════════════════════════════════════════════════════════════════════
+
+__device__ __forceinline__ uint32_t lcg_next(uint32_t& state) {
+  // Numerical Recipes LCG (Knuth vol.2): full 32-bit cycle, good randomness
+  state = state * 1664525u + 1013904223u;
+  return state;
+}
+
+// Sample K unique indices from [0, n) using per-thread LCG (rejection sampling).
+__device__ __forceinline__ void sample_unique_k(uint32_t& rng, int n, int K, int samp[8]) {
+  for (int i = 0; i < K; ++i) {
+    int idx;
+    do {
+      idx = (int)(lcg_next(rng) % (uint32_t)n);
+      bool dup = false;
+      for (int j = 0; j < i; ++j) dup |= (samp[j] == idx);
+      if (!dup) break;
+    } while (true);
+    samp[i] = idx;
+  }
+}
 
 __launch_bounds__(128, 4)
 __global__ void geo_ransac_batch_kernel(const float4* __restrict__ all_matches,
                                         const int* __restrict__ match_off,
                                         const int* __restrict__ pair_n,
-                                        const int* __restrict__ idx_off,
-                                        const int* __restrict__ indices,
                                         float* __restrict__ all_results,
                                         const int* __restrict__ res_off,
                                         const float* __restrict__ pair_thresh_norm, int u_model,
-                                        int u_solver, int num_iter, int K, int P) {
+                                        int u_solver, int num_iter, int K, int P,
+                                        uint32_t seed) {
   const int pair = blockIdx.x;
   if (pair >= P)
     return;
@@ -590,15 +613,19 @@ __global__ void geo_ransac_batch_kernel(const float4* __restrict__ all_matches,
   if (n < K)
     return;
   const float4* matches = all_matches + match_off[pair];
-  const int ix0 = idx_off[pair];
   float* results = all_results + res_off[pair];
   const float u_thresh = pair_thresh_norm[pair];
 
   for (int tid = threadIdx.x; tid < num_iter; tid += blockDim.x) {
+    // Per-iteration unique LCG state: mix pair, tid, and global seed
+    uint32_t rng = (uint32_t)pair * 2654435761u ^ (uint32_t)tid * 40503u ^ seed;
+    lcg_next(rng);  // warm up one cycle
+
     float2 p[8], q[8];
+    int samp[8];
+    sample_unique_k(rng, n, K, samp);
     for (int i = 0; i < K; i++) {
-      int idx = indices[ix0 + tid * K + i];
-      float4 m = matches[idx];
+      float4 m = matches[samp[i]];
       p[i] = make_float2(m.x, m.y);
       q[i] = make_float2(m.z, m.w);
     }
@@ -752,14 +779,10 @@ static bool ensure_buffers(int n, int iter, int K) {
 static void free_batch_db(void) {
   cudaFree(s_db_matches);
   s_db_matches = nullptr;
-  cudaFree(s_db_idx);
-  s_db_idx = nullptr;
   cudaFree(s_db_res);
   s_db_res = nullptr;
   cudaFree(s_db_match_off);
   s_db_match_off = nullptr;
-  cudaFree(s_db_idx_off);
-  s_db_idx_off = nullptr;
   cudaFree(s_db_res_off);
   s_db_res_off = nullptr;
   cudaFree(s_db_pair_n);
@@ -768,7 +791,7 @@ static void free_batch_db(void) {
   s_db_thresh = nullptr;
   cudaFree(s_db_best);
   s_db_best = nullptr;
-  s_db_cap_nfloat4 = s_db_cap_idx = s_db_cap_res = 0;
+  s_db_cap_nfloat4 = s_db_cap_res = 0;
   s_db_aux_ok = false;
 }
 
@@ -777,8 +800,6 @@ static bool ensure_db_aux_fixed(void) {
     return true;
   const int Pm = INSIGHTAT_CUDA_GEO_BATCH_MAX_PAIRS;
   if (cudaMalloc(reinterpret_cast<void**>(&s_db_match_off), static_cast<size_t>(Pm + 1) * sizeof(int)) !=
-          cudaSuccess ||
-      cudaMalloc(reinterpret_cast<void**>(&s_db_idx_off), static_cast<size_t>(Pm + 1) * sizeof(int)) !=
           cudaSuccess ||
       cudaMalloc(reinterpret_cast<void**>(&s_db_res_off), static_cast<size_t>(Pm + 1) * sizeof(int)) !=
           cudaSuccess ||
@@ -795,7 +816,7 @@ static bool ensure_db_aux_fixed(void) {
   return true;
 }
 
-static bool ensure_db_grow(size_t sum_n_float4, size_t total_idx, size_t total_res_floats) {
+static bool ensure_db_grow(size_t sum_n_float4, size_t total_res_floats) {
   if (sum_n_float4 > s_db_cap_nfloat4) {
     cudaFree(s_db_matches);
     s_db_matches = nullptr;
@@ -804,14 +825,6 @@ static bool ensure_db_grow(size_t sum_n_float4, size_t total_idx, size_t total_r
             cudaSuccess)
       return false;
     s_db_cap_nfloat4 = sum_n_float4;
-  }
-  if (total_idx > s_db_cap_idx) {
-    cudaFree(s_db_idx);
-    s_db_idx = nullptr;
-    if (total_idx == 0 ||
-        cudaMalloc(reinterpret_cast<void**>(&s_db_idx), total_idx * sizeof(int)) != cudaSuccess)
-      return false;
-    s_db_cap_idx = total_idx;
   }
   if (total_res_floats > s_db_cap_res) {
     cudaFree(s_db_res);
@@ -843,33 +856,27 @@ static int run_ransac_cuda_batch_int(int model, int K, const CudaGeoBatchItem* i
 
   std::vector<PairNormT> norms(static_cast<size_t>(P));
   std::vector<int> h_match_off(static_cast<size_t>(P + 1));
-  std::vector<int> h_idx_off(static_cast<size_t>(P + 1));
   std::vector<int> h_res_off(static_cast<size_t>(P + 1));
   std::vector<int> h_pair_n(static_cast<size_t>(P));
   std::vector<float> h_thresh(static_cast<size_t>(P));
 
   h_match_off[0] = 0;
-  h_idx_off[0] = 0;
   h_res_off[0] = 0;
   int sum_n = 0;
   for (int b = 0; b < P; ++b) {
     h_pair_n[static_cast<size_t>(b)] = items[b].n;
     sum_n += items[b].n;
     h_match_off[static_cast<size_t>(b + 1)] = sum_n;
-    h_idx_off[static_cast<size_t>(b + 1)] =
-        h_idx_off[static_cast<size_t>(b)] + s_num_iter * K;
     h_res_off[static_cast<size_t>(b + 1)] =
         h_res_off[static_cast<size_t>(b)] + s_num_iter * 10;
   }
 
-  const size_t total_idx = static_cast<size_t>(h_idx_off[static_cast<size_t>(P)]);
   const size_t total_res = static_cast<size_t>(h_res_off[static_cast<size_t>(P)]);
 
-  if (!ensure_db_grow(static_cast<size_t>(sum_n), total_idx, total_res))
+  if (!ensure_db_grow(static_cast<size_t>(sum_n), total_res))
     return -1;
 
   std::vector<float4> h_pack_m(static_cast<size_t>(sum_n));
-  std::vector<int> h_pack_idx(total_idx);
 
   for (int b = 0; b < P; ++b) {
     PairNormT& pn = norms[static_cast<size_t>(b)];
@@ -887,27 +894,11 @@ static int run_ransac_cuda_batch_int(int model, int K, const CudaGeoBatchItem* i
       h_pack_m[static_cast<size_t>(mo + i)] = make_float4(m.x1, m.y1, m.x2, m.y2);
     }
 
-    const int i0 = h_idx_off[static_cast<size_t>(b)];
-    std::vector<int> pool(static_cast<size_t>(items[b].n));
-    for (int i = 0; i < items[b].n; ++i)
-      pool[static_cast<size_t>(i)] = i;
-    for (int it = 0; it < s_num_iter; ++it) {
-      const int base = i0 + it * K;
-      for (int kk = 0; kk < K; ++kk) {
-        const int r = kk + rand() % (items[b].n - kk);
-        std::swap(pool[static_cast<size_t>(kk)], pool[static_cast<size_t>(r)]);
-        h_pack_idx[static_cast<size_t>(base + kk)] = pool[static_cast<size_t>(kk)];
-      }
-    }
   }
 
   cudaMemcpyAsync(s_db_matches, h_pack_m.data(), h_pack_m.size() * sizeof(float4),
                   cudaMemcpyHostToDevice, s_stream);
-  cudaMemcpyAsync(s_db_idx, h_pack_idx.data(), h_pack_idx.size() * sizeof(int),
-                  cudaMemcpyHostToDevice, s_stream);
   cudaMemcpyAsync(s_db_match_off, h_match_off.data(), static_cast<size_t>(P + 1) * sizeof(int),
-                  cudaMemcpyHostToDevice, s_stream);
-  cudaMemcpyAsync(s_db_idx_off, h_idx_off.data(), static_cast<size_t>(P + 1) * sizeof(int),
                   cudaMemcpyHostToDevice, s_stream);
   cudaMemcpyAsync(s_db_res_off, h_res_off.data(), static_cast<size_t>(P + 1) * sizeof(int),
                   cudaMemcpyHostToDevice, s_stream);
@@ -917,8 +908,8 @@ static int run_ransac_cuda_batch_int(int model, int K, const CudaGeoBatchItem* i
                   cudaMemcpyHostToDevice, s_stream);
 
   geo_ransac_batch_kernel<<<P, 128, 0, s_stream>>>(
-      s_db_matches, s_db_match_off, s_db_pair_n, s_db_idx_off, s_db_idx, s_db_res, s_db_res_off,
-      s_db_thresh, model, s_solver, s_num_iter, K, P);
+      s_db_matches, s_db_match_off, s_db_pair_n, s_db_res, s_db_res_off,
+      s_db_thresh, model, s_solver, s_num_iter, K, P, (uint32_t)rand());
   find_best_ransac_batch_kernel<<<P, 256, 0, s_stream>>>(s_db_res, s_db_res_off, s_num_iter,
                                                            s_db_best, P);
 
@@ -1044,7 +1035,7 @@ int cuda_geo_init(const GeoRansacConfig* cfg) {
     if (cfg->num_iterations > 0)
       s_num_iter = cfg->num_iterations;
     if (cfg->local_size_x > 0)
-      s_local_size = cfg->local_size_x;
+      (void)cfg->local_size_x;
   }
 
   if (cudaStreamCreate(&s_stream) != cudaSuccess) {
@@ -1145,4 +1136,328 @@ int cuda_ransac_H_batch(const CudaGeoBatchItem* items, int P, float* mat_out, in
   if (!s_inited)
     return -1;
   return run_ransac_cuda_batch_int(0, 4, items, P, mat_out, inliers_out);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E decomposition + triangulation: full GPU pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Decompose E matrix → best (R, t) via cheirality test. One block per pair, 32 threads/block.
+// Thread 0 computes SVD, builds 4 (R,t) candidates; all 32 threads vote on positive-depth count.
+//
+// 4 candidates:
+//   c=0: R = U*W*Vt,   t = +U[:,2]
+//   c=1: R = U*W*Vt,   t = -U[:,2]
+//   c=2: R = U*Wt*Vt,  t = +U[:,2]
+//   c=3: R = U*Wt*Vt,  t = -U[:,2]
+// where W = [[0,-1,0],[1,0,0],[0,0,1]].
+__launch_bounds__(32, 8)
+__global__ void decompose_E_batch_kernel(const float* __restrict__ E_mats,
+                                          const float4* __restrict__ all_pts,
+                                          const int* __restrict__ pair_off,
+                                          const int* __restrict__ pair_n,
+                                          const uint8_t* __restrict__ masks,
+                                          float* __restrict__ R_out, float* __restrict__ t_out,
+                                          int* __restrict__ cheir_out, int B) {
+  const int b = blockIdx.x;
+  if (b >= B)
+    return;
+  const int tid = threadIdx.x; // 0..31
+
+  __shared__ float sm_R[2][9]; // sm_R[0]=R1=U*W*Vt, sm_R[1]=R3=U*Wt*Vt
+  __shared__ float sm_t[3];   // +U[:,2]; negated per candidate
+  __shared__ int sm_cnt[4];   // positive-depth counter for each candidate
+
+  if (tid < 4)
+    sm_cnt[tid] = 0;
+  __syncthreads();
+
+  // Thread 0: SVD of E → build all 4 rotation candidates
+  if (tid == 0) {
+    float E[9], U[9], S[3], Vt[9];
+    for (int i = 0; i < 9; i++)
+      E[i] = E_mats[b * 9 + i];
+    svd3x3(E, U, S, Vt);
+
+    // t = U[:,2]  (col 2 of U: U[2], U[5], U[8])
+    sm_t[0] = U[2];
+    sm_t[1] = U[5];
+    sm_t[2] = U[8];
+
+    // W  = [[0,-1,0],[1,0,0],[0,0,1]]   → (UW)[i,k]: k=0→U[i,1], k=1→-U[i,0], k=2→U[i,2]
+    // Wt = [[0,1,0],[-1,0,0],[0,0,1]]  → (UWt)[i,k]: k=0→-U[i,1], k=1→U[i,0], k=2→U[i,2]
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        // R1 = U*W*Vt
+        sm_R[0][i * 3 + j] =
+            U[i * 3 + 1] * Vt[0 * 3 + j] - U[i * 3 + 0] * Vt[1 * 3 + j] + U[i * 3 + 2] * Vt[2 * 3 + j];
+        // R3 = U*Wt*Vt
+        sm_R[1][i * 3 + j] =
+            -U[i * 3 + 1] * Vt[0 * 3 + j] + U[i * 3 + 0] * Vt[1 * 3 + j] + U[i * 3 + 2] * Vt[2 * 3 + j];
+      }
+    }
+  }
+  __syncthreads();
+
+  // Threads 0-7 → c=0, 8-15 → c=1, 16-23 → c=2, 24-31 → c=3
+  const int c = tid / 8;
+  const int local_t = tid % 8;
+  const float tsign = (c == 1 || c == 3) ? -1.0f : 1.0f;
+  const float tx = tsign * sm_t[0];
+  const float ty = tsign * sm_t[1];
+  const float tz = tsign * sm_t[2];
+  const float* R = sm_R[c / 2]; // R1 for c=0,1; R3 for c=2,3
+
+  const int off = pair_off[b];
+  const int n = pair_n[b];
+  const int max_sample = min(n, 64); // sample up to 64 points for cheirality
+
+  int local_cnt = 0;
+  for (int k = local_t; k < max_sample; k += 8) {
+    if (!masks[off + k])
+      continue; // skip non-inliers
+    float4 pt = all_pts[off + k];
+    float x1 = pt.x, y1 = pt.y, x2 = pt.z, y2 = pt.w;
+
+    // Closed-form triangulation for P1=[I|0], P2=[R|t]:
+    //   d2  = R[2,0]*x1 + R[2,1]*y1 + R[2,2]
+    //   a   = x2*d2 - (R[0,0]*x1 + R[0,1]*y1 + R[0,2])
+    //   b   = y2*d2 - (R[1,0]*x1 + R[1,1]*y1 + R[1,2])
+    //   Z   = (a*(tx - x2*tz) + b*(ty - y2*tz)) / (a*a + b*b)
+    //   Z2  = Z*d2 + tz      (depth in cam2)
+    //   valid: Z > 0 && Z2 > 0
+    float d2 = R[6] * x1 + R[7] * y1 + R[8];
+    float a = x2 * d2 - (R[0] * x1 + R[1] * y1 + R[2]);
+    float bv = y2 * d2 - (R[3] * x1 + R[4] * y1 + R[5]);
+    float denom = a * a + bv * bv;
+    if (denom < 1e-10f)
+      continue;
+    float Z = (a * (tx - x2 * tz) + bv * (ty - y2 * tz)) / denom;
+    float Z2 = Z * d2 + tz;
+    if (Z > 0.0f && Z2 > 0.0f)
+      local_cnt++;
+  }
+  atomicAdd(&sm_cnt[c], local_cnt);
+  __syncthreads();
+
+  if (tid == 0) {
+    // Pick candidate with most positive-depth inliers
+    int best_c = 0, best_n = sm_cnt[0];
+    for (int ci = 1; ci < 4; ci++) {
+      if (sm_cnt[ci] > best_n) {
+        best_n = sm_cnt[ci];
+        best_c = ci;
+      }
+    }
+    const float best_sign = (best_c == 1 || best_c == 3) ? -1.0f : 1.0f;
+    float* Rb = R_out + b * 9;
+    float* tb = t_out + b * 3;
+    const float* Rm = sm_R[best_c / 2];
+    for (int i = 0; i < 9; i++)
+      Rb[i] = Rm[i];
+    tb[0] = best_sign * sm_t[0];
+    tb[1] = best_sign * sm_t[1];
+    tb[2] = best_sign * sm_t[2];
+    cheir_out[b] = best_n;
+  }
+}
+
+// Triangulate all inlier points for B pairs.
+// Launch: <<<B, 256>>>. Each block strides over its pair's matches.
+// Non-inlier or degenerate points are written as (NaN, NaN, NaN).
+__launch_bounds__(256, 2)
+__global__ void triangulate_batch_kernel(const float* __restrict__ R_all,
+                                          const float* __restrict__ t_all,
+                                          const float4* __restrict__ all_pts,
+                                          const int* __restrict__ pair_off,
+                                          const uint8_t* __restrict__ masks,
+                                          float* __restrict__ X_out,
+                                          int* __restrict__ valid_out, int B) {
+  const int b = blockIdx.x;
+  if (b >= B)
+    return;
+  const int tid = threadIdx.x;
+
+  const float* R = R_all + b * 9;
+  const float* t = t_all + b * 3;
+  const int off = pair_off[b];
+  const int n = pair_off[b + 1] - pair_off[b];
+
+  __shared__ int sm_valid;
+  if (tid == 0)
+    sm_valid = 0;
+  __syncthreads();
+
+  static constexpr float kNaN = __builtin_nanf("0");
+  int local_valid = 0;
+
+  for (int i = tid; i < n; i += blockDim.x) {
+    const int gi = off + i;
+    float* Xp = X_out + gi * 3;
+    if (!masks[gi]) {
+      Xp[0] = Xp[1] = Xp[2] = kNaN;
+      continue;
+    }
+    float4 pt = all_pts[gi];
+    float x1 = pt.x, y1 = pt.y, x2 = pt.z, y2 = pt.w;
+
+    float d2 = R[6] * x1 + R[7] * y1 + R[8];
+    float a = x2 * d2 - (R[0] * x1 + R[1] * y1 + R[2]);
+    float bv = y2 * d2 - (R[3] * x1 + R[4] * y1 + R[5]);
+    float denom = a * a + bv * bv;
+    if (denom < 1e-10f || !isfinite(denom)) {
+      Xp[0] = Xp[1] = Xp[2] = kNaN;
+      continue;
+    }
+    float Z = (a * (t[0] - x2 * t[2]) + bv * (t[1] - y2 * t[2])) / denom;
+    float Z2 = Z * d2 + t[2];
+    if (Z > 0.0f && Z2 > 0.0f) {
+      Xp[0] = x1 * Z;
+      Xp[1] = y1 * Z;
+      Xp[2] = Z;
+      local_valid++;
+    } else {
+      Xp[0] = Xp[1] = Xp[2] = kNaN;
+    }
+  }
+
+  atomicAdd(&sm_valid, local_valid);
+  __syncthreads();
+  if (tid == 0)
+    valid_out[b] = sm_valid;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Host APIs: E decomposition + triangulation batch
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Decompose B Essential matrices and select the best (R, t) via cheirality test.
+//
+// pts_norm:      host float array, sum_n × 4 floats (x1,y1,x2,y2) K-normalised
+// pair_off:      host int[B+1], prefix sums of pair sizes (pair_off[B] == sum_n)
+// pair_n:        host int[B], number of matches per pair
+// inlier_masks:  host uint8[sum_n], 1=E-inlier for the corresponding pair
+// R_out:         host float[B*9], row-major rotation matrix per pair
+// t_out:         host float[B*3], translation vector per pair
+// cheir_out:     host int[B], positive-depth inlier count for the winning candidate
+//
+// Returns 0 on success, -1 on error.
+int cuda_decompose_E_batch(const float* E_mats, int B, const float* pts_norm,
+                           const int* pair_off, const int* pair_n, const uint8_t* inlier_masks,
+                           float* R_out, float* t_out, int* cheir_out) {
+  if (!s_inited || B <= 0)
+    return -1;
+  const int sum_n = pair_off[B];
+
+  float* d_E = nullptr;
+  float* d_R = nullptr;
+  float* d_t = nullptr;
+  float4* d_pts = nullptr;
+  int* d_off = nullptr;
+  int* d_pn = nullptr;
+  int* d_cheir = nullptr;
+  uint8_t* d_masks = nullptr;
+
+  bool ok = (cudaMalloc(&d_E, (size_t)B * 9 * sizeof(float)) == cudaSuccess) &&
+            (cudaMalloc(&d_R, (size_t)B * 9 * sizeof(float)) == cudaSuccess) &&
+            (cudaMalloc(&d_t, (size_t)B * 3 * sizeof(float)) == cudaSuccess) &&
+            (cudaMalloc((void**)&d_pts, (size_t)sum_n * sizeof(float4)) == cudaSuccess) &&
+            (cudaMalloc(&d_off, (size_t)(B + 1) * sizeof(int)) == cudaSuccess) &&
+            (cudaMalloc(&d_pn, (size_t)B * sizeof(int)) == cudaSuccess) &&
+            (cudaMalloc(&d_cheir, (size_t)B * sizeof(int)) == cudaSuccess) &&
+            (cudaMalloc(&d_masks, (size_t)sum_n * sizeof(uint8_t)) == cudaSuccess);
+
+  if (ok) {
+    cudaMemcpyAsync(d_E, E_mats, (size_t)B * 9 * sizeof(float), cudaMemcpyHostToDevice, s_stream);
+    cudaMemcpyAsync(d_pts, pts_norm, (size_t)sum_n * sizeof(float4), cudaMemcpyHostToDevice,
+                   s_stream);
+    cudaMemcpyAsync(d_off, pair_off, (size_t)(B + 1) * sizeof(int), cudaMemcpyHostToDevice,
+                   s_stream);
+    cudaMemcpyAsync(d_pn, pair_n, (size_t)B * sizeof(int), cudaMemcpyHostToDevice, s_stream);
+    cudaMemcpyAsync(d_masks, inlier_masks, (size_t)sum_n * sizeof(uint8_t), cudaMemcpyHostToDevice,
+                   s_stream);
+
+    decompose_E_batch_kernel<<<B, 32, 0, s_stream>>>(d_E, d_pts, d_off, d_pn, d_masks, d_R, d_t,
+                                                      d_cheir, B);
+
+    cudaMemcpyAsync(R_out, d_R, (size_t)B * 9 * sizeof(float), cudaMemcpyDeviceToHost, s_stream);
+    cudaMemcpyAsync(t_out, d_t, (size_t)B * 3 * sizeof(float), cudaMemcpyDeviceToHost, s_stream);
+    cudaMemcpyAsync(cheir_out, d_cheir, (size_t)B * sizeof(int), cudaMemcpyDeviceToHost, s_stream);
+
+    ok = (cudaStreamSynchronize(s_stream) == cudaSuccess);
+  }
+
+  cudaFree(d_E);
+  cudaFree(d_R);
+  cudaFree(d_t);
+  cudaFree(d_pts);
+  cudaFree(d_off);
+  cudaFree(d_pn);
+  cudaFree(d_cheir);
+  cudaFree(d_masks);
+  return ok ? 0 : -1;
+}
+
+// Triangulate all E-inlier correspondences for B pairs.
+//
+// R, t:          host float[B*9], float[B*3] — relative pose per pair (from cuda_decompose_E_batch)
+// pts_norm:      host float[sum_n * 4] — same layout as cuda_decompose_E_batch
+// pair_off:      host int[B+1], prefix sums
+// inlier_masks:  host uint8[sum_n], 1=E-inlier to triangulate
+// X_out:         host float[sum_n * 3], (NaN,NaN,NaN) for non-inliers / negative-depth
+// valid_out:     host int[B], number of valid 3D points per pair
+//
+// Returns 0 on success, -1 on error.
+int cuda_triangulate_batch(const float* R, const float* t, int B, const float* pts_norm,
+                           const int* pair_off, const int* pair_n, const uint8_t* inlier_masks,
+                           float* X_out, int* valid_out) {
+  if (!s_inited || B <= 0)
+    return -1;
+  const int sum_n = pair_off[B];
+  (void)pair_n; // unused; sizes derived from pair_off
+
+  float* d_R = nullptr;
+  float* d_t = nullptr;
+  float4* d_pts = nullptr;
+  int* d_off = nullptr;
+  uint8_t* d_masks = nullptr;
+  float* d_X = nullptr;
+  int* d_valid = nullptr;
+
+  bool ok = (cudaMalloc(&d_R, (size_t)B * 9 * sizeof(float)) == cudaSuccess) &&
+            (cudaMalloc(&d_t, (size_t)B * 3 * sizeof(float)) == cudaSuccess) &&
+            (cudaMalloc((void**)&d_pts, (size_t)sum_n * sizeof(float4)) == cudaSuccess) &&
+            (cudaMalloc(&d_off, (size_t)(B + 1) * sizeof(int)) == cudaSuccess) &&
+            (cudaMalloc(&d_masks, (size_t)sum_n * sizeof(uint8_t)) == cudaSuccess) &&
+            (cudaMalloc(&d_X, (size_t)sum_n * 3 * sizeof(float)) == cudaSuccess) &&
+            (cudaMalloc(&d_valid, (size_t)B * sizeof(int)) == cudaSuccess);
+
+  if (ok) {
+    cudaMemcpyAsync(d_R, R, (size_t)B * 9 * sizeof(float), cudaMemcpyHostToDevice, s_stream);
+    cudaMemcpyAsync(d_t, t, (size_t)B * 3 * sizeof(float), cudaMemcpyHostToDevice, s_stream);
+    cudaMemcpyAsync(d_pts, pts_norm, (size_t)sum_n * sizeof(float4), cudaMemcpyHostToDevice,
+                   s_stream);
+    cudaMemcpyAsync(d_off, pair_off, (size_t)(B + 1) * sizeof(int), cudaMemcpyHostToDevice,
+                   s_stream);
+    cudaMemcpyAsync(d_masks, inlier_masks, (size_t)sum_n * sizeof(uint8_t), cudaMemcpyHostToDevice,
+                   s_stream);
+
+    triangulate_batch_kernel<<<B, 256, 0, s_stream>>>(d_R, d_t, d_pts, d_off, d_masks, d_X,
+                                                       d_valid, B);
+
+    cudaMemcpyAsync(X_out, d_X, (size_t)sum_n * 3 * sizeof(float), cudaMemcpyDeviceToHost,
+                   s_stream);
+    cudaMemcpyAsync(valid_out, d_valid, (size_t)B * sizeof(int), cudaMemcpyDeviceToHost, s_stream);
+
+    ok = (cudaStreamSynchronize(s_stream) == cudaSuccess);
+  }
+
+  cudaFree(d_R);
+  cudaFree(d_t);
+  cudaFree(d_pts);
+  cudaFree(d_off);
+  cudaFree(d_masks);
+  cudaFree(d_X);
+  cudaFree(d_valid);
+  return ok ? 0 : -1;
 }

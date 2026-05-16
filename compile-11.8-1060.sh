@@ -28,7 +28,7 @@ cmake "${SCRIPT_DIR}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_COMPILER="${NVCC}" \
     -DCUDAToolkit_ROOT=/usr/local/cuda-11.8 \
-    -DCMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89-virtual" \
+    -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" \
     -DCeres_DIR="$HOME/.local/ceres-cuda118/lib/cmake/Ceres" \
     -DSIFTGPU_ENABLE_CUDA=ON \
     "$@"

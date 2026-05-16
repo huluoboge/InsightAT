@@ -17,8 +17,13 @@
 
 cmake_minimum_required(VERSION 3.16)
 
+# Enable CUDA language
+enable_language(CUDA)
+
 find_package(Eigen3 REQUIRED)
 find_package(Ceres REQUIRED)
+find_package(CUDA REQUIRED)
+find_package(OpenMP REQUIRED)
 
 if(NOT OPENGL_FOUND)
     find_package(OpenGL REQUIRED)
@@ -31,11 +36,17 @@ if(NOT EGL_FOUND)
     message(FATAL_ERROR "EGL not found. sfm_module requires EGL for GPU triangulation.")
 endif()
 
+# Set CUDA architecture (volta, turing, ampere)
+if(NOT CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 75 80 86)  # Turing, Ampere, RTX 3000
+endif()
+
 add_library(sfm_module STATIC
     two_view_reconstruction.cpp
     two_view_reconstruction.h
     gpu_twoview_sfm.cpp
     gpu_twoview_sfm.h
+    gpu_twoview_sfm_cuda.cu
     track_store.cpp
     track_store.h
     scene_normalization.cpp
@@ -73,6 +84,15 @@ target_link_libraries(test_track_ray_lambda_ceres
 )
 set_property(TARGET test_track_ray_lambda_ceres PROPERTY FOLDER InsightAT/Tests)
 
+# ── Unit test: TrackStore incremental state helpers ───────────────────────
+add_executable(test_track_store_state_cache test_track_store_state_cache.cpp)
+target_link_libraries(test_track_store_state_cache
+    PRIVATE
+        sfm_module
+        glog::glog
+)
+set_property(TARGET test_track_store_state_cache PROPERTY FOLDER InsightAT/Tests)
+
 # ── Unit test: PnP resection ──────────────────────────────────────────────
 # add_executable(test_pnp_resection test_pnp_resection.cpp resection.cpp resection.h)
 # target_link_libraries(test_pnp_resection
@@ -103,8 +123,10 @@ target_link_libraries(sfm_module
         algorithm_camera
         ${OPENGL_LIBRARIES}
         ${GLEW_LIBRARIES}
+        ${CUDA_LIBRARIES}
     PRIVATE
         glog::glog
+        OpenMP::OpenMP_CXX
 )
 
 target_compile_features(sfm_module PUBLIC cxx_std_17)

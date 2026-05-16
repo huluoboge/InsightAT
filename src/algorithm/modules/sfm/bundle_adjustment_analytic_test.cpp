@@ -438,11 +438,11 @@ static int test_two_view_one_camera() {
     if (!project(intr, pose0, pt, uv)) continue;
     uv[0] += noise(rng); uv[1] += noise(rng);
     BAObservation o;
-    o.image_index = 0; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.2;
+    o.image_index = 0; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.std_sigma_obs_px = 1.2;
     input.observations.push_back(o);
     if (!project(intr, pose1, pt, uv)) continue;
     uv[0] += noise(rng); uv[1] += noise(rng);
-    o.image_index = 1; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.0;
+    o.image_index = 1; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.std_sigma_obs_px = 1.0;
     input.observations.push_back(o);
   }
 
@@ -506,11 +506,11 @@ static int test_two_view_two_cameras() {
     if (!project(intr0, pose0, pt, uv)) continue;
     uv[0] += noise(rng); uv[1] += noise(rng);
     BAObservation o;
-    o.image_index = 0; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.0;
+    o.image_index = 0; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.std_sigma_obs_px = 1.0;
     input.observations.push_back(o);
     if (!project(intr1, pose1, pt, uv)) continue;
     uv[0] += noise(rng); uv[1] += noise(rng);
-    o.image_index = 1; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.scale = 1.5;
+    o.image_index = 1; o.point_index = j; o.u = uv[0]; o.v = uv[1]; o.std_sigma_obs_px = 1.5;
     input.observations.push_back(o);
   }
 

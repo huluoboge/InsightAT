@@ -23,6 +23,7 @@
 #include <future>
 #include <glog/logging.h>
 #include <iostream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
@@ -56,6 +57,18 @@ static constexpr const char* kEventPrefix = "ISAT_EVENT ";
 static void print_event(const json& j) {
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
+}
+
+static bool write_pairs_json(const std::string& output_path,
+                             const std::vector<std::pair<uint32_t, uint32_t>>& pairs) {
+  json pairs_arr = json::array();
+  for (const auto& [i, j] : pairs)
+    pairs_arr.push_back({{"image1_index", i}, {"image2_index", j}});
+  std::ofstream f(output_path);
+  if (!f.is_open())
+    return false;
+  f << json{{"pairs", pairs_arr}}.dump(2) << "\n";
+  return true;
 }
 
 struct PairTask {
@@ -430,6 +443,7 @@ int main(int argc, char* argv[]) {
 
   std::string pairs_json;
   std::string output_dir;
+  std::string output_pairs_json;
   std::string feature_dir;
   int num_threads = -1;
   int sample_images = 256;
@@ -448,6 +462,8 @@ int main(int argc, char* argv[]) {
 
   cmd.add(make_option('i', pairs_json, "input").doc("Input pairs list (JSON format)"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory for .isat_match files"));
+  cmd.add(make_option(0, output_pairs_json, "output-pairs-json")
+              .doc("Optional JSON path listing only pairs whose .isat_match files were written."));
   cmd.add(make_option('f', feature_dir, "feature-dir")
               .doc("Matching feature directory (.isat_feat files from isat_extract -o)"));
   cmd.add(make_option('j', num_threads, "threads")
@@ -719,15 +735,22 @@ int main(int argc, char* argv[]) {
       std::chrono::duration_cast<std::chrono::seconds>(match_end - match_start).count();
 
   auto write_start = std::chrono::high_resolution_clock::now();
+  std::mutex written_pairs_mu;
+  std::vector<std::pair<uint32_t, uint32_t>> written_pairs;
+  written_pairs.reserve(static_cast<size_t>(total_pairs));
   Stage write_stage("WriteAllResultsAtEnd", num_threads, queue_size,
-                    [&pair_tasks, &output_dir, min_output_matches](int index) {
+                    [&pair_tasks, &output_dir, min_output_matches, &written_pairs_mu,
+                     &written_pairs](int index) {
                       auto& task = pair_tasks[static_cast<size_t>(index)];
                       if (static_cast<int>(task.matches.num_matches) < min_output_matches) {
                         task.matches.clear();
                         task.match_scales.clear();
                         return;
                       }
-                      write_match_idc(task.matches, task, output_dir);
+                      if (write_match_idc(task.matches, task, output_dir)) {
+                        std::lock_guard<std::mutex> lock(written_pairs_mu);
+                        written_pairs.emplace_back(task.image1_index, task.image2_index);
+                      }
                     });
   write_stage.setTaskCount(total_pairs);
   for (int i = 0; i < total_pairs; ++i) {
@@ -749,6 +772,13 @@ int main(int argc, char* argv[]) {
   }
   const int failed_pairs = total_pairs - pairs_with_matches;
 
+  if (!output_pairs_json.empty()) {
+    if (!write_pairs_json(output_pairs_json, written_pairs)) {
+      LOG(ERROR) << "Failed to write output pairs JSON: " << output_pairs_json;
+      return 1;
+    }
+  }
+
   print_event({{"type", "match.complete"},
                {"ok", true},
                {"data",
@@ -766,6 +796,7 @@ int main(int argc, char* argv[]) {
                  {"min_output_matches", min_output_matches},
                  {"blocks", block_count},
                  {"preset", preset},
-                 {"output_dir", output_dir}}}});
+                 {"output_dir", output_dir},
+                 {"output_pairs_json", output_pairs_json}}}});
   return 0;
 }

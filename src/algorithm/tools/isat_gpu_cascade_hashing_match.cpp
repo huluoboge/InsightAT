@@ -31,6 +31,7 @@
 #include <fstream>
 #include <glog/logging.h>
 #include <iostream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
@@ -60,6 +61,25 @@ using insight::algorithm::matching::FeatureData;
 using insight::algorithm::matching::MatchResult;
 using insight::io::IDCReader;
 using insight::io::IDCWriter;
+
+static constexpr const char* kEventPrefix = "ISAT_EVENT ";
+
+static void print_event(const json& j) {
+  std::cout << kEventPrefix << j.dump() << "\n";
+  std::cout.flush();
+}
+
+static bool write_pairs_json(const std::string& output_path,
+                             const std::vector<std::pair<uint32_t, uint32_t>>& pairs) {
+  json pairs_arr = json::array();
+  for (const auto& [i, j] : pairs)
+    pairs_arr.push_back({{"image1_index", i}, {"image2_index", j}});
+  std::ofstream f(output_path);
+  if (!f.is_open())
+    return false;
+  f << json{{"pairs", pairs_arr}}.dump(2) << "\n";
+  return true;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data structures
@@ -145,6 +165,11 @@ static std::vector<PairTask> load_pairs_json(const std::string& json_path,
   }
   json j;
   file >> j;
+  
+  if (!j.contains("pairs")) {
+    LOG(FATAL) << "Input JSON does not contain 'pairs' array: " << json_path;
+  }
+  
   std::vector<PairTask> pairs;
   for (const auto& pair : j["pairs"]) {
     PairTask task;
@@ -154,8 +179,18 @@ static std::vector<PairTask> load_pairs_json(const std::string& json_path,
       task.feature1_file = feature_dir + "/" + std::to_string(task.image1_index) + ".isat_feat";
       task.feature2_file = feature_dir + "/" + std::to_string(task.image2_index) + ".isat_feat";
     } else {
-      task.feature1_file = pair["feature1_file"];
-      task.feature2_file = pair["feature2_file"];
+      if (pair.contains("feature1_file")) {
+        task.feature1_file = pair["feature1_file"];
+      } else {
+        LOG(ERROR) << "Missing feature1_file in pair JSON";
+        continue;
+      }
+      if (pair.contains("feature2_file")) {
+        task.feature2_file = pair["feature2_file"];
+      } else {
+        LOG(ERROR) << "Missing feature2_file in pair JSON";
+        continue;
+      }
     }
     pairs.push_back(std::move(task));
   }
@@ -168,20 +203,34 @@ static FeatureData load_features_idc(const std::string& idc_path) {
   const auto keypoints_raw = reader.read_blob<float>("keypoints");
   if (keypoints_raw.empty()) return FeatureData();
   const auto desc_blob = reader.get_blob_descriptor("descriptors");
+  if (desc_blob.is_null() || !desc_blob.contains("dtype")) {
+    LOG(ERROR) << "Missing descriptors blob or dtype in " << idc_path;
+    return FeatureData();
+  }
   const std::string dtype = desc_blob["dtype"];
   const size_t num_features = keypoints_raw.size() / 4;
   DescriptorType descriptor_type =
       (dtype == "float32") ? DescriptorType::kFloat32 : DescriptorType::kUInt8;
-  FeatureData features(num_features, descriptor_type);
-  for (size_t i = 0; i < num_features; ++i) {
+
+  FeatureData features;
+  features.num_features = static_cast<int>(num_features);
+  features.descriptor_type = descriptor_type;
+  features.keypoints.resize(num_features);
+  for (int i = 0; i < static_cast<int>(num_features); ++i) {
     features.keypoints[i] << keypoints_raw[i * 4], keypoints_raw[i * 4 + 1],
         keypoints_raw[i * 4 + 2], keypoints_raw[i * 4 + 3];
   }
+
   if (descriptor_type == DescriptorType::kUInt8) {
-    features.descriptors_uint8 = reader.read_blob<uint8_t>("descriptors");
+    const auto desc_raw = reader.read_blob<uint8_t>("descriptors");
+    features.descriptors_uint8.resize(desc_raw.size());
+    std::copy(desc_raw.begin(), desc_raw.end(), features.descriptors_uint8.begin());
   } else {
-    features.descriptors_float = reader.read_blob<float>("descriptors");
+    const auto desc_raw = reader.read_blob<float>("descriptors");
+    features.descriptors_float.resize(desc_raw.size());
+    std::copy(desc_raw.begin(), desc_raw.end(), features.descriptors_float.begin());
   }
+
   return features;
 }
 
@@ -477,6 +526,7 @@ int main(int argc, char* argv[]) {
 
   std::string pairs_json;
   std::string output_dir;
+  std::string output_pairs_json;
   std::string feature_dir;
   int num_threads = -1;
   int sample_images = 256;
@@ -487,6 +537,8 @@ int main(int argc, char* argv[]) {
 
   cmd.add(make_option('i', pairs_json, "input").doc("Input pairs list (JSON format)"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory for .isat_match files"));
+  cmd.add(make_option(0, output_pairs_json, "output-pairs-json")
+              .doc("Optional JSON path listing only pairs whose .isat_match files were written."));
   cmd.add(make_option('f', feature_dir, "feature-dir").doc("Feature directory (.isat_feat files)"));
   cmd.add(make_option('j', num_threads, "threads").doc("I/O worker threads (-1 = auto)"));
   cmd.add(make_option(0, sample_images, "sample-images")
@@ -710,9 +762,14 @@ int main(int argc, char* argv[]) {
 
   // ── Stage 3: WriteStage (multi-threaded IO) ───────────────────────────────
   // Bounded queue capacity 6: allows GPU to stay 6 jobs ahead of disk write.
+  std::mutex written_pairs_mu;
+  std::vector<std::pair<uint32_t, uint32_t>> written_pairs;
+  written_pairs.reserve(static_cast<size_t>(total_pairs));
+  std::atomic<int> total_matches_written{0};
   Stage write_stage(
       "GpuWriteStage", num_threads, 6,
-      [&block_jobs, &pair_tasks, &output_dir, min_output_matches](int job_idx) {
+      [&block_jobs, &pair_tasks, &output_dir, min_output_matches, &written_pairs_mu,
+       &written_pairs, &total_matches_written](int job_idx) {
         auto& job = block_jobs[static_cast<size_t>(job_idx)];
         for (size_t k = 0; k < job.pair_indices.size(); ++k) {
           if (k >= job.results.size()) break;
@@ -722,11 +779,23 @@ int main(int argc, char* argv[]) {
               (k < job.result_scales.size()) ? job.result_scales[k] : std::vector<float>{};
           if (scales.empty()) {
             std::vector<float> default_scales(res.num_matches * 2, 1.0f);
-            write_match_idc(res, pair_tasks[static_cast<size_t>(job.pair_indices[k])],
-                            default_scales, output_dir);
+            if (write_match_idc(res, pair_tasks[static_cast<size_t>(job.pair_indices[k])],
+                                default_scales, output_dir)) {
+              const auto& pair = pair_tasks[static_cast<size_t>(job.pair_indices[k])];
+              total_matches_written.fetch_add(static_cast<int>(res.num_matches),
+                                              std::memory_order_relaxed);
+              std::lock_guard<std::mutex> lock(written_pairs_mu);
+              written_pairs.emplace_back(pair.image1_index, pair.image2_index);
+            }
           } else {
-            write_match_idc(res, pair_tasks[static_cast<size_t>(job.pair_indices[k])],
-                            scales, output_dir);
+            if (write_match_idc(res, pair_tasks[static_cast<size_t>(job.pair_indices[k])],
+                                scales, output_dir)) {
+              const auto& pair = pair_tasks[static_cast<size_t>(job.pair_indices[k])];
+              total_matches_written.fetch_add(static_cast<int>(res.num_matches),
+                                              std::memory_order_relaxed);
+              std::lock_guard<std::mutex> lock(written_pairs_mu);
+              written_pairs.emplace_back(pair.image1_index, pair.image2_index);
+            }
           }
         }
         // Free match results immediately after writing.
@@ -762,8 +831,31 @@ int main(int argc, char* argv[]) {
 
   const double total_s = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - t_pipeline_start).count();
+
+  if (!output_pairs_json.empty()) {
+    if (!write_pairs_json(output_pairs_json, written_pairs)) {
+      LOG(ERROR) << "Failed to write output pairs JSON: " << output_pairs_json;
+      return 1;
+    }
+  }
+
+  int total_matches = 0;
+  const int pairs_with_matches = static_cast<int>(written_pairs.size());
+  total_matches = total_matches_written.load(std::memory_order_relaxed);
   LOG(INFO) << "GPU cascade complete: jobs=" << total_jobs
             << " total_pairs=" << total_pairs
             << " elapsed=" << total_s << "s";
+  print_event({{"type", "match.complete"},
+               {"ok", true},
+               {"data",
+                {{"total_pairs", total_pairs},
+                 {"pairs_with_matches", pairs_with_matches},
+                 {"total_matches", total_matches},
+                 {"failed_pairs", total_pairs - pairs_with_matches},
+                 {"total_time_s", total_s},
+                 {"image_block_size", image_block_size},
+                 {"min_output_matches", min_output_matches},
+                 {"output_dir", output_dir},
+                 {"output_pairs_json", output_pairs_json}}}});
   return 0;
 }

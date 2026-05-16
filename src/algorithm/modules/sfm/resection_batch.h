@@ -10,10 +10,13 @@
 #include "../camera/camera_types.h"
 #include "track_store.h"
 #include <Eigen/Core>
+#include <limits>
 #include <vector>
 
 namespace insight {
 namespace sfm {
+
+struct ResectionCandidate;
 
 /**
  * Per-image score cache for choose_resection_candidates().
@@ -31,6 +34,15 @@ struct ResectionScoreCache {
     float score = 0.0f;
   };
   std::vector<Entry> entries;
+  std::vector<ResectionCandidate> cached_candidates;
+  uint64_t last_obs_epoch = std::numeric_limits<uint64_t>::max();
+  uint64_t last_tri_status_epoch = std::numeric_limits<uint64_t>::max();
+  uint64_t last_registration_epoch = std::numeric_limits<uint64_t>::max();
+  int last_registered_count = -1;
+  int last_min_3d2d_count = -1;
+  int last_max_candidates = -1;
+  float last_min_coverage_good = -1.0f;
+  size_t last_visibility_pyramid_levels = 0;
 
   void ensure_size(int n_images) {
     if (static_cast<int>(entries.size()) < n_images)
@@ -39,6 +51,15 @@ struct ResectionScoreCache {
   void invalidate_all() {
     for (auto& e : entries)
       e.n_tri = -1;
+    cached_candidates.clear();
+    last_obs_epoch = std::numeric_limits<uint64_t>::max();
+    last_tri_status_epoch = std::numeric_limits<uint64_t>::max();
+    last_registration_epoch = std::numeric_limits<uint64_t>::max();
+    last_registered_count = -1;
+    last_min_3d2d_count = -1;
+    last_max_candidates = -1;
+    last_min_coverage_good = -1.0f;
+    last_visibility_pyramid_levels = 0;
   }
 };
 
@@ -64,7 +85,7 @@ struct ResectionCandidate {
  *                                 new triangulation.  nullptr disables caching.
  */
 std::vector<ResectionCandidate> choose_resection_candidates(
-    const TrackStore& store, const std::vector<bool>& registered,
+  TrackStore& store, const std::vector<bool>& registered,
     const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& image_to_camera_index,
     int min_3d2d_count, int max_candidates, float min_coverage_good = 0.02f,
     size_t visibility_pyramid_levels = 6, ResectionScoreCache* score_cache = nullptr);

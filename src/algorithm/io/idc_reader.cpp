@@ -65,24 +65,44 @@ bool IDCReader::parse_header() {
   size_t padding = (ALIGNMENT - (header_size % ALIGNMENT)) % ALIGNMENT;
   payload_offset_ = header_size + padding;
 
+  // 7. Build O(1) blob name index
+  if (metadata_.contains("blobs") && metadata_["blobs"].is_array()) {
+    blob_index_.reserve(metadata_["blobs"].size());
+    for (const auto& blob : metadata_["blobs"]) {
+      if (blob.contains("name") && blob.contains("offset") && blob.contains("size")) {
+        blob_index_[blob["name"].get<std::string>()] =
+            BlobInfo{blob["offset"].get<size_t>(), blob["size"].get<size_t>()};
+      }
+    }
+  }
+
   VLOG(1) << "IDC file parsed: " << filepath_ << ", payload_offset=" << payload_offset_
-          << ", blobs=" << metadata_["blobs"].size();
+          << ", blobs=" << blob_index_.size();
 
   return true;
 }
 
 nlohmann::json IDCReader::get_blob_descriptor(const std::string& blob_name) const {
-  if (!metadata_.contains("blobs")) {
+  auto it = blob_index_.find(blob_name);
+  if (it == blob_index_.end()) {
     return nlohmann::json();
   }
 
-  for (const auto& blob : metadata_["blobs"]) {
-    if (blob["name"] == blob_name) {
-      return blob;
+  // Find the original blob entry to preserve all original fields like dtype
+  if (metadata_.contains("blobs") && metadata_["blobs"].is_array()) {
+    for (const auto& blob : metadata_["blobs"]) {
+      if (blob.contains("name") && blob["name"] == blob_name) {
+        return blob;  // Return the original blob descriptor with all fields intact
+      }
     }
   }
 
-  return nlohmann::json();
+  // Fallback: reconstruct basic descriptor if original not found
+  nlohmann::json desc;
+  desc["name"] = blob_name;
+  desc["offset"] = it->second.offset;
+  desc["size"] = it->second.size;
+  return desc;
 }
 
 std::vector<uint8_t> IDCReader::read_blob_raw(const std::string& blob_name) {
@@ -143,6 +163,53 @@ std::optional<DescriptorSchema> IDCReader::get_descriptor_schema() const {
           << ", dim=" << schema.descriptor_dim << ", dtype=" << schema.descriptor_dtype;
 
   return schema;
+}
+
+std::vector<uint8_t> IDCReader::read_full_payload() const {
+  std::vector<uint8_t> buf;
+  read_full_payload_into(buf);
+  return buf;
+}
+
+void IDCReader::read_full_payload_into(std::vector<uint8_t>& buf) const {
+  std::ifstream file(filepath_, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    LOG(ERROR) << "read_full_payload: cannot open " << filepath_;
+    buf.clear();
+    return;
+  }
+  const size_t file_size = static_cast<size_t>(file.tellg());
+  if (file_size <= payload_offset_) {
+    buf.clear();
+    return;
+  }
+  const size_t payload_size = file_size - payload_offset_;
+  buf.resize(payload_size);
+  file.seekg(static_cast<std::streamoff>(payload_offset_));
+  file.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(payload_size));
+  if (!file) {
+    LOG(ERROR) << "read_full_payload: read failed for " << filepath_;
+    buf.clear();
+  }
+}
+
+const uint8_t* IDCReader::get_blob_from_payload(const std::string& blob_name,
+                                                 const std::vector<uint8_t>& payload,
+                                                 size_t* out_size) const {
+  auto it = blob_index_.find(blob_name);
+  if (it == blob_index_.end()) {
+    if (out_size) *out_size = 0;
+    return nullptr;
+  }
+  const size_t offset = it->second.offset;
+  const size_t size   = it->second.size;
+  if (offset + size > payload.size()) {
+    LOG(ERROR) << "get_blob_from_payload: blob '" << blob_name << "' out of payload bounds";
+    if (out_size) *out_size = 0;
+    return nullptr;
+  }
+  if (out_size) *out_size = size;
+  return payload.data() + offset;
 }
 
 } // namespace io

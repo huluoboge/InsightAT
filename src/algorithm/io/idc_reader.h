@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace insight {
@@ -40,55 +41,64 @@ public:
   bool is_valid() const { return is_valid_; }
   std::optional<DescriptorSchema> get_descriptor_schema() const;
 
+  // Block-load API: read entire payload in one sequential fread, then access
+  // individual blobs via pointer arithmetic (zero seeks, zero copies).
+  std::vector<uint8_t> read_full_payload() const;
+  // In-place variant: reuses caller's buffer (resize, no realloc if capacity fits).
+  // Preferred in hot OMP loops to avoid repeated heap allocations.
+  void read_full_payload_into(std::vector<uint8_t>& buf) const;
+  // Returns pointer into pre-loaded payload buffer, or nullptr if not found.
+  // out_size receives the byte length of the blob.
+  const uint8_t* get_blob_from_payload(const std::string& blob_name,
+                                       const std::vector<uint8_t>& payload,
+                                       size_t* out_size) const;
+
 private:
   std::string filepath_;
   nlohmann::json metadata_;
   size_t payload_offset_ = 0;
   bool is_valid_ = false;
 
+  // O(1) blob lookup index: name → {offset, size}
+  struct BlobInfo { size_t offset; size_t size; };
+  std::unordered_map<std::string, BlobInfo> blob_index_;
+
   static constexpr uint32_t MAGIC_NUMBER = 0x54415349; // "ISAT"
   static constexpr uint32_t FORMAT_VERSION = 1;
   static constexpr size_t ALIGNMENT = 8;
 
-  // Parse header and load metadata
   bool parse_header();
 };
 
 // Template implementation
 template <typename T> std::vector<T> IDCReader::read_blob(const std::string& blob_name) {
-  auto blob_desc = get_blob_descriptor(blob_name);
-
-  if (blob_desc.is_null()) {
+  auto it = blob_index_.find(blob_name);
+  if (it == blob_index_.end()) {
     LOG(ERROR) << "Blob '" << blob_name << "' not found in " << filepath_;
     return {};
   }
 
-  size_t offset = blob_desc["offset"].get<size_t>();
-  size_t size = blob_desc["size"].get<size_t>();
+  const size_t offset = it->second.offset;
+  const size_t size   = it->second.size;
 
-  // Validate size
-  size_t expected_size = size / sizeof(T);
   if (size % sizeof(T) != 0) {
     LOG(ERROR) << "Blob size " << size << " not divisible by element size " << sizeof(T);
     return {};
   }
+  const size_t n_elems = size / sizeof(T);
 
-  // Read data
   std::ifstream file(filepath_, std::ios::binary);
   if (!file.is_open()) {
     LOG(ERROR) << "Failed to open file: " << filepath_;
     return {};
   }
-
-  file.seekg(payload_offset_ + offset);
-  std::vector<T> data(expected_size);
-  file.read(reinterpret_cast<char*>(data.data()), size);
-
+  file.seekg(static_cast<std::streamoff>(payload_offset_ + offset));
+  std::vector<T> data(n_elems);
+  file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size));
   if (!file) {
     LOG(ERROR) << "Failed to read blob '" << blob_name << "' from " << filepath_;
     return {};
   }
-
   return data;
 }
 

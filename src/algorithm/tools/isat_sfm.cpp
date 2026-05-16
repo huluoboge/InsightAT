@@ -15,6 +15,7 @@
  *   isat_sfm -i /photos -w work/                              # run all steps
  *   isat_sfm -i /photos -w work/ --exhaustive-match           # 跳过检索，全图像对全分辨率匹配
  *   isat_sfm -i /photos -w work/ --no-grid                    # 提取不传 --nms（关空间网格）
+ *   isat_sfm -i /photos -w work/ --sift-threshold 0.0067     # 全分辨率 SIFT 特征提取阈值
  *   isat_sfm -i /photos -w work/ --geo-thresh-f 3             # 更严 F 内点（像素，见 --help）
  *   isat_sfm -i /photos -w work/ --io-threads 8 --ba-threads 8  # I/O 与 Ceres 线程数
  *   isat_sfm -i /photos -w work/ --steps create,extract       # 只跑 create + extract
@@ -477,6 +478,7 @@ int main(int argc, char* argv[]) {
   int cascade_gpu_image_block_size = 1000;
   int cascade_gpu_sample_images = 256;
   int cascade_gpu_min_output_matches = 16;
+  int retrieval_min_output_matches = 16;
   std::string cascade_cpu_preset = "modern";
   bool use_pop_sift = false;
   bool use_sift_gpu = false;
@@ -485,12 +487,16 @@ int main(int argc, char* argv[]) {
   int max_sample = 5;
   // int image_max_dim = 6000;
   int image_max_dim = 3200;
+  double sift_threshold = 0.0067;
   bool exhaustive_match = false;
   /// When not using --exhaustive-match: if image count < this, skip retrieval and use full
   /// exhaustive pairs (same as manual exhaustive for small sets).
   int auto_exhaustive_max_images = 60;
-  /// Geometry backend selection for isat_geo.
-  /// Accepted values: cuda|gpu|poselib. Default: cuda (mapped to isat_geo --backend gpu).
+  /// Geometry backend selection for SfM geometry stage.
+  /// Accepted values:
+  ///   cuda    -> isat_geo_cuda (default)
+  ///   gpu     -> legacy isat_geo --backend gpu-gl (explicit OpenGL fallback)
+  ///   poselib -> legacy isat_geo --backend poselib
   std::string geo_backend = "cuda";
   /// Passed to isat_geo --min-inliers (F/E/H RANSAC inlier count gate for pairs.json).
   int geo_min_inliers = 10;
@@ -528,6 +534,10 @@ int main(int argc, char* argv[]) {
               .doc("Sample images for GPU cascade global mean descriptor (default: 256)"));
   cmd.add(make_option(0, cascade_gpu_min_output_matches, "cascade-gpu-min-output-matches")
               .doc("Minimum matches per pair for GPU cascade output (default: 16)"));
+  cmd.add(make_option(0, retrieval_min_output_matches, "retrieval-min-output-matches")
+              .doc("Minimum matches per pair written during retrieval-stage low-resolution "
+                   "matching (default: 16). Forwarded to isat_retrieval_match "
+                   "--cascade-min-output-matches."));
   cmd.add(make_option(0, cascade_cpu_preset, "cascade-cpu-preset")
               .doc("Preset for --match-impl=cascade: legacy or modern (default: modern)"));
   cmd.add(make_option(0, ext, "ext")
@@ -537,6 +547,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, image_max_dim, "image-max-dim")
               .doc("Forwarded to isat_extract --image-max-dim (default: 6000); "
                    "reduce to lower PopSift GPU memory usage, e.g. 4096"));
+      cmd.add(make_option(0, sift_threshold, "sift-threshold")
+            .doc("Full-resolution SIFT feature extraction threshold forwarded to "
+              "isat_extract --threshold (default: 0.0067). Lower values increase recall "
+              "in weak-texture scenes but may admit more unstable features."));
   cmd.add(make_switch(0, "fix-intrinsics").doc("Hold camera intrinsics fixed during BA"));
   cmd.add(make_switch(0, "exhaustive-match")
               .doc("Skip isat_retrieval_match; generate all image pairs and run full-resolution "
@@ -547,15 +561,16 @@ int main(int argc, char* argv[]) {
   cmd.add(make_switch(0, "no-grid")
               .doc("Feature extract: do not pass --nms to isat_extract (disable spatial grid on "
                    "matching + retrieval features; temporary A/B vs dense SIFT)"));
-  cmd.add(make_option(0, geo_min_inliers, "geo-min-inliers")
-              .doc("isat_geo --min-inliers: min F/E/H inliers to accept a pair (default: 10). "
-                   "Stricter scenes: try 12–15."));
+    cmd.add(make_option(0, geo_min_inliers, "geo-min-inliers")
+          .doc("Geometry min inliers: forwarded to isat_geo_cuda/isat_geo --min-inliers "
+            "(default: 10). Stricter scenes: try 12–15."));
   cmd.add(make_option(0, geo_backend, "geo-backend")
-              .doc("isat_geo geometry backend: cuda (default), gpu (alias of cuda), or poselib "
-                   "(CPU, 7-point + LO-RANSAC + bundle; more accurate, slower)."));
+          .doc("Geometry backend: cuda (default, runs isat_geo_cuda), gpu (runs legacy "
+            "isat_geo --backend gpu-gl), or poselib (runs legacy isat_geo --backend "
+            "poselib; CPU, usually slower)."));
   cmd.add(
       make_option(0, geo_thresh_f, "geo-thresh-f")
-          .doc("isat_geo -t: F inlier threshold in pixels (default: 16.0). "
+      .doc("Geometry -t/--thresh: F inlier threshold in pixels (default: 16.0). "
                "Larger tolerates calibration / distortion / noise; too large admits bad pairs."));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO); also forwarded to all sub-tools"));
@@ -598,6 +613,11 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
+  if (!(sift_threshold > 0.0)) {
+    std::cerr << "Error: --sift-threshold must be > 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
   if (auto_exhaustive_max_images < 0) {
     std::cerr << "Error: --auto-exhaustive-max-images must be >= 0 (0 disables)\n\n";
     cmd.printHelp(std::cerr, argv[0]);
@@ -631,12 +651,16 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
+  if (retrieval_min_output_matches < 0) {
+    std::cerr << "Error: --retrieval-min-output-matches must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
   if (geo_backend != "cuda" && geo_backend != "gpu" && geo_backend != "poselib") {
     std::cerr << "Error: --geo-backend must be cuda or gpu or poselib\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
-  const std::string geo_backend_for_isat_geo = (geo_backend == "cuda") ? "gpu" : geo_backend;
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   bool fix_intrinsics = cmd.used("fix-intrinsics");
   exhaustive_match = cmd.used("exhaustive-match");
@@ -701,8 +725,10 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Threading: io_threads=" << io_threads << "  ba_threads=" << ba_threads
             << (ba_threads > 0 ? "" : " (BA: auto)");
   LOG(INFO) << "SIFT image max dim: " << image_max_dim;
+  LOG(INFO) << "SIFT threshold: " << sift_threshold;
   LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
   LOG(INFO) << "Match implementation: " << match_impl;
+  LOG(INFO) << "Retrieval min output matches: " << retrieval_min_output_matches;
 
   auto active_steps = parse_steps(steps_str);
   {
@@ -736,6 +762,7 @@ int main(int argc, char* argv[]) {
   fs::path feat_dir = work_path / "feat";
   fs::path feat_ret_dir = work_path / "feat_retrieval";
   fs::path pairs_retrieve = work_path / "pairs_retrieve.json";
+  fs::path pairs_matched = work_path / "pairs_matched.json";
   fs::path match_dir_path = work_path / "match";
   fs::path geo_dir = work_path / "geo";
   fs::path pairs_json = geo_dir / "pairs.json";
@@ -837,6 +864,8 @@ int main(int argc, char* argv[]) {
     }
     { // 无论是否retrieval，都需要先全分辨率取特征一次
       LOG(INFO) << "Exhaustive full-res matching + Geometry";
+      char sift_threshold_buf[64];
+      std::snprintf(sift_threshold_buf, sizeof(sift_threshold_buf), "%.9g", sift_threshold);
       std::vector<std::string> extract_cmd = {tool_path("isat_extract"),
                                               "-i",
                                               images_all.string(),
@@ -847,7 +876,7 @@ int main(int argc, char* argv[]) {
                                               "--nfeatures",
                                               "10000",
                                               "--threshold",
-                                              "0.0067",
+                                              std::string(sift_threshold_buf),
                                               "--octaves",
                                               "-1",
                                               "--levels",
@@ -935,6 +964,10 @@ int main(int argc, char* argv[]) {
               << "  manual_exhaustive=" << (manual_exhaustive ? "yes" : "no")
               << "  auto_exhaustive=" << (auto_exhaustive ? "yes" : "no") << " (threshold "
               << auto_exhaustive_max_images << ")";
+    LOG(INFO) << "Pair JSONs:";
+    LOG(INFO) << "  candidate_pairs : " << pairs_retrieve.string();
+    LOG(INFO) << "  matched_pairs   : " << pairs_matched.string();
+    LOG(INFO) << "  verified_pairs  : " << pairs_json.string();
 
     if (use_exhaustive_pairs) {
       const long long n_pairs = static_cast<long long>(n_img) * (n_img - 1) / 2;
@@ -984,7 +1017,7 @@ int main(int argc, char* argv[]) {
                   "--cascade-sample-images",
                   std::to_string(cascade_gpu_sample_images),
                   "--cascade-min-output-matches",
-                  std::to_string(cascade_gpu_min_output_matches),
+                  std::to_string(retrieval_min_output_matches),
                   "--cascade-cpu-preset",
                   cascade_cpu_preset});
 
@@ -1010,6 +1043,8 @@ int main(int argc, char* argv[]) {
                            feat_dir.string(),
                            "-o",
                            match_dir_path.string(),
+                           "--output-pairs-json",
+                           pairs_matched.string(),
                            "-j",
                            std::to_string(io_threads),
                            "--preset",
@@ -1022,6 +1057,8 @@ int main(int argc, char* argv[]) {
                            feat_dir.string(),
                            "-o",
                            match_dir_path.string(),
+                           "--output-pairs-json",
+                           pairs_matched.string(),
                            "-j",
                            std::to_string(io_threads),
                            "--cuda-device",
@@ -1035,21 +1072,68 @@ int main(int argc, char* argv[]) {
     } else {
       run_or_die("match",
                  {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),
-                  "-o", match_dir_path.string(), "--match-backend", match_backend, "--max-features",
-                  "-1", "--threads", std::to_string(io_threads),
+                  "-o", match_dir_path.string(), "--output-pairs-json", pairs_matched.string(),
+                  "--match-backend", match_backend, "--max-features", "-1", "--threads",
+                  std::to_string(io_threads),
                   (use_pop_sift ? "--use-pop-sift" : "--use-sift-gpu")});
     }
 
     // Full geometric verification on full-resolution matches
     char geo_tf_buf[64];
     std::snprintf(geo_tf_buf, sizeof(geo_tf_buf), "%.9g", geo_thresh_f);
-    LOG(INFO) << "isat_geo thresholds: min-inliers=" << geo_min_inliers
+    LOG(INFO) << "Geometry thresholds: min-inliers=" << geo_min_inliers
               << "  thresh-f(px)=" << geo_tf_buf;
-    run_or_die("geo",
-               {tool_path("isat_geo"), "-i", pairs_retrieve.string(), "-m", match_dir_path.string(),
-                "-o", geo_dir.string(), "--image-list", images_all.string(), "-t",
-                std::string(geo_tf_buf), "--min-inliers", std::to_string(geo_min_inliers),
-                "--backend", geo_backend_for_isat_geo, "--estimate-h", "--twoview", "--vis"});
+    LOG(INFO) << "Final full-res pair flow:";
+    LOG(INFO) << "  candidate_pairs : " << pairs_retrieve.string();
+    LOG(INFO) << "  matched_pairs   : " << pairs_matched.string();
+    LOG(INFO) << "  verified_pairs  : " << pairs_json.string();
+
+    const fs::path geo_cuda_bin = fs::path(g_bin_dir) / "isat_geo_cuda";
+    if (geo_backend == "cuda" && fs::exists(geo_cuda_bin)) {
+      LOG(INFO) << "Geometry backend resolved: cuda (isat_geo_cuda)";
+      run_or_die("geo", {tool_path("isat_geo_cuda"),
+                          "-i",
+                          pairs_matched.string(),
+                          "-m",
+                          match_dir_path.string(),
+                          "-o",
+                          geo_dir.string(),
+                          "-l",
+                          images_all.string(),
+                          "-t",
+                          std::string(geo_tf_buf),
+                          "--min-inliers",
+                          std::to_string(geo_min_inliers),
+                          "-j",
+                          std::to_string(io_threads),
+                          "--vis"});
+    } else {
+      if (geo_backend == "cuda") {
+        LOG(WARNING) << "Geometry backend downgrade: requested cuda, but isat_geo_cuda not found at "
+                     << geo_cuda_bin.string() << "; falling back to isat_geo --backend gpu-gl";
+      }
+      const std::string legacy_backend = (geo_backend == "cuda") ? "gpu-gl" : geo_backend;
+      LOG(INFO) << "Geometry backend resolved: " << legacy_backend << " (isat_geo)";
+      run_or_die("geo",
+                 {tool_path("isat_geo"),
+                  "-i",
+                  pairs_matched.string(),
+                  "-m",
+                  match_dir_path.string(),
+                  "-o",
+                  geo_dir.string(),
+                  "--image-list",
+                  images_all.string(),
+                  "-t",
+                  std::string(geo_tf_buf),
+                  "--min-inliers",
+                  std::to_string(geo_min_inliers),
+                  "--backend",
+                  legacy_backend,
+                  "--estimate-h",
+                  "--twoview",
+                  "--vis"});
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════════

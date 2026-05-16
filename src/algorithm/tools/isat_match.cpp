@@ -25,6 +25,7 @@
 #include <glog/logging.h>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <string>
@@ -49,6 +50,18 @@ static constexpr const char* kEventPrefix = "ISAT_EVENT ";
 static void printEvent(const json& j) {
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
+}
+
+static bool write_pairs_json(const std::string& output_path,
+                             const std::vector<std::pair<uint32_t, uint32_t>>& pairs) {
+  json pairs_arr = json::array();
+  for (const auto& [i, j] : pairs)
+    pairs_arr.push_back({{"image1_index", i}, {"image2_index", j}});
+  std::ofstream f(output_path);
+  if (!f.is_open())
+    return false;
+  f << json{{"pairs", pairs_arr}}.dump(2) << "\n";
+  return true;
 }
 using namespace insight::io;
 
@@ -348,6 +361,7 @@ int main(int argc, char* argv[]) {
 
   std::string pairs_json;
   std::string output_dir;
+  std::string output_pairs_json;
   std::string feature_dir;
   float ratio_test = 0.8f;
   int max_matches = -1;
@@ -362,6 +376,8 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('i', pairs_json, "input")
               .doc("Input pairs list (JSON format, from isat_retrieve)"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory for .isat_match files"));
+  cmd.add(make_option(0, output_pairs_json, "output-pairs-json")
+              .doc("Optional JSON path listing only pairs whose .isat_match files were written."));
   cmd.add(make_option('f', feature_dir, "feature-dir")
               .doc("Matching feature directory (.isat_feat files from isat_extract -o). "
                    "Paths are rebuilt as {dir}/{image_id}.isat_feat, overriding the "
@@ -542,7 +558,7 @@ int main(int argc, char* argv[]) {
   // Stage 3: Write results (multi-threaded I/O)
   Stage writeStage(
       "WriteResults", num_threads, IO_QUEUE_SIZE,
-      [&pair_tasks, &output_dir, use_pop_sift](int index) {
+      [&pair_tasks, &output_dir, &output_pairs_json, use_pop_sift](int index) {
         auto& task = pair_tasks[index];
 
         if (task.matches.num_matches == 0) {
@@ -611,6 +627,19 @@ int main(int argc, char* argv[]) {
   double avg_time_per_pair =
       (total_pairs > 0) ? static_cast<double>(total_time) / total_pairs : 0.0;
 
+  if (!output_pairs_json.empty()) {
+    std::vector<std::pair<uint32_t, uint32_t>> written_pairs;
+    written_pairs.reserve(static_cast<size_t>(pairs_with_matches));
+    for (const auto& task : pair_tasks) {
+      if (task.matches.num_matches > 0)
+        written_pairs.emplace_back(task.image1_index, task.image2_index);
+    }
+    if (!write_pairs_json(output_pairs_json, written_pairs)) {
+      LOG(ERROR) << "Failed to write output pairs JSON: " << output_pairs_json;
+      return 1;
+    }
+  }
+
   // Machine-readable result (CLI_IO_CONVENTIONS: stdout = ISAT_EVENT only)
   printEvent({{"type", "match.complete"},
               {"ok", true},
@@ -622,7 +651,8 @@ int main(int argc, char* argv[]) {
                 {"total_time_s", total_time},
                 {"avg_matches_per_pair", std::round(avg_matches * 100) / 100.0},
                 {"avg_time_per_pair_s", std::round(avg_time_per_pair * 100) / 100.0},
-                {"output_dir", output_dir}}}});
+                {"output_dir", output_dir},
+                {"output_pairs_json", output_pairs_json}}}});
 
   LOG(INFO) << "=== Matching Complete ===";
   LOG(INFO) << "Total pairs: " << total_pairs;

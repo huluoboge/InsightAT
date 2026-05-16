@@ -15,6 +15,7 @@
 #include "track_store.h"
 #include "view_graph.h"
 #include <Eigen/Core>
+#include <cmath>
 #include <functional>
 #include <optional>
 #include <string>
@@ -44,10 +45,11 @@ bool run_initial_pair_loop(const ViewGraph& view_graph, TrackStore* store,
                            const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& image_to_camera_index,
                            int min_tracks_for_intital_pair, double min_median_angle_deg,
-                           uint32_t* initial_im0_out,
-                           uint32_t* initial_im1_out, std::vector<Eigen::Matrix3d>* poses_R_out,
+                           uint32_t* initial_im0_out, uint32_t* initial_im1_out,
+                           std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
-                           std::vector<bool>* registered_out);
+                           std::vector<bool>* registered_out,
+                           int max_first_images = 100, int max_second_images = 50);
 
 // ─── BA (build from Store, solve, write back) ───────────────────────────────
 
@@ -120,7 +122,9 @@ bool run_local_ba_colmap(TrackStore* store, std::vector<Eigen::Matrix3d>* poses_
                          const std::vector<camera::Intrinsics>& cameras,
                          const std::vector<int>& batch, int max_variable_cameras,
                          int max_iterations, double* rmse_px_out, int max_observations_per_track = 0,
-                         const BASolverOverrides& overrides = {});
+                         const BASolverOverrides& overrides = {}, int scene_num_registered = 0,
+                         double constant_cam_gross_outlier_px = 0.0,
+                         int constant_cam_gross_outlier_min_registered = 0);
 
 /**
  * Neighbor-anchored local BA (kBatchNeighbor strategy).
@@ -137,7 +141,9 @@ bool run_local_ba_batch_neighbor(
     const std::vector<camera::Intrinsics>& cameras, const std::vector<int>& batch,
     const std::vector<int>& new_track_ids, int neighbor_k, int max_iterations, double* rmse_px_out,
     int max_observations_per_track = 0,
-    const BASolverOverrides& overrides = {});
+    const BASolverOverrides& overrides = {}, int scene_num_registered = 0,
+    double constant_cam_gross_outlier_px = 0.0,
+    int constant_cam_gross_outlier_min_registered = 0);
 
 // ─── Full pipeline ───────────────────────────────────────────────────────────
 
@@ -191,40 +197,28 @@ struct ResectionOptions {
   float min_visibility_coverage = 0.02f;
   /// Pyramid depth (COLMAP default 6 → finest grid 2^6 per side).
   int visibility_pyramid_levels = 6;
+  /// GpuResectionContext `max_pts`: upper bound on 3D–2D pairs **per image** for CUDA LM refine
+  /// (one image at a time). Typically set to ~2× your per-image feature extraction cap (e.g. 10k
+  /// features → 20000). Must be ≥ the largest `nk` passed to gpu_resection_upload for any image.
+  int max_gpu_resection_points_per_image = 20000;
 };
 
 /// Progressive intrinsics unlock schedule + freeze policy.
 ///
-/// Four phases keyed on num_registered:
-///   Phase 0 (< phase1_min):             fix ALL — no intrinsics optimisation.
-///   Phase 1 [phase1_min, phase2_min):   optimise fx/fy only.
-///   Phase 2 [phase2_min, phase3_min):   optimise fx/fy + k1/k2.
-///   Phase 3 (≥ phase3_min):             optimise all (cx/cy, k3, p1, p2 unlocked).
+/// Per **camera model**: phases use that camera's registered-image count (see fix_masks_per_camera).
+///   Phase 0 (< phase1_min):              fix ALL.
+///   Phase 1 [phase1_min, phase2_min):    optimise **fx + k1**; sigma, cx, cy, k2, k3, p1, p2 fixed.
+///   Phase 2 [phase2_min, phase3_min):    optimise **fx + k1 + k2**; sigma, cx, cy, k3, p1, p2 fixed.
+///   Phase 3 (≥ phase3_min):             all intrinsics free.
 ///
 /// fix_mask_for(n) returns the FixIntrinsicsMask to pass as partial_intr_fix
 /// to run_global_ba().  It supersedes the old intrinsics_k3p12_free_min_images field.
 struct IntrinsicsSchedule {
   // ── Phase unlock thresholds ───────────────────────────────────────────────
-  //[1,phase1_min_images): fix all
-  //[phase1_min_images, phase2_min_images): refine fx/fy
-  //[phase2_min_images, phase3_min_images): refine fx/fy + k1/k2
-  //[phase3_min_images, ∞): refine all (cx/cy, k3, p1, p2)
-  int phase1_min_images = 3;   ///< Start optimising fx/fy.
-  int phase2_min_images = 10;  ///< Also unlock k1/k2.
-  int phase3_min_images = 50; ///< Unlock cx/cy + k3/p1/p2 (full intrinsics).
+  int phase1_min_images = 3;   ///< Start optimising fx + k1 (distortion k2+ still fixed).
+  int phase2_min_images = 10;  ///< Also unlock k2 (still fix sigma, cx/cy, k3, p1, p2 until phase 3).
+  int phase3_min_images = 50;  ///< Unlock cx/cy + k3/p1/p2 (full intrinsics).
 
-  // ── Progressive freeze (per-camera “frozen intrinsics” for Schur / BA); off by default ─────
-  bool progressive_freeze = false;
-  int freeze_min_images = 30;       ///< Level-1 gate: min registered images per camera.
-  double freeze_delta_focal = 1e-3; ///< Relative focal convergence threshold.
-  double freeze_delta_pp = 0.5;     ///< Principal-point convergence threshold (px).
-  double freeze_delta_dist = 1e-4;  ///< Distortion L1 convergence threshold.
-  int freeze_stable_rounds = 2;     ///< Consecutive stable BAs needed to confirm freeze.
-
-  // ── Low-frequency recalibration ───────────────────────────────────────────
-  int recalib_every_n_periodic = 4; ///< Full-recalib every N mid-freq BAs (0 = disabled).
-
-  // ── Focal soft prior ──────────────────────────────────────────────────────
   double focal_prior_weight = 100.0; ///< Tikhonov weight on focal deviation (0 = disabled).
 
   /// Returns the partial_intr_fix bitmask for run_global_ba() based on registration count.
@@ -249,17 +243,34 @@ struct LocalBAOptions {
   /// When true, run the local-BA phase after switch_after_n_images (periodic global + local BA).
   /// Default false: global-only loop until you opt in.
   bool enable = false;
-  int max_iterations = 25;
+  int max_iterations = 250;
   /// Cap per-track observations inserted into local BA (0 = no cap).
   int max_observations_per_track = 8;
+
+  /// After local BA, mark **constant** (frozen-pose) cameras' observations as kRestorable deleted when
+  /// reproj error exceeds this (px). 0 = disabled. Intended for late incremental stages: intrinsics are
+  /// stable and gross outliers on neighbors poison the next periodic global. Early phase: keep 0 so we
+  /// do not strip observations that look bad only because fx/distortion are still moving.
+  double constant_cam_gross_outlier_px = 0.0;
+  /// Gate for `constant_cam_gross_outlier_px`: require `scene_num_registered >= this`. If 0 while
+  /// `constant_cam_gross_outlier_px > 0`, `switch_after_n_images` is used instead.
+  int constant_cam_gross_outlier_min_registered = 0;
 };
+
+/// Effective minimum registration count for LocalBAOptions::constant_cam_gross_outlier_px (see struct).
+inline int effective_local_ba_gross_constant_cam_min_reg(const LocalBAOptions& o) {
+  if (o.constant_cam_gross_outlier_px <= 0.0)
+    return 0;
+  return o.constant_cam_gross_outlier_min_registered > 0 ? o.constant_cam_gross_outlier_min_registered
+                                                         : o.switch_after_n_images;
+}
 
 /**
  * Dispatch one local-BA solve according to `opts.strategy` (kColmap / kBatchNeighbor / kWindow).
  * Intrinsics are not optimised. Extend here when adding LocalBAStrategy values.
  */
-bool run_local_ba_dispatch(const LocalBAOptions& opts, int anchor_image, TrackStore* store,
-                           std::vector<Eigen::Matrix3d>* poses_R,
+bool run_local_ba_dispatch(const LocalBAOptions& opts, int anchor_image, int scene_num_registered,
+                           TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R,
                            std::vector<Eigen::Vector3d>* poses_C,
                            const std::vector<bool>& registered,
                            const std::vector<int>& image_to_camera_index,
@@ -271,20 +282,38 @@ bool run_local_ba_dispatch(const LocalBAOptions& opts, int anchor_image, TrackSt
 struct GlobalBAOptions {
   bool enabled = true;
   bool optimize_intrinsics = true;
-  int optimize_intrinsics_min_images = 10; ///< Gate: don't touch intrinsics below this count.
-  int max_iterations = 50;
-  int every_n_images = 1;             ///< Early-phase: run global BA every N registrations.
-  int periodic_every_n_images = 100;   ///< Local-BA phase: mid-freq global BA every N images.
+  int max_iterations = 500;
+  int every_n_images = 1; ///< Early-phase: run global BA every N registrations.
+  /// Late phase only (after local_ba.switch_after_n_images): fixed-period fallback when linear
+  /// spacing is off. When periodic_global_linear_spacing is true and (spacing_a>0 || spacing_b>0),
+  /// spacing uses spacing_a + spacing_b·n instead.
+  int periodic_every_n_images = 50;
+  /// If true and at least one of spacing_a/spacing_b is positive, next periodic global when
+  /// n_registered ≥ milestone where milestone advances by ceil(max(1, spacing_a + spacing_b·n))
+  /// after each successful periodic solve (first milestone = switch_after_n_images).
+  bool periodic_global_linear_spacing = true;
+  /// Linear gap after a periodic global at registration count n: gap = ceil(max(1, a + b·n)).
+  /// At n≈100 with the defaults below, gap≈28 (was a=40,b=0.1 → gap≈50): fewer local-only
+  /// stretches before the next full global, which tends to avoid ill-conditioned joint Schur steps.
+  double periodic_global_spacing_a = 22.0;
+  double periodic_global_spacing_b = 0.06;
   BASolverOverrides solver_overrides; ///< Ceres solver parameter overrides.
   /// Conservative early phase: limit to 1 new camera per SfM iteration (identical to local-BA
   /// behaviour) until this many images are registered.  0 = disabled.  Improves stability when
   /// intrinsics are still converging in the first ~100 frames.
   int early_phase_max_cameras = 100;
-  /// Phase boundary: below this count, run global BA every registration (intrinsics unstable).
-  /// Above this (and below local_ba.switch_after_n_images), enter the mid-phase where global BA
-  /// fires every every_n_images registrations and local BA fills the gaps in between.
-  /// 0 = disabled (global-BA-only until switch_after_n_images).
-  int early_phase_global_only_images = 35;
+  /// Phase boundary: run full **global** BA on every registration while `n_registered <` this value.
+  /// Default 41 → global every new registration for the first 40 registered images; at n≥41 enter
+  /// mid-phase (linear or fixed-step globals + local BA) until `switch_after_n_images`.
+  /// 0 = disabled (global-BA-only until switch_after_n_images when local BA is off; see pipeline).
+  int early_phase_global_only_images = 41;
+
+  /// Mid phase [early_phase_global_only_images, switch_after_n_images): when true and (a>0||b>0),
+  /// full global BA runs when n_registered ≥ milestone; milestone += ceil(max(1,a+b·n)) after each
+  /// successful scheduled global. When false, use every_n_images modulo (legacy).
+  bool mid_phase_global_linear_spacing = true;
+  double mid_global_spacing_a = 5.0;
+  double mid_global_spacing_b = 0.12;
 
   // ── 2-degree track pruning in global BA ──────────────────────────────────────────────────────
   /// If true, 2-view tracks (visible in exactly 2 registered images) whose both observing images
@@ -330,16 +359,51 @@ struct GlobalBAOptions {
 
   // ── Intermediate-round loose tolerances ──────────────────────────────────────────────────────
   /// When the outlier-rejection fine loop runs round r>0, the pose is already established and we
-  /// only need to re-converge after deleting bad observations.  Once num_registered is large enough
-  /// (intrinsics stable), apply loose Ceres tolerances for these intermediate rounds so they exit
-  /// quickly.  Round r=0 always uses the full solver_overrides / Ceres defaults.
-  /// Set intermediate_loose_after_images=0 to disable.
-  int intermediate_loose_after_images = 31; ///< Gate: only apply loose tolerances above this count.
+  /// only need to re-converge after deleting bad observations.  Round r=0 always uses the full
+  /// solver_overrides / Ceres defaults.  Set intermediate_loose_after_images=0 to disable.
+  ///
+  /// Profiling on 301-image data showed that keeping this at 31 caused 37% of all Ceres time to
+  /// be spent on early-phase (n<31) cleanup rounds using full strict tolerances.  Setting it to 3
+  /// applies loose tolerances from the very first multi-round BA and typically saves 15–20s.
+  int intermediate_loose_after_images = 3; ///< Gate: n_registered >= this to apply loose tol.
   /// function_tolerance for intermediate rounds (r>0). 0.0 = use Ceres default (1e-6).
   double intermediate_function_tolerance = 1e-4;
   /// Max iterations cap for intermediate rounds (r>0). 0 = use max_iterations.
   int intermediate_max_iterations = 20;
 };
+
+/// Advance linear periodic-global milestone after a successful solve at `num_registered`.
+inline void bump_periodic_global_milestone_linear(int num_registered, const GlobalBAOptions& g,
+                                                  int* next_milestone) {
+  const double raw =
+      g.periodic_global_spacing_a + g.periodic_global_spacing_b * static_cast<double>(num_registered);
+  const int gap = std::max(1, static_cast<int>(std::ceil(raw)));
+  *next_milestone = num_registered + gap;
+}
+
+/// Whether to run an extra full global BA after local BA this iteration (late phase cadence).
+inline bool periodic_global_ba_should_run_after_local(
+    int num_registered, bool in_late_phase, const GlobalBAOptions& g, int switch_after_n_images,
+    int* next_milestone) {
+  if (!g.enabled || !in_late_phase)
+    return false;
+  if (g.periodic_global_linear_spacing &&
+      (g.periodic_global_spacing_a > 0.0 || g.periodic_global_spacing_b > 0.0)) {
+    if (*next_milestone < 0)
+      *next_milestone = switch_after_n_images;
+    return num_registered >= *next_milestone;
+  }
+  return g.periodic_every_n_images > 0 &&
+         (num_registered % g.periodic_every_n_images == 0);
+}
+
+inline void bump_mid_global_milestone_linear(int num_registered, const GlobalBAOptions& g,
+                                             int* next_milestone) {
+  const double raw =
+      g.mid_global_spacing_a + g.mid_global_spacing_b * static_cast<double>(num_registered);
+  const int gap = std::max(1, static_cast<int>(std::ceil(raw)));
+  *next_milestone = num_registered + gap;
+}
 
 /// Median-based scene normalization (tracks + registered camera centres). Default 0 = off.
 /// When enabled, call before periodic global BA so BA runs in normalized world units; no inverse
@@ -360,40 +424,10 @@ struct OutlierOptions {
   double min_angle_deg = 0.50;    ///< Reject observation if max parallax angle < this (fine phase).
   double max_angle_deg = 120.0;   ///< Reject observation if max parallax angle > this (fine phase).
   double max_depth_factor = 200.0; ///< Reject if depth > median_scene_depth × factor (0 = off).
-  int min_for_retry = 60;          ///< Continue iterating when newly rejected >= this.
+  int min_for_retry = 100;         ///< Continue iterating when newly rejected >= this.
   int min_registered_images = 2;   ///< Minimum registered images before outlier rejection runs.
-  int final_max_rounds = 10;       ///< Max rounds in the final global BA reject loop.
-  /// If true (and coarse_ba_max_rounds > 0, global BA), run fixed-intrinsic coarse BA before fine
-  /// phase.
-  bool enable_coarse_outlier_rejection = true;
-  /// Phase 1: fast global BA + loose reproj delete (gross outliers); intrinsics always fixed there.
-  int coarse_ba_max_rounds = 3; ///< 0 = skip coarse phase when enable_coarse_outlier_rejection.
-  double coarse_huber_delta_px = 12.0;  ///< Huber loss scale during coarse BA (px).
-  double coarse_reproj_floor_px = 16.0; ///< Hard reproj threshold to delete observations (px).
-  /// Per-pass reproj delete thresholds (px). If empty, every pass uses coarse_reproj_floor_px.
-  /// Example: {8, 6, 4} tightens the gate over coarse_ba_max_rounds passes.
-  std::vector<double> coarse_reproj_thresholds_px;
-  /// Ceres iteration cap per coarse global-BA pass (intrinsics fixed; loose tolerances).
-  int coarse_ba_max_iterations_per_pass = 500;
+  int max_rounds = 10;             ///< Max rounds in the BA outlier-rejection loop.
 };
-
-/**
- * Fixed intrinsics: repeated global BA + hard reproj delete per reproj_thresholds_px entry.
- * Ceres tolerances are fixed inside run_coarse_outlier_rejection_global_ba (not GlobalBAOptions).
- */
-// struct CoarseOutlierGlobalBAOptions {
-//   std::vector<double> reproj_thresholds_px;
-//   double huber_delta_px = 12.0;
-//   int max_iterations_per_pass = 500;
-//   int min_rejected_to_continue = 1;
-// };
-
-// bool run_coarse_outlier_rejection_global_ba(
-//     TrackStore* store, std::vector<Eigen::Matrix3d>* poses_R, std::vector<Eigen::Vector3d>* poses_C,
-//     const std::vector<bool>& registered, const std::vector<int>& image_to_camera_index,
-//     std::vector<camera::Intrinsics>* cameras, int anchor_image,
-//     const CoarseOutlierGlobalBAOptions& coarse, double* rmse_px_out);
-
 /// Options for triangulation and periodic re-triangulation.
 struct TriangulationOptions {
   double min_angle_deg = 0.5;   ///< Min max pairwise angle for a triangulated point.
@@ -460,6 +494,12 @@ struct IncrementalSfMOptions {
   OutlierOptions outlier;
   TriangulationOptions triangulation;
   DebugOptions debug; ///< Per-iteration debug snapshots (disabled by default).
+
+  /// Number of OpenMP threads for parallel loops (outlier rejection, select_ba_subset, etc.).
+  /// -1 (default) means use the system/OMP default (typically all hardware threads).
+  /// Set to a positive value to cap parallelism, e.g. when multiple pipeline instances run
+  /// concurrently and you want to divide cores evenly.
+  int omp_num_threads = -1;
 };
 
 /// One BA + iterative outlier-rejection call (global or local). Keeps

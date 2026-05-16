@@ -30,6 +30,11 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/popsift/CMakeLists.txt")
   message(STATUS "Third-party: enabling PopSift build (default backend)")
   add_subdirectory(popsift)
+  # Ensure a stable namespaced target for downstream links even when PopSift
+  # examples are disabled.
+  if(TARGET popsift AND NOT TARGET PopSift::popsift)
+    add_library(PopSift::popsift ALIAS popsift)
+  endif()
 else()
   message(FATAL_ERROR
     "third_party/popsift was not found. PopSift is required as the default backend.")

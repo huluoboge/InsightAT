@@ -56,6 +56,8 @@ set(ALGORITHM_SOURCES
     io/idc_writer.cpp
     io/idc_reader.h
     io/idc_reader.cpp
+    io/geopack_index.h
+    io/geopack_index.cpp
     io/track_store_idc.h
     io/track_store_idc.cpp
     io/exif/exif.h
@@ -137,6 +139,22 @@ if(INSIGHTAT_USE_CUDA_PCA)
         modules/retrieval/pca_whitening_cuda.h
         modules/retrieval/pca_whitening_cuda.cu
     )
+endif()
+
+# Add SfM CUDA kernels when CUDAToolkit is present
+if(CUDAToolkit_FOUND)
+    list(APPEND ALGORITHM_SOURCES
+        modules/sfm/cuda/cuda_sfm_common.cuh
+        modules/sfm/cuda/cuda_triangulation.cuh
+        modules/sfm/cuda/cuda_triangulation.cu
+        modules/sfm/cuda/cuda_reproj.cuh
+        modules/sfm/cuda/cuda_reproj.cu
+        modules/sfm/cuda/cuda_resection.cuh
+        modules/sfm/cuda/cuda_resection.cu
+    )
+    message(STATUS "InsightATAlgorithm: SfM CUDA kernels enabled (triangulation / reproj / resection)")
+else()
+    message(STATUS "InsightATAlgorithm: SfM CUDA kernels disabled (CUDAToolkit not found)")
 endif()
 
 # ─────────────────────────────────────────────────────────────
@@ -250,6 +268,21 @@ target_include_directories(test_sfm_diag2
         ${CMAKE_SOURCE_DIR}/third_party
 )
 set_property(TARGET test_sfm_diag2 PROPERTY FOLDER InsightAT/Tests)
+
+# ── Resection candidate cache unit test ────────────────────────────────────
+add_executable(test_resection_candidate_cache modules/sfm/test_resection_candidate_cache.cpp)
+target_link_libraries(test_resection_candidate_cache
+    PRIVATE
+        InsightATAlgorithm
+        PoseLib
+        glog::glog
+)
+target_include_directories(test_resection_candidate_cache
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET test_resection_candidate_cache PROPERTY FOLDER InsightAT/Tests)
 
 # ── CPU cascade hash test ──
 add_executable(test_cpu_cascade_hash
@@ -665,6 +698,27 @@ if(TARGET cuda_geo_ransac)
   target_link_libraries(isat_geo PRIVATE cuda_geo_ransac CUDA::cudart)
   add_compile_definitions(INSIGHTAT_HAS_CUDA_GEO=1)
   message(STATUS "InsightATAlgorithm: INSIGHTAT_HAS_CUDA_GEO=1 (global)")
+
+  # isat_geo_cuda — pure CUDA pipeline: F+E+H RANSAC, E decompose, triangulate all on GPU
+  add_executable(isat_geo_cuda tools/isat_geo_cuda.cpp)
+  target_link_libraries(isat_geo_cuda
+      PRIVATE
+          insightat_tools_logging
+          InsightATAlgorithm
+          cuda_geo_ransac
+          sfm_module
+          glog::glog
+          CUDA::cudart
+  )
+  target_include_directories(isat_geo_cuda
+      PRIVATE
+          ${CMAKE_CURRENT_SOURCE_DIR}/..
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+          ${CMAKE_CURRENT_SOURCE_DIR}/modules/geometry
+  )
+  target_compile_definitions(isat_geo_cuda PRIVATE INSIGHTAT_HAS_CUDA_GEO=1)
+  set_property(TARGET isat_geo_cuda PROPERTY FOLDER InsightAT/Tools)
+  message(STATUS "InsightATAlgorithm: isat_geo_cuda enabled (CUDA E decompose + triangulate)")
 endif()
 
 # ─────────────────────────────────────────────────────────────

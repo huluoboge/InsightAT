@@ -94,6 +94,10 @@ bool load_track_store_from_idc(const std::string& path, TrackStore* store_out,
   } else if (view_graph_out) {
     view_graph_out->clear();
   }
+  // Rebuild the per-image triangulation counters (image_n_tri_) from scratch.
+  // The incremental updates during add_track/mark_track_deleted/add_observation
+  // may over-count when tracks are deleted before observations are added.
+  store_out->rebuild_image_n_tri();
   return true;
 }
 

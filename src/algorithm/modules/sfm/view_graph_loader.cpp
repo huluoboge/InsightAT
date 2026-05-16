@@ -4,6 +4,7 @@
  */
 
 #include "view_graph_loader.h"
+#include "../../io/geopack_index.h"
 #include "../../io/idc_reader.h"
 #include "../../tools/pair_json_utils.h"
 #include "track_store.h"
@@ -25,6 +26,27 @@ namespace {
 bool geo_file_exists(const std::string& path) {
   std::error_code ec;
   return std::filesystem::is_regular_file(std::filesystem::path(path), ec);
+}
+
+void pair_geo_info_from_geopack_entry(const io::GeoPackPairEntry& e, PairGeoInfo* info) {
+  if (!info)
+    return;
+  info->F_ok = e.F_ok;
+  info->F_inliers = e.F_inliers;
+  info->F_inlier_ratio = e.F_inlier_ratio;
+  info->H_ok = e.H_ok;
+  info->H_inliers = e.H_inliers;
+  info->is_degenerate = e.is_degenerate;
+  info->E_ok = e.E_ok;
+  info->E_inliers = e.E_inliers;
+  info->twoview_ok = e.twoview_ok;
+  info->stable = e.stable;
+  info->num_valid_points = e.num_valid_points;
+  info->median_pixel_disp = e.median_pixel_disp;
+  info->score_prelim = e.score_prelim;
+  info->stability.median_parallax_deg = e.median_parallax_deg;
+  info->stability.median_depth_baseline = e.median_depth_baseline;
+  info->stability.is_stable = e.stable;
 }
 
 } // namespace
@@ -145,8 +167,13 @@ bool build_view_graph_from_pairs_list_and_track_store(
   std::string dir = geo_dir;
   if (!dir.empty() && dir.back() != '/')
     dir += '/';
+
+  io::GeoPackIndex geopack_index;
+  const bool have_geopack_index = geopack_index.load_from_dir(geo_dir);
+
   out->reserve(canonical_pairs.size());
   size_t loaded = 0;
+  size_t loaded_from_geopack = 0;
   size_t skipped_not_covisible = 0;
   size_t skipped_no_geo = 0;
   for (const auto& e : canonical_pairs) {
@@ -159,18 +186,37 @@ bool build_view_graph_from_pairs_list_and_track_store(
       ++skipped_not_covisible;
       continue;
     }
-    const std::string path = dir + std::to_string(i) + "_" + std::to_string(j) + ".isat_geo";
+
     PairGeoInfo info;
-    if (!load_pair_geo_info_from_isat_geo_file(path, i, j, &info)) {
+    info.image1_index = i;
+    info.image2_index = j;
+
+    bool ok = false;
+    if (have_geopack_index) {
+      const io::GeoPackPairEntry* entry = geopack_index.find(i, j);
+      if (entry) {
+        pair_geo_info_from_geopack_entry(*entry, &info);
+        ok = true;
+        ++loaded_from_geopack;
+      }
+    }
+
+    if (!ok) {
+      const std::string path = dir + std::to_string(i) + "_" + std::to_string(j) + ".isat_geo";
+      ok = load_pair_geo_info_from_isat_geo_file(path, i, j, &info);
+    }
+    if (!ok) {
       ++skipped_no_geo;
       continue;
     }
+
     out->add_pair(info);
     ++loaded;
   }
   LOG(INFO) << "build_view_graph_from_pairs_list_and_track_store: " << loaded << " pairs embedded (from "
             << canonical_pairs.size() << " direct pairs; skipped_not_covisible=" << skipped_not_covisible
-            << " skipped_no_geo_file=" << skipped_no_geo << " geo_dir=" << geo_dir << ")";
+            << " skipped_no_geo_file=" << skipped_no_geo << " loaded_from_geopack="
+            << loaded_from_geopack << " geo_dir=" << geo_dir << ")";
   return true;
 }
 
@@ -254,18 +300,18 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
   std::string dir = geo_dir;
   if (!dir.empty() && dir.back() != '/')
     dir += '/';
+
+  io::GeoPackIndex geopack_index;
+  const bool have_geopack_index = geopack_index.load_from_dir(geo_dir);
+
   size_t num_loaded = 0;
+  size_t num_loaded_geopack = 0;
   for (const auto& p : j["pairs"]) {
     uint32_t idx1 = insight::tools::get_image_index_from_pair(p, "image1_index");
     uint32_t idx2 = insight::tools::get_image_index_from_pair(p, "image2_index");
     if (idx1 > idx2)
       std::swap(idx1, idx2);
-    std::string geo_path = dir + std::to_string(idx1) + "_" + std::to_string(idx2) + ".isat_geo";
-    if (!geo_file_exists(geo_path))
-      continue;
-    insight::io::IDCReader reader(geo_path);
-    if (!reader.is_valid())
-      continue;
+
     PairGeoInfo info;
     info.image1_index = idx1;
     info.image2_index = idx2;
@@ -278,13 +324,32 @@ bool build_view_graph_from_geo(const std::string& pairs_json_path, const std::st
       info.F_inlier_ratio = p.value("inlier_ratio", 0.0f);
     if (p.contains("degenerate"))
       info.is_degenerate = p.value("degenerate", false);
-    // Now augment with any detailed metadata stored in the .isat_geo IDC file.
-    pair_geo_info_from_isat_geo_metadata(reader.get_metadata(), &info);
+
+    bool ok = false;
+    if (have_geopack_index) {
+      const io::GeoPackPairEntry* entry = geopack_index.find(idx1, idx2);
+      if (entry) {
+        pair_geo_info_from_geopack_entry(*entry, &info);
+        ok = true;
+        ++num_loaded_geopack;
+      }
+    }
+    if (!ok) {
+      std::string geo_path = dir + std::to_string(idx1) + "_" + std::to_string(idx2) + ".isat_geo";
+      if (!geo_file_exists(geo_path))
+        continue;
+      insight::io::IDCReader reader(geo_path);
+      if (!reader.is_valid())
+        continue;
+      // Now augment with any detailed metadata stored in the .isat_geo IDC file.
+      pair_geo_info_from_isat_geo_metadata(reader.get_metadata(), &info);
+    }
+
     out->add_pair(info);
     ++num_loaded;
   }
   LOG(INFO) << "build_view_graph_from_geo: " << num_loaded << " pairs loaded from " << num_pairs_json
-            << " (geo_dir=" << geo_dir << ")";
+            << " (from_geopack=" << num_loaded_geopack << ", geo_dir=" << geo_dir << ")";
   return true;
 }
 
