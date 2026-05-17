@@ -62,10 +62,27 @@ from benchmarks.sfm_compare.colmap_sparse import (  # noqa: E402
 
 
 def _colmap_exe(bin_dir: Optional[str]) -> str:
+    """
+    Find COLMAP executable.
+    Tries:
+      1. {bin_dir}/colmap
+      2. {bin_dir}/src/colmap/exe/colmap (COLMAP CMake build layout)
+      3. Falls back to 'colmap' (search in PATH)
+    """
     if bin_dir:
-        p = Path(bin_dir) / "colmap"
-        if p.is_file():
-            return str(p)
+        candidates = [
+            Path(bin_dir) / "colmap",
+            Path(bin_dir) / "src" / "colmap" / "exe" / "colmap",
+        ]
+        for p in candidates:
+            if p.is_file() and os.access(p, os.X_OK):
+                return str(p)
+        # If not found, print diagnostic info
+        print(
+            f"Warning: COLMAP executable not found in {bin_dir}. Tried:\n"
+            + "\n".join(f"  - {c}" for c in candidates),
+            file=sys.stderr,
+        )
     return "colmap"
 
 

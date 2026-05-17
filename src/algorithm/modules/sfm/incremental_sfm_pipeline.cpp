@@ -4480,6 +4480,12 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   }
   int num_registered = 2;
 
+  if (opts.max_registered_images > 0 && num_registered >= opts.max_registered_images) {
+    LOG(INFO) << "Early stop: max_registered_images reached at initial pair ("
+              << num_registered << "/" << opts.max_registered_images << ")";
+    return true;
+  }
+
   LOG(INFO) << "Initial pair done. Registered: " << num_registered << "/" << n_images;
   // ── Initial-pair diagnostic ──────────────────────────────────────────────
   {
@@ -4565,6 +4571,12 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   int next_periodic_global_registered = -1; ///< Late-phase linear milestone for periodic global BA.
   int next_mid_global_registered = -1; ///< Mid-phase linear milestone for full global BA cadence.
   for (;;) {
+    if (opts.max_registered_images > 0 && num_registered >= opts.max_registered_images) {
+      LOG(INFO) << "Early stop: max_registered_images reached (" << num_registered << "/"
+                << opts.max_registered_images << ")";
+      break;
+    }
+
     ++sfm_iter;
     auto iter_start = Clock::now();
     const uint64_t iter_ms_choose_t0 = ms_choose_candidates;

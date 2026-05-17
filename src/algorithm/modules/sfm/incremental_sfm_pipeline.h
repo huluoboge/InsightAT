@@ -499,6 +499,10 @@ struct IncrementalSfMOptions {
   TriangulationOptions triangulation;
   DebugOptions debug; ///< Per-iteration debug snapshots (disabled by default).
 
+  /// Early stop when registered images reach this cap (including initial pair).
+  /// 0 = disabled (run full incremental reconstruction).
+  int max_registered_images = 0;
+
   /// Number of OpenMP threads for parallel loops (outlier rejection, select_ba_subset, etc.).
   /// -1 (default) means use the system/OMP default (typically all hardware threads).
   /// Set to a positive value to cap parallelism, e.g. when multiple pipeline instances run
