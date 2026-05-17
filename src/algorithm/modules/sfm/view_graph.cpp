@@ -12,6 +12,25 @@
 namespace insight {
 namespace sfm {
 
+namespace {
+
+double second_image_rank_score(const SecondImageCandidate& c) {
+  // Angle is intentionally given a high weight to prefer wide-baseline seeds
+  // while still balancing inlier support and reconstructed point count.
+  const double s_prelim = std::log1p(std::max(0.0, c.score_prelim));
+  const double s_f = std::log1p(static_cast<double>(std::max(0, c.F_inliers)));
+  const double s_pts = std::log1p(static_cast<double>(std::max(0, c.num_valid_points)));
+  const double s_angle = std::log1p(std::max(0.0, c.median_parallax_deg));
+
+  constexpr double kWPrelim = 1.0;
+  constexpr double kWF = 1.2;
+  constexpr double kWPoints = 1.4;
+  constexpr double kWAngle = 2.2;
+  return kWPrelim * s_prelim + kWF * s_f + kWPoints * s_pts + kWAngle * s_angle;
+}
+
+} // namespace
+
 void ViewGraph::add_pair(const PairGeoInfo& info) {
   pairs_.push_back(info);
   degree_dirty_ = true;
@@ -167,10 +186,18 @@ ViewGraph::get_second_image_candidates_sorted(uint32_t first_image,
     result.push_back(sc);
   }
 
-  std::stable_sort(result.begin(), result.end(),
-                   [](const SecondImageCandidate& a, const SecondImageCandidate& b) {
-                     return a.score_prelim > b.score_prelim;
-                   });
+  std::stable_sort(result.begin(), result.end(), [](const SecondImageCandidate& a,
+                                                    const SecondImageCandidate& b) {
+    const double sa = second_image_rank_score(a);
+    const double sb = second_image_rank_score(b);
+    if (sa != sb)
+      return sa > sb;
+    if (a.median_parallax_deg != b.median_parallax_deg)
+      return a.median_parallax_deg > b.median_parallax_deg;
+    if (a.num_valid_points != b.num_valid_points)
+      return a.num_valid_points > b.num_valid_points;
+    return a.F_inliers > b.F_inliers;
+  });
   return result;
 }
 

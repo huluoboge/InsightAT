@@ -44,7 +44,9 @@ namespace sfm {
 bool run_initial_pair_loop(const ViewGraph& view_graph, TrackStore* store,
                            const std::vector<camera::Intrinsics>& cameras,
                            const std::vector<int>& image_to_camera_index,
-                           int min_tracks_for_intital_pair, double min_median_angle_deg,
+                           int min_tracks_for_intital_pair, int min_num_inliers,
+                           double max_forward_motion, double min_angle_deg,
+                           double min_median_angle_deg,
                            uint32_t* initial_im0_out, uint32_t* initial_im1_out,
                            std::vector<Eigen::Matrix3d>* poses_R_out,
                            std::vector<Eigen::Vector3d>* poses_C_out,
@@ -172,6 +174,8 @@ enum class LocalBAStrategy {
 /// Options for initial pair selection.
 struct InitPairOptions {
   int min_tracks_for_intital_pair = 50; ///< Min inlier tracks after MAD filter to accept pair.
+  int min_num_inliers = 100;            ///< Min E-RANSAC inliers (COLMAP-style gate).
+  double max_forward_motion = 0.95;     ///< Reject near-pure forward motion: |tz|/||t|| must be < this.
   int max_first_images = 100;           ///< Max first-image candidates to try.
   int max_second_images = 50;           ///< Max second-image candidates per first image.
   double ba_rmse_max = 10.0;            ///< Max BA RMSE (px) to accept pair.
