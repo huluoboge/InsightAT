@@ -32,17 +32,14 @@ int test_default_profiles() {
 }
 
 int test_scoring_monotonicity() {
-  const double s_low = insight::tools::compute_seed_eval_score(4, 500, 20.0);
-  const double s_high_reg = insight::tools::compute_seed_eval_score(6, 500, 20.0);
-  const double s_high_pts = insight::tools::compute_seed_eval_score(4, 1500, 20.0);
-  const double s_slow = insight::tools::compute_seed_eval_score(4, 500, 60.0);
+  const double s_low = insight::tools::compute_seed_eval_score(4, 500);
+  const double s_high_reg = insight::tools::compute_seed_eval_score(6, 500);
+  const double s_high_pts = insight::tools::compute_seed_eval_score(4, 1500);
 
   if (!(s_high_reg > s_low))
     return fail("score must increase with registered images");
   if (!(s_high_pts > s_low))
     return fail("score must increase with triangulated points");
-  if (!(s_slow < s_low))
-    return fail("score must decrease with runtime penalty");
 
   return 0;
 }

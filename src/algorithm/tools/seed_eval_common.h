@@ -15,6 +15,7 @@ struct SeedStrategyProfile {
   double init_max_forward_motion = 0.95;
   double init_min_angle_deg = 2.0;
   double init_min_median_angle_deg = 30.0;
+  int resection_min_inliers = 15;  ///< PnP RANSAC inliers threshold for incremental registration
 };
 
 struct SeedEvalMetrics {
@@ -27,19 +28,21 @@ struct SeedEvalMetrics {
 
 inline std::vector<SeedStrategyProfile> default_seed_profiles() {
   return {
-      {"00_balanced", "balanced", 100, 0.95, 2.0, 20.0},
-      {"01_wide_baseline", "wide_baseline", 110, 0.80, 3.0, 30.0},
-      {"02_support_first", "support_first", 80, 0.95, 1.5, 10.0},
-      {"03_conservative", "conservative", 120, 0.75, 2.5, 15.0},
+      {"00_balanced", "balanced", 100, 0.95, 2.0, 20.0, 15},
+      {"01_wide_baseline", "wide_baseline", 110, 0.80, 3.0, 30.0, 15},
+      {"02_support_first", "support_first", 80, 0.95, 1.5, 10.0, 15},
+      {"03_conservative", "conservative", 120, 0.75, 2.5, 15.0, 15},
   };
 }
 
-inline double compute_seed_eval_score(int registered_images, int triangulated_points,
-                                      double runtime_sec) {
-  const double reg_term = 20.0 * static_cast<double>(registered_images);
-  const double tri_term = 4.0 * std::log1p(std::max(0, triangulated_points));
-  const double time_penalty = 0.2 * std::max(0.0, runtime_sec);
-  return reg_term + tri_term - time_penalty;
+inline double compute_seed_eval_score(int registered_images, int triangulated_points) {
+  // Score prioritizes registered image count (geometric coverage) over triangle density.
+  // Baseline: 100 per registered image; triangulated points as tiebreaker.
+  if (registered_images == 0)
+    return 0.0;
+  const double reg_term = 100.0 * static_cast<double>(registered_images);
+  const double tri_term = 5.0 * std::log1p(std::max(0, triangulated_points));
+  return reg_term + tri_term;
 }
 
 } // namespace tools

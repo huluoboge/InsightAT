@@ -4748,14 +4748,24 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       // resection one image every time is very important, and then do triangulation
       registered_images_buf.clear();
       const int resection_minliers = opts.resection.min_inliers;
+      double resection_min_inlier_ratio = opts.resection.min_inlier_ratio;
+      const bool use_large_scene_ratio =
+          (n_images >= opts.resection.large_scene_min_images &&
+           num_registered >= opts.resection.large_scene_min_registered);
+      if (use_large_scene_ratio) {
+        resection_min_inlier_ratio =
+            std::max(resection_min_inlier_ratio, opts.resection.min_inlier_ratio_large_scene);
+      }
       auto t_resect_cand0 = Clock::now();
       const int n = run_batch_resection(*store_out, {cand.image_index}, *cameras,
                                         image_to_camera_index, poses_R_out, poses_C_out,
                                         registered_out, resection_minliers, &registered_images_buf,
+                                        resection_min_inlier_ratio,
                                         opts.resection.post_resection_reproj_thresh_px);
       add_ms(&ms_resection, t_resect_cand0, Clock::now());
       VLOG(1) << "  [resection] img=" << cand.image_index << " 3d2d=" << cand.num_3d2d
-              << " cov=" << cand.coverage << " → " << (n > 0 ? "OK" : "FAIL");
+              << " cov=" << cand.coverage << " min_ratio=" << resection_min_inlier_ratio
+              << " → " << (n > 0 ? "OK" : "FAIL");
       if (n <= 0)
         continue;
       num_registered += n;

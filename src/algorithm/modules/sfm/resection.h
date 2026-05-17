@@ -59,13 +59,15 @@ int prune_resection_observations_reprojection(TrackStore* store, int image_index
 bool resection_single_image(TrackStore& store, int image_index, double fx, double fy, double cx,
                             double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
-                            int* inliers_out = nullptr, double* rmse_px_out = nullptr);
+                            int* inliers_out = nullptr, double* rmse_px_out = nullptr,
+                            double min_inlier_ratio = 0.02);
 
 /// If K.has_distortion(), observations are undistorted before PnP.
 bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
-                            int* inliers_out = nullptr, double* rmse_px_out = nullptr);
+                            int* inliers_out = nullptr, double* rmse_px_out = nullptr,
+                            double min_inlier_ratio = 0.02);
 
 /**
  * Count grid cells that contain at least one 3D–2D observation (COLMAP-style

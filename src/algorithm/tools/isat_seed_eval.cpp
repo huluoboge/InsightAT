@@ -123,6 +123,7 @@ static json profile_to_json(const SeedStrategyProfile& p) {
       {"init_max_forward_motion", p.init_max_forward_motion},
       {"init_min_angle_deg", p.init_min_angle_deg},
       {"init_min_median_angle_deg", p.init_min_median_angle_deg},
+      {"resection_min_inliers", p.resection_min_inliers},
   };
 }
 
@@ -261,6 +262,7 @@ int main(int argc, char* argv[]) {
         "--init-max-forward-motion", std::to_string(p.init_max_forward_motion),
         "--init-min-angle-deg", std::to_string(p.init_min_angle_deg),
         "--init-min-median-angle-deg", std::to_string(p.init_min_median_angle_deg),
+        "--resection-min-inliers", std::to_string(p.resection_min_inliers),
         "--fix-intrinsics"};
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -286,7 +288,7 @@ int main(int argc, char* argv[]) {
                                              static_cast<double>(row.metrics.registered_images)
                                        : 0.0;
     row.metrics.score = insight::tools::compute_seed_eval_score(
-        row.metrics.registered_images, row.metrics.triangulated_points, row.metrics.runtime_sec);
+        row.metrics.registered_images, row.metrics.triangulated_points);
 
     // Write per-strategy summary
     {

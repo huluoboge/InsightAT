@@ -357,6 +357,7 @@ int run_batch_resection(TrackStore& store, const std::vector<int>& image_indices
                         std::vector<Eigen::Matrix3d>* poses_R,
                         std::vector<Eigen::Vector3d>* poses_C, std::vector<bool>* registered,
                         int min_inliers, std::vector<int>* registered_images_out,
+                        double min_inlier_ratio,
                         double post_resection_reproj_thresh_px) {
   if (!poses_R || !poses_C || !registered)
     return 0;
@@ -375,9 +376,10 @@ int run_batch_resection(TrackStore& store, const std::vector<int>& image_indices
     const double ransac_thresh_px =
         4.0; // tighter threshold since we have good initialization from tracks
     if (!resection_single_image(K, store, im, &R, &t, min_inliers, ransac_thresh_px, &inliers,
-                                &rmse_px)) {
+                                &rmse_px, min_inlier_ratio)) {
       LOG(INFO) << "  resection image " << im << ": FAILED (3D-2D=" << n_3d2d
                 << ", inliers=" << inliers << ", rmse=" << rmse_px << ", need " << min_inliers
+                << ", ratio>=" << min_inlier_ratio
                 << ")";
       continue;
     }

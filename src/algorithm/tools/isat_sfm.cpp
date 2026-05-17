@@ -147,6 +147,7 @@ static bool load_seed_eval_best_profile(const fs::path& best_seed_path,
     profile->init_min_angle_deg = best_strategy.value("init_min_angle_deg", 2.0);
     profile->init_min_median_angle_deg =
         best_strategy.value("init_min_median_angle_deg", 30.0);
+    profile->resection_min_inliers = best_strategy.value("resection_min_inliers", 15);
     return !profile->name.empty();
   } catch (const std::exception& e) {
     if (error_message)
@@ -1269,6 +1270,8 @@ int main(int argc, char* argv[]) {
       sfm_cmd.push_back(std::to_string(seed_profile.init_min_angle_deg));
       sfm_cmd.push_back("--init-min-median-angle-deg");
       sfm_cmd.push_back(std::to_string(seed_profile.init_min_median_angle_deg));
+      sfm_cmd.push_back("--resection-min-inliers");
+      sfm_cmd.push_back(std::to_string(seed_profile.resection_min_inliers));
     }
     if (fix_intrinsics)
       sfm_cmd.push_back("--fix-intrinsics");
