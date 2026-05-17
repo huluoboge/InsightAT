@@ -1095,6 +1095,39 @@ std::vector<std::pair<int, int>> find_initial_first_images(const TrackStore& sto
   return result;
 }
 
+std::vector<double> build_init_median_angle_schedule(double min_median_angle_deg) {
+  if (min_median_angle_deg <= 0.0)
+    return {0.0};
+
+  std::vector<double> schedule;
+  schedule.push_back(min_median_angle_deg);
+
+  // Strict-first, then progressively relax for low-parallax datasets (e.g. ETH3D).
+  // Keep 10° as the lower bound to avoid collapsing to very weak baselines.
+  if (min_median_angle_deg > 20.0)
+    schedule.push_back(std::max(20.0, min_median_angle_deg * 0.67));
+  if (min_median_angle_deg > 15.0)
+    schedule.push_back(15.0);
+  if (min_median_angle_deg > 10.0)
+    schedule.push_back(10.0);
+
+  // Deduplicate near-identical entries caused by rounding or small input values.
+  std::vector<double> uniq;
+  uniq.reserve(schedule.size());
+  for (double v : schedule) {
+    bool exists = false;
+    for (double u : uniq) {
+      if (std::abs(u - v) < 1e-6) {
+        exists = true;
+        break;
+      }
+    }
+    if (!exists)
+      uniq.push_back(v);
+  }
+  return uniq;
+}
+
 /// Trial result for an initial pair candidate (no store mutation).
 struct InitPairTrialResult {
   bool success = false;
@@ -1114,9 +1147,14 @@ struct InitPairTrialResult {
 InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0, int im1,
                                                const std::vector<camera::Intrinsics>& cameras,
                                                const std::vector<int>& image_to_camera_index,
-                                               int min_tracks_for_intital_pair, double ba_rmse_max,
-                                               double outlier_thresh_px, double min_angle_deg,
-                                               double max_angle_deg, double min_median_angle_deg) {
+                                               int min_tracks_for_intital_pair,
+                                               int min_num_inliers,
+                                               double max_forward_motion,
+                                               double ba_rmse_max,
+                                               double outlier_thresh_px,
+                                               double min_angle_deg,
+                                               double max_angle_deg,
+                                               double min_median_angle_deg) {
 
   const double kPi = 3.141592653589793;
   const double min_angle_rad_q = min_angle_deg * (kPi / 180.0);
@@ -1201,10 +1239,25 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
     LOG(INFO) << "    pair (" << im0 << "," << im1 << "): E-RANSAC inliers=" << stats.num_inliers
               << "/" << corrs.size();
 
-    if (static_cast<int>(stats.num_inliers) < min_tracks_for_intital_pair) {
+    if (static_cast<int>(stats.num_inliers) < min_num_inliers) {
       LOG(INFO) << "    pair (" << im0 << "," << im1
-                << "): REJECTED (E-RANSAC inliers too few, need " << min_tracks_for_intital_pair
+                << "): REJECTED (E-RANSAC inliers too few, need " << min_num_inliers
                 << ")";
+      return result;
+    }
+
+    // COLMAP-style forward-motion gate.
+    // t is up-to-scale; forwardness ratio uses direction only.
+    const Eigen::Vector3d t01 = pose.t;
+    const double t_norm = t01.norm();
+    if (t_norm <= 1e-12) {
+      LOG(INFO) << "    pair (" << im0 << "," << im1 << "): REJECTED (invalid relative t)";
+      return result;
+    }
+    const double forward_motion = std::abs(t01.z()) / t_norm;
+    if (max_forward_motion > 0.0 && forward_motion >= max_forward_motion) {
+      LOG(INFO) << "    pair (" << im0 << "," << im1 << "): REJECTED (forward motion "
+                << forward_motion << " >= " << max_forward_motion << ")";
       return result;
     }
 
@@ -1558,8 +1611,9 @@ InitPairTrialResult try_initial_pair_candidate(const TrackStore& store, int im0,
 // ─────────────────────────────────────────────────────────────────────────────
 bool run_initial_pair_loop(
     const ViewGraph& view_graph, TrackStore* store, const std::vector<camera::Intrinsics>& cameras,
-    const std::vector<int>& image_to_camera_index, int min_tracks_for_intital_pair,
-    double min_median_angle_deg, uint32_t* initial_im0_out, uint32_t* initial_im1_out,
+  const std::vector<int>& image_to_camera_index, int min_tracks_for_intital_pair,
+  int min_num_inliers, double max_forward_motion, double min_angle_deg,
+  double min_median_angle_deg, uint32_t* initial_im0_out, uint32_t* initial_im1_out,
     std::vector<Eigen::Matrix3d>* poses_R_out, std::vector<Eigen::Vector3d>* poses_C_out,
     std::vector<bool>* registered_out, int max_first_images, int max_second_images) {
   if (!store || !poses_R_out || !poses_C_out || !registered_out || cameras.empty())
@@ -1572,8 +1626,21 @@ bool run_initial_pair_loop(
   LOG(INFO) << "  n_images=" << n_images << ", n_tracks=" << store->num_tracks()
             << ", n_obs=" << store->num_observations();
   LOG(INFO) << "  min_tracks_for_intital_pair=" << min_tracks_for_intital_pair
+            << ", min_num_inliers=" << min_num_inliers
+            << ", max_forward_motion=" << max_forward_motion
+            << ", min_angle_deg=" << min_angle_deg
             << ", min_median_angle_deg=" << min_median_angle_deg;
   LOG(INFO) << "  ViewGraph pairs (informational): " << view_graph.num_pairs();
+
+  const std::vector<double> median_angle_schedule =
+      build_init_median_angle_schedule(min_median_angle_deg);
+  if (median_angle_schedule.size() > 1) {
+    std::ostringstream oss;
+    oss << "  init median-angle fallback schedule:";
+    for (double v : median_angle_schedule)
+      oss << " " << v << "°";
+    LOG(INFO) << oss.str();
+  }
 
   // Step 1: Rank first images by total correspondence count
   auto first_images = find_initial_first_images(*store);
@@ -1587,11 +1654,19 @@ bool run_initial_pair_loop(
     return false;
   }
 
-  std::set<std::pair<int, int>> tried_pairs;
   const size_t max_first = std::min(first_images.size(), static_cast<size_t>(max_first_images));
+  size_t total_tried_pairs = 0;
 
-  for (size_t fi = 0; fi < max_first; ++fi) {
-    const int im1 = first_images[fi].first;
+  for (size_t pass = 0; pass < median_angle_schedule.size(); ++pass) {
+    const double pass_min_median_angle_deg = median_angle_schedule[pass];
+    if (pass > 0) {
+      LOG(INFO) << "  [fallback pass " << pass << "] Relax min_median_angle_deg to "
+                << pass_min_median_angle_deg << "°";
+    }
+    std::set<std::pair<int, int>> tried_pairs;
+
+    for (size_t fi = 0; fi < max_first; ++fi) {
+      const int im1 = first_images[fi].first;
 
     // Phase 2: rank second-image candidates via ViewGraph quality score.
     // Hard filters (F_ok && !is_degenerate) are applied inside get_second_image_candidates_sorted.
@@ -1617,80 +1692,84 @@ bool run_initial_pair_loop(
         LOG(INFO) << "    ... (" << second_candidates.size() - show_n << " more)";
     }
 
-    const size_t max_second =
-        std::min(second_candidates.size(), static_cast<size_t>(max_second_images));
-    for (size_t si = 0; si < max_second; ++si) {
-      const int im2 = static_cast<int>(second_candidates[si].image_index);
-      auto pair_key = std::make_pair(std::min(im1, im2), std::max(im1, im2));
-      if (tried_pairs.count(pair_key))
-        continue;
-      tried_pairs.insert(pair_key);
+      const size_t max_second =
+          std::min(second_candidates.size(), static_cast<size_t>(max_second_images));
+      for (size_t si = 0; si < max_second; ++si) {
+        const int im2 = static_cast<int>(second_candidates[si].image_index);
+        auto pair_key = std::make_pair(std::min(im1, im2), std::max(im1, im2));
+        if (tried_pairs.count(pair_key))
+          continue;
+        tried_pairs.insert(pair_key);
+        ++total_tried_pairs;
 
       // Try this pair (NO store mutation)
       const float ba_rmse_max = 10.0;
       double outlier_thresh_px = 4.0;
-      double min_angle_deg = 2.0;
-      double max_angle_deg = 120.0;
-      auto trial = try_initial_pair_candidate(
-          *store, im1, im2, cameras, image_to_camera_index, min_tracks_for_intital_pair,
-          ba_rmse_max, outlier_thresh_px, min_angle_deg, max_angle_deg, min_median_angle_deg);
-      if (!trial.success)
-        continue;
+        double max_angle_deg = 120.0;
+        auto trial = try_initial_pair_candidate(
+            *store, im1, im2, cameras, image_to_camera_index,
+            min_tracks_for_intital_pair, min_num_inliers, max_forward_motion,
+            ba_rmse_max, outlier_thresh_px, min_angle_deg, max_angle_deg,
+          pass_min_median_angle_deg);
+        if (!trial.success)
+          continue;
 
       // ── Pair accepted! Now commit to store ──
-      LOG(INFO) << "  >> ACCEPTED pair (" << im1 << ", " << im2 << "): " << trial.n_inlier_tracks
-                << " inlier tracks, RMSE=" << trial.rmse_px
-                << " px, reproj_thr=" << trial.reproject_px << " px";
+        LOG(INFO) << "  >> ACCEPTED pair (" << im1 << ", " << im2
+            << "): " << trial.n_inlier_tracks << " inlier tracks, RMSE=" << trial.rmse_px
+            << " px, reproj_thr=" << trial.reproject_px
+            << " px, min_median_angle_deg=" << pass_min_median_angle_deg;
 
       // Write refined XYZ for inlier tracks.
-      for (const auto& p : trial.track_xyz) {
-        store->set_track_xyz(p.first, static_cast<float>(p.second(0)),
-                             static_cast<float>(p.second(1)), static_cast<float>(p.second(2)));
-      }
+        for (const auto& p : trial.track_xyz) {
+          store->set_track_xyz(p.first, static_cast<float>(p.second(0)),
+                               static_cast<float>(p.second(1)), static_cast<float>(p.second(2)));
+        }
 
       // Reject observations of NON-inlier tracks in im1/im2 using the per-image reverse index.
       // get_image_observation_indices() returns only obs for that image (O(obs_in_image)),
       // so total cost here is O(obs_im1 + obs_im2), not O(num_observations_total).
       // Observations from OTHER images on the same track are intentionally left intact
       // so future cameras can still observe those tracks.
-      {
-        int rej_obs = 0;
-        std::vector<int> img_obs_ids;
-        for (int target_im : {im1, im2}) {
-          img_obs_ids.clear();
-          store->get_image_observation_indices(target_im, &img_obs_ids);
-          for (int obs_id : img_obs_ids) {
-            const int tid = store->obs_track_id(obs_id);
-            if (trial.inlier_track_ids.count(tid) == 0) {
-              store->mark_observation_deleted(obs_id);
-              ++rej_obs;
+        {
+          int rej_obs = 0;
+          std::vector<int> img_obs_ids;
+          for (int target_im : {im1, im2}) {
+            img_obs_ids.clear();
+            store->get_image_observation_indices(target_im, &img_obs_ids);
+            for (int obs_id : img_obs_ids) {
+              const int tid = store->obs_track_id(obs_id);
+              if (trial.inlier_track_ids.count(tid) == 0) {
+                store->mark_observation_deleted(obs_id);
+                ++rej_obs;
+              }
             }
           }
+          int n_valid = count_two_view_valid_tracks(*store, im1, im2);
+          LOG(INFO) << "  After commit: valid_tracks=" << n_valid << ", rejected_obs=" << rej_obs
+                    << " (MAD-consistent, image reverse-index)";
         }
-        int n_valid = count_two_view_valid_tracks(*store, im1, im2);
-        LOG(INFO) << "  After commit: valid_tracks=" << n_valid << ", rejected_obs=" << rej_obs
-                  << " (MAD-consistent, image reverse-index)";
-      }
 
-      if (initial_im0_out)
-        *initial_im0_out = static_cast<uint32_t>(im1);
-      if (initial_im1_out)
-        *initial_im1_out = static_cast<uint32_t>(im2);
-      poses_R_out->resize(static_cast<size_t>(n_images));
-      poses_C_out->resize(static_cast<size_t>(n_images));
-      registered_out->resize(static_cast<size_t>(n_images), false);
-      (*poses_R_out)[static_cast<size_t>(im1)] = Eigen::Matrix3d::Identity();
-      (*poses_C_out)[static_cast<size_t>(im1)] = Eigen::Vector3d::Zero();
-      (*poses_R_out)[static_cast<size_t>(im2)] = trial.R1;
-      (*poses_C_out)[static_cast<size_t>(im2)] = trial.C1;
-      (*registered_out)[static_cast<size_t>(im1)] = true;
-      (*registered_out)[static_cast<size_t>(im2)] = true;
-      LOG(INFO) << "================================================================";
-      return true;
+        if (initial_im0_out)
+          *initial_im0_out = static_cast<uint32_t>(im1);
+        if (initial_im1_out)
+          *initial_im1_out = static_cast<uint32_t>(im2);
+        poses_R_out->resize(static_cast<size_t>(n_images));
+        poses_C_out->resize(static_cast<size_t>(n_images));
+        registered_out->resize(static_cast<size_t>(n_images), false);
+        (*poses_R_out)[static_cast<size_t>(im1)] = Eigen::Matrix3d::Identity();
+        (*poses_C_out)[static_cast<size_t>(im1)] = Eigen::Vector3d::Zero();
+        (*poses_R_out)[static_cast<size_t>(im2)] = trial.R1;
+        (*poses_C_out)[static_cast<size_t>(im2)] = trial.C1;
+        (*registered_out)[static_cast<size_t>(im1)] = true;
+        (*registered_out)[static_cast<size_t>(im2)] = true;
+        LOG(INFO) << "================================================================";
+        return true;
+      }
     }
   }
 
-  LOG(ERROR) << "  No initial pair found after trying " << tried_pairs.size() << " pairs";
+  LOG(ERROR) << "  No initial pair found after trying " << total_tried_pairs << " pairs";
   LOG(INFO) << "================================================================";
   return false;
 }
@@ -4389,7 +4468,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   uint32_t* im0_ptr = &local_im0;
   uint32_t* im1_ptr = &local_im1;
   if (!run_initial_pair_loop(view_graph, store_out, *cameras, image_to_camera_index,
-                             opts.init.min_tracks_for_intital_pair, opts.init.min_median_angle_deg,
+                             opts.init.min_tracks_for_intital_pair,
+                             opts.init.min_num_inliers,
+                             opts.init.max_forward_motion,
+                             opts.init.min_angle_deg,
+                             opts.init.min_median_angle_deg,
                              im0_ptr, im1_ptr, poses_R_out, poses_C_out, registered_out,
                              opts.init.max_first_images, opts.init.max_second_images)) {
     LOG(ERROR) << "run_incremental_sfm_pipeline: no initial pair succeeded";

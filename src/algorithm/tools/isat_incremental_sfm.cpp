@@ -629,8 +629,11 @@ int main(int argc, char* argv[]) {
   opts.global_ba.max_observations_per_track = 12;
   opts.global_ba.ba_fixed_pose_optimize_skipped = true;
   opts.intrinsics.focal_prior_weight = 1.f;
+  // COLMAP-style initial two-view geometry gates.
+  opts.init.min_num_inliers = 100;
+  opts.init.max_forward_motion = 0.95;
   opts.init.min_angle_deg = 2.f;
-  opts.init.min_median_angle_deg = 10.f;
+  opts.init.min_median_angle_deg = 30.f;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
   // constant = top-K co-visible neighbors. Intrinsics are fixed in local BA.
   // Batch cameras: MAD tight rejection after local BA. Constant neighbors: default no gross delete
