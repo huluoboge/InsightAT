@@ -6,99 +6,87 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-  inputs:
-    minimal-build:
-      description: 'Build with minimal dependencies (CLI only, no Qt UI)'
-      required: false
-      default: 'false'
+    inputs:
+      minimal-build:
+        description: 'Build with minimal dependencies (CLI only, no Qt UI)'
+        required: false
+        default: 'false'
+
+env:
+  CUDA_VERSION: "12.8.0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: windows-latest
-    
-    strategy:
-      matrix:
-        include:
-          # 可选：支持多个 CUDA 版本
-          - cuda: "12.8"
-            visual-studio: "2022"
-            
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 1. 安装 CUDA Toolkit 12.8
-      - name: Install CUDA Toolkit
-        run: |
-          $cuda_installer = "$env:TEMP\cuda_installer.exe"
-          $cuda_version = "${{ matrix.cuda }}"
-          Write-Host "Downloading CUDA $cuda_version installer..."
-          
-          # CUDA 12.8 network installer
-          $cuda_url = "https://developer.download.nvidia.com/compute/cuda/12.8.0/network_installers/cuda_12.8.0_windows_network.exe"
-          (New-Object System.Net.ServicePointManager).SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          Invoke-WebRequest -Uri $cuda_url -OutFile $cuda_installer -UseBasicParsing
-          
-          Write-Host "Installing CUDA $cuda_version..."
-          & $cuda_installer -s CUDAToolkit_12.8=1 CUDAVisualStudioIntegration_12.8=1
-          
-          $cuda_path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-          if (-Not (Test-Path $cuda_path)) {
-            Write-Error "CUDA installation failed"
-            exit 1
-          }
-          Write-Host "CUDA installed at: $cuda_path"
-          
-          # Add to PATH and env
-          echo "$cuda_path\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          echo "CUDA_PATH=$cuda_path" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "CUDA_PATH_V12_8=$cuda_path" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "CUDA_BIN_PATH=$cuda_path\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
-        shell: pwsh
-
-      # 2. 安装 Visual Studio Build Tools（如果需要）
-      - name: Setup Visual Studio
-        uses: microsoft/setup-msbuild@v1
-        with:
-          vs-version: '17'
-
-      # 检查磁盘空间
+      # ────────────────────────────────────────────────────────────────────────
+      # 1. Check disk space early (CUDA + vcpkg need lots of room)
+      # ────────────────────────────────────────────────────────────────────────
       - name: Check disk space
-        run: |
-          Write-Host "Initial disk space:"
-          Get-PSDrive C | Select-Object Name, @{label='Used(GB)';expression={[math]::Round($_.Used/1GB,2)}}, @{label='Free(GB)';expression={[math]::Round($_.Free/1GB,2)}}
-          
-          $free_gb = (Get-PSDrive C).Free / 1GB
-          if ($free_gb -lt 8) {
-            Write-Error "Insufficient disk space: ${free_gb}GB free. Need at least 8GB"
-            exit 1
-          }
-          Write-Host "Disk space OK: ${free_gb}GB available"
         shell: pwsh
+        run: |
+          $free_gb = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
+          Write-Host "Free disk: ${free_gb}GB"
+          if ($free_gb -lt 15) {
+            Write-Warning "Only ${free_gb}GB free — CUDA + vcpkg may need >15GB"
+          }
 
-      # 3. 初始化 vcpkg 并安装依赖
+      # ────────────────────────────────────────────────────────────────────────
+      # 2. Install CUDA Toolkit via marketplace action (reliable, cached)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.22
+        id: cuda-install
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          sub-packages: '["nvcc", "cudart", "cublas", "cufft", "curand"]'
+
+      - name: Verify CUDA
+        shell: pwsh
+        run: |
+          $cuda_path = "${{ steps.cuda-install.outputs.CUDA_PATH }}"
+          Write-Host "CUDA installed at: $cuda_path"
+          & "$cuda_path\bin\nvcc.exe" --version
+          echo "CUDA_PATH=$cuda_path" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 3. vcpkg — pre-installed at C:\vcpkg on windows-latest runner
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Verify vcpkg
+        shell: pwsh
+        run: |
+          $vcpkg_root = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          echo "VCPKG_ROOT=$vcpkg_root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "vcpkg root: $vcpkg_root"
+          & "$vcpkg_root\vcpkg" version
+
       - name: Setup vcpkg cache
         uses: actions/cache@v4
         with:
           path: C:\vcpkg\installed
-          key: ${{ runner.os }}-vcpkg-installed-${{ matrix.cuda }}-${{ hashFiles('**/vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
           restore-keys: |
-            ${{ runner.os }}-vcpkg-installed-${{ matrix.cuda }}-
-            ${{ runner.os }}-vcpkg-installed-
+            vcpkg-${{ runner.os }}-
 
       - name: Install vcpkg dependencies
+        shell: pwsh
         run: |
-          Write-Host "Integrating vcpkg..."
-          cd C:\vcpkg
-          .\vcpkg integrate install
-          
-          # 检查是否是最小化编译
+          $vcpkg_root = "$env:VCPKG_ROOT"
+          Write-Host "vcpkg root: $vcpkg_root"
+
+          & "$vcpkg_root\vcpkg" integrate install
+
           $minimal = "${{ github.event.inputs.minimal-build }}" -eq 'true'
-          
+
           if ($minimal) {
-            Write-Host "Installing minimal dependencies (CLI tools only, no Qt UI)..."
-            .\vcpkg install `
+            Write-Host "minimal build — CLI tools only, no Qt UI"
+            & "$vcpkg_root\vcpkg" install `
               ceres[lapack,schur,suitesparse] `
               cuda `
               eigen3 `
@@ -109,8 +97,8 @@ jobs:
               --triplet x64-windows `
               --clean-after-build
           } else {
-            Write-Host "Installing full dependencies (including Qt5 UI)..."
-            .\vcpkg install `
+            Write-Host "full build — including Qt5 UI and GDAL"
+            & "$vcpkg_root\vcpkg" install `
               ceres[lapack,schur,suitesparse] `
               cuda `
               egl `
@@ -118,44 +106,44 @@ jobs:
               gflags `
               glew `
               glog `
-              "gdal[curl,expat,geos,jpeg,png,sqlite3]" `
+              "gdal[core,curl,expat,geos,jpeg,png,sqlite3]" `
               nlohmann-json `
               "opencv4[jpeg,png,tiff]" `
               "qt5-base" `
               --triplet x64-windows `
               --clean-after-build
           }
-          
+
           if ($LASTEXITCODE -ne 0) {
             Write-Error "vcpkg install failed"
             exit 1
           }
-          
-          Write-Host "Available disk after install:"
-          Get-PSDrive C | Select-Object Name, @{label='Used(GB)';expression={[math]::Round($_.Used/1GB,2)}}, @{label='Free(GB)';expression={[math]::Round($_.Free/1GB,2)}}
-          
-          Write-Host "vcpkg dependencies installed successfully"
-        shell: pwsh
 
-      # 4. 配置 CMake with CUDA support
+          Write-Host "vcpkg dependencies installed successfully"
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 4. CMake Configure
+      # ────────────────────────────────────────────────────────────────────────
       - name: Configure CMake
+        shell: pwsh
         run: |
-          $cuda_path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+          $cuda_path = "${{ steps.cuda-install.outputs.CUDA_PATH }}"
           $nvcc_path = "$cuda_path\bin\nvcc.exe"
-          
+          $vcpkg_root = "$env:VCPKG_INSTALLATION_ROOT"
+
           if (-Not (Test-Path $nvcc_path)) {
             Write-Error "nvcc.exe not found at $nvcc_path"
             exit 1
           }
-          
-          Write-Host "Configuring CMake with CUDA support..."
-          Write-Host "CUDA path: $cuda_path"
-          Write-Host "NVCC path: $nvcc_path"
-          
+
+          Write-Host "CUDA path : $cuda_path"
+          Write-Host "NVCC      : $nvcc_path"
+          Write-Host "vcpkg     : $vcpkg_root"
+
           cmake -B build -S . `
             -G "Visual Studio 17 2022" `
             -A x64 `
-            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake `
+            -DCMAKE_TOOLCHAIN_FILE="$vcpkg_root/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_CUDA_COMPILER="$nvcc_path" `
@@ -163,57 +151,64 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" `
             -DSIFTGPU_ENABLE_CUDA=OFF `
             -DINSIGHTAT_ENABLE_SIFTGPU=OFF
-          
+
           if ($LASTEXITCODE -ne 0) {
             Write-Error "CMake configuration failed"
             exit 1
           }
           Write-Host "CMake configured successfully"
-        shell: pwsh
 
-      # 5. 编译
+      # ────────────────────────────────────────────────────────────────────────
+      # 5. Build
+      # ────────────────────────────────────────────────────────────────────────
       - name: Build
+        shell: pwsh
         run: |
-          Write-Host "Starting build..."
-          cmake --build build --config Release --verbose -j 4
-          
+          $cores = $env:NUMBER_OF_PROCESSORS
+          Write-Host "Building with ${cores} cores..."
+          cmake --build build --config Release --verbose -j $cores
+
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Build failed"
             exit 1
           }
           Write-Host "Build completed successfully"
-        shell: pwsh
 
-      # 清理临时文件以节省磁盘空间（可选）
+      # ────────────────────────────────────────────────────────────────────────
+      # 6. Cleanup temporary files to reclaim disk
+      # ────────────────────────────────────────────────────────────────────────
       - name: Cleanup temporary files
         if: always()
-        run: |
-          Write-Host "Cleaning up temporary files..."
-          # 删除 vcpkg 源码和编译产物（已安装在 installed 目录）
-          Remove-Item -Path "C:\vcpkg\buildtrees" -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -Path "C:\vcpkg\packages" -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -Path "C:\vcpkg\downloads" -Recurse -Force -ErrorAction SilentlyContinue
-          
-          Write-Host "Disk space after cleanup:"
-          Get-PSDrive C | Select-Object Name, @{label='Used(GB)';expression={[math]::Round($_.Used/1GB,2)}}, @{label='Free(GB)';expression={[math]::Round($_.Free/1GB,2)}}
         shell: pwsh
+        run: |
+          $vcpkg_root = "$env:VCPKG_INSTALLATION_ROOT"
+          Remove-Item -Path "$vcpkg_root\buildtrees" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$vcpkg_root\packages" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$vcpkg_root\downloads" -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "Cleanup done"
 
-      # 6. 运行测试（可选）
+      # ────────────────────────────────────────────────────────────────────────
+      # 7. Run tests (skip GPU-dependent tests that need EGL/hardware)
+      # ────────────────────────────────────────────────────────────────────────
       - name: Run tests
-        run: |
-          ctest --build-config Release --verbose
-        working-directory: build
         shell: pwsh
+        working-directory: build
+        run: |
+          # Exclude tests that require GPU / EGL hardware (not available on GitHub runners)
+          ctest --build-config Release --output-on-failure `
+            -E "gpu_|twoview|incremental_triangulation|seed_eval" `
+            --timeout 120
 
-      # 7. 打包构建产物
+      # ────────────────────────────────────────────────────────────────────────
+      # 8. Upload build artifacts
+      # ────────────────────────────────────────────────────────────────────────
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: insightat-windows-cuda-${{ matrix.cuda }}
+          name: insightat-windows-cuda-${{ env.CUDA_VERSION }}
           path: |
             build/Release/*.exe
-            build/*.exe
             build/Release/*.dll
-            build/*.dll
+            build/Release/*.pdb
           retention-days: 30
