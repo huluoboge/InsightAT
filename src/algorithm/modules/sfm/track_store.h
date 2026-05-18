@@ -109,6 +109,15 @@ public:
   void set_track_retriangulation_flag(int track_id, bool value);
   bool track_needs_retriangulation(int track_id) const;
 
+  /// Mark a track as "attempted" in the current pose epoch so that is_track_tri_stale()
+  /// returns false, preventing re-attempts in subsequent full-scans until the next BA
+  /// bumps global_pose_epoch_.  Used by run_retriangulation(kFullScan) to avoid
+  /// repeatedly trying non-triangulable tracks (the dominant cost in large scenes).
+  void mark_track_tri_attempted(int track_id) {
+    if (track_id >= 0 && static_cast<size_t>(track_id) < track_last_tri_epoch_.size())
+      track_last_tri_epoch_[static_cast<size_t>(track_id)] = global_pose_epoch_;
+  }
+
   // ── BA subset selection flag (kSkipFromBA) ───────────────────────────────
   bool is_track_skip_ba(int track_id) const;
   void set_track_skip_ba(int track_id, bool skip);
@@ -161,6 +170,11 @@ public:
   /// that want to avoid repeatedly materializing temporary vectors.
   const std::vector<int>& track_all_obs_ids_view(int track_id) const;
   const std::vector<int>& image_all_obs_ids_view(int image_index) const;
+
+  /// Zero-copy views over flat SoA arrays.  Avoids function-call + assert overhead of the
+  /// scalar accessors (obs_image_index, get_track_xyz) in hot loops (e.g. outlier rejection).
+  const std::vector<uint32_t>& obs_image_id_view() const { return obs_image_id_; }
+  const float* track_xyz_data() const { return track_xyz_.data(); }
 
   /// Zero-copy scalar accessors for observation SoA fields.
   uint32_t obs_image_index(int obs_id) const;

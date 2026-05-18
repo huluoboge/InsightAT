@@ -296,9 +296,15 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
     return 0;
   const double min_angle_rad = min_angle_deg * (3.141592653589793 / 180.0);
   const double max_angle_rad = max_angle_deg * (3.141592653589793 / 180.0);
+  // Precompute cos thresholds: angle ∈ [min_angle, max_angle] ⇔ dot ∈ [cos(max_angle), cos(min_angle)]
+  // Using dot-product comparison avoids expensive std::acos() entirely.
+  const double cos_min_angle = std::cos(min_angle_rad);
+  const double cos_max_angle = std::cos(max_angle_rad);
   const int n_tracks = static_cast<int>(store->num_tracks());
 
-  // ── CSR build: two-pass over registered images → contiguous per-track obs/image arrays ────────
+  // ── CSR build: single-pass over registered images → contiguous per-track obs array ──────────
+  // We store obs_id only (not image_index) — the latter is fetched on the fly from
+  // store->obs_image_index() in Pass B, avoiding an extra parallel array and its fill pass.
   // Pass 0: count registered valid triangulated obs per track.
   std::vector<int> track_obs_count(static_cast<size_t>(n_tracks), 0);
   {
@@ -327,8 +333,7 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
     if (track_obs_count[static_cast<size_t>(tid)] >= 2)
       active_tracks.push_back(tid);
 
-  // Prefix-sum → CSR start offsets (only needs to cover active tids, but full array is fine since
-  // track_obs_count[] is already populated and inactive entries are 0).
+  // Prefix-sum → CSR start offsets.
   std::vector<int> track_start(static_cast<size_t>(n_tracks + 1), 0);
   for (int tid = 0; tid < n_tracks; ++tid)
     track_start[static_cast<size_t>(tid + 1)] =
@@ -336,9 +341,10 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
   const int total_obs = track_start[static_cast<size_t>(n_tracks)];
 
   std::vector<int> obs_flat(static_cast<size_t>(total_obs));
-  std::vector<int> image_flat(static_cast<size_t>(total_obs));
 
-  // Pass A: fill CSR arrays.  Write cursors start at track_start[tid].
+  // Pass A: fill CSR obs_flat.  Write cursors start at track_start[tid].
+  // image_flat is NOT stored — image index is obtained from store->obs_image_index()
+  // during Pass B, saving ~8 bytes × total_obs of memory and the fill pass bandwidth.
   {
     std::vector<int> fill_ptr(track_start.begin(), track_start.begin() + n_tracks);
     std::vector<int> img_obs;
@@ -353,51 +359,74 @@ int reject_outliers_angle_multiview(TrackStore* store, const std::vector<Eigen::
           continue;
         if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
           continue;
-        const int wp = fill_ptr[static_cast<size_t>(tid)]++;
-        obs_flat[static_cast<size_t>(wp)] = obs_id;
-        image_flat[static_cast<size_t>(wp)] = im;
+        obs_flat[static_cast<size_t>(fill_ptr[static_cast<size_t>(tid)]++)] = obs_id;
       }
     }
   }
 
   // ── Pass B (OMP-parallel over active tracks): angle check ────────────────────────────────────
-  // Iterate only active_tracks (O(n_tri)), not all n_tracks (O(millions)).
+  // For each observation i, find the first j≠i such that dot(ray_i, ray_j) ∈ [cos_max, cos_min].
+  // If found → observation has sufficient parallax AND is not excessively far → good (skip).
+  //
+  // Optimisations applied (from slowest → fastest):
+  //   1. Eliminated std::acos: compare dot product directly against cos thresholds.
+  //      angle ∈ [θ_min, θ_max] ⇔ dot ∈ [cos(θ_max), cos(θ_min)]
+  //   2. Early termination: break inner j-loop as soon as a valid pair is found.
+  //   3. Split j-loop: j ∈ [0, i) ∪ (i, k) avoids the `j == i` branch in the hot inner path.
+  //   4. image_flat eliminated: image index read from store->obs_image_index() on the fly.
+  //      No parallel array allocation → less memory traffic and no second fill pass.
+  //   5. Larger OMP chunk (256 → less scheduling overhead for fast per-track kernels).
   const int n_active = static_cast<int>(active_tracks.size());
   const int n_threads = omp_get_max_threads();
   std::vector<std::vector<int>> per_thread_marked(static_cast<size_t>(n_threads));
   std::vector<std::vector<int>> per_thread_dirty(static_cast<size_t>(n_threads));
 
-#pragma omp parallel for schedule(dynamic, 64)
+  // Grab flat SoA views once (avoid per-call function overhead in the OMP parallel loop).
+  const std::vector<uint32_t>& obs_img = store->obs_image_id_view();
+  const float* track_xyz = store->track_xyz_data();
+
+#pragma omp parallel for schedule(dynamic, 256)
   for (int ai = 0; ai < n_active; ++ai) {
     const int tid = active_tracks[static_cast<size_t>(ai)];
     const int k = track_obs_count[static_cast<size_t>(tid)];
-    float tx, ty, tz;
-    store->get_track_xyz(tid, &tx, &ty, &tz);
-    const Eigen::Vector3d X(static_cast<double>(tx), static_cast<double>(ty),
-                            static_cast<double>(tz));
+    // Direct SoA access: track_xyz[tid*3 + 0..2]
+    const float* xyz = track_xyz + static_cast<size_t>(tid) * 3;
+    const Eigen::Vector3d X(static_cast<double>(xyz[0]), static_cast<double>(xyz[1]),
+                            static_cast<double>(xyz[2]));
     const int start = track_start[static_cast<size_t>(tid)];
 
-    thread_local std::vector<Eigen::Vector3d> rays;
-    rays.resize(static_cast<size_t>(k));
-    for (int i = 0; i < k; ++i)
+    // Compute all k rays once (cache-friendly: sequential access to poses_C via obs_img view).
+    std::vector<Eigen::Vector3d> rays(static_cast<size_t>(k));
+    for (int i = 0; i < k; ++i) {
+      const int oid = obs_flat[static_cast<size_t>(start + i)];
+      const int im = static_cast<int>(obs_img[static_cast<size_t>(oid)]);
       rays[static_cast<size_t>(i)] =
-          (X - poses_C[static_cast<size_t>(image_flat[static_cast<size_t>(start + i)])])
-              .normalized();
+          (X - poses_C[static_cast<size_t>(im)]).normalized();
+    }
 
     const int th = omp_get_thread_num();
     bool any_marked = false;
     for (int i = 0; i < k; ++i) {
-      double max_angle = 0.0;
-      for (int j = 0; j < k; ++j) {
-        if (j == i)
-          continue;
-        const double cos_a = std::max(
-            -1.0, std::min(1.0, rays[static_cast<size_t>(i)].dot(rays[static_cast<size_t>(j)])));
-        const double angle = std::acos(cos_a);
-        if (angle > max_angle)
-          max_angle = angle;
+      bool good = false;
+      const Eigen::Vector3d& r_i = rays[static_cast<size_t>(i)];
+      // j in [0, i): no `j == i` check needed.
+      for (int j = 0; j < i; ++j) {
+        const double dot = r_i.dot(rays[static_cast<size_t>(j)]);
+        if (dot >= cos_max_angle && dot <= cos_min_angle) {
+          good = true;
+          goto next_obs;  // single-level break into the outer loop
+        }
       }
-      if (max_angle < min_angle_rad || max_angle > max_angle_rad) {
+      // j in (i, k): no `j == i` check needed.
+      for (int j = i + 1; j < k; ++j) {
+        const double dot = r_i.dot(rays[static_cast<size_t>(j)]);
+        if (dot >= cos_max_angle && dot <= cos_min_angle) {
+          good = true;
+          break;
+        }
+      }
+    next_obs:
+      if (!good) {
         per_thread_marked[static_cast<size_t>(th)].push_back(
             obs_flat[static_cast<size_t>(start + i)]);
         any_marked = true;
