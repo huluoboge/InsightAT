@@ -102,6 +102,7 @@ int run_batch_resection(TrackStore& store, const std::vector<int>& image_indices
                         std::vector<Eigen::Vector3d>* poses_C, std::vector<bool>* registered,
                         int min_inliers = 15,
                         std::vector<int>* registered_images_out = nullptr,
+                        double min_inlier_ratio = 0.02,
                         double post_resection_reproj_thresh_px = 0.0);
 
 } // namespace sfm

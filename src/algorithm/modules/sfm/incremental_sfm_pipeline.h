@@ -193,6 +193,13 @@ struct ResectionOptions {
   ResectionBackend backend = ResectionBackend::kPoseLib; ///< Absolute-pose backend.
   int min_inliers = 9;     ///< Min PnP RANSAC inliers to accept resection (3× P3P min-sample).
   int min_3d2d_count = 15; ///< Min 3D-2D correspondences to list a candidate.
+  /// Stability gate: min PnP inlier ratio (inliers / total 3D-2D correspondences).
+  /// Helps reject large-support false positives (e.g. 9 inliers out of 400+ correspondences).
+  double min_inlier_ratio = 0.02;
+  /// For large scenes, use a stricter inlier-ratio gate once enough cameras are registered.
+  double min_inlier_ratio_large_scene = 0.05;
+  int large_scene_min_images = 100;
+  int large_scene_min_registered = 20;
   /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 =
   /// off.
   double post_resection_reproj_thresh_px = 0.0;
@@ -498,6 +505,10 @@ struct IncrementalSfMOptions {
   OutlierOptions outlier;
   TriangulationOptions triangulation;
   DebugOptions debug; ///< Per-iteration debug snapshots (disabled by default).
+
+  /// Early stop when registered images reach this cap (including initial pair).
+  /// 0 = disabled (run full incremental reconstruction).
+  int max_registered_images = 0;
 
   /// Number of OpenMP threads for parallel loops (outlier rejection, select_ba_subset, etc.).
   /// -1 (default) means use the system/OMP default (typically all hardware threads).

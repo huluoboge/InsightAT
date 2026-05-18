@@ -9,7 +9,8 @@
  * --auto-exhaustive-max-images 时自动改全穷举；若有 matching_extract_meta.json 中的 low_peak
  * 图，则与 检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举
  *   4. tracks            – build tracks from matches + geometry
- *   5. incremental_sfm   – incremental SfM (resection + BA)
+ *   5. seed_eval         – 四策略 seed 评估（balanced/wide_baseline/support_first/conservative）
+ *   6. incremental_sfm   – incremental SfM (resection + BA)
  *
  * Usage:
  *   isat_sfm -i /photos -w work/                              # run all steps
@@ -19,7 +20,7 @@
  *   isat_sfm -i /photos -w work/ --geo-thresh-f 3             # 更严 F 内点（像素，见 --help）
  *   isat_sfm -i /photos -w work/ --io-threads 8 --ba-threads 8  # I/O 与 Ceres 线程数
  *   isat_sfm -i /photos -w work/ --steps create,extract       # 只跑 create + extract
- *   isat_sfm -i /photos -w work/ --steps tracks,incremental_sfm  # 从 tracks 续跑
+ *   isat_sfm -i /photos -w work/ --steps tracks,seed_eval,incremental_sfm  # 从 tracks 续跑并评估seed
  *   isat_sfm -i /photos -w work/ --output-interval-sfm           # 在 <work>/sfm_interval/ 写每步 Bundler 快照，at_bundler_viewer 查看
  *
  * The binary locates sibling tools relative to its own path (same directory).
@@ -45,6 +46,7 @@
 
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
+#include "seed_eval_common.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -119,6 +121,39 @@ static std::string tool_path(const std::string& name) {
   if (fs::exists(p))
     return p.string();
   return name;
+}
+
+static bool load_seed_eval_best_profile(const fs::path& best_seed_path,
+                                        insight::tools::SeedStrategyProfile* profile,
+                                        std::string* error_message) {
+  if (!profile)
+    return false;
+  try {
+    std::ifstream f(best_seed_path);
+    if (!f.is_open()) {
+      if (error_message)
+        *error_message = "cannot open " + best_seed_path.string();
+      return false;
+    }
+
+    json best_json;
+    f >> best_json;
+    const auto& best_strategy = best_json.at("best_strategy");
+
+    profile->id = best_strategy.value("id", std::string());
+    profile->name = best_strategy.value("name", std::string());
+    profile->init_min_inliers = best_strategy.value("init_min_inliers", 100);
+    profile->init_max_forward_motion = best_strategy.value("init_max_forward_motion", 0.95);
+    profile->init_min_angle_deg = best_strategy.value("init_min_angle_deg", 2.0);
+    profile->init_min_median_angle_deg =
+        best_strategy.value("init_min_median_angle_deg", 30.0);
+    profile->resection_min_inliers = best_strategy.value("resection_min_inliers", 15);
+    return !profile->name.empty();
+  } catch (const std::exception& e) {
+    if (error_message)
+      *error_message = e.what();
+    return false;
+  }
 }
 
 static std::string build_cmd(const std::vector<std::string>& args) {
@@ -243,7 +278,7 @@ static std::vector<json> run_capture_or_die(const std::string& step,
 // ─────────────────────────────────────────────────────────────────────────────
 
 static const std::vector<std::string> ALL_STEPS = {"create", "extract", "match", "tracks",
-                                                   "incremental_sfm"};
+                                                   "seed_eval", "incremental_sfm"};
 
 static std::set<std::string> parse_steps(const std::string& steps_str) {
   std::set<std::string> result;
@@ -257,7 +292,7 @@ static std::set<std::string> parse_steps(const std::string& steps_str) {
       continue;
     if (std::find(ALL_STEPS.begin(), ALL_STEPS.end(), token) == ALL_STEPS.end()) {
       LOG(ERROR) << "Unknown step: '" << token << "'";
-      LOG(ERROR) << "Valid steps: create, extract, match, tracks, incremental_sfm";
+      LOG(ERROR) << "Valid steps: create, extract, match, tracks, seed_eval, incremental_sfm";
       std::exit(2);
     }
     result.insert(token);
@@ -470,7 +505,7 @@ int main(int argc, char* argv[]) {
   // ── CLI options ──────────────────────────────────────────────────────────
   std::string input_dir;
   std::string work_dir;
-  std::string steps_str = "create,extract,match,tracks,incremental_sfm";
+  std::string steps_str = "create,extract,match,tracks,seed_eval,incremental_sfm";
   std::string extract_backend = "cuda";
   std::string match_backend = "cuda";
   std::string match_impl = "cascade-gpu";
@@ -506,6 +541,8 @@ int main(int argc, char* argv[]) {
   int io_threads = -1;
   /// isat_incremental_sfm Ceres BA threads (0 = 子进程默认，按硬件并发).
   int ba_threads = 0;
+  /// isat_seed_eval short-window evaluation cap.
+  int seed_eval_max_images = 6;
 
   CmdLine cmd("InsightAT SfM Pipeline – end-to-end incremental SfM");
   cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required)"));
@@ -513,7 +550,7 @@ int main(int argc, char* argv[]) {
       make_option('w', work_dir, "work-dir").doc("Working directory for all outputs (required)"));
   cmd.add(make_option('s', steps_str, "steps")
               .doc("Comma-separated steps to run (default: "
-                   "create,extract,match,tracks,incremental_sfm)"));
+            "create,extract,match,tracks,seed_eval,incremental_sfm)"));
   cmd.add(make_option(0, extract_backend, "extract-backend")
               .doc("Feature extraction backend: cuda or glsl (default: cuda)"));
   cmd.add(make_switch(0, "use-pop-sift")
@@ -584,6 +621,8 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, ba_threads, "ba-threads")
               .doc("Ceres thread count for incremental SfM bundle adjustment (default: 0 = use "
                    "isat_incremental_sfm hardware default). Set >0 to cap or fix parallelism."));
+  cmd.add(make_option(0, seed_eval_max_images, "seed-eval-max-images")
+              .doc("Short-window max registered images for seed evaluation step (default: 6)."));
   cmd.add(make_switch(0, "output-interval-sfm")
               .doc("During incremental SfM, write per-iteration Bundler bundle.out + list.txt under "
                    "<work-dir>/sfm_interval/iter_NNNN/ (interval fixed at 1; view with "
@@ -630,6 +669,11 @@ int main(int argc, char* argv[]) {
   }
   if (ba_threads < 0) {
     std::cerr << "Error: --ba-threads must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (seed_eval_max_images < 2) {
+    std::cerr << "Error: --seed-eval-max-images must be >= 2\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -767,6 +811,7 @@ int main(int argc, char* argv[]) {
   fs::path geo_dir = work_path / "geo";
   fs::path pairs_json = geo_dir / "pairs.json";
   fs::path tracks_path = work_path / "tracks.isat_tracks";
+  fs::path seed_eval_out = work_path / "seed_eval_all";
   fs::path sfm_out = work_path / "incremental_sfm";
 
   // Create work directory (sub-dirs created per step as needed)
@@ -989,7 +1034,10 @@ int main(int argc, char* argv[]) {
         return 1;
       }
     } else {
-      fs::path retrieval_work = work_path / "retrieval_match_work";
+      fs::path /* The above code is a comment in C++ programming language. Comments are used to provide
+      explanations or notes within the code for better understanding. In this case, the
+      comment is indicating that the code below it is related to "retrieval_work". */
+      retrieval_work = work_path / "retrieval_match_work";
       fs::create_directories(retrieval_work);
 
       run_or_die("retrieval-match",
@@ -1150,12 +1198,57 @@ int main(int argc, char* argv[]) {
   }
 
   // ════════════════════════════════════════════════════════════════════════
+  // Step: SEED_EVAL
+  // ════════════════════════════════════════════════════════════════════════
+  if (active_steps.count("seed_eval")) {
+    ++step_num;
+    LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Seed evaluation ===";
+    fs::create_directories(seed_eval_out);
+
+    std::vector<std::string> seed_eval_cmd = {tool_path("isat_seed_eval"),
+                                              "-t",
+                                              tracks_path.string(),
+                                              "-p",
+                                              images_all.string(),
+                                              "-m",
+                                              pairs_json.string(),
+                                              "-g",
+                                              geo_dir.string(),
+                                              "-o",
+                                              seed_eval_out.string(),
+                                              "--max-eval-images",
+                                              std::to_string(seed_eval_max_images),
+                                              "--incremental-sfm-bin",
+                                              tool_path("isat_incremental_sfm")};
+
+    run_or_die("seed-eval", seed_eval_cmd);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
   // Step: INCREMENTAL_SFM
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("incremental_sfm")) {
     ++step_num;
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Incremental SfM ===";
     fs::create_directories(sfm_out);
+
+    insight::tools::SeedStrategyProfile seed_profile;
+    bool use_seed_profile = false;
+    if (active_steps.count("seed_eval")) {
+      std::string seed_error;
+      if (load_seed_eval_best_profile(seed_eval_out / "best_seed.json", &seed_profile,
+                                      &seed_error)) {
+        use_seed_profile = true;
+        LOG(INFO) << "Using seed-eval winner for incremental SfM: " << seed_profile.name
+                  << " (min_inliers=" << seed_profile.init_min_inliers
+                  << ", max_forward_motion=" << seed_profile.init_max_forward_motion
+                  << ", min_angle_deg=" << seed_profile.init_min_angle_deg
+                  << ", min_median_angle_deg=" << seed_profile.init_min_median_angle_deg << ")";
+      } else {
+        LOG(WARNING) << "Seed-eval best profile unavailable; falling back to incremental SfM "
+                     << "defaults (" << seed_error << ")";
+      }
+    }
 
     std::vector<std::string> sfm_cmd = {tool_path("isat_incremental_sfm"),
                                         "-t",
@@ -1168,6 +1261,18 @@ int main(int argc, char* argv[]) {
                                         geo_dir.string(),
                                         "-o",
                                         sfm_out.string()};
+    if (use_seed_profile) {
+      sfm_cmd.push_back("--init-min-inliers");
+      sfm_cmd.push_back(std::to_string(seed_profile.init_min_inliers));
+      sfm_cmd.push_back("--init-max-forward-motion");
+      sfm_cmd.push_back(std::to_string(seed_profile.init_max_forward_motion));
+      sfm_cmd.push_back("--init-min-angle-deg");
+      sfm_cmd.push_back(std::to_string(seed_profile.init_min_angle_deg));
+      sfm_cmd.push_back("--init-min-median-angle-deg");
+      sfm_cmd.push_back(std::to_string(seed_profile.init_min_median_angle_deg));
+      sfm_cmd.push_back("--resection-min-inliers");
+      sfm_cmd.push_back(std::to_string(seed_profile.resection_min_inliers));
+    }
     if (fix_intrinsics)
       sfm_cmd.push_back("--fix-intrinsics");
     if (ba_threads > 0) {
@@ -1247,6 +1352,11 @@ int main(int argc, char* argv[]) {
       LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " "
                 << (work_path / "sfm_interval" / "iter_0000" / "bundle.out").string() << " ...";
     }
+  }
+  if (active_steps.count("seed_eval")) {
+    LOG(INFO) << "  Seed-eval report: " << (seed_eval_out / "report.json").string();
+    LOG(INFO) << "  Seed-eval best : " << (seed_eval_out / "best_seed.json").string();
+    LOG(INFO) << "  Seed-eval plot : " << (seed_eval_out / "report_plot.png").string();
   }
   LOG(INFO) << "========================================";
 

@@ -342,7 +342,8 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
                                       double fy, double cx, double cy, int min_inliers,
                                       double ransac_thresh_px, Eigen::Matrix3d* R_out,
                                       Eigen::Vector3d* t_out, int* inliers_out, double* rmse_px_out,
-                                      std::vector<char>* inlier_mask_full_out) {
+                                      std::vector<char>* inlier_mask_full_out,
+                                      double min_inlier_ratio) {
   if (!R_out || !t_out || pts3d.size() != pts2d.size() || pts3d.empty())
     return false;
 
@@ -419,7 +420,7 @@ static bool resection_poselib_pinhole(const std::vector<Eigen::Vector3d>& pts3d,
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, static_cast<int>(pts3d.size()), rmse,
-                           /*min_inlier_ratio=*/0.02,
+                           /*min_inlier_ratio=*/min_inlier_ratio,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
     VLOG(1) << "[PERF] resection_single_image(poselib)"
             << "  rejected_by_stability: inlier_ratio="
@@ -536,7 +537,7 @@ bool is_resection_stable(int inlier_count, int total_correspondences, double rms
 bool resection_single_image(TrackStore& store, int image_index, double fx, double fy, double cx,
                             double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers, double ransac_thresh_px, int* inliers_out,
-                            double* rmse_px_out) {
+                            double* rmse_px_out, double min_inlier_ratio) {
   if (!R_out || !t_out)
     return false;
 
@@ -584,7 +585,8 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
     }
     std::vector<char> inlier_full;
     if (!resection_poselib_pinhole(pts3d, pts2d, fx, fy, cx, cy, min_inliers, ransac_thresh_px,
-                                   R_out, t_out, inliers_out, rmse_px_out, &inlier_full))
+                                   R_out, t_out, inliers_out, rmse_px_out, &inlier_full,
+                                   min_inlier_ratio))
       return false;
     mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
     return true;
@@ -657,7 +659,7 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, num_pts, rmse,
-                           /*min_inlier_ratio=*/0.02,
+                           /*min_inlier_ratio=*/min_inlier_ratio,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px))) {
     VLOG(1) << "[PERF] resection_single_image im=" << image_index
             << "  rejected_by_stability: inlier_ratio="
@@ -680,10 +682,12 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
 
 bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out, int min_inliers,
-                            double ransac_thresh_px, int* inliers_out, double* rmse_px_out) {
+                            double ransac_thresh_px, int* inliers_out, double* rmse_px_out,
+                            double min_inlier_ratio) {
   if (!K.has_distortion()) {
     return resection_single_image(store, image_index, K.fx, K.fy, K.cx, K.cy, R_out, t_out,
-                                  min_inliers, ransac_thresh_px, inliers_out, rmse_px_out);
+                                  min_inliers, ransac_thresh_px, inliers_out, rmse_px_out,
+                                  min_inlier_ratio);
   }
 
   std::vector<int> obs_ids_all;
@@ -736,7 +740,7 @@ bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int 
     std::vector<char> inlier_full;
     if (!resection_poselib_pinhole(pts3d, pts2d, K.fx, K.fy, K.cx, K.cy, min_inliers,
                                    ransac_thresh_px, R_out, t_out, inliers_out, rmse_px_out,
-                                   &inlier_full))
+                                   &inlier_full, min_inlier_ratio))
       return false;
     mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
     return true;
@@ -789,7 +793,7 @@ bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int 
   if (rmse_px_out)
     *rmse_px_out = rmse;
   if (!is_resection_stable(n_inliers, num_pts, rmse,
-                           /*min_inlier_ratio=*/0.02,
+                           /*min_inlier_ratio=*/min_inlier_ratio,
                            /*max_rmse_px=*/std::max(6.0, 1.5 * ransac_thresh_px)))
     return false;
   if (inliers_out)

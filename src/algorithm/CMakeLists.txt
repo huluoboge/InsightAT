@@ -300,6 +300,20 @@ target_include_directories(test_cpu_cascade_hash
 )
 set_property(TARGET test_cpu_cascade_hash PROPERTY FOLDER InsightAT/Tests)
 
+# ── Seed-eval common logic unit test ─────────────────────────────────────
+add_executable(test_seed_eval_common tools/test_seed_eval_common.cpp)
+target_link_libraries(test_seed_eval_common
+    PRIVATE
+        glog::glog
+)
+target_include_directories(test_seed_eval_common
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET test_seed_eval_common PROPERTY FOLDER InsightAT/Tests)
+
 # ─────────────────────────────────────────────────────────────
 # CLI Tools (shared logging helper)
 # ─────────────────────────────────────────────────────────────
@@ -591,6 +605,19 @@ target_include_directories(isat_incremental_sfm
 )
 set_property(TARGET isat_incremental_sfm PROPERTY FOLDER InsightAT/Tools)
 
+# isat_seed_eval - Multi-strategy seed-pair evaluation CLI
+add_executable(isat_seed_eval tools/isat_seed_eval.cpp)
+target_link_libraries(isat_seed_eval
+    PRIVATE
+        insightat_tools_logging
+        glog::glog
+)
+target_include_directories(isat_seed_eval
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+set_property(TARGET isat_seed_eval PROPERTY FOLDER InsightAT/Tools)
 # isat_camera_estimator - Per-group EXIF-based camera intrinsics estimator
 add_executable(isat_camera_estimator tools/isat_camera_estimator.cpp)
 

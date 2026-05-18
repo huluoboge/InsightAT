@@ -532,6 +532,12 @@ int main(int argc, char* argv[]) {
   int bundler_max_cameras = -1;
   int ba_grid_target = 1000;
   int ba_threads = 0;
+  int max_registered_images = 0;
+  int init_min_inliers = 100;
+  double init_max_forward_motion = 0.95;
+  double init_min_angle_deg = 2.0;
+  double init_min_median_angle_deg = 30.0;
+  int resection_min_inliers = 15;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
@@ -561,6 +567,18 @@ int main(int argc, char* argv[]) {
                    "0=off)."));
   cmd.add(make_option(0, ba_threads, "ba-threads")
               .doc("Ceres num_threads for BA solves (default: 0 = use hardware concurrency)."));
+  cmd.add(make_option(0, max_registered_images, "max-registered-images")
+              .doc("Early stop when registered image count reaches this cap (0=disabled)."));
+  cmd.add(make_option(0, init_min_inliers, "init-min-inliers")
+              .doc("Initial pair gate: minimum E-RANSAC inliers (default: 100)."));
+  cmd.add(make_option(0, init_max_forward_motion, "init-max-forward-motion")
+              .doc("Initial pair gate: max |tz|/||t|| forward-motion ratio (default: 0.95)."));
+  cmd.add(make_option(0, init_min_angle_deg, "init-min-angle-deg")
+              .doc("Initial pair gate: minimum per-point triangulation angle in degrees (default: 2.0)."));
+  cmd.add(make_option(0, init_min_median_angle_deg, "init-min-median-angle-deg")
+              .doc("Initial pair gate: minimum median triangulation angle in degrees (default: 30.0)."));
+  cmd.add(make_option(0, resection_min_inliers, "resection-min-inliers")
+              .doc("Resection gate: minimum PnP RANSAC inliers to accept new image registration (default: 15)."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));
@@ -581,6 +599,31 @@ int main(int argc, char* argv[]) {
   }
   if (ba_threads < 0) {
     std::cerr << "Error: --ba-threads must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (max_registered_images < 0) {
+    std::cerr << "Error: --max-registered-images must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (init_min_inliers < 1) {
+    std::cerr << "Error: --init-min-inliers must be >= 1\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (init_max_forward_motion <= 0.0 || init_max_forward_motion > 1.0) {
+    std::cerr << "Error: --init-max-forward-motion must be in (0, 1]\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (init_min_angle_deg <= 0.0 || init_min_median_angle_deg <= 0.0) {
+    std::cerr << "Error: --init-min-angle-deg and --init-min-median-angle-deg must be > 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (resection_min_inliers < 1) {
+    std::cerr << "Error: --resection-min-inliers must be >= 1\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -630,10 +673,13 @@ int main(int argc, char* argv[]) {
   opts.global_ba.ba_fixed_pose_optimize_skipped = true;
   opts.intrinsics.focal_prior_weight = 1.f;
   // COLMAP-style initial two-view geometry gates.
-  opts.init.min_num_inliers = 100;
-  opts.init.max_forward_motion = 0.95;
-  opts.init.min_angle_deg = 2.f;
-  opts.init.min_median_angle_deg = 30.f;
+  opts.init.min_num_inliers = init_min_inliers;
+  opts.init.max_forward_motion = init_max_forward_motion;
+  opts.init.min_angle_deg = init_min_angle_deg;
+  opts.init.min_median_angle_deg = init_min_median_angle_deg;
+  // Resection (incremental registration) gate: increase default from 9 to reduce false positives.
+  opts.resection.min_inliers = resection_min_inliers;
+  opts.max_registered_images = max_registered_images;
   // kBatchNeighbor: variable = batch cameras + newly triangulated points;
   // constant = top-K co-visible neighbors. Intrinsics are fixed in local BA.
   // Batch cameras: MAD tight rejection after local BA. Constant neighbors: default no gross delete
