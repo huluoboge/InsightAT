@@ -82,37 +82,8 @@ jobs:
 
           & "$vcpkg_root\vcpkg" integrate install
 
-          $minimal = "${{ github.event.inputs.minimal-build }}" -eq 'true'
-
-          if ($minimal) {
-            Write-Host "minimal build — CLI tools only, no Qt UI"
-            & "$vcpkg_root\vcpkg" install `
-              ceres[lapack,schur,suitesparse] `
-              cuda `
-              eigen3 `
-              gflags `
-              glog `
-              nlohmann-json `
-              "opencv4[jpeg,png,tiff]" `
-              --triplet x64-windows `
-              --clean-after-build
-          } else {
-            Write-Host "full build — including Qt5 UI and GDAL"
-            & "$vcpkg_root\vcpkg" install `
-              ceres[lapack,schur,suitesparse] `
-              cuda `
-              egl `
-              eigen3 `
-              gflags `
-              glew `
-              glog `
-              "gdal[core,curl,expat,geos,jpeg,png,sqlite3]" `
-              nlohmann-json `
-              "opencv4[jpeg,png,tiff]" `
-              "qt5-base" `
-              --triplet x64-windows `
-              --clean-after-build
-          }
+          # Manifest mode: vcpkg.json 已声明所有依赖，不需要传包名参数
+          & "$vcpkg_root\vcpkg" install --clean-after-build
 
           if ($LASTEXITCODE -ne 0) {
             Write-Error "vcpkg install failed"
