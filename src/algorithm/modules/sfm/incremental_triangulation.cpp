@@ -1124,21 +1124,23 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
 
     const int n_tracks = static_cast<int>(store->num_tracks());
 
-    // ── Phase 1 (OMP parallel): epoch gate + quick pre-check ─────────────────────────────────
-    // Each track is independent — per-track writes (set_track_retriangulation_flag,
-    // mark_track_tri_attempted) touch disjoint memory locations (different track_id,
-    // different obs_id ranges).  Diagnostic counters use #pragma omp atomic.
-    // Tracks that pass all gates (need actual triangulation or restore) are collected
-    // into needs_tri / needs_restore for serial Phase 2.
+    // ── Phase 1 (OMP parallel): filter tracks ─────────────────────────────────────────────────
+    // Non-tri tracks: fast quick pre-check (count registered views) avoids expensive
+    // rebuild+undistort for tracks with < 2 views.  No epoch gate — between full-scans
+    // within the same epoch, new image registrations may add observations, making
+    // previously-untriangulable tracks viable.  The original serial code retried all
+    // non-tri tracks every full-scan; we preserve that semantics.
+    //
+    // Already-tri tracks: epoch gate skips stable tracks whose poses have not changed
+    // since they were last triangulated.
     //
     // Action encoding for the parallel filter:
-    //   0 = skip (epoch gate or quick check rejected)
+    //   0 = skip (quick check rejected, or epoch gate for already-tri)
     //   1 = needs triangulate_track_common
     //   2 = needs retri_restore_deleted_obs_branch_a
     //   3 = invalid track (already handled)
     std::vector<int8_t> track_action(static_cast<size_t>(n_tracks), 0);
     {
-      // Per-thread diagnostic counters (merged after the parallel loop).
       int n_threads = omp_get_max_threads();
       std::vector<int> pt_invalid(static_cast<size_t>(n_threads), 0);
       std::vector<int> pt_retri_fail(static_cast<size_t>(n_threads), 0);
@@ -1151,17 +1153,13 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
         if (!store->is_track_valid(track_id)) {
           store->set_track_retriangulation_flag(track_id, false);
           ++pt_invalid[static_cast<size_t>(th)];
-          track_action[static_cast<size_t>(track_id)] = 3; // invalid
+          track_action[static_cast<size_t>(track_id)] = 3;
           continue;
         }
         if (!store->track_has_triangulated_xyz(track_id)) {
-          // Epoch gate: skip if already attempted (and failed) in this pose epoch.
-          if (!store->is_track_tri_stale(track_id)) {
-            store->set_track_retriangulation_flag(track_id, false);
-            ++pt_retri_fail[static_cast<size_t>(th)];
-            continue;
-          }
           // Quick pre-check: count valid+restorable registered views.
+          // No epoch gate — observations can change between full-scans in the
+          // same epoch via new image registrations.
           {
             const auto& obs_ids_check = store->track_all_obs_ids_view(track_id);
             int nv = 0;
@@ -1174,22 +1172,22 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
                 break;
             }
             if (nv < 2) {
-              store->mark_track_tri_attempted(track_id);
               store->set_track_retriangulation_flag(track_id, false);
               ++pt_retri_fail[static_cast<size_t>(th)];
               pt_nv_hist[static_cast<size_t>(th)][std::min(nv, 7)]++;
               continue;
             }
           }
-          track_action[static_cast<size_t>(track_id)] = 1; // needs triangulation
+          track_action[static_cast<size_t>(track_id)] = 1;
         } else {
           ++pt_already_tri[static_cast<size_t>(th)];
-          // Epoch gate for already-triangulated tracks.
+          // Epoch gate for already-triangulated tracks only: skip stable tracks
+          // whose observing poses have not changed since they were last triangulated.
           if (!store->is_track_tri_stale(track_id)) {
             store->set_track_retriangulation_flag(track_id, false);
             continue;
           }
-          track_action[static_cast<size_t>(track_id)] = 2; // needs restore
+          track_action[static_cast<size_t>(track_id)] = 2;
         }
       }
 
@@ -1217,7 +1215,6 @@ int run_retriangulation(TrackStore* store, const std::vector<Eigen::Matrix3d>& p
           ++n_retri;
         } else {
           ++n_retri_fail;
-          store->mark_track_tri_attempted(track_id); // prevent re-try this epoch
           fail_hist[std::min(static_cast<int>(fcode), 9)]++;
           if (fcode == TriFailCode::kInsufficientRegisteredViews) {
             const auto& all_obs_ids_buf = store->track_all_obs_ids_view(track_id);
