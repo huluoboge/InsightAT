@@ -667,6 +667,22 @@ target_include_directories(isat_retrieval_match
 )
 set_property(TARGET isat_retrieval_match PROPERTY FOLDER InsightAT/Tools)
 
+# isat_undistort - Undistort registered images for 3DGS / COLMAP-compatible output
+add_executable(isat_undistort tools/isat_undistort.cpp)
+target_link_libraries(isat_undistort
+    PRIVATE
+        insightat_tools_logging
+        InsightATAlgorithm
+        glog::glog
+        ${OpenCV_LIBS}
+)
+target_include_directories(isat_undistort
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+)
+set_property(TARGET isat_undistort PROPERTY FOLDER InsightAT/Tools)
+
 # ─────────────────────────────────────────────────────────────
 # CameraEstimator 独立进程工具
 # ─────────────────────────────────────────────────────────────
