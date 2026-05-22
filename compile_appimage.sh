@@ -9,7 +9,7 @@
 # Optional env:
 #   INSIGHTAT_QMAKE     — path to `qmake` for the *same* Qt that linked at_bundler_viewer (default: from CMakeCache Qt5Core_QMAKE_EXECUTABLE, else first of qmake-qt5, qmake on PATH). Required for consistent Qt in the AppImage; wrong/missing QMAKE can cause "Cannot mix incompatible Qt library" at runtime.
 #   BUNDLE_PYTHON=1|0   — copy host python3 + stdlib into AppDir (default: 1). Set 0 to skip (smaller image).
-#   VERSION             — Version string for the AppImage (default: 0.1.0)
+#   VERSION             — Version string for the AppImage (default: read from VERSION file at project root)
 #   APPIMAGE_OUT_DIR    — Output directory for the AppImage (default: build-appimage)
 #   BUNDLE_PYTHON_DIST  — Copy dist-packages (default: 0)
 #
@@ -20,7 +20,9 @@ APPIMAGE_OUT_DIR="${APPIMAGE_OUT_DIR:-${REPO_ROOT}/build-appimage}"
 TOOLS_DIR="${APPIMAGE_OUT_DIR}/.tools"
 APPDIR="${APPIMAGE_OUT_DIR}/InsightAT.AppDir"
 APPNAME=InsightAT
-VERSION="${VERSION:-0.1.0}"
+# Version: if VERSION env var is not set, read from VERSION file at project root.
+INSIGHTAT_BASE_VERSION=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "0.1.0")
+VERSION="${VERSION:-${INSIGHTAT_BASE_VERSION}}"
 DESKTOP_SRC="${REPO_ROOT}/packaging/appimage/insightat.desktop"
 ICON_SRC="${REPO_ROOT}/packaging/appimage/app.png"
 BUNDLE_PYTHON="${BUNDLE_PYTHON:-1}"
@@ -255,6 +257,12 @@ OUT_IMG=$(ls -1t "${APPIMAGE_OUT_DIR}/"*.AppImage 2>/dev/null | head -1 || true)
 if [[ -n "$OUT_IMG" ]]; then
   echo "AppImage: $OUT_IMG"
   echo "No-arg default:  $OUT_IMG  → runs isat_tools (list CLIs in this image)"
+
+  # ── SHA256 checksum ────────────────────────────────────────────────────────
+  SHA256_FILE="${OUT_IMG}.sha256"
+  echo "Generating SHA256: $(sha256sum "$OUT_IMG" | cut -d' ' -f1)"
+  sha256sum "$OUT_IMG" > "$SHA256_FILE"
+  echo "SHA256 file: $SHA256_FILE"
 else
   echo "Expected an *.AppImage under ${APPIMAGE_OUT_DIR}/"
   exit 1

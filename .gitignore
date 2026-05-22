@@ -10,3 +10,4 @@ build-appimage/
 .cursor
 .kiro
 __pycache__/
+cudss-local*

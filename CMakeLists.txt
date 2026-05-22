@@ -1,7 +1,10 @@
 
 CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
 
-project(InsightAT C CXX)
+# Read project version from VERSION file at project root
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" INSIGHTAT_VERSION_RAW)
+string(STRIP "${INSIGHTAT_VERSION_RAW}" INSIGHTAT_VERSION)
+project(InsightAT VERSION ${INSIGHTAT_VERSION} LANGUAGES C CXX)
 
 
 # guard against in-source builds
