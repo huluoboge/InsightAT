@@ -11,6 +11,7 @@
  *   4. tracks            – build tracks from matches + geometry
  *   5. seed_eval         – 四策略 seed 评估（balanced/wide_baseline/support_first/conservative）
  *   6. incremental_sfm   – incremental SfM (resection + BA)
+ *   7. undistort         – [可选] 去畸变图像导出 + COLMAP sparse (--undistort 开启)
  *
  * Usage:
  *   isat_sfm -i /photos -w work/                              # run all steps
@@ -22,6 +23,8 @@
  *   isat_sfm -i /photos -w work/ --steps create,extract       # 只跑 create + extract
  *   isat_sfm -i /photos -w work/ --steps tracks,seed_eval,incremental_sfm  # 从 tracks 续跑并评估seed
  *   isat_sfm -i /photos -w work/ --output-interval-sfm           # 在 <work>/sfm_interval/ 写每步 Bundler 快照，at_bundler_viewer 查看
+ *   isat_sfm -i /photos -w work/ --undistort                     # SfM 后导出去畸变图像 + COLMAP (txt)
+ *   isat_sfm -i /photos -w work/ --undistort --binary            # 同上，COLMAP 二进制格式
  *
  * The binary locates sibling tools relative to its own path (same directory).
  */
@@ -278,7 +281,7 @@ static std::vector<json> run_capture_or_die(const std::string& step,
 // ─────────────────────────────────────────────────────────────────────────────
 
 static const std::vector<std::string> ALL_STEPS = {"create", "extract", "match", "tracks",
-                                                   "seed_eval", "incremental_sfm"};
+                                                   "seed_eval", "incremental_sfm", "undistort"};
 
 static std::set<std::string> parse_steps(const std::string& steps_str) {
   std::set<std::string> result;
@@ -292,7 +295,7 @@ static std::set<std::string> parse_steps(const std::string& steps_str) {
       continue;
     if (std::find(ALL_STEPS.begin(), ALL_STEPS.end(), token) == ALL_STEPS.end()) {
       LOG(ERROR) << "Unknown step: '" << token << "'";
-      LOG(ERROR) << "Valid steps: create, extract, match, tracks, seed_eval, incremental_sfm";
+      LOG(ERROR) << "Valid steps: create, extract, match, tracks, seed_eval, incremental_sfm, undistort";
       std::exit(2);
     }
     result.insert(token);
@@ -627,6 +630,12 @@ int main(int argc, char* argv[]) {
               .doc("During incremental SfM, write per-iteration Bundler bundle.out + list.txt under "
                    "<work-dir>/sfm_interval/iter_NNNN/ (interval fixed at 1; view with "
                    "at_bundler_viewer). No need to set paths manually."));
+  cmd.add(make_switch(0, "undistort")
+              .doc("After incremental SfM, run isat_undistort to export undistorted images + "
+                   "COLMAP sparse (PINHOLE, %08d naming) for 3DGS training. "
+                   "Default: off. Requires --binary for binary format."));
+  cmd.add(make_switch(0, "binary")
+              .doc("When --undistort is set, write COLMAP binary format (.bin) instead of text."));
 
   try {
     cmd.process(argc, argv);
@@ -1294,6 +1303,27 @@ int main(int argc, char* argv[]) {
   }
 
   // ════════════════════════════════════════════════════════════════════════
+  // Step: UNDISTORT (optional, off by default)
+  // ════════════════════════════════════════════════════════════════════════
+  if (active_steps.count("undistort")) {
+    ++step_num;
+    LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Undistort ===";
+
+    const fs::path tracks_idc = sfm_out / "tracks.isat_tracks";
+    if (!fs::exists(tracks_idc)) {
+      LOG(ERROR) << "Undistort skipped: " << tracks_idc << " not found (run incremental_sfm first)";
+    } else {
+      std::vector<std::string> ud_cmd = {tool_path("isat_undistort"),
+                                         "-p", images_all.string(),
+                                         "-t", tracks_idc.string(),
+                                         "-o", sfm_out.string()};
+      if (cmd.used("binary"))
+        ud_cmd.push_back("--binary");
+      run_or_die("undistort", ud_cmd);
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
   // Done
   // ════════════════════════════════════════════════════════════════════════
   auto pipeline_end = std::chrono::steady_clock::now();
@@ -1341,6 +1371,9 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "  Poses:  " << (sfm_out / "poses.json").string();
     LOG(INFO) << "  Bundle: " << (sfm_out / "bundle.out").string();
     LOG(INFO) << "  COLMAP: " << (sfm_out / "colmap" / "sparse" / "0").string();
+    if (active_steps.count("undistort")) {
+      LOG(INFO) << "  Undistorted: " << (sfm_out / "colmap" / "images").string() << "/";
+    }
     if (cmd.used("output-interval-sfm")) {
       const std::string iv =
           fs::absolute(work_path / "sfm_interval").string();

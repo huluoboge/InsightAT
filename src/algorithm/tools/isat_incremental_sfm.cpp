@@ -815,9 +815,45 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < n_imgs; ++i)
       img_indices[static_cast<size_t>(i)] = static_cast<uint32_t>(i);
 
+    // ── Build embedded pose + intrinsics data (replaces poses.json) ─────────
+    insight::sfm::SfMResultData sfm_pose;
+    sfm_pose.pose_R.resize(static_cast<size_t>(n_imgs) * 9, 0.0f);
+    sfm_pose.pose_C.resize(static_cast<size_t>(n_imgs) * 3, 0.0f);
+    sfm_pose.registered.resize(static_cast<size_t>(n_imgs), 0);
+    sfm_pose.cam_idx.resize(static_cast<size_t>(n_imgs), 0);
+
+    for (int i = 0; i < n_imgs; ++i) {
+      sfm_pose.registered[static_cast<size_t>(i)] = registered[static_cast<size_t>(i)] ? 1 : 0;
+      sfm_pose.cam_idx[static_cast<size_t>(i)] = project.image_to_camera_index[static_cast<size_t>(i)];
+      if (registered[static_cast<size_t>(i)]) {
+        const auto& R = poses_R[static_cast<size_t>(i)];
+        const auto& C = poses_C[static_cast<size_t>(i)];
+        float* r = &sfm_pose.pose_R[static_cast<size_t>(i) * 9];
+        r[0] = static_cast<float>(R(0,0)); r[1] = static_cast<float>(R(0,1)); r[2] = static_cast<float>(R(0,2));
+        r[3] = static_cast<float>(R(1,0)); r[4] = static_cast<float>(R(1,1)); r[5] = static_cast<float>(R(1,2));
+        r[6] = static_cast<float>(R(2,0)); r[7] = static_cast<float>(R(2,1)); r[8] = static_cast<float>(R(2,2));
+        float* c = &sfm_pose.pose_C[static_cast<size_t>(i) * 3];
+        c[0] = static_cast<float>(C(0)); c[1] = static_cast<float>(C(1)); c[2] = static_cast<float>(C(2));
+      }
+    }
+
+    sfm_pose.num_cameras = project.num_cameras();
+    sfm_pose.intrinsics.resize(static_cast<size_t>(sfm_pose.num_cameras) * 11, 0.0f);
+    for (int ci = 0; ci < sfm_pose.num_cameras; ++ci) {
+      const auto& K = project.cameras[static_cast<size_t>(ci)];
+      float* k = &sfm_pose.intrinsics[static_cast<size_t>(ci) * 11];
+      k[0] = static_cast<float>(K.fx);  k[1] = static_cast<float>(K.fy);
+      k[2] = static_cast<float>(K.cx);  k[3] = static_cast<float>(K.cy);
+      k[4] = static_cast<float>(K.width); k[5] = static_cast<float>(K.height);
+      k[6] = static_cast<float>(K.k1);  k[7] = static_cast<float>(K.k2);
+      k[8] = static_cast<float>(K.k3);  k[9] = static_cast<float>(K.p1);
+      k[10] = static_cast<float>(K.p2);
+    }
+
     TrackSaveOptions sfm_opts;
     sfm_opts.is_sfm_result = true;
     sfm_opts.num_registered_images = n_reg;
+    sfm_opts.sfm_pose = &sfm_pose;
     // num_triangulated / num_inlier auto-counted in save_track_store_to_idc
 
     const std::string tracks_out = output_dir + "/tracks.isat_tracks";
@@ -825,7 +861,8 @@ int main(int argc, char* argv[]) {
       ScopedTimer timer("save_track_store_to_idc");
       if (save_track_store_to_idc(store, img_indices, tracks_out,
                                   /*view_graph=*/nullptr, &sfm_opts)) {
-        LOG(INFO) << "Saved TrackStore → " << tracks_out;
+        LOG(INFO) << "Saved TrackStore → " << tracks_out << " (with " << n_reg
+                  << " embedded poses, " << sfm_pose.num_cameras << " cameras)";
       } else {
         LOG(ERROR) << "Failed to save TrackStore to " << tracks_out;
       }

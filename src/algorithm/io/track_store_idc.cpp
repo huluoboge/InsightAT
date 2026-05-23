@@ -15,7 +15,9 @@ namespace insight {
 namespace sfm {
 
 bool load_track_store_from_idc(const std::string& path, TrackStore* store_out,
-                               std::vector<uint32_t>* image_indices_out, ViewGraph* view_graph_out) {
+                               std::vector<uint32_t>* image_indices_out,
+                               ViewGraph* view_graph_out,
+                               SfMResultData* sfm_pose_out) {
   if (!store_out)
     return false;
   io::IDCReader reader(path);
@@ -69,8 +71,14 @@ bool load_track_store_from_idc(const std::string& path, TrackStore* store_out,
     float y = track_xyz[static_cast<size_t>(t) * 3 + 1];
     float z = track_xyz[static_cast<size_t>(t) * 3 + 2];
     store_out->add_track(x, y, z);
-    if ((track_flags[static_cast<size_t>(t)] & track_flags::kAlive) == 0)
+    const uint8_t flags = track_flags[static_cast<size_t>(t)];
+    if ((flags & track_flags::kAlive) == 0)
       store_out->mark_track_deleted(t);
+    // Restore kHasTriangulated so that track_has_triangulated_xyz() works after reload.
+    // add_track sets the flag only on camera-ready triangulations; on-disk the bit may
+    // have been set by the SfM pipeline (schema >= 1.2).
+    if (flags & track_flags::kHasTriangulated)
+      store_out->set_track_xyz(t, x, y, z);  // also increments num_triangulated_
   }
   for (int t = 0; t < num_tracks; ++t) {
     const size_t beg = track_obs_offset[static_cast<size_t>(t)];
@@ -95,9 +103,31 @@ bool load_track_store_from_idc(const std::string& path, TrackStore* store_out,
     view_graph_out->clear();
   }
   // Rebuild the per-image triangulation counters (image_n_tri_) from scratch.
-  // The incremental updates during add_track/mark_track_deleted/add_observation
-  // may over-count when tracks are deleted before observations are added.
   store_out->rebuild_image_n_tri();
+
+  // ── Optional: load embedded pose + intrinsics blobs (schema 1.3) ──────────
+  if (sfm_pose_out && meta.value("has_pose_data", false)) {
+    const int n_imgs = num_images;
+    sfm_pose_out->pose_R = reader.read_blob<float>("pose_R");
+    sfm_pose_out->pose_C = reader.read_blob<float>("pose_C");
+    sfm_pose_out->registered = reader.read_blob<uint8_t>("registered");
+    sfm_pose_out->cam_idx = reader.read_blob<int32_t>("cam_idx");
+    sfm_pose_out->intrinsics = reader.read_blob<float>("intrinsics");
+    sfm_pose_out->num_cameras = meta.value("num_cameras", 0);
+
+    // Validate sizes
+    if (sfm_pose_out->pose_R.size() != static_cast<size_t>(n_imgs) * 9) {
+      LOG(WARNING) << "load_track_store_from_idc: pose_R size mismatch, clearing pose data";
+      *sfm_pose_out = SfMResultData();
+    } else if (sfm_pose_out->intrinsics.size() != static_cast<size_t>(sfm_pose_out->num_cameras) * 11) {
+      LOG(WARNING) << "load_track_store_from_idc: intrinsics size mismatch, clearing pose data";
+      *sfm_pose_out = SfMResultData();
+    } else {
+      LOG(INFO) << "Loaded " << n_imgs << " poses, " << sfm_pose_out->num_cameras
+                << " cameras from embedded pose data";
+    }
+  }
+
   return true;
 }
 
@@ -108,10 +138,12 @@ bool save_track_store_to_idc(const TrackStore& store, const std::vector<uint32_t
   const bool embed_vg  = view_graph != nullptr && view_graph->num_pairs() > 0;
   const bool is_sfm    = opts != nullptr && opts->is_sfm_result;
 
-  // ── Determine schema_version ─────────────────────────────────────────────
+  // Determine schema_version
+  const bool has_sfm_pose = (opts != nullptr && opts->sfm_pose != nullptr);
   std::string schema_ver = "1.0";
-  if (is_sfm)           schema_ver = "1.2";
-  else if (embed_vg)    schema_ver = "1.1";
+  if (has_sfm_pose)       schema_ver = "1.3";
+  else if (is_sfm)        schema_ver = "1.2";
+  else if (embed_vg)      schema_ver = "1.1";
 
   nlohmann::json meta;
   meta["schema_version"] = schema_ver;
@@ -220,6 +252,27 @@ bool save_track_store_to_idc(const TrackStore& store, const std::vector<uint32_t
                   {static_cast<int>(obs_scale.size())});
   writer.add_blob("obs_flags", obs_flag_bytes.data(), obs_flag_bytes.size() * sizeof(uint8_t),
                   "uint8", {static_cast<int>(obs_flag_bytes.size())});
+
+  // ── Optional: embed pose + intrinsics blobs (schema 1.3) ──────────────────
+  if (has_sfm_pose) {
+    const auto* sp = opts->sfm_pose;
+    meta["has_pose_data"] = true;
+    meta["num_cameras"]   = sp->num_cameras;
+
+    writer.add_blob("pose_R", sp->pose_R.data(), sp->pose_R.size() * sizeof(float),
+                    "float32", {static_cast<int>(sp->pose_R.size() / 9), 9});
+    writer.add_blob("pose_C", sp->pose_C.data(), sp->pose_C.size() * sizeof(float),
+                    "float32", {static_cast<int>(sp->pose_C.size() / 3), 3});
+    writer.add_blob("registered", sp->registered.data(), sp->registered.size() * sizeof(uint8_t),
+                    "uint8", {static_cast<int>(sp->registered.size())});
+    writer.add_blob("cam_idx", sp->cam_idx.data(), sp->cam_idx.size() * sizeof(int32_t),
+                    "int32", {static_cast<int>(sp->cam_idx.size())});
+    writer.add_blob("intrinsics", sp->intrinsics.data(), sp->intrinsics.size() * sizeof(float),
+                    "float32", {static_cast<int>(sp->num_cameras), 11});
+    VLOG(1) << "save_track_store_to_idc: embedded " << sp->pose_R.size() / 9 << " poses, "
+            << sp->num_cameras << " cameras";
+  }
+
   if (!writer.write()) {
     LOG(ERROR) << "save_track_store_to_idc: failed to write " << path;
     return false;

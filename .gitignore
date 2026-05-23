@@ -11,3 +11,4 @@ build-appimage/
 .kiro
 __pycache__/
 cudss-local*
+InsightMap

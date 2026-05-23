@@ -6,15 +6,16 @@
  *   [pre]   Pre-generate undistortion maps per camera (shared by all images using that camera)
  *   Stage 1 [multi-thread I/O]    Read images from disk
  *   Stage 2 [multi-thread CPU]    Undistort via cv::remap using pre-generated maps
- *   Stage 3 [multi-thread I/O]    Write as <out>/images/%08d.jpg
+ *   Stage 3 [multi-thread I/O]    Write as <out>/colmap/sparse/0/images/%08d.jpg
  *   [post]  Write COLMAP sparse/0/ cameras.txt / images.txt / points3D.txt
  *
  * Usage:
  *   isat_undistort -p project.json -j poses.json -o out_dir
+ *   isat_undistort -p project.json -t tracks.isat_tracks -o out_dir   (poses from IDC)
  *   isat_undistort -p project.json -j poses.json -o out_dir --jpg-quality 95 -j 4
  *
  * Output:
- *   out_dir/images/%08d.jpg        — undistorted images, zero-padded 8-digit 1-based index
+ *   out_dir/colmap/images/%08d.jpg  — undistorted images
  *   out_dir/colmap/sparse/0/       — COLMAP text files (PINHOLE cameras, %08d names)
  */
 
@@ -178,6 +179,51 @@ static bool load_poses_json(const std::string& path, int total_images, PoseBundl
   }
   LOG(INFO) << "Loaded " << out->image_indices.size() << " poses, "
             << out->cameras.size() << " cameras from " << path;
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Load PoseBundle from embedded SfMResultData (tracks IDC)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static bool poses_from_sfm_result(const insight::sfm::SfMResultData& sfm,
+                                  int total_images, PoseBundle* out) {
+  const int n_imgs = static_cast<int>(sfm.registered.size());
+  if (n_imgs != total_images) {
+    LOG(ERROR) << "SfMResultData images mismatch: " << n_imgs << " vs " << total_images;
+    return false;
+  }
+
+  out->cameras.clear();
+  for (int ci = 0; ci < sfm.num_cameras; ++ci) {
+    const float* k = &sfm.intrinsics[static_cast<size_t>(ci) * 11];
+    CameraIntrinsics K;
+    K.fx = k[0]; K.fy = k[1]; K.cx = k[2]; K.cy = k[3];
+    K.width = static_cast<int>(k[4]); K.height = static_cast<int>(k[5]);
+    K.k1 = k[6]; K.k2 = k[7]; K.k3 = k[8]; K.p1 = k[9]; K.p2 = k[10];
+    out->cameras.push_back(K);
+  }
+
+  out->image_indices.clear();
+  out->poses_R.clear();
+  out->poses_C.clear();
+
+  for (int i = 0; i < n_imgs; ++i) {
+    if (!sfm.registered[static_cast<size_t>(i)])
+      continue;
+    out->image_indices.push_back(i);
+
+    const float* r = &sfm.pose_R[static_cast<size_t>(i) * 9];
+    Eigen::Matrix3d R;
+    R << r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8];
+    out->poses_R.push_back(R);
+
+    const float* c = &sfm.pose_C[static_cast<size_t>(i) * 3];
+    out->poses_C.push_back(Eigen::Vector3d(c[0], c[1], c[2]));
+  }
+
+  LOG(INFO) << "Loaded " << out->image_indices.size() << " poses, "
+            << out->cameras.size() << " cameras from embedded SfMResultData";
   return true;
 }
 
@@ -389,6 +435,200 @@ static bool write_colmap_sparse(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Write COLMAP binary format (cameras.bin / images.bin / points3D.bin)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static bool write_colmap_binary(
+    const std::string& sparse_dir,
+    const std::vector<UndistortTask>& tasks,
+    const std::vector<CameraIntrinsics>& cameras,
+    const PoseBundle& poses,
+    const insight::sfm::TrackStore* store) {
+
+  // Same camera + pose index maps as write_colmap_sparse
+  std::map<int, int> cam_idx_to_colmap_id;
+  int next_cam_id = 1;
+  for (const auto& t : tasks)
+    if (cam_idx_to_colmap_id.find(t.camera_idx) == cam_idx_to_colmap_id.end())
+      cam_idx_to_colmap_id[t.camera_idx] = next_cam_id++;
+
+  std::map<int, size_t> img_to_task;
+  for (const auto& t : tasks)
+    img_to_task[t.image_index] = static_cast<size_t>(t.colmap_image_id - 1);
+
+  std::map<int, size_t> idx_to_pose;
+  for (size_t pi = 0; pi < poses.image_indices.size(); ++pi)
+    idx_to_pose[poses.image_indices[pi]] = pi;
+
+  // Build per-image 2D observations + 3D points
+  struct Pt2D { double x, y; int64_t pt3d_id; };
+  std::vector<std::vector<Pt2D>> img_pts(tasks.size());
+
+  struct Pt3D {
+    uint64_t id;
+    double x, y, z;
+    double error;
+    std::vector<std::pair<uint32_t, uint32_t>> track;
+  };
+  std::vector<Pt3D> points3d;
+  uint64_t next_pt_id = 1;
+
+  if (store) {
+    std::vector<insight::camera::Intrinsics> cam_intr(cameras.size());
+    for (size_t ci = 0; ci < cameras.size(); ++ci)
+      cam_intr[ci] = to_cam_intr(cameras[ci]);
+
+    std::vector<insight::sfm::Observation> obs_buf;
+    for (size_t ti = 0; ti < store->num_tracks(); ++ti) {
+      const int tid = static_cast<int>(ti);
+      if (!store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+        continue;
+      float px, py, pz;
+      store->get_track_xyz(tid, &px, &py, &pz);
+
+      obs_buf.clear();
+      store->get_track_observations(tid, &obs_buf);
+
+      Pt3D pt;
+      pt.id = next_pt_id;
+      pt.x = static_cast<double>(px);
+      pt.y = static_cast<double>(py);
+      pt.z = static_cast<double>(pz);
+
+      double sum_err = 0.0;
+      int n_err = 0;
+      for (const auto& o : obs_buf) {
+        const int img_idx = static_cast<int>(o.image_index);
+        auto tit = img_to_task.find(img_idx);
+        if (tit == img_to_task.end()) continue;
+        const size_t task_idx = tit->second;
+
+        const int ci = tasks[task_idx].camera_idx;
+        double uu = o.u, vu = o.v;
+        if (static_cast<size_t>(ci) < cam_intr.size())
+          insight::camera::undistort_point(cam_intr[static_cast<size_t>(ci)], o.u, o.v, &uu, &vu);
+
+        const uint32_t pt2d_idx = static_cast<uint32_t>(img_pts[task_idx].size());
+        img_pts[task_idx].push_back({uu, vu, static_cast<int64_t>(next_pt_id)});
+        pt.track.emplace_back(static_cast<uint32_t>(tasks[task_idx].colmap_image_id), pt2d_idx);
+
+        // Reprojection error
+        auto pit = idx_to_pose.find(img_idx);
+        if (pit != idx_to_pose.end()) {
+          const Eigen::Vector3d Xw(pt.x, pt.y, pt.z);
+          const size_t pi = pit->second;
+          Eigen::Vector3d p = poses.poses_R[pi] * (Xw - poses.poses_C[pi]);
+          if (p(2) > 1e-12) {
+            double du = uu - (p(0) / p(2));
+            double dv = vu - (p(1) / p(2));
+            sum_err += std::sqrt(du * du + dv * dv);
+            ++n_err;
+          }
+        }
+      }
+      if (pt.track.size() >= 2) {
+        pt.error = (n_err > 0) ? sum_err / n_err : 0.0;
+        points3d.push_back(std::move(pt));
+        ++next_pt_id;
+      }
+    }
+    LOG(INFO) << "Collected " << points3d.size() << " points for binary output";
+  }
+
+  // ── cameras.bin ──
+  {
+    const std::string p = sparse_dir + "/cameras.bin";
+    std::ofstream f(p, std::ios::binary);
+    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << p; return false; }
+    const uint64_t n_cams = static_cast<uint64_t>(cam_idx_to_colmap_id.size());
+    f.write(reinterpret_cast<const char*>(&n_cams), sizeof(uint64_t));
+    for (const auto& kv : cam_idx_to_colmap_id) {
+      const auto& K = cameras[static_cast<size_t>(kv.first)];
+      const uint32_t cam_id = static_cast<uint32_t>(kv.second);
+      const int32_t model_id = 1; // PINHOLE
+      const uint64_t w = static_cast<uint64_t>(K.width);
+      const uint64_t h = static_cast<uint64_t>(K.height);
+      const double params[4] = {K.fx, K.fy, K.cx, K.cy};
+      f.write(reinterpret_cast<const char*>(&cam_id), sizeof(uint32_t));
+      f.write(reinterpret_cast<const char*>(&model_id), sizeof(int32_t));
+      f.write(reinterpret_cast<const char*>(&w), sizeof(uint64_t));
+      f.write(reinterpret_cast<const char*>(&h), sizeof(uint64_t));
+      f.write(reinterpret_cast<const char*>(params), 4 * sizeof(double));
+    }
+    LOG(INFO) << "Wrote " << p;
+  }
+
+  // ── images.bin ──
+  {
+    const std::string p = sparse_dir + "/images.bin";
+    std::ofstream f(p, std::ios::binary);
+    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << p; return false; }
+    const uint64_t n_imgs = static_cast<uint64_t>(tasks.size());
+    f.write(reinterpret_cast<const char*>(&n_imgs), sizeof(uint64_t));
+    for (const auto& t : tasks) {
+      auto pit = idx_to_pose.find(t.image_index);
+      if (pit == idx_to_pose.end()) continue;
+      const size_t pi = pit->second;
+
+      const Eigen::Quaterniond q(poses.poses_R[pi]);
+      const Eigen::Vector3d tr = poses.poses_R[pi] * (-poses.poses_C[pi]);
+
+      const uint32_t img_id = static_cast<uint32_t>(t.colmap_image_id);
+      const float qvec[4] = {static_cast<float>(q.w()), static_cast<float>(q.x()),
+                              static_cast<float>(q.y()), static_cast<float>(q.z())};
+      const double tvec[3] = {tr(0), tr(1), tr(2)};
+      const uint32_t cam_id = static_cast<uint32_t>(cam_idx_to_colmap_id[t.camera_idx]);
+
+      std::ostringstream ss;
+      ss << std::setw(8) << std::setfill('0') << t.colmap_image_id << ".jpg";
+      const std::string name = ss.str();
+
+      f.write(reinterpret_cast<const char*>(&img_id), sizeof(uint32_t));
+      f.write(reinterpret_cast<const char*>(qvec), 4 * sizeof(float));
+      f.write(reinterpret_cast<const char*>(tvec), 3 * sizeof(double));
+      f.write(reinterpret_cast<const char*>(&cam_id), sizeof(uint32_t));
+      f.write(name.c_str(), name.size() + 1);
+
+      const size_t task_idx = static_cast<size_t>(t.colmap_image_id - 1);
+      const auto& pts = img_pts[task_idx];
+      const uint64_t n_pts = static_cast<uint64_t>(pts.size());
+      f.write(reinterpret_cast<const char*>(&n_pts), sizeof(uint64_t));
+      for (const auto& p2 : pts) {
+        const double xy[2] = {p2.x, p2.y};
+        f.write(reinterpret_cast<const char*>(xy), 2 * sizeof(double));
+        f.write(reinterpret_cast<const char*>(&p2.pt3d_id), sizeof(int64_t));
+      }
+    }
+    LOG(INFO) << "Wrote " << p;
+  }
+
+  // ── points3D.bin ──
+  {
+    const std::string p = sparse_dir + "/points3D.bin";
+    std::ofstream f(p, std::ios::binary);
+    if (!f.is_open()) { LOG(ERROR) << "Cannot write " << p; return false; }
+    const uint64_t n_pts = static_cast<uint64_t>(points3d.size());
+    f.write(reinterpret_cast<const char*>(&n_pts), sizeof(uint64_t));
+    for (const auto& pt : points3d) {
+      const double xyz[3] = {pt.x, pt.y, pt.z};
+      const uint8_t rgb[3] = {128, 128, 128};
+      const uint64_t track_len = static_cast<uint64_t>(pt.track.size());
+      f.write(reinterpret_cast<const char*>(&pt.id), sizeof(uint64_t));
+      f.write(reinterpret_cast<const char*>(xyz), 3 * sizeof(double));
+      f.write(reinterpret_cast<const char*>(rgb), 3);
+      f.write(reinterpret_cast<const char*>(&pt.error), sizeof(double));
+      f.write(reinterpret_cast<const char*>(&track_len), sizeof(uint64_t));
+      for (const auto& [img_id, pt2d_idx] : pt.track) {
+        f.write(reinterpret_cast<const char*>(&img_id), sizeof(uint32_t));
+        f.write(reinterpret_cast<const char*>(&pt2d_idx), sizeof(uint32_t));
+      }
+    }
+    LOG(INFO) << "Wrote " << p << " (" << points3d.size() << " points)";
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -397,6 +637,7 @@ int main(int argc, char* argv[]) {
   int io_threads = 4;
   int jpg_quality = 95;
   int queue_size = 10;
+  int use_binary = 0;
 
   CmdLine cmd("Undistort registered images for 3DGS / COLMAP output (Stage pipeline)");
   cmd.add(make_option('p', project_path, "project").doc("project.json (isat_project extract)"));
@@ -408,6 +649,7 @@ int main(int argc, char* argv[]) {
               .doc("CPU I/O / undistort worker threads (default: 4)"));
   cmd.add(make_option(0, jpg_quality, "jpg-quality").doc("JPEG quality 1-100 (default: 95)"));
   cmd.add(make_option(0, queue_size, "queue-size").doc("Bounded queue size per stage (default: 10)"));
+  cmd.add(make_switch(0, "binary").doc("Write COLMAP binary format (.bin) instead of text (.txt)"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
@@ -418,8 +660,8 @@ int main(int argc, char* argv[]) {
     std::cerr << "Error: " << s << "\n\n"; cmd.printHelp(std::cerr, argv[0]); return 1;
   }
   if (cmd.checkHelp(argv[0])) return 0;
-  if (project_path.empty() || poses_path.empty() || output_dir.empty()) {
-    std::cerr << "Error: -p, -j, -o are required\n\n";
+  if (project_path.empty() || output_dir.empty()) {
+    std::cerr << "Error: -p and -o are required\n\n";
     cmd.printHelp(std::cerr, argv[0]); return 1;
   }
   if (io_threads < 1) { std::cerr << "Error: --threads must be >= 1\n\n"; return 1; }
@@ -437,24 +679,44 @@ int main(int argc, char* argv[]) {
   if (!load_project_info(project_path, &image_paths, &image_to_camera_index)) return 1;
   const int total_images = static_cast<int>(image_paths.size());
 
-  // ── 2. Load poses (registered images + optimised cameras) ──────────────────
+  // ── 2. Load poses (from poses.json OR embedded in tracks IDC) ──────────────
   PoseBundle poses;
-  if (!load_poses_json(poses_path, total_images, &poses)) return 1;
-  if (poses.image_indices.empty()) {
-    LOG(ERROR) << "No registered images to undistort"; return 1;
-  }
-
-  // ── 2b. Optionally load TrackStore for points3D.txt ────────────────────────
   std::unique_ptr<insight::sfm::TrackStore> track_store;
+  bool have_poses = false;
+
   if (!tracks_path.empty()) {
+    // Try loading extended IDC with embedded pose data
     track_store = std::make_unique<insight::sfm::TrackStore>();
     std::vector<uint32_t> img_indices;
-    if (!insight::sfm::load_track_store_from_idc(tracks_path, track_store.get(), &img_indices)) {
+    insight::sfm::SfMResultData sfm_result;
+    if (insight::sfm::load_track_store_from_idc(tracks_path, track_store.get(),
+                                                 &img_indices, nullptr, &sfm_result)) {
+      LOG(INFO) << "Loaded TrackStore: " << track_store->num_tracks() << " tracks, "
+                << track_store->num_observations() << " observations";
+      if (!sfm_result.pose_R.empty()) {
+        have_poses = poses_from_sfm_result(sfm_result, total_images, &poses);
+      } else {
+        LOG(INFO) << "No embedded pose data in " << tracks_path
+                  << ", falling back to poses.json";
+      }
+    } else {
       LOG(ERROR) << "Failed to load TrackStore from " << tracks_path;
       return 1;
     }
-    LOG(INFO) << "Loaded TrackStore: " << track_store->num_tracks() << " tracks, "
-              << track_store->num_observations() << " observations from " << tracks_path;
+  }
+
+  // Fallback: load standalone poses.json
+  if (!have_poses) {
+    if (poses_path.empty()) {
+      LOG(ERROR) << "No pose data available: provide -j poses.json or -t tracks.isat_tracks";
+      return 1;
+    }
+    if (!load_poses_json(poses_path, total_images, &poses)) return 1;
+    have_poses = true;
+  }
+
+  if (poses.image_indices.empty()) {
+    LOG(ERROR) << "No registered images to undistort"; return 1;
   }
 
   // ── 3. Pre-generate undistortion maps per camera ───────────────────────────
@@ -486,8 +748,8 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Prepared " << n_tasks << " undistortion tasks";
 
   // ── 5. Create output directories ──────────────────────────────────────────
-  const fs::path img_dir = fs::path(output_dir) / "images";
   const fs::path sparse_dir = fs::path(output_dir) / "colmap" / "sparse" / "0";
+  const fs::path img_dir = fs::path(output_dir) / "colmap" / "images";
   try {
     fs::create_directories(img_dir);
     fs::create_directories(sparse_dir);
@@ -501,7 +763,7 @@ int main(int argc, char* argv[]) {
   // ── 6. Pipeline: 3-stage chain ────────────────────────────────────────────
   // Stage 1: multi-thread I/O — read images from disk
   Stage readStage("ReadImage", io_threads, queue_size,
-      [&tasks, &camera_maps](int idx) {
+      [&tasks](int idx) {
         auto& t = tasks[static_cast<size_t>(idx)];
         if (t.src_path.empty()) {
           LOG(WARNING) << "Task " << idx << ": empty src_path";
@@ -561,31 +823,38 @@ int main(int argc, char* argv[]) {
   writeStage.wait();
 
   // ── 7. Gather statistics ──────────────────────────────────────────────────
-  int ok = 0, fail = 0;
+  int wrote = 0, failed_read = 0, failed_undist = 0;
   for (const auto& t : tasks) {
-    if (!t.src_path.empty()) {
-      // We can't easily check success post-release, so count by task count
-      ++ok;
-    } else {
-      ++fail;
-    }
+    if (t.src_path.empty())
+      ++failed_read;
+    else if (t.undistorted.empty())
+      ++failed_undist;
+    else
+      ++wrote;
   }
 
   const auto t_end = std::chrono::steady_clock::now();
   const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
-  LOG(INFO) << "Undistortion pipeline: " << ok << " OK, " << fail << " failed, "
+  LOG(INFO) << "Undistortion pipeline: " << wrote << " written, "
+            << failed_read << " read failures, " << failed_undist << " undistort failures, "
             << elapsed_ms << " ms total";
 
-  if (ok == 0) { LOG(ERROR) << "No images processed"; return 1; }
+  if (wrote == 0) { LOG(ERROR) << "No images were successfully undistorted"; return 1; }
 
   // ── 8. Write COLMAP sparse files ──────────────────────────────────────────
-  if (!write_colmap_sparse(sparse_dir.string(), tasks, poses.cameras, poses,
-                           track_store ? track_store.get() : nullptr)) {
-    LOG(ERROR) << "Failed to write COLMAP sparse files"; return 1;
+  if (cmd.used("binary")) {
+    if (!write_colmap_binary(sparse_dir.string(), tasks, poses.cameras, poses,
+                             track_store ? track_store.get() : nullptr)) {
+      LOG(ERROR) << "Failed to write COLMAP binary files"; return 1;
+    }
+  } else {
+    if (!write_colmap_sparse(sparse_dir.string(), tasks, poses.cameras, poses,
+                             track_store ? track_store.get() : nullptr)) {
+      LOG(ERROR) << "Failed to write COLMAP text files"; return 1;
+    }
   }
 
   LOG(INFO) << "Done. Output:";
-  LOG(INFO) << "  Undistorted images: " << img_dir.string() << "/";
   LOG(INFO) << "  COLMAP sparse:      " << sparse_dir.string() << "/";
 
   return 0;
