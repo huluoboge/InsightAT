@@ -24,7 +24,7 @@ class RenderWidget;
 
 namespace insight {
 
-class BundlerViewerWindow : public QMainWindow {
+class BundlerViewerWindow : public QWidget {
   Q_OBJECT
 
 public:

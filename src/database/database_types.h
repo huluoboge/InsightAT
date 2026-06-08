@@ -847,6 +847,7 @@ struct ATTask {
   std::string id;        ///< 任务UUID（唯一标识）
   uint32_t task_id = 0;  ///< 任务整型ID（用于持久化引用）
   std::string task_name; ///< 任务名称，e.g. "AT_0", "AT_1"（用户友好）
+  std::string working_directory; ///< CLI/重建工作目录（Viewer/Export/Optimization 目录契约）
   InputSnapshot input_snapshot;
   std::optional<Initialization> initialization;
   CoordinateSystem output_coordinate_system;
@@ -886,6 +887,9 @@ struct ATTask {
     }
     if (version >= 1) {
       ar(CEREAL_NVP(task_name));
+    }
+    if (version >= 5) {
+      ar(CEREAL_NVP(working_directory));
     }
     ar(CEREAL_NVP(input_snapshot));
     ar(CEREAL_NVP(initialization), CEREAL_NVP(output_coordinate_system));
@@ -1157,7 +1161,7 @@ CEREAL_CLASS_VERSION(insight::database::CameraRig::CameraMount, 1);
 CEREAL_CLASS_VERSION(insight::database::Image, 2);      ///< v2: 增加gnss_data字段
 CEREAL_CLASS_VERSION(insight::database::ImageGroup, 2); ///< v2: 增加rig_mount_info字段
 CEREAL_CLASS_VERSION(insight::database::ImageGroup::RigMountInfo, 1);
-CEREAL_CLASS_VERSION(insight::database::ATTask, 4); ///< v4: 添加 task_id
+CEREAL_CLASS_VERSION(insight::database::ATTask, 5); ///< v5: 添加 working_directory
 CEREAL_CLASS_VERSION(insight::database::ATTask::InputSnapshot, 2);
 CEREAL_CLASS_VERSION(insight::database::ATTask::Initialization, 1);
 CEREAL_CLASS_VERSION(insight::database::Project, 5); ///< v5: 添加 next_at_task_index

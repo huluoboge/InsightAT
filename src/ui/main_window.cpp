@@ -6,7 +6,9 @@
 #include "main_window.h"
 #include "../database/database_types.h"
 #include "system_config.h"
+#include "app_settings.h"
 #include "dialogs/coordinate_system_config_dialog.h"
+#include "dialogs/first_launch_dialog.h"
 #include "dialogs/image_group_detail_panel.h"
 #include "dialogs/image_group_dialog.h"
 #include "dialogs/new_at_task_dialog.h"
@@ -22,7 +24,9 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDialog>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
@@ -30,6 +34,7 @@
 #include <QSettings>
 #include <QShowEvent>
 #include <QSplitter>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QTreeView>
@@ -105,6 +110,11 @@ void MainWindow::create_menu_bar() {
   m_actionSaveProjectAs->setShortcut(QKeySequence::SaveAs);
   m_actionSaveProjectAs->setEnabled(false);
   connect(m_actionSaveProjectAs, &QAction::triggered, this, &MainWindow::on_save_project_as);
+
+  m_fileMenu->addSeparator();
+
+  m_actionSetWorkDirectory = m_fileMenu->addAction(tr("Set Work &Directory..."));
+  connect(m_actionSetWorkDirectory, &QAction::triggered, this, &MainWindow::on_set_work_directory);
 
   m_fileMenu->addSeparator();
 
@@ -273,6 +283,12 @@ void MainWindow::create_status_bar() {
   m_projectNameLabel->setMinimumWidth(150);
   statusBar()->addWidget(m_projectNameLabel, 0);
 
+  // 工作目录标签
+  m_workDirLabel = new QLabel("");
+  m_workDirLabel->setMinimumWidth(250);
+  m_workDirLabel->setStyleSheet("color: #666;");
+  statusBar()->addWidget(m_workDirLabel, 1);
+
   // 修改指示符
   m_modifiedIndicator = new QLabel("");
   m_modifiedIndicator->setMinimumWidth(20);
@@ -352,59 +368,73 @@ void MainWindow::on_new_project() {
     return; // 用户取消了保存操作
   }
 
-  // 创建新项目对话框
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 弹出新建项目对话框，让用户输入项目信息
+  // 项目将自动保存到全局工作路径下
+  // ─────────────────────────────────────────────────────────────────────────────
+
   if (!m_newProjectDialog) {
     m_newProjectDialog = std::make_unique<NewProjectDialog>(this);
-
     // 连接对话框信号
-    connect(m_newProjectDialog.get(), &NewProjectDialog::projectCreated, m_projectDocument.get(),
-            &ProjectDocument::newProject);
+    connect(m_newProjectDialog.get(), &NewProjectDialog::projectCreated, this,
+            &MainWindow::on_new_project_created);
   }
 
   // 显示对话框
-  if (m_newProjectDialog->exec() == QDialog::Accepted) {
-    // 立即选择新项目的保存位置
-    QString filePath = QFileDialog::getSaveFileName(
-        this, tr("Save New Project"), "", tr("InsightAT Projects (*.iat);;All Files (*)"));
+  m_newProjectDialog->exec();
+}
 
-    if (filePath.isEmpty()) {
-      // 用户取消了保存位置选择，回退新建操作
-      m_projectDocument->closeProject();
-      return;
-    }
+void MainWindow::on_new_project_created(const QString& name, const QString& author,
+                                        const QString& description) {
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 使用全局工作路径 + 项目名称自动生成项目文件路径
+  // ─────────────────────────────────────────────────────────────────────────────
 
-    // 确保扩展名正确
-    if (!filePath.endsWith(".iat")) {
-      filePath += ".iat";
-    }
-
-    // 保存新项目
-    if (m_projectDocument->saveProjectAs(filePath)) {
-      m_currentFilePath = filePath;
-      m_statusLabel->setText(tr("New project created and saved: %1").arg(filePath));
-      LOG(INFO) << "New project created and saved: " << filePath.toStdString();
-    } else {
-      QMessageBox::critical(this, tr("Error"), tr("Failed to save new project"));
-      m_projectDocument->closeProject();
-      return;
-    }
-
-    // 项目已创建并保存，现在显示坐标系设置对话框
-    on_set_coordinate_system();
-
-    // 启用编辑菜单项
-    m_actionProjectInfo->setEnabled(true);
-    m_actionSetCoordinateSystem->setEnabled(true);
-    m_actionAddImageGroup->setEnabled(true);
-    m_actionAddCameraRig->setEnabled(true);
-    m_actionImportGCPs->setEnabled(true);
-    m_actionCreateATTask->setEnabled(true);
-    m_actionSaveProject->setEnabled(true);
-    m_actionSaveProjectAs->setEnabled(true);
-
-    m_statusLabel->setText(tr("New project created"));
-    LOG(INFO) << "New project created";
+  AppSettings& settings = AppSettings::instance();
+  if (!settings.has_work_directory()) {
+    QMessageBox::critical(this, tr("Error"),
+                          tr("Work directory not configured. Please set it via File → Set Work Directory"));
+    return;
   }
+
+  QString workDir = settings.get_work_directory();
+  QString filePath = QDir(workDir).filePath(name + ".iat");
+
+  // 检查项目是否已存在
+  if (QFileInfo::exists(filePath)) {
+    QMessageBox::warning(this, tr("Warning"), tr("Project already exists: %1").arg(filePath));
+    return;
+  }
+
+  // 创建新项目
+  if (!m_projectDocument->newProject(name, author, description)) {
+    QMessageBox::critical(this, tr("Error"), tr("Failed to create new project"));
+    return;
+  }
+
+  // 保存新项目到工作路径
+  if (!m_projectDocument->saveProjectAs(filePath)) {
+    QMessageBox::critical(this, tr("Error"), tr("Failed to save new project"));
+    m_projectDocument->closeProject();
+    return;
+  }
+
+  m_currentFilePath = filePath;
+  m_statusLabel->setText(tr("New project created: %1").arg(name));
+  LOG(INFO) << "New project created: " << name.toStdString() << " at " << filePath.toStdString();
+
+  // 项目已创建并保存，现在显示坐标系设置对话框
+  on_set_coordinate_system();
+
+  // 启用编辑菜单项
+  m_actionProjectInfo->setEnabled(true);
+  m_actionSetCoordinateSystem->setEnabled(true);
+  m_actionAddImageGroup->setEnabled(true);
+  m_actionAddCameraRig->setEnabled(true);
+  m_actionImportGCPs->setEnabled(true);
+  m_actionCreateATTask->setEnabled(true);
+  m_actionSaveProject->setEnabled(true);
+  m_actionSaveProjectAs->setEnabled(true);
 }
 
 void MainWindow::on_open_project() {
@@ -412,8 +442,16 @@ void MainWindow::on_open_project() {
     return; // 用户取消了保存操作
   }
 
-  // 选择文件
-  QString filePath = QFileDialog::getOpenFileName(this, tr("Open InsightAT Project"), "",
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 使用全局工作路径作为默认目录
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  AppSettings& settings = AppSettings::instance();
+  QString defaultDir = settings.has_work_directory() ? settings.get_work_directory()
+                                                      : QStandardPaths::writableLocation(
+                                                            QStandardPaths::DocumentsLocation);
+
+  QString filePath = QFileDialog::getOpenFileName(this, tr("Open InsightAT Project"), defaultDir,
                                                   tr("InsightAT Projects (*.iat);;All Files (*)"));
 
   if (filePath.isEmpty()) {
@@ -637,7 +675,7 @@ void MainWindow::on_modification_changed(bool modified) {
 void MainWindow::showEvent(QShowEvent* event) {
   QMainWindow::showEvent(event);
 
-  // 在窗口首次显示时设置splitter的初始大小
+  // 在窗口首次显示时进行初始化
   static bool firstShow = true;
   if (firstShow) {
     firstShow = false;
@@ -654,6 +692,12 @@ void MainWindow::showEvent(QShowEvent* event) {
     }
 
     m_splitter->setSizes(QList<int>() << leftWidth << rightWidth);
+
+    // 检查工作目录配置
+    check_and_setup_work_directory();
+
+    // 更新显示
+    update_work_directory_display();
   }
 }
 
@@ -711,6 +755,11 @@ void MainWindow::load_settings() {
   // 恢复分割器大小
   if (settings.contains("mainWindow/splitterSizes")) {
     m_splitter->restoreState(settings.value("mainWindow/splitterSizes").toByteArray());
+  }
+
+  // 确保 toolbar 可见（restoreState 可能会恢复其隐藏状态）
+  for (QToolBar* toolbar : findChildren<QToolBar*>()) {
+    toolbar->show();
   }
 }
 
@@ -805,6 +854,62 @@ void MainWindow::on_image_groups_node_selected() {
 void MainWindow::on_edit_image_group(database::ImageGroup* group) {
   if (m_imageGroupDetailDialog && group) {
     m_imageGroupDetailDialog->load_group(group);
+  }
+}
+
+// ─────────────────────────────────────────────────────
+// 工作目录管理
+// ─────────────────────────────────────────────────────
+
+void MainWindow::check_and_setup_work_directory() {
+  AppSettings& settings = AppSettings::instance();
+
+  if (!settings.has_work_directory()) {
+    // 首次启动，显示欢迎对话框
+    FirstLaunchDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+      QString workDir = dialog.get_selected_work_directory();
+      if (!workDir.isEmpty()) {
+        settings.set_work_directory(workDir);
+      }
+    }
+  }
+}
+
+void MainWindow::update_work_directory_display() {
+  AppSettings& settings = AppSettings::instance();
+  if (settings.has_work_directory()) {
+    QString workDir = settings.get_work_directory();
+    // 显示相对路径如果可能
+    QDir dir(workDir);
+    QString displayPath = dir.dirName();
+    if (displayPath.isEmpty()) {
+      displayPath = workDir;
+    }
+    m_workDirLabel->setText(tr("Work Dir: ") + displayPath);
+    m_workDirLabel->setToolTip(workDir);
+  } else {
+    m_workDirLabel->setText(tr("Work Dir: Not set"));
+    m_workDirLabel->setToolTip("");
+  }
+}
+
+void MainWindow::on_set_work_directory() {
+  AppSettings& settings = AppSettings::instance();
+
+  QString currentDir = settings.has_work_directory() ? settings.get_work_directory()
+                                                      : QStandardPaths::writableLocation(
+                                                            QStandardPaths::DocumentsLocation);
+
+  QString selectedDir = QFileDialog::getExistingDirectory(
+      this, tr("Select Work Directory"), currentDir,
+      QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+  if (!selectedDir.isEmpty()) {
+    settings.set_work_directory(selectedDir);
+    update_work_directory_display();
+    QMessageBox::information(this, tr("Success"),
+                             tr("Work directory has been set to:\n") + selectedDir);
   }
 }
 

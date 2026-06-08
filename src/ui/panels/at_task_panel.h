@@ -27,8 +27,16 @@ class QLineEdit;
 class QLabel;
 class QCheckBox;
 class QPlainTextEdit;
+class QTableWidget;
+class QProgressBar;
 
 namespace insight {
+
+class BundlerViewerWindow;
+namespace database {
+struct ATTask;
+}
+
 namespace ui {
 
 class ProjectDocument;
@@ -62,19 +70,26 @@ public:
   std::string get_current_task_id() const;
 
 public slots:
-  void on_export_clicked();
-  void on_run_sift_gpu_clicked();
-  void on_run_selected_steps_clicked();
   void on_task_name_changed();
 
 private:
   void init_ui();
   void refresh_ui();
   void save_task();
+  void refresh_input_data_tab(const insight::database::ATTask& task);
+  void refresh_optimization_tab(const insight::database::ATTask& task);
+  void refresh_viewer_tab(const insight::database::ATTask& task);
+  void refresh_export_tab(const insight::database::ATTask& task);
+  void refresh_sfm_tab(const insight::database::ATTask& task);
+  void load_reconstruction_to_viewer(const insight::database::ATTask& task);
+  void on_export_colmap_clicked();
+  void on_run_sfm_clicked();
+  void on_sfm_process_finished(int exitCode);
+  void on_sfm_process_stdout();
+  void on_sfm_process_stderr();
+  void on_view_detailed_log_clicked();
 
   // Runner helpers
-  void start_next_selected_step();
-  void launch_process_for_step(int step_index);
   void append_log(const QString& text);
 
 private:
@@ -86,32 +101,39 @@ private:
   QWidget* m_inputDataTab;    ///< Tab 1：Input Data
   QWidget* m_optimizationTab; ///< Tab 2：Optimization
   QWidget* m_exportTab;       ///< Tab 3：Export
+  QWidget* m_sfmTab;          ///< Tab 4：SfM Runner
 
   // 顶部信息显示
   QLineEdit* m_taskNameEdit;
+  QLabel* m_workDirLabel;    ///< 只读，基于 task_id（固定）
   QLabel* m_taskIdLabel; ///< 显示任务的完整 UUID
   QLabel* m_parentTaskLabel;
   QLabel* m_statusLabel;
 
+  // Input Data tab
+  QLabel* m_inputSummaryLabel = nullptr;
+  QTableWidget* m_groupTable = nullptr;
+
+  // Optimization tab
+  QLabel* m_optimizationConfigLabel = nullptr;
+  QLabel* m_optimizationResultLabel = nullptr;
+
   // Export Tab 中的按钮
-  QPushButton* m_exportButton = nullptr;
-  QPushButton* m_siftGPUButton = nullptr;
-  QPushButton* m_runButton = nullptr;
+  QPushButton* m_exportColmapButton = nullptr;
+  QLabel* m_exportStatusLabel = nullptr;
 
-  // Run step checkboxes
-  QCheckBox* m_chkExtract = nullptr;   // 特征提取
-  QCheckBox* m_chkMatch = nullptr;     // 特征匹配
-  QCheckBox* m_chkIncremental = nullptr; // 增量重建
+  // SfM Tab
+  QLabel* m_sfmWorkDirLabel = nullptr;
+  QPushButton* m_runSfmButton = nullptr;
+  QPushButton* m_viewDetailedLogButton = nullptr; ///< View detailed log file
+  QPlainTextEdit* m_sfmLogTextEdit = nullptr;
+  QLabel* m_sfmStatusLabel = nullptr;
+  QProgressBar* m_sfmProgressBar = nullptr;
+  QProcess* m_sfmProcess = nullptr;
 
-  // Log output
-  QPlainTextEdit* m_logView = nullptr;
-
-  // Viewer (placeholder widget; can be replaced by AT3dRenderWidget)
-  QWidget* m_viewerWidget = nullptr;
-  // Runner state
-  QList<int> m_pendingSteps;
-  int m_currentStepIndex = 0;
-  QProcess* m_currentProcess = nullptr;
+  // Viewer (BundlerViewerWindow for 3D visualization)
+  insight::BundlerViewerWindow* m_bundlerViewer = nullptr;
+  QLabel* m_viewerStatusLabel = nullptr;
 };
 
 }  // namespace ui

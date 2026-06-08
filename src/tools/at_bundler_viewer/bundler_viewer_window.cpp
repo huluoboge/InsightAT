@@ -126,13 +126,11 @@ private:
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
-BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QMainWindow(parent) {
+BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QWidget(parent) {
   setWindowTitle(QStringLiteral("Bundler viewer"));
   resize(1280, 800);
 
-  auto* central = new QWidget(this);
-  setCentralWidget(central);
-  auto* outer = new QVBoxLayout(central);
+  auto* outer = new QVBoxLayout(this);
   outer->setContentsMargins(4, 4, 4, 4);
   outer->setSpacing(4);
 
@@ -183,7 +181,7 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QMainWindow(parent) 
   bar->addStretch(1);
   outer->addLayout(bar);
   // ── Iteration navigation bar (hidden until a series is loaded) ─────────────
-  iter_bar_widget_ = new QWidget(central);
+  iter_bar_widget_ = new QWidget();
   auto* iter_bar   = new QHBoxLayout(iter_bar_widget_);
   iter_bar->setContentsMargins(0, 0, 0, 0);
   iter_bar->setSpacing(6);
@@ -213,7 +211,7 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QMainWindow(parent) 
   outer->addWidget(iter_bar_widget_);
 
   // ── 3D view + pick info panel ────────────────────────────────────────────────
-  auto* splitter = new QSplitter(Qt::Horizontal, central);
+  auto* splitter = new QSplitter(Qt::Horizontal);
 
   auto* pickable = new PickableRenderWidget(splitter);
   render_widget_ = pickable;
@@ -237,16 +235,17 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QMainWindow(parent) 
   render_widget_->data_root()->render_objects().push_back(tracks_);
   render_widget_->set_pivot_visible(btn_pivot->isChecked());
 
-  // ── Menu ────────────────────────────────────────────────────────────────────
-  auto* file_menu = menuBar()->addMenu(tr("&File"));
-
-  auto* open_act = file_menu->addAction(tr("&Open reconstruction folder…"));
-  open_act->setShortcut(tr("Ctrl+O"));
-  connect(open_act, &QAction::triggered, this, &BundlerViewerWindow::open_bundler_directory);
-
-  auto* open_series_act = file_menu->addAction(tr("Open &iteration series…"));
-  open_series_act->setShortcut(tr("Ctrl+I"));
-  connect(open_series_act, &QAction::triggered, this, &BundlerViewerWindow::open_iter_series);
+  // ── Menu (disabled when embedded in QWidget; use standalone application to get menuBar) ────────
+  // NOTE: menuBar() is only available when this class inherits QMainWindow.
+  // Since we now inherit QWidget for embedding, menus are removed.
+  // In the standalone at_bundler_viewer application, create a QMainWindow wrapper if needed.
+  // auto* file_menu = menuBar()->addMenu(tr("&File"));
+  // auto* open_act = file_menu->addAction(tr("&Open reconstruction folder…"));
+  // open_act->setShortcut(tr("Ctrl+O"));
+  // connect(open_act, &QAction::triggered, this, &BundlerViewerWindow::open_bundler_directory);
+  // auto* open_series_act = file_menu->addAction(tr("Open &iteration series…"));
+  // open_series_act->setShortcut(tr("Ctrl+I"));
+  // connect(open_series_act, &QAction::triggered, this, &BundlerViewerWindow::open_iter_series);
 }
 
 BundlerViewerWindow::~BundlerViewerWindow() {
@@ -624,7 +623,7 @@ void BundlerViewerWindow::keyPressEvent(QKeyEvent* event) {
       return;
     }
   }
-  QMainWindow::keyPressEvent(event);
+  QWidget::keyPressEvent(event);
 }
 
 // ── Standard control slots ──────────────────────────────────────────────────

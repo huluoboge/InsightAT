@@ -4,6 +4,7 @@
  */
 
 #include "project_document.h"
+#include <QDir>
 #include <QFileInfo>
 #include <QUuid>
 #include <algorithm>
@@ -482,6 +483,15 @@ std::string ProjectDocument::createATTask(const QString& name) {
   task.id = task_id_str;
   task.task_id = task_id;
   task.task_name = task_name;
+
+  QString defaultWorkDir;
+  if (!m_filepath.isEmpty()) {
+    QFileInfo projectInfo(m_filepath);
+    defaultWorkDir = projectInfo.absoluteDir().filePath(QString("tasks/task_%1").arg(task_id));
+  } else {
+    defaultWorkDir = QDir::home().filePath(QString(".insightat/tasks/task_%1").arg(task_id));
+  }
+  task.working_directory = QDir::cleanPath(defaultWorkDir).toStdString();
 
   // 复制当前项目的快照到 InputSnapshot
   task.input_snapshot.image_groups = m_project.image_groups;

@@ -33,9 +33,13 @@ endif ()
 # ==============================================================================
 # INSIGHTAT build options
 # ==============================================================================
+option(INSIGHTAT_BUILD_GUI_ONLY "Build only GUI-related targets and skip CUDA-dependent components" OFF)
 option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend (optional)" OFF)
 option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" ON)
 
+if(INSIGHTAT_BUILD_GUI_ONLY)
+    message(STATUS "Top-level: INSIGHTAT_BUILD_GUI_ONLY=ON, skipping algorithm/CUDA components")
+endif()
 message(STATUS "Top-level: INSIGHTAT_ENABLE_SIFTGPU=${INSIGHTAT_ENABLE_SIFTGPU}")
 message(STATUS "Top-level: SIFTGPU_ENABLE_CUDA=${SIFTGPU_ENABLE_CUDA}")
 
@@ -109,9 +113,13 @@ find_package(Eigen3 REQUIRED)
 message(STATUS "Eigen3 version is ${EIGEN3_VERSION},dir is ${EIGEN3_INCLUDE_DIRS}")
 
 include_directories(${EIGEN3_INCLUDE_DIRS}) 
-# Ceres (required: for bundle adjustment in incremental SfM)
-find_package(Ceres REQUIRED)
-message(STATUS "Ceres: ${Ceres_VERSION}, BA module enabled")
+if(NOT INSIGHTAT_BUILD_GUI_ONLY)
+    # Ceres (required: for bundle adjustment in incremental SfM)
+    find_package(Ceres REQUIRED)
+    message(STATUS "Ceres: ${Ceres_VERSION}, BA module enabled")
+else()
+    message(STATUS "GUI-only mode: skipping Ceres")
+endif()
 
 
 if(IS_DEBUG)
@@ -134,9 +142,13 @@ endif()
 # ==============================================================================
 # - only external and enabled only if INSIGHTAT_USE_OPENCV is set to ON
 # ==============================================================================
-find_package( OpenCV REQUIRED )
-if (NOT OpenCV_FOUND OR OpenCV_VERSION VERSION_LESS "3.0.0")
-    message(STATUS "OpenCV was not found (note that OpenCV version >= 3.0.0 is required). ")
+if(NOT INSIGHTAT_BUILD_GUI_ONLY)
+    find_package(OpenCV REQUIRED)
+    if (NOT OpenCV_FOUND OR OpenCV_VERSION VERSION_LESS "3.0.0")
+        message(STATUS "OpenCV was not found (note that OpenCV version >= 3.0.0 is required). ")
+    endif()
+else()
+    message(STATUS "GUI-only mode: skipping OpenCV")
 endif()
 
 #===============================================================================
@@ -159,10 +171,21 @@ else()
 endif()
 
 include_directories(${GLOG_INCLUDE_DIRS})
+if(NOT TARGET glog::glog)
+    add_library(glog::glog INTERFACE IMPORTED)
+    set_target_properties(glog::glog PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${GLOG_INCLUDE_DIRS}"
+        INTERFACE_LINK_LIBRARIES "${GLOG_LIBRARIES}"
+    )
+endif()
 # GLEW
 # ==============================================================================
-find_package(OpenGL REQUIRED)
-find_package(Glew REQUIRED)
+if(NOT INSIGHTAT_BUILD_GUI_ONLY)
+    find_package(OpenGL REQUIRED)
+    find_package(Glew REQUIRED)
+else()
+    message(STATUS "GUI-only mode: skipping OpenGL/GLEW")
+endif()
 
 include_directories(third_party)
 include_directories(third_party/PoseLib)

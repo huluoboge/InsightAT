@@ -26,6 +26,9 @@
 #include <QtCore/qglobal.h>
 
 // ── 第三方库（OpenGL / GLEW） ─────────────────────────────────────────────────
+// GLEW 是可选的，用于访问 OpenGL extensions
+// 在 GUI-only 模式且 GLEW 不可用时，使用 Qt OpenGL 替代
+#if !defined(RENDER_NO_GLEW)
 #if defined(WIN32) || defined(WIN64) || defined(_WIN32) || defined(_WIN64)
 #include "gl/glew.h"
 #ifndef APIENTRY
@@ -37,6 +40,11 @@
 #include <GL/glu.h>
 #else
 #include "GL/glew.h"
+#include <GL/glu.h>
+#endif
+#else
+// When GLEW is not available, use Qt OpenGL headers + GLU from system
+#include <QOpenGLFunctions>
 #include <GL/glu.h>
 #endif
 

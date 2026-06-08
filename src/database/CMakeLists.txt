@@ -8,7 +8,7 @@
 # - 输入位姿表示
 # - 空三任务及快照设计
 
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.16)
 
 # ─────────────────────────────────────────────────────────────
 # 源文件列表
@@ -51,7 +51,7 @@ target_link_libraries(InsightATDatabase PUBLIC Eigen3::Eigen)
 
 # Glog (日志库)
 if(NOT TARGET glog::glog)
-    find_package(glog REQUIRED)
+    find_package(Glog REQUIRED)
 endif()
 target_link_libraries(InsightATDatabase PUBLIC glog::glog)
 

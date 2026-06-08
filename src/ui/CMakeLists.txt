@@ -19,10 +19,22 @@ find_package(Qt5 COMPONENTS
     Core
     Gui
     Widgets
+    OpenGL
     REQUIRED
 )
 
-find_package(glog REQUIRED)
+if(NOT TARGET glog::glog)
+    find_package(Glog REQUIRED)
+endif()
+
+# OpenGL and GLEW are optional in GUI-only mode
+if(NOT INSIGHTAT_BUILD_GUI_ONLY)
+    find_package(OpenGL REQUIRED)
+    find_package(Glew REQUIRED)
+else()
+    find_package(OpenGL QUIET)
+    find_package(Glew QUIET)
+endif()
 
 # ─────────────────────────────────────────────────────────────
 # 源文件
@@ -31,12 +43,16 @@ find_package(glog REQUIRED)
 set(UI_SOURCES
     system_config.h
     system_config.cpp
+    app_settings.h
+    app_settings.cpp
     models/project_document.h
     models/project_document.cpp
     models/workspace_tree_model.h
     models/workspace_tree_model.cpp
     main_window.h
     main_window.cpp
+    dialogs/first_launch_dialog.h
+    dialogs/first_launch_dialog.cpp
     dialogs/new_project_dialog.h
     dialogs/new_project_dialog.cpp
     dialogs/project_info_dialog.h
@@ -75,6 +91,8 @@ set(UI_SOURCES
     widgets/gnss_measurement_import_dialog.cpp
     panels/at_task_panel.h
     panels/at_task_panel.cpp
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/bundler_viewer_window.h
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/bundler_viewer_window.cpp
 )
 
 set(UI_HEADERS
@@ -100,6 +118,7 @@ target_include_directories(InsightATUI
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/..
         ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer
         ${Qt5_INCLUDE_DIRS}
         ${GDAL_INCLUDE_DIRS}
 )
@@ -109,12 +128,23 @@ target_link_libraries(InsightATUI
         Qt5::Core
         Qt5::Gui
         Qt5::Widgets
+        Qt5::OpenGL
         glog::glog
         InsightATDatabase
         util
         stlplus3
+        render
+        pthread
         ${GDAL_LIBRARIES}
 )
+
+# Conditionally link OpenGL/GLEW if found
+if(OPENGL_FOUND)
+    target_link_libraries(InsightATUI PUBLIC ${OPENGL_LIBRARIES})
+endif()
+if(GLEW_FOUND)
+    target_link_libraries(InsightATUI PUBLIC ${GLEW_LIBRARIES})
+endif()
 
 # ─────────────────────────────────────────────────────────────
 # 编译选项

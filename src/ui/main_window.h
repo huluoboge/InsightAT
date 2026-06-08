@@ -34,6 +34,7 @@ class ProjectInfoDialog;
 class CameraModelWidget;
 class ATTaskPanel;
 class NewATTaskDialog;
+class FirstLaunchDialog;
 
 namespace widgets {
 class ImageGroupsManagementPanel;
@@ -75,6 +76,7 @@ private slots:
   // ─────────────────────────────────────────────────────
 
   void on_new_project();
+  void on_new_project_created(const QString& name, const QString& author, const QString& description);
   void on_open_project();
   void on_save_project();
   void on_save_project_as();
@@ -90,6 +92,7 @@ private slots:
   void on_add_camera_rig();
   void on_import_gcps();
   void on_create_at_task();
+  void on_set_work_directory();
   void on_toggle_workspace_panel();
   void on_toggle_property_panel();
   void on_about();
@@ -117,6 +120,8 @@ private:
   void save_settings();
   bool maybe_save();
   void update_window_title();
+  void check_and_setup_work_directory();
+  void update_work_directory_display();
 
   // ─────────────────────────────────────────────────────
   // 成员变量
@@ -137,6 +142,7 @@ private:
   QAction* m_actionOpenProject = nullptr;
   QAction* m_actionSaveProject = nullptr;
   QAction* m_actionSaveProjectAs = nullptr;
+  QAction* m_actionSetWorkDirectory = nullptr;
   QAction* m_actionExit = nullptr;
 
   // 编辑菜单动作
@@ -154,6 +160,9 @@ private:
   // 帮助菜单动作
   QAction* m_actionAbout = nullptr;
   QAction* m_actionAboutQt = nullptr;
+
+  // 工作目录显示标签
+  QLabel* m_workDirLabel = nullptr;
 
   // UI 组件 - 工作区
   QSplitter* m_splitter = nullptr;          ///< 左右分割器

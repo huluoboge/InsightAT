@@ -25,7 +25,7 @@ endif()
 target_link_libraries(util PUBLIC Eigen3::Eigen)
 
 if(NOT TARGET glog::glog)
-    find_package(glog REQUIRED)
+    find_package(Glog REQUIRED)
 endif()
 target_link_libraries(util PUBLIC glog::glog)
 

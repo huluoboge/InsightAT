@@ -58,11 +58,16 @@ void RenderWidget::init_scene() {
 }
 
 void RenderWidget::initializeGL() {
+#if !defined(RENDER_NO_GLEW)
   GLenum code = glewInit();
   if (GLEW_OK != (int)code) {
     LOG(ERROR) << "Init glew failed, error information: " << glewGetErrorString(code);
     return;
   }
+#else
+  // GLEW not available, skip initialization
+  LOG(INFO) << "GLEW not available, using Qt OpenGL backend";
+#endif
   glClearColor(0, 0, 0, 1.0);
   glClearDepth(1.0);
   glEnable(GL_DEPTH_TEST);

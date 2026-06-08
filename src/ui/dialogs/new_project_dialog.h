@@ -1,11 +1,11 @@
 /**
  * @file NewProjectDialog.h
- * @brief 新建项目对话框
+ * @brief New Project Dialog
  *
- * 功能：
- * 1. 输入项目名称、作者、描述
- * 2. 自动生成 UUID 和时间戳
- * 3. 发出 projectCreated 信号
+ * Features:
+ * 1. Input project name, author, description
+ * 2. Auto-generate UUID and timestamp
+ * 3. Emit projectCreated signal
  */
 
 #ifndef UI_NEWPROJECTDIALOG_H
@@ -24,7 +24,7 @@ namespace ui {
 
 /**
  * @class NewProjectDialog
- * @brief 新建项目对话框
+ * @brief New Project Dialog
  */
 class NewProjectDialog : public QDialog {
   Q_OBJECT
@@ -35,39 +35,39 @@ public:
 
 signals:
   /**
-   * 项目创建信号
+   * Project creation signal
    *
-   * @param name 项目名称
-   * @param author 作者（可为空）
-   * @param description 描述（可为空）
+   * @param name Project name
+   * @param author Author (can be empty)
+   * @param description Description (can be empty)
    */
   void projectCreated(const QString& name, const QString& author, const QString& description);
 
 private slots:
   /**
-   * 处理确定按钮点击事件
+   * Handle Create button click event
    */
   void onCreateProject();
 
 private:
   /**
-   * 初始化UI
+   * Initialize UI
    */
   void initializeUI();
 
   /**
-   * 验证输入
+   * Validate input
    *
-   * @return 有效返回true
+   * @return True if valid
    */
   bool validateInput();
 
-  // UI 组件
-  QLineEdit* m_projectNameEdit;      ///< 项目名称输入框
-  QLineEdit* m_authorEdit;           ///< 作者输入框
-  QPlainTextEdit* m_descriptionEdit; ///< 描述输入框
-  QPushButton* m_createButton;       ///< 创建按钮
-  QPushButton* m_cancelButton;       ///< 取消按钮
+  // UI components
+  QLineEdit* m_projectNameEdit;      ///< Project name input field
+  QLineEdit* m_authorEdit;           ///< Author input field
+  QPlainTextEdit* m_descriptionEdit; ///< Description input field
+  QPushButton* m_createButton;       ///< Create button
+  QPushButton* m_cancelButton;       ///< Cancel button
 };
 
 }  // namespace ui

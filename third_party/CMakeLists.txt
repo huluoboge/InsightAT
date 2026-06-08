@@ -19,7 +19,9 @@ set(STLPLUS_LIBRARY stlplus3 PARENT_SCOPE)
 add_subdirectory(ImageIO)
 
 # SiftGPU for optional backend.
-if(INSIGHTAT_ENABLE_SIFTGPU)
+if(INSIGHTAT_BUILD_GUI_ONLY)
+  message(STATUS "Third-party: GUI-only mode, skipping SiftGPU")
+elseif(INSIGHTAT_ENABLE_SIFTGPU)
   message(STATUS "Third-party: enabling optional SiftGPU build")
   add_subdirectory(SiftGPU)
 else()
@@ -27,7 +29,9 @@ else()
 endif()
 
 # PopSift for default SIFT extraction/matching backend.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/popsift/CMakeLists.txt")
+if(INSIGHTAT_BUILD_GUI_ONLY)
+  message(STATUS "Third-party: GUI-only mode, skipping PopSift")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/popsift/CMakeLists.txt")
   message(STATUS "Third-party: enabling PopSift build (default backend)")
   add_subdirectory(popsift)
   # Ensure a stable namespaced target for downstream links even when PopSift

@@ -1,6 +1,6 @@
 /**
  * @file NewProjectDialog.cpp
- * @brief 新建项目对话框 - 实现
+ * @brief New Project Dialog - Implementation
  */
 
 #include "new_project_dialog.h"
@@ -17,7 +17,7 @@ namespace insight {
 namespace ui {
 
 NewProjectDialog::NewProjectDialog(QWidget* parent) : QDialog(parent) {
-  setWindowTitle("新建项目");
+  setWindowTitle(tr("New Project"));
   setModal(true);
   setMinimumWidth(400);
   initializeUI();
@@ -26,42 +26,42 @@ NewProjectDialog::NewProjectDialog(QWidget* parent) : QDialog(parent) {
 NewProjectDialog::~NewProjectDialog() = default;
 
 void NewProjectDialog::initializeUI() {
-  // 创建主布局
+  // Create main layout
   QVBoxLayout* mainLayout = new QVBoxLayout(this);
   mainLayout->setSpacing(10);
   mainLayout->setContentsMargins(20, 20, 20, 20);
 
-  // 项目名称
-  QLabel* nameLabel = new QLabel("项目名称 *", this);
+  // Project Name
+  QLabel* nameLabel = new QLabel(tr("Project Name *"), this);
   m_projectNameEdit = new QLineEdit(this);
-  m_projectNameEdit->setPlaceholderText("输入项目名称");
+  m_projectNameEdit->setPlaceholderText(tr("Enter project name"));
   mainLayout->addWidget(nameLabel);
   mainLayout->addWidget(m_projectNameEdit);
 
-  // 作者（可选）
-  QLabel* authorLabel = new QLabel("作者", this);
+  // Author (optional)
+  QLabel* authorLabel = new QLabel(tr("Author"), this);
   m_authorEdit = new QLineEdit(this);
-  m_authorEdit->setPlaceholderText("输入作者名称（可选）");
+  m_authorEdit->setPlaceholderText(tr("Enter author name (optional)"));
   mainLayout->addWidget(authorLabel);
   mainLayout->addWidget(m_authorEdit);
 
-  // 描述（可选）
-  QLabel* descLabel = new QLabel("项目描述", this);
+  // Description (optional)
+  QLabel* descLabel = new QLabel(tr("Project Description"), this);
   m_descriptionEdit = new QPlainTextEdit(this);
-  m_descriptionEdit->setPlaceholderText("输入项目描述（可选）");
+  m_descriptionEdit->setPlaceholderText(tr("Enter project description (optional)"));
   m_descriptionEdit->setMaximumHeight(100);
   mainLayout->addWidget(descLabel);
   mainLayout->addWidget(m_descriptionEdit);
 
-  // 添加伸缩
+  // Add stretch
   mainLayout->addStretch();
 
-  // 按钮布局
+  // Button layout
   QHBoxLayout* buttonLayout = new QHBoxLayout();
   buttonLayout->setSpacing(10);
 
-  m_createButton = new QPushButton("创建项目", this);
-  m_cancelButton = new QPushButton("取消", this);
+  m_createButton = new QPushButton(tr("Create Project"), this);
+  m_cancelButton = new QPushButton(tr("Cancel"), this);
 
   m_createButton->setMinimumWidth(100);
   m_cancelButton->setMinimumWidth(100);
@@ -72,11 +72,11 @@ void NewProjectDialog::initializeUI() {
 
   mainLayout->addLayout(buttonLayout);
 
-  // 连接信号槽
+  // Connect signals and slots
   connect(m_createButton, &QPushButton::clicked, this, &NewProjectDialog::onCreateProject);
   connect(m_cancelButton, &QPushButton::clicked, this, &QDialog::reject);
 
-  // 设置初始焦点
+  // Set initial focus
   m_projectNameEdit->setFocus();
 }
 
@@ -89,24 +89,25 @@ void NewProjectDialog::onCreateProject() {
   QString author = m_authorEdit->text().trimmed();
   QString description = m_descriptionEdit->toPlainText().trimmed();
 
-  // 发出信号
+  // Emit signal
   emit projectCreated(name, author, description);
 
-  // 接受对话框
+  // Accept dialog
   accept();
 }
 
 bool NewProjectDialog::validateInput() {
-  // 检查项目名称是否为空
+  // Check if project name is empty
   if (m_projectNameEdit->text().trimmed().isEmpty()) {
-    QMessageBox::warning(this, "输入错误", "项目名称不能为空！");
+    QMessageBox::warning(this, tr("Input Error"), tr("Project name cannot be empty!"));
     m_projectNameEdit->setFocus();
     return false;
   }
 
-  // 检查项目名称长度
+  // Check project name length
   if (m_projectNameEdit->text().length() > 100) {
-    QMessageBox::warning(this, "输入错误", "项目名称过长（最多100个字符）！");
+    QMessageBox::warning(this, tr("Input Error"),
+                         tr("Project name is too long (maximum 100 characters)!"));
     m_projectNameEdit->selectAll();
     m_projectNameEdit->setFocus();
     return false;
