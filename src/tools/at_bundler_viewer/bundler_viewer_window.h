@@ -40,10 +40,13 @@ public:
 protected:
   void keyPressEvent(QKeyEvent* event) override;
 
-private slots:
+public slots:
+  /// Open a Bundler/COLMAP directory dialog (used by File menu)
   void open_bundler_directory();
+  /// Open an iteration series directory dialog (used by File menu)
   void open_iter_series();
 
+private slots:
   void on_reset_view();
   void on_pivot_toggled(bool visible);
   void on_cameras_toggled(bool visible);

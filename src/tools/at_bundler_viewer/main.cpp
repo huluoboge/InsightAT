@@ -15,6 +15,9 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QMainWindow>
+#include <QMenu>
+#include <QMenuBar>
 #include <QRegularExpression>
 #include <QString>
 
@@ -23,8 +26,34 @@ int main(int argc, char* argv[]) {
   FLAGS_logtostderr = 1;
 
   QApplication app(argc, argv);
-  insight::BundlerViewerWindow w;
-  w.show();
+
+  // Create main window for the standalone application
+  auto* main_window = new QMainWindow();
+  main_window->setWindowTitle(QObject::tr("InsightAT Bundler Viewer"));
+  main_window->resize(1400, 900);
+
+  // Create the viewer widget as central widget
+  auto* viewer = new insight::BundlerViewerWindow(main_window);
+  main_window->setCentralWidget(viewer);
+
+  // Create File menu
+  auto* file_menu = main_window->menuBar()->addMenu(QObject::tr("&File"));
+
+  auto* open_act = file_menu->addAction(QObject::tr("&Open reconstruction folder…"));
+  open_act->setShortcut(QObject::tr("Ctrl+O"));
+  QObject::connect(open_act, &QAction::triggered, viewer, &insight::BundlerViewerWindow::open_bundler_directory);
+
+  auto* open_series_act = file_menu->addAction(QObject::tr("Open &iteration series…"));
+  open_series_act->setShortcut(QObject::tr("Ctrl+I"));
+  QObject::connect(open_series_act, &QAction::triggered, viewer, &insight::BundlerViewerWindow::open_iter_series);
+
+  file_menu->addSeparator();
+
+  auto* exit_act = file_menu->addAction(QObject::tr("E&xit"));
+  exit_act->setShortcut(QObject::tr("Ctrl+Q"));
+  QObject::connect(exit_act, &QAction::triggered, main_window, &QMainWindow::close);
+
+  main_window->show();
 
   if (argc >= 2) {
     const QString path = QString::fromLocal8Bit(argv[1]);
@@ -39,9 +68,9 @@ int main(int argc, char* argv[]) {
       }
     }
     if (has_iter_subdirs)
-      w.open_iter_series_from_path(path);
+      viewer->open_iter_series_from_path(path);
     else
-      w.open_reconstruction_path(path);
+      viewer->open_reconstruction_path(path);
   }
 
   return app.exec();

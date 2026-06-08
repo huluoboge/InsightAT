@@ -145,15 +145,17 @@ void MainWindow::create_menu_bar() {
   m_actionAddImageGroup->setEnabled(false);
   connect(m_actionAddImageGroup, &QAction::triggered, this, &MainWindow::on_add_image_group);
 
-  m_actionAddCameraRig = m_editMenu->addAction(tr("Add Camera &Rig"));
-  m_actionAddCameraRig->setShortcut(Qt::CTRL | Qt::Key_R);
-  m_actionAddCameraRig->setEnabled(false);
-  connect(m_actionAddCameraRig, &QAction::triggered, this, &MainWindow::on_add_camera_rig);
+  // Camera Rig support disabled for now
+  // m_actionAddCameraRig = m_editMenu->addAction(tr("Add Camera &Rig"));
+  // m_actionAddCameraRig->setShortcut(Qt::CTRL | Qt::Key_R);
+  // m_actionAddCameraRig->setEnabled(false);
+  // connect(m_actionAddCameraRig, &QAction::triggered, this, &MainWindow::on_add_camera_rig);
 
-  m_actionImportGCPs = m_editMenu->addAction(tr("&Import GCPs..."));
-  m_actionImportGCPs->setShortcut(Qt::CTRL | Qt::Key_I);
-  m_actionImportGCPs->setEnabled(false);
-  connect(m_actionImportGCPs, &QAction::triggered, this, &MainWindow::on_import_gcps);
+  // GCP import disabled for now
+  // m_actionImportGCPs = m_editMenu->addAction(tr("&Import GCPs..."));
+  // m_actionImportGCPs->setShortcut(Qt::CTRL | Qt::Key_I);
+  // m_actionImportGCPs->setEnabled(false);
+  // connect(m_actionImportGCPs, &QAction::triggered, this, &MainWindow::on_import_gcps);
 
   m_editMenu->addSeparator();
 
@@ -205,8 +207,9 @@ void MainWindow::create_tool_bar() {
 
   // 编辑操作
   toolbar->addAction(m_actionAddImageGroup);
-  toolbar->addAction(m_actionAddCameraRig);
-  toolbar->addAction(m_actionImportGCPs);
+  // Camera Rig and GCP import disabled for now
+  // toolbar->addAction(m_actionAddCameraRig);
+  // toolbar->addAction(m_actionImportGCPs);
   toolbar->addSeparator();
   toolbar->addAction(m_actionCreateATTask);
 }
@@ -430,8 +433,9 @@ void MainWindow::on_new_project_created(const QString& name, const QString& auth
   m_actionProjectInfo->setEnabled(true);
   m_actionSetCoordinateSystem->setEnabled(true);
   m_actionAddImageGroup->setEnabled(true);
-  m_actionAddCameraRig->setEnabled(true);
-  m_actionImportGCPs->setEnabled(true);
+  // Camera Rig and GCP import disabled
+  // m_actionAddCameraRig->setEnabled(true);
+  // m_actionImportGCPs->setEnabled(true);
   m_actionCreateATTask->setEnabled(true);
   m_actionSaveProject->setEnabled(true);
   m_actionSaveProjectAs->setEnabled(true);
@@ -464,8 +468,9 @@ void MainWindow::on_open_project() {
 
     // 启用编辑菜单项
     m_actionAddImageGroup->setEnabled(true);
-    m_actionAddCameraRig->setEnabled(true);
-    m_actionImportGCPs->setEnabled(true);
+    // Camera Rig and GCP import disabled
+    // m_actionAddCameraRig->setEnabled(true);
+    // m_actionImportGCPs->setEnabled(true);
     m_actionCreateATTask->setEnabled(true);
     m_actionSaveProject->setEnabled(true);
     m_actionSaveProjectAs->setEnabled(true);

@@ -35,11 +35,15 @@ namespace insight {
 class BundlerViewerWindow;
 namespace database {
 struct ATTask;
+struct InputSnapshot;
 }
 
 namespace ui {
 
 class ProjectDocument;
+namespace dialogs {
+class ImageGroupDetailPanel;
+}  // namespace dialogs
 
 /**
  * @class ATTaskPanel
@@ -84,10 +88,15 @@ private:
   void load_reconstruction_to_viewer(const insight::database::ATTask& task);
   void on_export_colmap_clicked();
   void on_run_sfm_clicked();
+  void on_delete_task_clicked();
   void on_sfm_process_finished(int exitCode);
   void on_sfm_process_stdout();
   void on_sfm_process_stderr();
   void on_view_detailed_log_clicked();
+
+  // 编辑输入数据中的 ImageGroup
+  void on_edit_input_group_clicked(int row);
+  void on_input_group_data_changed(uint32_t group_id);
 
   // Runner helpers
   void append_log(const QString& text);
@@ -132,6 +141,7 @@ private:
   // SfM Tab
   QLabel* m_sfmWorkDirLabel = nullptr;
   QPushButton* m_runSfmButton = nullptr;
+  QPushButton* m_deleteTaskButton = nullptr;  ///< Delete ATTask from project (keep work directory)
   QPushButton* m_viewDetailedLogButton = nullptr; ///< View detailed log file
   QPlainTextEdit* m_sfmLogTextEdit = nullptr;
   QLabel* m_sfmStatusLabel = nullptr;
@@ -141,6 +151,9 @@ private:
   // Viewer (BundlerViewerWindow for 3D visualization)
   insight::BundlerViewerWindow* m_bundlerViewer = nullptr;
   QLabel* m_viewerStatusLabel = nullptr;
+
+  // 编辑输入数据
+  dialogs::ImageGroupDetailPanel* m_inputGroupDetailPanel = nullptr;
 };
 
 }  // namespace ui

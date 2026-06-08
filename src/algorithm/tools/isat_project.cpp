@@ -902,6 +902,14 @@ static int runCreateATTask(int argc, char* argv[]) {
   task.id = id;
   task.task_id = task_id;
   task.task_name = name;
+
+  // ─── Set working directory ───────────────────────────────────────────
+  // Each ATTask has its own subdirectory: project.iat.data/task_N/
+  fs::path project_path = fs::absolute(project_file);
+  fs::path data_dir = fs::path(project_path.string() + ".data");
+  fs::path work_dir = data_dir / (std::string("task_") + std::to_string(task_id));
+  task.working_directory = work_dir.string();
+
   task.input_snapshot.image_groups = project.image_groups;
   task.input_snapshot.measurements = project.measurements;
   task.input_snapshot.input_coordinate_system = project.input_coordinate_system;

@@ -157,8 +157,8 @@ public:
 
   /// Screen-space pick: find the camera or track closest to screen pixel (px,py).
   /// Returns index >= 0 on hit, -1 on miss. is_camera=true means camera hit.
-  /// threshold_px: max screen-space distance in pixels.
-  int pick_screen(int px, int py, bool* is_camera, double threshold_px = 12.0) const;
+  /// threshold_px: max screen-space distance in pixels (default: 50px for easier camera picking).
+  int pick_screen(int px, int py, bool* is_camera, double threshold_px = 50.0) const;
 
   struct GlState {
     double mv[16]   = {};

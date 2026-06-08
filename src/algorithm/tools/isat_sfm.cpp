@@ -548,9 +548,13 @@ int main(int argc, char* argv[]) {
   int seed_eval_max_images = 6;
 
   CmdLine cmd("InsightAT SfM Pipeline – end-to-end incremental SfM");
-  cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required)"));
+  cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required unless --existing-task)"));
   cmd.add(
       make_option('w', work_dir, "work-dir").doc("Working directory for all outputs (required)"));
+  cmd.add(make_switch(0, "existing-task")
+              .doc("Run on an existing ATTask directory. Ignores -i, skips create step. "
+                   "Requires <work-dir> to contain images_all.json. "
+                   "Useful for re-running or continuing partial steps."));
   cmd.add(make_option('s', steps_str, "steps")
               .doc("Comma-separated steps to run (default: "
             "create,extract,match,tracks,seed_eval,incremental_sfm)"));
@@ -646,10 +650,30 @@ int main(int argc, char* argv[]) {
   }
   if (cmd.checkHelp(argv[0]))
     return 0;
-  if (input_dir.empty() || work_dir.empty()) {
-    std::cerr << "Error: --input and --work-dir are required\n\n";
-    cmd.printHelp(std::cerr, argv[0]);
-    return 1;
+
+  // ── Mode validation ──────────────────────────────────────────────────────
+  const bool existing_task_mode = cmd.used("existing-task");
+  if (existing_task_mode) {
+    // Mode: existing ATTask
+    // - Requires: -w
+    // - Ignores: -i (logged as warning if provided)
+    if (work_dir.empty()) {
+      std::cerr << "Error: --work-dir is required with --existing-task\n\n";
+      cmd.printHelp(std::cerr, argv[0]);
+      return 1;
+    }
+    if (!input_dir.empty()) {
+      LOG(WARNING) << "--existing-task mode: -i/--input is ignored (found: " << input_dir << ")";
+      input_dir.clear();
+    }
+  } else {
+    // Mode: traditional (create new project)
+    // - Requires: -i and -w
+    if (input_dir.empty() || work_dir.empty()) {
+      std::cerr << "Error: without --existing-task, both -i/--input and -w/--work-dir are required\n\n";
+      cmd.printHelp(std::cerr, argv[0]);
+      return 1;
+    }
   }
   if (geo_min_inliers < 1) {
     std::cerr << "Error: --geo-min-inliers must be >= 1\n\n";
@@ -784,6 +808,14 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Retrieval min output matches: " << retrieval_min_output_matches;
 
   auto active_steps = parse_steps(steps_str);
+  
+  // In existing-task mode, remove 'create' from active steps
+  if (existing_task_mode) {
+    if (active_steps.erase("create") > 0) {
+      LOG(INFO) << "--existing-task mode: 'create' step automatically removed";
+    }
+  }
+  
   {
     std::string active_list;
     for (const auto& s : ALL_STEPS)
@@ -802,11 +834,32 @@ int main(int argc, char* argv[]) {
       s.pop_back();
     return s;
   };
-  fs::path input_path = fs::absolute(strip_trailing_sep(input_dir));
   fs::path work_path = fs::absolute(strip_trailing_sep(work_dir));
-  if (!fs::is_directory(input_path)) {
-    LOG(ERROR) << "Input directory does not exist: " << input_path;
+  
+  // Validate work directory
+  if (!fs::is_directory(work_path)) {
+    LOG(ERROR) << "Work directory does not exist: " << work_path;
     return 1;
+  }
+  
+  fs::path input_path;
+  if (!existing_task_mode) {
+    // Traditional mode: validate input directory
+    input_path = fs::absolute(strip_trailing_sep(input_dir));
+    if (!fs::is_directory(input_path)) {
+      LOG(ERROR) << "Input directory does not exist: " << input_path;
+      return 1;
+    }
+  }
+  
+  // In existing-task mode, verify images_all.json exists
+  if (existing_task_mode) {
+    fs::path images_all_check = work_path / "images_all.json";
+    if (!fs::exists(images_all_check)) {
+      LOG(ERROR) << "--existing-task mode requires images_all.json in work directory: " << images_all_check;
+      return 1;
+    }
+    LOG(INFO) << "--existing-task mode: found images_all.json in " << work_path;
   }
 
   // ── Derived paths ────────────────────────────────────────────────────────

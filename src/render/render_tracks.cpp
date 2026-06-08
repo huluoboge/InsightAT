@@ -425,34 +425,93 @@ int RenderTracks::pick_screen(int px, int py, bool* is_camera, double threshold_
   };
 
   // ── Cameras ──────────────────────────────────────────────────────────────
+  // NOTE: Enhanced picking - test camera frustum (corners and edges)
+  // Only pick cameras if they are visible
   int   best_cam = -1;
   double best_cam_d2 = thresh2;
-  for (int i = 0; i < static_cast<int>(photos_.size()); ++i) {
-    const auto& ph = photos_[i];
-    double wx, wy, wz;
-    if (ph.refinedPose.centerValid) {
-      wx = ph.refinedPose.data[0]; wy = ph.refinedPose.data[1]; wz = ph.refinedPose.data[2];
-    } else if (ph.initPose.centerValid) {
-      wx = ph.initPose.data[0]; wy = ph.initPose.data[1]; wz = ph.initPose.data[2];
-    } else continue;
+  if (show_photo_) {
+    for (int i = 0; i < static_cast<int>(photos_.size()); ++i) {
+      const auto& ph = photos_[i];
+      double cam_cx, cam_cy, cam_cz;
+      if (ph.refinedPose.centerValid) {
+        cam_cx = ph.refinedPose.data[0]; cam_cy = ph.refinedPose.data[1]; cam_cz = ph.refinedPose.data[2];
+      } else if (ph.initPose.centerValid) {
+        cam_cx = ph.initPose.data[0]; cam_cy = ph.initPose.data[1]; cam_cz = ph.initPose.data[2];
+      } else continue;
 
-    double sx, sy;
-    if (!project_pt(wx, wy, wz, &sx, &sy)) continue;
-    double dx = sx - px, dy = sy - gl_py;
-    double d2 = dx*dx + dy*dy;
-    if (d2 < best_cam_d2) { best_cam_d2 = d2; best_cam = i; }
+      // Check camera center point first (highest priority)
+      double sx, sy;
+      if (project_pt(cam_cx, cam_cy, cam_cz, &sx, &sy)) {
+        double dx = sx - px, dy = sy - gl_py;
+        double d2 = dx*dx + dy*dy;
+        if (d2 < best_cam_d2) { best_cam_d2 = d2; best_cam = i; }
+      }
+
+      // Enhanced: Check camera frustum pyramid (image corners + intermediate points)
+      // This makes camera selection much easier - user can click on the camera frame, not just center
+      if (ph.focal > 0 && ph.w > 0 && ph.h > 0) {
+        // Assume principal point at image center: cx = w/2, cy = h/2
+        double half_w = ph.w * 0.5;
+        double half_h = ph.h * 0.5;
+        double f = ph.focal;
+
+        // Use openglMat for rotation (already correct world-to-camera frame)
+        // Extract rotation as 3x3 submatrix (column-major in openglMat)
+        const double* mat = ph.refinedPose.centerValid ? ph.refinedPose.openglMat.data() 
+                                                       : ph.initPose.openglMat.data();
+        // openglMat is 4x4 column-major, so R_cam_from_world is in top-left
+        // We need R_world_from_cam = R^T for transforming camera-relative points to world
+        double R_inv[9];
+        R_inv[0] = mat[0];  R_inv[1] = mat[4];  R_inv[2] = mat[8];   // transpose: col 0 → row 0
+        R_inv[3] = mat[1];  R_inv[4] = mat[5];  R_inv[5] = mat[9];   // transpose: col 1 → row 1
+        R_inv[6] = mat[2];  R_inv[7] = mat[6];  R_inv[8] = mat[10];  // transpose: col 2 → row 2
+
+        // 8 corners of frustum pyramid at focal plane
+        double corners_cam[8][3] = {
+          {-half_w, -half_h, f},  // top-left
+          { half_w, -half_h, f},  // top-right
+          {-half_w,  half_h, f},  // bottom-left
+          { half_w,  half_h, f},  // bottom-right
+          {-half_w*0.5, -half_h*0.5, f*0.5},  // smaller pyramid for intermediate picking
+          { half_w*0.5, -half_h*0.5, f*0.5},
+          {-half_w*0.5,  half_h*0.5, f*0.5},
+          { half_w*0.5,  half_h*0.5, f*0.5}
+        };
+
+        // Project each corner
+        for (int c = 0; c < 8; ++c) {
+          double x_cam = corners_cam[c][0];
+          double y_cam = corners_cam[c][1];
+          double z_cam = corners_cam[c][2];
+
+          // Transform: world = center + R_inv * camera
+          double x_world = cam_cx + R_inv[0]*x_cam + R_inv[1]*y_cam + R_inv[2]*z_cam;
+          double y_world = cam_cy + R_inv[3]*x_cam + R_inv[4]*y_cam + R_inv[5]*z_cam;
+          double z_world = cam_cz + R_inv[6]*x_cam + R_inv[7]*y_cam + R_inv[8]*z_cam;
+
+          if (project_pt(x_world, y_world, z_world, &sx, &sy)) {
+            double dx = sx - px, dy = sy - gl_py;
+            double d2 = dx*dx + dy*dy;
+            if (d2 < best_cam_d2) { best_cam_d2 = d2; best_cam = i; }
+          }
+        }
+      }
+    }
   }
 
   // ── 3D points ─────────────────────────────────────────────────────────────
+  // Only pick points if they are visible
   int   best_pt = -1;
   double best_pt_d2 = thresh2;
-  for (int i = 0; i < static_cast<int>(tracks_.size()); ++i) {
-    const auto& tk = tracks_[i];
-    double sx, sy;
-    if (!project_pt(tk.x, tk.y, tk.z, &sx, &sy)) continue;
-    double dx = sx - px, dy = sy - gl_py;
-    double d2 = dx*dx + dy*dy;
-    if (d2 < best_pt_d2) { best_pt_d2 = d2; best_pt = i; }
+  if (show_vertex_) {
+    for (int i = 0; i < static_cast<int>(tracks_.size()); ++i) {
+      const auto& tk = tracks_[i];
+      double sx, sy;
+      if (!project_pt(tk.x, tk.y, tk.z, &sx, &sy)) continue;
+      double dx = sx - px, dy = sy - gl_py;
+      double d2 = dx*dx + dy*dy;
+      if (d2 < best_pt_d2) { best_pt_d2 = d2; best_pt = i; }
+    }
   }
 
   // Return whichever is closer

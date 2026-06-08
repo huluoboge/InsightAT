@@ -53,16 +53,14 @@ void CameraParameterEditorWidget::initialize_ui() {
     auto layout = new QVBoxLayout(m_cameraParamsBox);
 
     // 相机模式选择
+    // NOTE: 目前仅支持 GroupLevel 模式，其他模式（ImageLevel、RigBased）待实现
     {
       auto modeLayout = new QHBoxLayout();
       m_cameraModeLabel = new QLabel(tr("Mode:"), this);
       m_cameraModeCombo = new QComboBox(this);
       m_cameraModeCombo->addItem("GroupLevel",
                                  static_cast<int>(database::ImageGroup::CameraMode::kGroupLevel));
-      m_cameraModeCombo->addItem("ImageLevel",
-                                 static_cast<int>(database::ImageGroup::CameraMode::kImageLevel));
-      m_cameraModeCombo->addItem("RigBased",
-                                 static_cast<int>(database::ImageGroup::CameraMode::kRigBased));
+      m_cameraModeCombo->setEnabled(false);  // 只有一个选项，禁用下拉框交互
       modeLayout->addWidget(m_cameraModeLabel);
       modeLayout->addWidget(m_cameraModeCombo);
       modeLayout->addStretch();

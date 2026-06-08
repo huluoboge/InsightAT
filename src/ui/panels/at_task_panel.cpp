@@ -6,10 +6,12 @@
 #include "at_task_panel.h"
 #include "../../database/database_types.h"
 #include "../models/project_document.h"
+#include "../dialogs/image_group_detail_panel.h"
 #include "bundler_viewer_window.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -40,8 +42,10 @@
 #include <QVBoxLayout>
 #include <glog/logging.h>
 #include <cereal/archives/json.hpp>
+#include <nlohmann/json.hpp>
 #include <fstream>
 #include <sstream>
+#include <chrono>
 
 namespace {
 
@@ -132,7 +136,8 @@ ATTaskPanel::ATTaskPanel(ProjectDocument* document, QWidget* parent)
   m_statusLabel(nullptr), m_bundlerViewer(nullptr), m_viewerStatusLabel(nullptr),
   m_exportStatusLabel(nullptr), m_exportColmapButton(nullptr),
   m_sfmWorkDirLabel(nullptr), m_runSfmButton(nullptr), m_sfmLogTextEdit(nullptr),
-  m_sfmStatusLabel(nullptr), m_sfmProgressBar(nullptr), m_sfmProcess(nullptr) {
+  m_sfmStatusLabel(nullptr), m_sfmProgressBar(nullptr), m_sfmProcess(nullptr),
+  m_inputGroupDetailPanel(nullptr) {
 
   setWindowTitle("AT Task Editor");
   init_ui();
@@ -205,11 +210,12 @@ void ATTaskPanel::init_ui() {
     inputLayout->addWidget(m_inputSummaryLabel);
 
     m_groupTable = new QTableWidget();
-    m_groupTable->setColumnCount(5);
+    m_groupTable->setColumnCount(6);
     m_groupTable->setHorizontalHeaderLabels(
-      {"Group ID", "Group Name", "Camera Mode", "Images", "Camera Summary"});
-    m_groupTable->horizontalHeader()->setStretchLastSection(true);
+      {"Group ID", "Group Name", "Camera Mode", "Images", "Camera Summary", "Edit"});
+    m_groupTable->horizontalHeader()->setStretchLastSection(false);
     m_groupTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_groupTable->setColumnWidth(4, 150);  // Camera Summary column wider
     m_groupTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_groupTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_groupTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -280,12 +286,25 @@ void ATTaskPanel::init_ui() {
   m_sfmWorkDirLabel->setMinimumHeight(40);
   sfmControlLayout->addRow("Work Directory:", m_sfmWorkDirLabel);
   
+  // Control buttons layout (Run and Delete side by side)
+  QHBoxLayout* sfmButtonLayout = new QHBoxLayout();
+  
   // Run button
   m_runSfmButton = new QPushButton("▶ Run SfM Pipeline");
   m_runSfmButton->setMinimumHeight(40);
   m_runSfmButton->setStyleSheet("font-weight: bold; font-size: 11pt;");
   connect(m_runSfmButton, &QPushButton::clicked, this, &ATTaskPanel::on_run_sfm_clicked);
-  sfmControlLayout->addRow(m_runSfmButton);
+  sfmButtonLayout->addWidget(m_runSfmButton);
+  
+  // Delete button
+  m_deleteTaskButton = new QPushButton("🗑 Delete Task");
+  m_deleteTaskButton->setMinimumHeight(40);
+  m_deleteTaskButton->setMaximumWidth(150);
+  m_deleteTaskButton->setStyleSheet("font-weight: bold; font-size: 11pt;");
+  connect(m_deleteTaskButton, &QPushButton::clicked, this, &ATTaskPanel::on_delete_task_clicked);
+  sfmButtonLayout->addWidget(m_deleteTaskButton);
+  
+  sfmControlLayout->addRow(sfmButtonLayout);
   
   // Status label
   m_sfmStatusLabel = new QLabel("Ready");
@@ -410,6 +429,14 @@ void ATTaskPanel::refresh_input_data_tab(const insight::database::ATTask& task) 
     m_groupTable->setItem(row, 3,
                           new QTableWidgetItem(QString::number(static_cast<int>(group.images.size()))));
     m_groupTable->setItem(row, 4, new QTableWidgetItem(camera_summary));
+
+    // 添加编辑按钮
+    auto editBtn = new QPushButton(tr("✏ Edit"));
+    editBtn->setMaximumWidth(100);
+    connect(editBtn, &QPushButton::clicked, this, [this, row]() {
+      on_edit_input_group_clicked(row);
+    });
+    m_groupTable->setCellWidget(row, 5, editBtn);
   }
 }
 
@@ -719,20 +746,16 @@ void ATTaskPanel::on_run_sfm_clicked() {
   
   // Prepare arguments for isat_sfm
   // ─────────────────────────────────────────────────────────────────────────────
-  // isat_sfm workflow:
-  //   create → extract → match → tracks → seed_eval → incremental_sfm
+  // isat_sfm --existing-task workflow:
+  //   Runs extract → match → tracks → seed_eval → incremental_sfm
+  //   (skips 'create' step automatically, uses existing images_all.json)
   //
-  // 当前状态：我们已导出 project_snapshot.json 和 images_all.json
+  // Step 1: Export latest task data to work directory (ensures images_all.json is current)
+  // Step 2: Use --existing-task mode to run the pipeline
   // ─────────────────────────────────────────────────────────────────────────────
   
-  QString snapshot_path = work_dir_obj.filePath("project_snapshot.json");
-  bool snapshot_exists = QFileInfo::exists(snapshot_path);
-  
-  QStringList arguments;
-  arguments << "-w" << work_dir;
-  
-  // 总是尝试导出最新的任务数据，确保数据同步
-  m_sfmLogTextEdit->appendPlainText("Preparing task data (coordinates, measurements, images)...");
+  // Export latest task data (includes images_all.json)
+  m_sfmLogTextEdit->appendPlainText("Exporting task data (images, GNSS, IMU, GCP, coordinate system)...");
   
   if (!exportTaskDataToWorkDir(*task, work_dir)) {
     m_runSfmButton->setEnabled(true);
@@ -747,9 +770,29 @@ void ATTaskPanel::on_run_sfm_clicked() {
     return;
   }
   
-  // 构建命令行参数
-  // 由于我们已经导出了数据，可以跳过 create 步骤
-  arguments << "--steps" << "extract,match,tracks,seed_eval,incremental_sfm";
+  m_sfmLogTextEdit->appendPlainText("✓ Task data exported successfully");
+  
+  // Verify images_all.json exists
+  QString images_all_path = work_dir_obj.filePath("images_all.json");
+  if (!QFileInfo::exists(images_all_path)) {
+    m_runSfmButton->setEnabled(true);
+    m_sfmProgressBar->setVisible(false);
+    m_sfmStatusLabel->setText("Missing images_all.json");
+    m_sfmLogTextEdit->appendPlainText("");
+    m_sfmLogTextEdit->appendPlainText("❌ ERROR: images_all.json not found after export");
+    QMessageBox::critical(this, "Error", 
+        "Failed to create images_all.json. Check export function.");
+    delete m_sfmProcess;
+    m_sfmProcess = nullptr;
+    return;
+  }
+  
+  m_sfmLogTextEdit->appendPlainText(QString("✓ Found images_all.json in work directory"));
+  
+  // Build command line arguments using --existing-task mode
+  QStringList arguments;
+  arguments << "--existing-task";
+  arguments << "-w" << work_dir;
   arguments << "-v";
   
   // Connect signals
@@ -854,6 +897,95 @@ void ATTaskPanel::on_sfm_process_stderr() {
   m_sfmProcess->readAllStandardError();
 }
 
+void ATTaskPanel::on_delete_task_clicked() {
+  if (m_currentTaskId.empty() || !m_document) {
+    QMessageBox::warning(this, "Warning", "No ATTask selected");
+    return;
+  }
+
+  // Get task name
+  const auto* task = m_document->getATTaskById(m_currentTaskId);
+  if (!task) {
+    QMessageBox::warning(this, "Warning", "AT Task not found");
+    return;
+  }
+
+  // Confirmation dialog
+  QMessageBox::StandardButton reply = QMessageBox::question(
+      this, "Delete ATTask",
+      QString("Are you sure you want to delete ATTask '%1' from the project?\n\n"
+              "Note: The working directory will be preserved.\n"
+              "You can manually delete it later if needed.")
+          .arg(QString::fromStdString(task->task_name)),
+      QMessageBox::Yes | QMessageBox::No);
+
+  if (reply != QMessageBox::Yes) {
+    return;
+  }
+
+  // Delete task from project using task_id (uint32_t)
+  bool success = m_document->deleteATTask(task->task_id);
+  if (success) {
+    m_currentTaskId.clear();
+    m_sfmWorkDirLabel->setText("");
+    m_sfmStatusLabel->setText("Task deleted");
+    QMessageBox::information(this, "Success", "ATTask deleted from project successfully.\nWorking directory preserved.");
+  } else {
+    QMessageBox::critical(this, "Error", "Failed to delete ATTask from project");
+  }
+}
+
+void ATTaskPanel::on_edit_input_group_clicked(int row) {
+  if (!m_document || m_currentTaskId.empty()) {
+    QMessageBox::warning(this, "Warning", "No input snapshot available");
+    return;
+  }
+
+  // 获取当前任务
+  auto* task = const_cast<database::ATTask*>(m_document->getATTaskById(m_currentTaskId));
+  if (!task) {
+    QMessageBox::warning(this, "Warning", "ATTask not found");
+    return;
+  }
+
+  if (row < 0 || row >= static_cast<int>(task->input_snapshot.image_groups.size())) {
+    QMessageBox::warning(this, "Warning", "Invalid group row");
+    return;
+  }
+
+  // 懒创建对话框
+  if (!m_inputGroupDetailPanel) {
+    m_inputGroupDetailPanel = new dialogs::ImageGroupDetailPanel(this);
+    m_inputGroupDetailPanel->set_project_document(m_document);
+    connect(m_inputGroupDetailPanel, &dialogs::ImageGroupDetailPanel::groupDataChanged, this,
+            &ATTaskPanel::on_input_group_data_changed);
+  }
+
+  // 获取要编辑的 group
+  auto& group = task->input_snapshot.image_groups[row];
+  m_inputGroupDetailPanel->load_group(&group);
+}
+
+void ATTaskPanel::on_input_group_data_changed(uint32_t group_id) {
+  Q_UNUSED(group_id);
+
+  if (!m_document || m_currentTaskId.empty()) {
+    return;
+  }
+
+  // 获取当前任务
+  const auto* task = m_document->getATTaskById(m_currentTaskId);
+  if (task) {
+    refresh_input_data_tab(*task);
+    // 直接保存项目（如果已有文件路径）
+    if (!m_document->filepath().isEmpty()) {
+      m_document->saveProject();
+      LOG(INFO) << "Input snapshot modified and saved. "
+                << "images_all.json will be regenerated when SfM runs.";
+    }
+  }
+}
+
 void ATTaskPanel::on_sfm_process_finished(int exitCode) {
   m_runSfmButton->setEnabled(true);
   m_sfmProgressBar->setVisible(false);
@@ -889,27 +1021,26 @@ void ATTaskPanel::append_log(const QString& text) {
 
 QString ATTaskPanel::getWorkDirectory(const insight::database::ATTask& task) const {
   // ─────────────────────────────────────────────────────────────────────────────
-  // 获取任务工作目录，优先级：
-  // 1. 如果 task.working_directory 已设置，使用它
-  // 2. 如果有项目文档，使用 project.iat.data/{uuid}/ 结构
-  // 3. 回退到默认：~/.insightat/tasks/{uuid}/
+  // Each ATTask has its own subdirectory: project.iat.data/task_N/
+  // Priority:
+  // 1. Use task.working_directory if already set
+  // 2. Derive from project: project_file.data/task_N/
+  // 3. Fallback: ~/.insightat/default_work/task_N/
   // ─────────────────────────────────────────────────────────────────────────────
   
   if (!task.working_directory.empty()) {
     return QDir::cleanPath(QString::fromStdString(task.working_directory));
   }
   
-  // 尝试使用项目数据目录结构
+  // Derive from project file and task_id
   if (m_document && !m_document->filepath().isEmpty()) {
-    // project.iat → project.iat.data/
     QString project_file = m_document->filepath();
     QString project_data_dir = project_file + ".data";
-    // project.iat.data/{uuid}/ - 使用 task.id (UUID) 确保全局唯一
-    return QDir(project_data_dir).filePath(QString::fromStdString(task.id));
+    return QDir(project_data_dir).filePath(QString("task_%1").arg(task.task_id));
   }
   
-  // 回退到默认目录
-  return QDir::home().filePath(QString(".insightat/tasks/%1").arg(QString::fromStdString(task.id)));
+  // Fallback to default
+  return QDir::home().filePath(QString(".insightat/default_work/task_%1").arg(task.task_id));
 }
 
 void ATTaskPanel::on_view_detailed_log_clicked() {
@@ -1016,75 +1147,160 @@ bool ATTaskPanel::exportTaskDataToWorkDir(const insight::database::ATTask& task,
 
 bool ATTaskPanel::generateImagesAllJson(const insight::database::ATTask& task,
                                         const QString& work_dir) {
-  // 生成 images_all.json，包含所有图像的文件名和元数据
+  // Generate images_all.json in the same format as isat_project extract command
+  // This format is consumed by isat_extract, isat_retrieval_match, etc.
+  // 
+  // NOTE: This regenerates from the current input_snapshot, so any edits to camera
+  // parameters in the ATTask will be reflected in the new images_all.json
   
-  QJsonObject root;
-  QJsonArray images_array;
+  using json = nlohmann::json;
   
-  size_t total_images = 0;
+  // ─── Build cameras[] array (one camera per group) ───────────────────────────────
+  std::map<uint32_t, int> group_to_camera_index;
+  json cameras_arr = json::array();
   
   for (const auto& group : task.input_snapshot.image_groups) {
+    // Pick camera from this group
+    const insight::database::CameraModel* cam = nullptr;
+    
+    // Try group-level camera first
+    if (group.group_camera.has_value()) {
+      cam = &group.group_camera.value();
+    } else if (!group.images.empty() && group.images[0].camera.has_value()) {
+      // Fallback to first image's camera
+      cam = &group.images[0].camera.value();
+    }
+    
+    if (!cam || cam->focal_length <= 0.0)
+      continue;
+    
+    const double fx = cam->focal_length;
+    const double fy = cam->focal_length * (cam->aspect_ratio > 0 ? cam->aspect_ratio : 1.0);
+    
+    json cam_obj;
+    cam_obj["fx"] = fx;
+    cam_obj["fy"] = fy;
+    cam_obj["cx"] = cam->principal_point_x;
+    cam_obj["cy"] = cam->principal_point_y;
+    cam_obj["width"] = cam->width;
+    cam_obj["height"] = cam->height;
+    
+    if (!cam->camera_name.empty())
+      cam_obj["camera_name"] = cam->camera_name;
+    if (!cam->make.empty())
+      cam_obj["make"] = cam->make;
+    if (!cam->model.empty())
+      cam_obj["model"] = cam->model;
+    
+    int cidx = static_cast<int>(cameras_arr.size());
+    cameras_arr.push_back(std::move(cam_obj));
+    group_to_camera_index[group.group_id] = cidx;
+  }
+  
+  // ─── Build output JSON ───────────────────────────────────────────────────────
+  json output;
+  output["$schema"] = "InsightAT Image List Format v2.0";
+  output["images"] = json::array();
+  output["cameras"] = std::move(cameras_arr);
+  
+  int image_index = 0;
+  int gnss_count = 0;
+  int imu_count = 0;
+  
+  for (const auto& group : task.input_snapshot.image_groups) {
+    auto it = group_to_camera_index.find(group.group_id);
+    int camera_index = (it != group_to_camera_index.end()) ? it->second : 0;
+    
     for (const auto& image : group.images) {
-      QJsonObject image_obj;
+      json img;
+      img["image_index"] = image_index;
+      img["id"] = image.image_id;
+      img["path"] = image.filename;
+      img["camera_index"] = camera_index;
+      img["camera_id"] = group.group_id;
       
-      // 图像基本信息
-      image_obj["image_id"] = static_cast<int>(image.image_id);
-      image_obj["filename"] = QString::fromStdString(image.filename);
-      image_obj["group_id"] = static_cast<int>(group.group_id);
-      image_obj["group_name"] = QString::fromStdString(group.group_name);
-      
-      // 相机参数（如果在 group level）
-      if (group.group_camera.has_value()) {
-        QJsonObject camera_obj;
-        camera_obj["width"] = static_cast<int>(group.group_camera->width);
-        camera_obj["height"] = static_cast<int>(group.group_camera->height);
-        camera_obj["focal_length"] = group.group_camera->focal_length;
-        camera_obj["principal_point_x"] = group.group_camera->principal_point_x;
-        camera_obj["principal_point_y"] = group.group_camera->principal_point_y;
-        image_obj["camera"] = camera_obj;
+      // Add GNSS if available
+      if (image.gnss_data.has_value()) {
+        const auto& gnss = image.gnss_data.value();
+        img["gnss"] = {
+          {"x", gnss.x},
+          {"y", gnss.y},
+          {"z", gnss.z},
+          {"cov_xx", gnss.cov_xx},
+          {"cov_yy", gnss.cov_yy},
+          {"cov_zz", gnss.cov_zz},
+          {"cov_xy", gnss.cov_xy},
+          {"cov_xz", gnss.cov_xz},
+          {"cov_yz", gnss.cov_yz},
+          {"num_satellites", gnss.num_satellites},
+          {"hdop", gnss.hdop},
+          {"vdop", gnss.vdop}
+        };
+        gnss_count++;
       }
       
-      // 输入位姿（简化表示）
-      if (image.input_pose.has_position) {
-        QJsonObject position_obj;
-        position_obj["x"] = image.input_pose.x;
-        position_obj["y"] = image.input_pose.y;
-        position_obj["z"] = image.input_pose.z;
-        image_obj["position"] = position_obj;
-      }
-      
+      // Add IMU (input_pose rotation) if available
       if (image.input_pose.has_rotation) {
-        QJsonObject rotation_obj;
-        rotation_obj["omega_deg"] = image.input_pose.omega;
-        rotation_obj["phi_deg"] = image.input_pose.phi;
-        rotation_obj["kappa_deg"] = image.input_pose.kappa;
-        image_obj["rotation_euler"] = rotation_obj;
+        double omega = image.input_pose.omega;
+        double phi = image.input_pose.phi;
+        double kappa = image.input_pose.kappa;
+        
+        // Convert to degrees if needed
+        if (image.input_pose.angle_unit == insight::database::InputPose::AngleUnit::kRadians) {
+          omega *= 180.0 / M_PI;
+          phi *= 180.0 / M_PI;
+          kappa *= 180.0 / M_PI;
+        }
+        
+        img["imu"] = {
+          {"roll", omega},
+          {"pitch", phi},
+          {"yaw", kappa},
+          {"cov_att_xx", 0.1},
+          {"cov_att_yy", 0.1},
+          {"cov_att_zz", 0.1}
+        };
+        imu_count++;
       }
       
-      images_array.append(image_obj);
-      total_images++;
+      output["images"].push_back(std::move(img));
+      ++image_index;
     }
   }
   
-  root["total_images"] = static_cast<int>(total_images);
-  root["images"] = images_array;
+  // Add metadata
+  output["metadata"] = {
+    {"format_version", "2.0"},
+    {"exported_from", task.task_name},
+    {"task_id", task.task_id},
+    {"task_uuid", task.id},
+    {"exported_at", std::chrono::system_clock::now().time_since_epoch().count()},
+    {"coordinate_system", task.input_snapshot.input_coordinate_system.definition.empty()
+                            ? "Unknown"
+                            : task.input_snapshot.input_coordinate_system.definition},
+    {"num_groups_exported", task.input_snapshot.image_groups.size()},
+    {"num_gnss_images", gnss_count},
+    {"num_imu_images", imu_count}
+  };
   
-  // 写入文件
+  // Write to file
   QString images_json_path = QDir(work_dir).filePath("images_all.json");
-  QJsonDocument doc(root);
+  std::ofstream out_file(images_json_path.toStdString());
   
-  QFile file(images_json_path);
-  if (!file.open(QIODevice::WriteOnly)) {
+  if (!out_file.is_open()) {
     LOG(ERROR) << "Failed to open images_all.json for writing: " << images_json_path.toStdString();
     return false;
   }
   
-  file.write(doc.toJson(QJsonDocument::Indented));
-  file.close();
+  out_file << output.dump(2);
+  out_file.close();
   
   m_sfmLogTextEdit->appendPlainText(
-      QString("✓ Generated images_all.json (%1 images)").arg(total_images));
-  LOG(INFO) << "Generated images_all.json with " << total_images << " images";
+      QString("✓ Generated images_all.json (%1 images, %2 cameras)")
+      .arg(image_index)
+      .arg(cameras_arr.size()));
+  LOG(INFO) << "Generated images_all.json with " << image_index << " images and "
+            << cameras_arr.size() << " cameras";
   
   return true;
 }

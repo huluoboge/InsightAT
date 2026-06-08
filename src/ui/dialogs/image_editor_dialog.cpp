@@ -101,9 +101,11 @@ void ImageEditorDialog::InitializeUI() {
   m_rightPanel->setMinimumWidth(250);
 
   // Show GNSS Data button
+  // NOTE: GNSS functionality not yet implemented; button disabled
   m_showGNSSDataButton = new QPushButton("Show GNSS Data", m_rightPanel);
   m_showGNSSDataButton->setCheckable(true);
   m_showGNSSDataButton->setMaximumHeight(30);
+  m_showGNSSDataButton->setEnabled(false);
   m_rightLayout->addWidget(m_showGNSSDataButton);
 
   // GNSS Details Group Box
@@ -152,6 +154,7 @@ void ImageEditorDialog::InitializeUI() {
   QVBoxLayout* gnssActionsLayout = new QVBoxLayout();
 
   // First row: Import, Clear, Edit
+  // NOTE: GNSS functionality not yet implemented; buttons disabled
   m_gnssButtonLayout = new QHBoxLayout();
   m_importGNSSButton = new QPushButton("Import GNSS", m_rightPanel);
   m_clearGNSSButton = new QPushButton("Clear GNSS", m_rightPanel);
@@ -159,15 +162,20 @@ void ImageEditorDialog::InitializeUI() {
   m_importGNSSButton->setMaximumWidth(110);
   m_clearGNSSButton->setMaximumWidth(110);
   m_editGNSSButton->setMaximumWidth(110);
+  m_importGNSSButton->setEnabled(false);
+  m_clearGNSSButton->setEnabled(false);
+  m_editGNSSButton->setEnabled(false);
   m_gnssButtonLayout->addWidget(m_importGNSSButton);
   m_gnssButtonLayout->addWidget(m_clearGNSSButton);
   m_gnssButtonLayout->addWidget(m_editGNSSButton);
   gnssActionsLayout->addLayout(m_gnssButtonLayout);
 
   // Second row: Set All Covariance
+  // NOTE: GNSS functionality not yet implemented; button disabled
   QHBoxLayout* covarianceLayout = new QHBoxLayout();
   m_setAllCovarianceButton = new QPushButton("Set All Covariance", m_rightPanel);
   m_setAllCovarianceButton->setMaximumWidth(340);
+  m_setAllCovarianceButton->setEnabled(false);
   covarianceLayout->addWidget(m_setAllCovarianceButton);
   gnssActionsLayout->addLayout(covarianceLayout);
 

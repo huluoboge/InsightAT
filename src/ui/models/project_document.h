@@ -308,9 +308,9 @@ public slots:
   std::string createATTask(const QString& name);
 
   /**
-   * 删除空三任务
+   * 删除空三任务 (by task_id, which is unique)
    */
-  bool deleteATTask(const std::string& task_id);
+  bool deleteATTask(uint32_t task_id);
 
   /**
    * 更新空三任务信息

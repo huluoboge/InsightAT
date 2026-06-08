@@ -99,7 +99,7 @@ bool ProjectDocument::saveProjectAs(const QString& filepath) {
   m_project.last_modified_time = std::time(nullptr);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // 创建 .iat.data/ 目录并设置任务的工作目录
+  // 创建 project.iat.data/ 目录和每个任务的子目录
   // ─────────────────────────────────────────────────────────────────────────────
   QString project_data_dir = filepath + ".data";
   QDir data_dir(project_data_dir);
@@ -112,22 +112,25 @@ bool ProjectDocument::saveProjectAs(const QString& filepath) {
     }
   }
   
-  // 为每个任务设置工作目录
+  // 为每个任务创建/更新工作目录
   for (auto& task : m_project.at_tasks) {
-    if (task.working_directory.empty()) {
-      // 设置为 project.iat.data/{uuid}/ - 使用 task.id (UUID) 确保全局唯一
-      QString task_work_dir = data_dir.filePath(QString::fromStdString(task.id));
+    // Use task_id for directory name (e.g., task_0, task_1, ...)
+    QString task_work_dir = data_dir.filePath(QString("task_%1").arg(task.task_id));
+    
+    // Update working_directory if empty or if path is inconsistent
+    if (task.working_directory.empty() || 
+        task.working_directory != task_work_dir.toStdString()) {
       task.working_directory = task_work_dir.toStdString();
-      
-      // 创建任务目录
-      QDir task_dir(task_work_dir);
-      if (!task_dir.exists()) {
-        if (!task_dir.mkpath(".")) {
-          LOG(WARNING) << "Failed to create task directory: " << task_work_dir.toStdString();
-        }
+      LOG(INFO) << "Set task working directory: task_" << task.task_id 
+                << " → " << task_work_dir.toStdString();
+    }
+    
+    // Create task directory
+    QDir task_dir(task_work_dir);
+    if (!task_dir.exists()) {
+      if (!task_dir.mkpath(".")) {
+        LOG(WARNING) << "Failed to create task directory: " << task_work_dir.toStdString();
       }
-      
-      LOG(INFO) << "Set task working directory: " << task.id << " → " << task_work_dir.toStdString();
     }
   }
 
@@ -172,6 +175,12 @@ void ProjectDocument::updateCoordinateSystem(const insight::database::Coordinate
   m_project.input_coordinate_system = cs;
   setModified(true);
   emit projectInfoChanged();
+  
+  // Auto-save project file when CoordinateSystem is updated
+  // (affects all ATTasks' coordinate reference)
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -214,6 +223,11 @@ uint32_t ProjectDocument::createImageGroup(const QString& name,
   emit imageGroupAdded(group_id);
 
   LOG(INFO) << "Image group created: " << name.toStdString() << " (ID: " << group_id << ")";
+  
+  // Auto-save project file when ImageGroup is added
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
   return group_id;
 }
 
@@ -232,6 +246,11 @@ bool ProjectDocument::deleteImageGroup(uint32_t group_id) {
   emit imageGroupRemoved(group_id);
 
   LOG(INFO) << "Image group deleted: " << group_id;
+  
+  // Auto-save project file when ImageGroup is deleted
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
   return true;
 }
 
@@ -259,6 +278,11 @@ bool ProjectDocument::addImagesToGroup(uint32_t group_id, const QStringList& fil
   emit imageGroupChanged(group_id);
 
   LOG(INFO) << "Added " << filenames.size() << " images to group " << group_id;
+  
+  // Auto-save project file when images are added
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
   return true;
 }
 
@@ -451,6 +475,11 @@ uint32_t ProjectDocument::addGCP(const insight::database::GCPMeasurement& gcp) {
 
   setModified(true);
   emit gcpAdded(gcp_id);
+  
+  // Auto-save project file when GCP is added
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
 
   return gcp_id;
 }
@@ -467,6 +496,11 @@ bool ProjectDocument::deleteGCP(uint32_t gcp_id) {
 
   setModified(true);
   emit gcpRemoved(gcp_id);
+  
+  // Auto-save project file when GCP is deleted
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
 
   return true;
 }
@@ -481,6 +515,11 @@ void ProjectDocument::updateGCP(uint32_t gcp_id, const insight::database::GCPMea
 
     setModified(true);
     emit gcpChanged(gcp_id);
+    
+    // Auto-save project file when GCP is updated
+    if (!m_filepath.isEmpty()) {
+      saveProject();
+    }
   }
 }
 
@@ -489,6 +528,11 @@ void ProjectDocument::clearAllGCPs() {
   m_project.invalidate_gcp_cache();
 
   setModified(true);
+  
+  // Auto-save project file when all GCPs are cleared
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -518,14 +562,17 @@ std::string ProjectDocument::createATTask(const QString& name) {
   task.task_id = task_id;
   task.task_name = task_name;
 
-  QString defaultWorkDir;
+  // ─── Set working directory ───────────────────────────────────────────
+  // Each ATTask has its own subdirectory: project.iat.data/task_N/
+  // This ensures each task has a unique, self-contained workspace
+  QString workDir;
   if (!m_filepath.isEmpty()) {
-    QFileInfo projectInfo(m_filepath);
-    defaultWorkDir = projectInfo.absoluteDir().filePath(QString("tasks/task_%1").arg(task_id));
+    QString dataDir = m_filepath + ".data";
+    workDir = QDir(dataDir).filePath(QString("task_%1").arg(task_id));
   } else {
-    defaultWorkDir = QDir::home().filePath(QString(".insightat/tasks/task_%1").arg(task_id));
+    workDir = QDir::home().filePath(QString(".insightat/default_work/task_%1").arg(task_id));
   }
-  task.working_directory = QDir::cleanPath(defaultWorkDir).toStdString();
+  task.working_directory = QDir::cleanPath(workDir).toStdString();
 
   // 复制当前项目的快照到 InputSnapshot
   task.input_snapshot.image_groups = m_project.image_groups;
@@ -560,24 +607,35 @@ std::string ProjectDocument::createATTask(const QString& name) {
 
   LOG(INFO) << "AT task created: " << task_name << " (ID: " << task_id_str
             << ", Number: " << task_id << ")";
+  
+  // Auto-save project file when ATTask is created
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
   return task_id_str;
 }
 
-bool ProjectDocument::deleteATTask(const std::string& task_id) {
+bool ProjectDocument::deleteATTask(uint32_t task_id) {
   auto it = std::find_if(m_project.at_tasks.begin(), m_project.at_tasks.end(),
-                         [&task_id](const auto& t) { return t.id == task_id; });
+                         [task_id](const auto& t) { return t.task_id == task_id; });
 
   if (it == m_project.at_tasks.end()) {
-    LOG(ERROR) << "AT task not found: " << task_id;
+    LOG(ERROR) << "AT task not found: task_id=" << task_id;
     return false;
   }
 
+  std::string deleted_uuid = it->id;  // Save UUID for logging
   m_project.at_tasks.erase(it);
 
   setModified(true);
-  emit atTaskRemoved(QString::fromStdString(task_id));
+  emit atTaskRemoved(QString::fromStdString(deleted_uuid));
 
-  LOG(INFO) << "AT task deleted: " << task_id;
+  LOG(INFO) << "AT task deleted: task_id=" << task_id << " (UUID: " << deleted_uuid << ")";
+  
+  // Auto-save project file when ATTask is deleted
+  if (!m_filepath.isEmpty()) {
+    saveProject();
+  }
   return true;
 }
 
