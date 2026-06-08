@@ -79,6 +79,9 @@ struct UndistortTask {
 
   // Stage 2: undistorted image
   cv::Mat undistorted;
+
+  // Stage 3: success flag (set after successful write)
+  bool write_success = false;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -769,7 +772,7 @@ int main(int argc, char* argv[]) {
           LOG(WARNING) << "Task " << idx << ": empty src_path";
           return;
         }
-        t.image = cv::imread(t.src_path, cv::IMREAD_COLOR);
+        t.image = cv::imread(t.src_path, cv::IMREAD_UNCHANGED);
         if (t.image.empty()) {
           LOG(ERROR) << "Failed to read: " << t.src_path;
           return;
@@ -801,6 +804,7 @@ int main(int argc, char* argv[]) {
           LOG(ERROR) << "Failed to write: " << dst;
           return;
         }
+        t.write_success = true;  // Mark successful write before release
         t.undistorted.release(); // free memory
         LOG(INFO) << "Wrote [" << idx << "]: " << dst;
       });
@@ -827,7 +831,7 @@ int main(int argc, char* argv[]) {
   for (const auto& t : tasks) {
     if (t.src_path.empty())
       ++failed_read;
-    else if (t.undistorted.empty())
+    else if (!t.write_success)
       ++failed_undist;
     else
       ++wrote;
