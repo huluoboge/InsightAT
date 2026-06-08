@@ -69,8 +69,8 @@ if [[ ${#isats[@]} -eq 0 ]]; then
   echo "ERROR: no isat_* binaries in ${INSIGHTAT_BUILD_DIR} (build the project first)."
   exit 1
 fi
-# Ship all CLI tools, GUI viewer, and InsightAT GUI application
-for f in "${isats[@]}" "$INSIGHTAT_BUILD_DIR/at_bundler_viewer" "$INSIGHTAT_BUILD_DIR/InsightAT"; do
+# Ship all CLI tools, GUI viewer, InsightAT GUI application, and CameraEstimator (UI dependency)
+for f in "${isats[@]}" "$INSIGHTAT_BUILD_DIR/at_bundler_viewer" "$INSIGHTAT_BUILD_DIR/InsightAT" "$INSIGHTAT_BUILD_DIR/CameraEstimator"; do
   [[ -f "$f" && -x "$f" ]] || { echo "ERROR: required binary missing or not executable: $f"; exit 1; }
   cp -a "$f" "$APPDIR/usr/bin/"
 done
