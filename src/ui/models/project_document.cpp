@@ -98,6 +98,39 @@ bool ProjectDocument::saveProjectAs(const QString& filepath) {
 
   m_project.last_modified_time = std::time(nullptr);
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 创建 .iat.data/ 目录并设置任务的工作目录
+  // ─────────────────────────────────────────────────────────────────────────────
+  QString project_data_dir = filepath + ".data";
+  QDir data_dir(project_data_dir);
+  
+  if (!data_dir.exists()) {
+    if (!data_dir.mkpath(".")) {
+      LOG(WARNING) << "Failed to create project data directory: " << project_data_dir.toStdString();
+    } else {
+      LOG(INFO) << "Created project data directory: " << project_data_dir.toStdString();
+    }
+  }
+  
+  // 为每个任务设置工作目录
+  for (auto& task : m_project.at_tasks) {
+    if (task.working_directory.empty()) {
+      // 设置为 project.iat.data/{uuid}/ - 使用 task.id (UUID) 确保全局唯一
+      QString task_work_dir = data_dir.filePath(QString::fromStdString(task.id));
+      task.working_directory = task_work_dir.toStdString();
+      
+      // 创建任务目录
+      QDir task_dir(task_work_dir);
+      if (!task_dir.exists()) {
+        if (!task_dir.mkpath(".")) {
+          LOG(WARNING) << "Failed to create task directory: " << task_work_dir.toStdString();
+        }
+      }
+      
+      LOG(INFO) << "Set task working directory: " << task.id << " → " << task_work_dir.toStdString();
+    }
+  }
+
   if (!saveToFile(filepath)) {
     return false;
   }
@@ -106,6 +139,7 @@ bool ProjectDocument::saveProjectAs(const QString& filepath) {
   setModified(false);
 
   LOG(INFO) << "Project saved: " << filepath.toStdString();
+  LOG(INFO) << "Project data directory: " << project_data_dir.toStdString();
   emit projectSaved();
   return true;
 }

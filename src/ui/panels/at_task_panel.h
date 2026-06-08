@@ -91,6 +91,13 @@ private:
 
   // Runner helpers
   void append_log(const QString& text);
+  
+  // 任务数据导出（Phase 3 核心功能）
+  bool exportTaskDataToWorkDir(const insight::database::ATTask& task, const QString& work_dir);
+  bool generateImagesAllJson(const insight::database::ATTask& task, const QString& work_dir);
+  
+  // 工作目录管理：使用项目数据目录结构 (project.iat.data/{uuid}/)
+  QString getWorkDirectory(const insight::database::ATTask& task) const;
 
 private:
   ProjectDocument* m_document;

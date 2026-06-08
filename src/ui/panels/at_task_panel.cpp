@@ -8,6 +8,8 @@
 #include "../models/project_document.h"
 #include "bundler_viewer_window.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -25,6 +27,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -36,6 +39,9 @@
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <glog/logging.h>
+#include <cereal/archives/json.hpp>
+#include <fstream>
+#include <sstream>
 
 namespace {
 
@@ -55,6 +61,7 @@ QString resolve_work_directory(const insight::database::ATTask& task) {
   if (!task.working_directory.empty()) {
     return QDir::cleanPath(QString::fromStdString(task.working_directory));
   }
+  // Fallback: 使用 UUID (task.id)，而不是 task_id (uint32)
   return QDir::home().filePath(QString(".insightat/tasks/%1").arg(QString::fromStdString(task.id)));
 }
 
@@ -71,6 +78,46 @@ QString camera_summary_text(const insight::database::CameraModel& camera) {
       .arg(camera.focal_length, 0, 'f', 1)
       .arg(camera.principal_point_x, 0, 'f', 1)
       .arg(camera.principal_point_y, 0, 'f', 1);
+}
+
+QString find_isat_sfm_binary() {
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 按优先级查找 isat_sfm 可执行文件：
+  // 1. 环境变量 ISAT_BIN_DIR 指定的目录
+  // 2. InsightAT 应用所在的同一目录
+  // 3. PATH 中的默认位置
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // 1. 检查环境变量 ISAT_BIN_DIR
+  const char* isat_bin_dir_env = std::getenv("ISAT_BIN_DIR");
+  if (isat_bin_dir_env && strlen(isat_bin_dir_env) > 0) {
+    QString bin_dir = QString::fromStdString(std::string(isat_bin_dir_env));
+    QString sfm_path = QDir(bin_dir).absoluteFilePath("isat_sfm");
+    if (QFileInfo::exists(sfm_path) && QFileInfo(sfm_path).isExecutable()) {
+      LOG(INFO) << "Found isat_sfm via ISAT_BIN_DIR: " << sfm_path.toStdString();
+      return sfm_path;
+    }
+  }
+
+  // 2. 检查 InsightAT 应用所在目录
+  QString app_dir = QCoreApplication::applicationDirPath();
+  QString sfm_path = QDir(app_dir).absoluteFilePath("isat_sfm");
+  LOG(INFO) << "Checking for isat_sfm in app dir: " << sfm_path.toStdString();
+  if (QFileInfo::exists(sfm_path)) {
+    if (QFileInfo(sfm_path).isExecutable()) {
+      LOG(INFO) << "Found isat_sfm in app directory";
+      return sfm_path;
+    } else {
+      LOG(WARNING) << "isat_sfm exists but is not executable: " << sfm_path.toStdString();
+    }
+  } else {
+    LOG(WARNING) << "isat_sfm not found in app directory: " << sfm_path.toStdString();
+  }
+
+  // 3. 尝试在 PATH 中查找（使用相对名称）
+  // QProcess 会自动在 PATH 中搜索
+  LOG(INFO) << "Will attempt to find isat_sfm in PATH";
+  return "isat_sfm";
 }
 
 } // namespace
@@ -130,6 +177,7 @@ void ATTaskPanel::init_ui() {
   m_workDirLabel->setWordWrap(true);
   m_workDirLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
   m_workDirLabel->setMinimumHeight(40);
+  m_workDirLabel->setText("(Project data directory: project.iat.data/task_N/)");
   infoLayout->addRow("Work Dir:", m_workDirLabel);
 
   m_taskIdLabel = new QLabel("");
@@ -305,7 +353,7 @@ void ATTaskPanel::refresh_ui() {
     const QSignalBlocker blocker(m_taskNameEdit);
     m_taskNameEdit->setText(QString::fromStdString(it->task_name));
   }
-  m_workDirLabel->setText(resolve_work_directory(*it));
+  m_workDirLabel->setText(getWorkDirectory(*it));
   m_taskIdLabel->setText(QString::fromStdString(m_currentTaskId));
 
   // 显示父任务信息
@@ -346,7 +394,7 @@ void ATTaskPanel::refresh_input_data_tab(const insight::database::ATTask& task) 
                         .arg(task.input_snapshot.measurements.size())
                         .arg(task.input_snapshot.image_groups.size())
                         .arg(total_images)
-                        .arg(resolve_work_directory(task));
+                        .arg(getWorkDirectory(task));
   m_inputSummaryLabel->setText(summary);
 
   m_groupTable->setRowCount(static_cast<int>(task.input_snapshot.image_groups.size()));
@@ -381,7 +429,7 @@ void ATTaskPanel::refresh_optimization_tab(const insight::database::ATTask& task
 
   const QString reconstruction_dir = reconstruction_directory_for_task(task);
   const QString poses_path = QDir(reconstruction_dir).filePath("poses.json");
-  const QString timing_path = QDir(resolve_work_directory(task)).filePath("sfm_timing.json");
+  const QString timing_path = QDir(getWorkDirectory(task)).filePath("sfm_timing.json");
   const QString bundle_path = QDir(reconstruction_dir).filePath("bundle.out");
   const QString colmap_sparse_dir = QDir(reconstruction_dir).filePath("colmap/sparse/0");
 
@@ -451,7 +499,7 @@ void ATTaskPanel::refresh_export_tab(const insight::database::ATTask& task) {
     return;
   }
 
-  const QString work_dir = resolve_work_directory(task);
+  const QString work_dir = getWorkDirectory(task);
   const QString reconstruction_dir = reconstruction_directory_for_task(task);
   const QString colmap_sparse_dir = QDir(reconstruction_dir).filePath("colmap/sparse/0");
 
@@ -570,7 +618,7 @@ void ATTaskPanel::refresh_sfm_tab(const insight::database::ATTask& task) {
     return;
   }
 
-  const QString work_dir = resolve_work_directory(task);
+  const QString work_dir = getWorkDirectory(task);
   m_sfmWorkDirLabel->setText(work_dir);
   
   // Reset status and log
@@ -590,16 +638,52 @@ void ATTaskPanel::on_run_sfm_clicked() {
     return;
   }
 
-  const QString work_dir = resolve_work_directory(*task);
+  const QString work_dir = getWorkDirectory(*task);
   
   // Disable button and show progress
   m_runSfmButton->setEnabled(false);
   m_sfmProgressBar->setVisible(true);
   m_sfmLogTextEdit->clear();
-  m_sfmStatusLabel->setText("Running isat_sfm...");
+  m_sfmStatusLabel->setText("Preparing SfM pipeline...");
 
-  // Get isat_sfm binary path (assume it's in PATH or same directory as InsightAT)
-  QString sfm_bin = "isat_sfm";
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 准备工作目录和必要的文件
+  // ─────────────────────────────────────────────────────────────────────────────
+  QDir work_dir_obj(work_dir);
+  if (!work_dir_obj.exists()) {
+    if (!work_dir_obj.mkpath(".")) {
+      m_runSfmButton->setEnabled(true);
+      m_sfmProgressBar->setVisible(false);
+      m_sfmStatusLabel->setText("Failed to create work directory");
+      m_sfmLogTextEdit->appendPlainText("❌ ERROR: Failed to create work directory");
+      m_sfmLogTextEdit->appendPlainText(QString("Path: %1").arg(work_dir));
+      QMessageBox::critical(this, "Error", 
+          QString("Failed to create work directory:\n%1").arg(work_dir));
+      return;
+    }
+    m_sfmLogTextEdit->appendPlainText(QString("Created work directory: %1").arg(work_dir));
+  }
+  
+  // 创建输出子目录
+  QStringList subdirs = {"feat", "feat_retrieval", "match", "geo", "incremental_sfm"};
+  for (const auto& subdir : subdirs) {
+    QString subdir_path = work_dir_obj.filePath(subdir);
+    QDir subdir_obj(subdir_path);
+    if (!subdir_obj.exists()) {
+      subdir_obj.mkpath(".");
+    }
+  }
+  
+  m_sfmStatusLabel->setText("Running isat_sfm...");
+  m_sfmLogTextEdit->appendPlainText("");
+  m_sfmLogTextEdit->appendPlainText("═══════════════════════════════════════════════════════════");
+  m_sfmLogTextEdit->appendPlainText(QString("Starting SfM Pipeline for Task: %1").arg(QString::fromStdString(task->task_name)));
+  m_sfmLogTextEdit->appendPlainText(QString("Work directory: %1").arg(work_dir));
+  m_sfmLogTextEdit->appendPlainText("═══════════════════════════════════════════════════════════");
+  m_sfmLogTextEdit->appendPlainText("");
+
+  // Get isat_sfm binary path (check ISAT_BIN_DIR env var, app directory, or PATH)
+  QString sfm_bin = find_isat_sfm_binary();
   
   // Kill previous process if running
   if (m_sfmProcess) {
@@ -613,11 +697,60 @@ void ATTaskPanel::on_run_sfm_clicked() {
   m_sfmProcess = new QProcess(this);
   m_sfmProcess->setWorkingDirectory(work_dir);
   
-  // Prepare arguments: isat_sfm -i <images_dir> -w <work_dir> -v
-  // We assume images are in input_snapshot or we just run with defaults
-  // For now, we'll just run isat_sfm to process existing work directory
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Setup environment variables for isat_sfm
+  // ─────────────────────────────────────────────────────────────────────────────
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  
+  // Get the build directory from the binary path
+  QString bin_dir = QFileInfo(sfm_bin).dir().absolutePath();
+  QString ld_library_path = bin_dir;  // Add build directory
+  ld_library_path += ":" + QDir(bin_dir).absoluteFilePath("third_party/popsift/Linux-x86_64");
+  
+  // Append existing LD_LIBRARY_PATH if present
+  if (env.contains("LD_LIBRARY_PATH")) {
+    ld_library_path += ":" + env.value("LD_LIBRARY_PATH");
+  }
+  
+  env.insert("LD_LIBRARY_PATH", ld_library_path);
+  m_sfmProcess->setProcessEnvironment(env);
+  
+  m_sfmLogTextEdit->appendPlainText(QString("Set LD_LIBRARY_PATH: %1").arg(ld_library_path));
+  
+  // Prepare arguments for isat_sfm
+  // ─────────────────────────────────────────────────────────────────────────────
+  // isat_sfm workflow:
+  //   create → extract → match → tracks → seed_eval → incremental_sfm
+  //
+  // 当前状态：我们已导出 project_snapshot.json 和 images_all.json
+  // ─────────────────────────────────────────────────────────────────────────────
+  
+  QString snapshot_path = work_dir_obj.filePath("project_snapshot.json");
+  bool snapshot_exists = QFileInfo::exists(snapshot_path);
+  
   QStringList arguments;
-  arguments << "-w" << work_dir << "-v";
+  arguments << "-w" << work_dir;
+  
+  // 总是尝试导出最新的任务数据，确保数据同步
+  m_sfmLogTextEdit->appendPlainText("Preparing task data (coordinates, measurements, images)...");
+  
+  if (!exportTaskDataToWorkDir(*task, work_dir)) {
+    m_runSfmButton->setEnabled(true);
+    m_sfmProgressBar->setVisible(false);
+    m_sfmStatusLabel->setText("Failed to export task data");
+    m_sfmLogTextEdit->appendPlainText("");
+    m_sfmLogTextEdit->appendPlainText("❌ ERROR: Failed to export task data to work directory");
+    QMessageBox::critical(this, "Error", 
+        "Failed to export task data. Check logs for details.");
+    delete m_sfmProcess;
+    m_sfmProcess = nullptr;
+    return;
+  }
+  
+  // 构建命令行参数
+  // 由于我们已经导出了数据，可以跳过 create 步骤
+  arguments << "--steps" << "extract,match,tracks,seed_eval,incremental_sfm";
+  arguments << "-v";
   
   // Connect signals
   connect(m_sfmProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
@@ -627,6 +760,10 @@ void ATTaskPanel::on_run_sfm_clicked() {
   connect(m_sfmProcess, &QProcess::readyReadStandardError,
           this, &ATTaskPanel::on_sfm_process_stderr);
 
+  m_sfmLogTextEdit->appendPlainText(QString("Attempting to start: %1").arg(sfm_bin));
+  m_sfmLogTextEdit->appendPlainText(QString("Arguments: %1").arg(arguments.join(" ")));
+  m_sfmLogTextEdit->appendPlainText(QString("Work directory: %1").arg(work_dir));
+
   // Start process
   m_sfmProcess->start(sfm_bin, arguments);
   
@@ -634,18 +771,71 @@ void ATTaskPanel::on_run_sfm_clicked() {
     m_runSfmButton->setEnabled(true);
     m_sfmProgressBar->setVisible(false);
     m_sfmStatusLabel->setText("Failed to start isat_sfm");
-    m_sfmLogTextEdit->appendPlainText("ERROR: Failed to start isat_sfm binary");
-    m_sfmLogTextEdit->appendPlainText("Make sure isat_sfm is in PATH or same directory as InsightAT");
+    m_sfmLogTextEdit->appendPlainText("");
+    m_sfmLogTextEdit->appendPlainText("❌ ERROR: Failed to start isat_sfm binary");
+    m_sfmLogTextEdit->appendPlainText("");
+    
+    // Get QProcess error information
+    QProcess::ProcessError error = m_sfmProcess->error();
+    QString error_msg;
+    switch (error) {
+      case QProcess::FailedToStart:
+        error_msg = "FailedToStart: The process could not be started";
+        break;
+      case QProcess::Crashed:
+        error_msg = "Crashed: The process crashed";
+        break;
+      case QProcess::Timedout:
+        error_msg = "Timedout: waitForStarted() timed out";
+        break;
+      case QProcess::WriteError:
+        error_msg = "WriteError: An error occurred when attempting to write to the process";
+        break;
+      case QProcess::ReadError:
+        error_msg = "ReadError: An error occurred when attempting to read from the process";
+        break;
+      default:
+        error_msg = "UnknownError";
+    }
+    m_sfmLogTextEdit->appendPlainText(QString("Error code: %1").arg(error_msg));
+    m_sfmLogTextEdit->appendPlainText("");
+    
+    m_sfmLogTextEdit->appendPlainText("Binary lookup search order:");
+    m_sfmLogTextEdit->appendPlainText("1. Environment variable ISAT_BIN_DIR");
+    m_sfmLogTextEdit->appendPlainText("2. Same directory as InsightAT application");
+    m_sfmLogTextEdit->appendPlainText("3. System PATH");
+    m_sfmLogTextEdit->appendPlainText("");
+    m_sfmLogTextEdit->appendPlainText(QString("Tried to execute: %1").arg(sfm_bin));
+    m_sfmLogTextEdit->appendPlainText("App directory: " + QCoreApplication::applicationDirPath());
+    m_sfmLogTextEdit->appendPlainText("");
+    m_sfmLogTextEdit->appendPlainText("Solutions:");
+    m_sfmLogTextEdit->appendPlainText("✓ Option 1: Set ISAT_BIN_DIR environment variable");
+    m_sfmLogTextEdit->appendPlainText("  export ISAT_BIN_DIR=/home/recon/Git/04jones/InsightAT/build-ceres-12.8");
+    m_sfmLogTextEdit->appendPlainText("  Then restart InsightAT");
+    m_sfmLogTextEdit->appendPlainText("");
+    m_sfmLogTextEdit->appendPlainText("✓ Option 2: Create symlink in InsightAT app directory");
+    m_sfmLogTextEdit->appendPlainText(QString("  ln -s %1 %2")
+        .arg("$(pwd)/build-ceres-12.8/isat_sfm", "$(pwd)/build-ceres-12.8/InsightAT/../isat_sfm"));
+    m_sfmLogTextEdit->appendPlainText("");
+    m_sfmLogTextEdit->appendPlainText("✓ Option 3: Add build directory to PATH");
+    m_sfmLogTextEdit->appendPlainText("  export PATH=/home/recon/Git/04jones/InsightAT/build-ceres-12.8:$PATH");
+    
     QMessageBox::critical(this, "Error", 
-        "Failed to start isat_sfm. Please check if the executable exists in PATH.");
+        QString("Failed to start isat_sfm binary.\n\n"
+                "Error: %1\n\n"
+                "Please set environment variable:\n"
+                "export ISAT_BIN_DIR=/home/recon/Git/04jones/InsightAT/build-ceres-12.8\n\n"
+                "Then restart InsightAT.").arg(error_msg));
     delete m_sfmProcess;
     m_sfmProcess = nullptr;
     return;
   }
 
-  m_sfmLogTextEdit->appendPlainText(QString("Started: %1").arg(sfm_bin));
-  m_sfmLogTextEdit->appendPlainText(QString("Work dir: %1").arg(work_dir));
-  m_sfmLogTextEdit->appendPlainText("Detailed logs available in work directory");
+  m_sfmLogTextEdit->appendPlainText(QString("✓ Started: %1").arg(sfm_bin));
+  m_sfmLogTextEdit->appendPlainText(QString("  Work dir: %1").arg(work_dir));
+  m_sfmLogTextEdit->appendPlainText("  Detailed logs available in work directory");
+  
+  LOG(INFO) << "Started isat_sfm process: " << sfm_bin.toStdString();
 }
 
 void ATTaskPanel::on_sfm_process_stdout() {
@@ -697,6 +887,31 @@ void ATTaskPanel::append_log(const QString& text) {
   LOG(INFO) << text.toStdString();
 }
 
+QString ATTaskPanel::getWorkDirectory(const insight::database::ATTask& task) const {
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 获取任务工作目录，优先级：
+  // 1. 如果 task.working_directory 已设置，使用它
+  // 2. 如果有项目文档，使用 project.iat.data/{uuid}/ 结构
+  // 3. 回退到默认：~/.insightat/tasks/{uuid}/
+  // ─────────────────────────────────────────────────────────────────────────────
+  
+  if (!task.working_directory.empty()) {
+    return QDir::cleanPath(QString::fromStdString(task.working_directory));
+  }
+  
+  // 尝试使用项目数据目录结构
+  if (m_document && !m_document->filepath().isEmpty()) {
+    // project.iat → project.iat.data/
+    QString project_file = m_document->filepath();
+    QString project_data_dir = project_file + ".data";
+    // project.iat.data/{uuid}/ - 使用 task.id (UUID) 确保全局唯一
+    return QDir(project_data_dir).filePath(QString::fromStdString(task.id));
+  }
+  
+  // 回退到默认目录
+  return QDir::home().filePath(QString(".insightat/tasks/%1").arg(QString::fromStdString(task.id)));
+}
+
 void ATTaskPanel::on_view_detailed_log_clicked() {
   if (m_currentTaskId.empty() || !m_document) {
     QMessageBox::warning(this, "Warning", "No task loaded");
@@ -729,5 +944,151 @@ void ATTaskPanel::on_view_detailed_log_clicked() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 任务数据导出函数 (Phase 3 核心功能)
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool ATTaskPanel::exportTaskDataToWorkDir(const insight::database::ATTask& task,
+                                          const QString& work_dir) {
+  // 导出任务的 input_snapshot 到工作目录，使 isat_sfm 能直接使用
+  
+  m_sfmLogTextEdit->appendPlainText("");
+  m_sfmLogTextEdit->appendPlainText("Exporting task data to work directory...");
+
+  // Step 1: 导出任务输入快照为 project_snapshot.json
+  // 包含坐标系、测量、图像组等所有必要的项目数据
+  QString snapshot_json_path = QDir(work_dir).filePath("project_snapshot.json");
+  
+  // 创建快照 JSON 对象
+  QJsonObject snapshot_root;
+  
+  // 记录导出信息
+  snapshot_root["export_type"] = "task_input_snapshot";
+  snapshot_root["task_id"] = QString::fromStdString(task.id);
+  snapshot_root["task_name"] = QString::fromStdString(task.task_name);
+  snapshot_root["export_timestamp"] = static_cast<qint64>(std::time(nullptr));
+  
+  // 记录坐标系信息（简化表示）
+  QJsonObject coordinate_system;
+  coordinate_system["type"] = static_cast<int>(task.input_snapshot.input_coordinate_system.type);
+  coordinate_system["rotation_convention"] = 
+      static_cast<int>(task.input_snapshot.input_coordinate_system.rotation_convention);
+  coordinate_system["definition"] = 
+      QString::fromStdString(task.input_snapshot.input_coordinate_system.definition);
+  snapshot_root["coordinate_system"] = coordinate_system;
+  
+  // 记录测量数据个数
+  snapshot_root["measurements_count"] = static_cast<int>(task.input_snapshot.measurements.size());
+  
+  // 记录图像组统计
+  QJsonArray image_groups_summary;
+  size_t total_images = 0;
+  for (const auto& group : task.input_snapshot.image_groups) {
+    total_images += group.images.size();
+  }
+  snapshot_root["total_images"] = static_cast<int>(total_images);
+  snapshot_root["image_groups_count"] = static_cast<int>(task.input_snapshot.image_groups.size());
+  
+  // 写入 project_snapshot.json
+  QJsonDocument snapshot_doc(snapshot_root);
+  QFile snapshot_file(snapshot_json_path);
+  if (!snapshot_file.open(QIODevice::WriteOnly)) {
+    LOG(ERROR) << "Failed to open project_snapshot.json for writing";
+    return false;
+  }
+  snapshot_file.write(snapshot_doc.toJson(QJsonDocument::Indented));
+  snapshot_file.close();
+  
+  m_sfmLogTextEdit->appendPlainText(
+      QString("✓ Exported project snapshot (%1 images, %2 measurements)")
+      .arg(total_images)
+      .arg(task.input_snapshot.measurements.size()));
+  
+  // Step 2: 生成 images_all.json (包含所有图像的路径和元数据)
+  if (!generateImagesAllJson(task, work_dir)) {
+    m_sfmLogTextEdit->appendPlainText("❌ Failed to generate images_all.json");
+    return false;
+  }
+  
+  m_sfmLogTextEdit->appendPlainText("✓ Task data export completed");
+  return true;
+}
+
+bool ATTaskPanel::generateImagesAllJson(const insight::database::ATTask& task,
+                                        const QString& work_dir) {
+  // 生成 images_all.json，包含所有图像的文件名和元数据
+  
+  QJsonObject root;
+  QJsonArray images_array;
+  
+  size_t total_images = 0;
+  
+  for (const auto& group : task.input_snapshot.image_groups) {
+    for (const auto& image : group.images) {
+      QJsonObject image_obj;
+      
+      // 图像基本信息
+      image_obj["image_id"] = static_cast<int>(image.image_id);
+      image_obj["filename"] = QString::fromStdString(image.filename);
+      image_obj["group_id"] = static_cast<int>(group.group_id);
+      image_obj["group_name"] = QString::fromStdString(group.group_name);
+      
+      // 相机参数（如果在 group level）
+      if (group.group_camera.has_value()) {
+        QJsonObject camera_obj;
+        camera_obj["width"] = static_cast<int>(group.group_camera->width);
+        camera_obj["height"] = static_cast<int>(group.group_camera->height);
+        camera_obj["focal_length"] = group.group_camera->focal_length;
+        camera_obj["principal_point_x"] = group.group_camera->principal_point_x;
+        camera_obj["principal_point_y"] = group.group_camera->principal_point_y;
+        image_obj["camera"] = camera_obj;
+      }
+      
+      // 输入位姿（简化表示）
+      if (image.input_pose.has_position) {
+        QJsonObject position_obj;
+        position_obj["x"] = image.input_pose.x;
+        position_obj["y"] = image.input_pose.y;
+        position_obj["z"] = image.input_pose.z;
+        image_obj["position"] = position_obj;
+      }
+      
+      if (image.input_pose.has_rotation) {
+        QJsonObject rotation_obj;
+        rotation_obj["omega_deg"] = image.input_pose.omega;
+        rotation_obj["phi_deg"] = image.input_pose.phi;
+        rotation_obj["kappa_deg"] = image.input_pose.kappa;
+        image_obj["rotation_euler"] = rotation_obj;
+      }
+      
+      images_array.append(image_obj);
+      total_images++;
+    }
+  }
+  
+  root["total_images"] = static_cast<int>(total_images);
+  root["images"] = images_array;
+  
+  // 写入文件
+  QString images_json_path = QDir(work_dir).filePath("images_all.json");
+  QJsonDocument doc(root);
+  
+  QFile file(images_json_path);
+  if (!file.open(QIODevice::WriteOnly)) {
+    LOG(ERROR) << "Failed to open images_all.json for writing: " << images_json_path.toStdString();
+    return false;
+  }
+  
+  file.write(doc.toJson(QJsonDocument::Indented));
+  file.close();
+  
+  m_sfmLogTextEdit->appendPlainText(
+      QString("✓ Generated images_all.json (%1 images)").arg(total_images));
+  LOG(INFO) << "Generated images_all.json with " << total_images << " images";
+  
+  return true;
+}
+
 }  // namespace ui
 }  // namespace insight
+
