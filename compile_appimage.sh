@@ -69,8 +69,8 @@ if [[ ${#isats[@]} -eq 0 ]]; then
   echo "ERROR: no isat_* binaries in ${INSIGHTAT_BUILD_DIR} (build the project first)."
   exit 1
 fi
-# AppImage is CLI-only for v0.1: do not ship the Qt "InsightAT" binary (GUI not release-ready).
-for f in "${isats[@]}" "$INSIGHTAT_BUILD_DIR/at_bundler_viewer"; do
+# Ship all CLI tools, GUI viewer, and InsightAT GUI application
+for f in "${isats[@]}" "$INSIGHTAT_BUILD_DIR/at_bundler_viewer" "$INSIGHTAT_BUILD_DIR/InsightAT"; do
   [[ -f "$f" && -x "$f" ]] || { echo "ERROR: required binary missing or not executable: $f"; exit 1; }
   cp -a "$f" "$APPDIR/usr/bin/"
 done
@@ -172,7 +172,7 @@ export PATH="${HERE}/usr/bin:${PATH:-}"
 export INSIGHTAT_PREFIX="${HERE}/usr"
 export INSIGHTAT_SHARE="${HERE}/usr/share/InsightAT"
 export INSIGHTAT_DATA_DIR="${INSIGHTAT_SHARE}"
-# Qt (at_bundler_viewer): use *only* bundled plugins, never the host (avoids 5.15.3 + 5.15.13 mix)
+# Qt (InsightAT GUI, at_bundler_viewer): use *only* bundled plugins, never the host (avoids 5.15.3 + 5.15.13 mix)
 unset QTDIR QT_QPA_PLATFORM_PLUGIN_PATH 2>/dev/null || true
 for _qtp in "${HERE}/usr/lib/qt5/plugins" "${HERE}/usr/plugins" "${HERE}/usr/lib/x86_64-linux-gnu/qt5/plugins"; do
   if [[ -d "${_qtp}/platforms" ]]; then
@@ -190,9 +190,9 @@ if [[ -x "${HERE}/usr/bin/python3" && -d "${HERE}/usr/lib" ]]; then
   export PYTHONHOME="${HERE}/usr"
   export PYTHONNOUSERSITE=1
 fi
-# No args: list bundled CLIs (Qt InsightAT is intentionally not included in the image).
+# No args: launch InsightAT GUI. With args: execute specified binary/script
 if [[ $# -eq 0 ]]; then
-  exec "${HERE}/usr/bin/isat_tools" "$@"
+  exec "${HERE}/usr/bin/InsightAT" "$@"
 else
   exec "${HERE}/usr/bin/$@"
 fi
@@ -256,7 +256,8 @@ fi
 OUT_IMG=$(ls -1t "${APPIMAGE_OUT_DIR}/"*.AppImage 2>/dev/null | head -1 || true)
 if [[ -n "$OUT_IMG" ]]; then
   echo "AppImage: $OUT_IMG"
-  echo "No-arg default:  $OUT_IMG  → runs isat_tools (list CLIs in this image)"
+  echo "No-arg default:  $OUT_IMG  → launches InsightAT GUI"
+  echo "With arg:        $OUT_IMG isat_project ... → runs CLI tools"
 
   # ── SHA256 checksum ────────────────────────────────────────────────────────
   SHA256_FILE="${OUT_IMG}.sha256"
