@@ -10,7 +10,7 @@ project(InsightATAlgorithm)
 # 查找依赖
 # ─────────────────────────────────────────────────────────────
 
-find_package(glog REQUIRED)
+find_package(Glog REQUIRED)
 
 # Optional CUDA for PCA training (cuBLAS + cuSOLVER)
 set(INSIGHTAT_USE_CUDA_PCA FALSE)
@@ -78,10 +78,6 @@ set(ALGORITHM_SOURCES
     modules/matching/sift_matcher.cpp
     modules/cpu_cascade_hash/cpu_cascade_hash.h
     modules/cpu_cascade_hash/cpu_cascade_hash.cpp
-    modules/gpu_cascade_hash/gpu_cascade_hash.h
-    modules/gpu_cascade_hash/gpu_cascade_hash.cpp
-    modules/gpu_cascade_hash/cuda_cascade_hash_kernel.h
-    modules/gpu_cascade_hash/cuda_cascade_hash_kernel.cu
     
     # Modules - Image Retrieval
     modules/retrieval/retrieval_types.h
@@ -144,6 +140,10 @@ endif()
 # Add SfM CUDA kernels when CUDAToolkit is present
 if(CUDAToolkit_FOUND)
     list(APPEND ALGORITHM_SOURCES
+        modules/gpu_cascade_hash/gpu_cascade_hash.h
+        modules/gpu_cascade_hash/gpu_cascade_hash.cpp
+        modules/gpu_cascade_hash/cuda_cascade_hash_kernel.h
+        modules/gpu_cascade_hash/cuda_cascade_hash_kernel.cu
         modules/sfm/cuda/cuda_sfm_common.cuh
         modules/sfm/cuda/cuda_triangulation.cuh
         modules/sfm/cuda/cuda_triangulation.cu
@@ -152,9 +152,9 @@ if(CUDAToolkit_FOUND)
         modules/sfm/cuda/cuda_resection.cuh
         modules/sfm/cuda/cuda_resection.cu
     )
-    message(STATUS "InsightATAlgorithm: SfM CUDA kernels enabled (triangulation / reproj / resection)")
+    message(STATUS "InsightATAlgorithm: CUDA kernels enabled (cascade_hash / triangulation / reproj / resection)")
 else()
-    message(STATUS "InsightATAlgorithm: SfM CUDA kernels disabled (CUDAToolkit not found)")
+    message(STATUS "InsightATAlgorithm: CUDA kernels disabled (CUDAToolkit not found)")
 endif()
 
 # ─────────────────────────────────────────────────────────────
@@ -205,16 +205,18 @@ else()
     message(STATUS "InsightATAlgorithm: SiftGPU backend disabled")
 endif()
 
-# Optional PopSift backend for SIFT extraction.
-# Enabled only when PopSift target is available from parent CMake.
+# Optional PopSift backend for SIFT extraction (CUDA required).
+# If PopSift is not available, fall back to SiftGPU (EGL+GLSL).
 if(TARGET PopSift::popsift)
     target_link_libraries(InsightATAlgorithm PUBLIC PopSift::popsift)
     target_compile_definitions(InsightATAlgorithm PUBLIC HAVE_CUDA)
-    message(STATUS "InsightATAlgorithm: PopSift backend enabled")
+    message(STATUS "InsightATAlgorithm: PopSift backend enabled (CUDA SIFT extraction)")
+elseif(TARGET sift_gpu)
+    message(STATUS "InsightATAlgorithm: PopSift not available, using SiftGPU backend (GLSL SIFT extraction)")
 else()
     message(FATAL_ERROR
-        "InsightATAlgorithm: PopSift::popsift target is missing. "
-        "PopSift is required as the default backend.")
+        "InsightATAlgorithm: Neither PopSift::popsift nor sift_gpu target is available. "
+        "Either enable CUDA+PopSift or enable SiftGPU.")
 endif()
 
 # CUDA PCA: compile definition + link cuBLAS/cuSOLVER so all consumers resolve the .cu symbols
@@ -223,7 +225,10 @@ if(INSIGHTAT_USE_CUDA_PCA)
     target_link_libraries(InsightATAlgorithm PUBLIC ${CUDA_PCA_LIBS})
 endif()
 
-target_link_libraries(InsightATAlgorithm PUBLIC cudart)
+# Link CUDA runtime library when CUDA is available
+if(CUDAToolkit_FOUND)
+    target_link_libraries(InsightATAlgorithm PUBLIC cudart)
+endif()
 
 # ── Unit test: incremental triangulation (strategy B) ──
 add_executable(test_incremental_triangulation modules/sfm/incremental_triangulation_test.cpp)
@@ -432,24 +437,29 @@ target_include_directories(isat_cpu_cascade_hashing_match
 
 set_property(TARGET isat_cpu_cascade_hashing_match PROPERTY FOLDER InsightAT/Tools)
 
-# isat_gpu_cascade_hashing_match - GPU cascade hashing feature matching tool
-add_executable(isat_gpu_cascade_hashing_match tools/isat_gpu_cascade_hashing_match.cpp)
+# isat_gpu_cascade_hashing_match - GPU cascade hashing feature matching tool (CUDA only)
+if(CUDAToolkit_FOUND)
+    add_executable(isat_gpu_cascade_hashing_match tools/isat_gpu_cascade_hashing_match.cpp)
 
-target_link_libraries(isat_gpu_cascade_hashing_match
-    PRIVATE
-        insightat_tools_logging
-        InsightATAlgorithm
-        glog::glog
-        cudart
-)
+    target_link_libraries(isat_gpu_cascade_hashing_match
+        PRIVATE
+            insightat_tools_logging
+            InsightATAlgorithm
+            glog::glog
+            cudart
+    )
 
-target_include_directories(isat_gpu_cascade_hashing_match
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/..
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
-)
+    target_include_directories(isat_gpu_cascade_hashing_match
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party
+    )
 
-set_property(TARGET isat_gpu_cascade_hashing_match PROPERTY FOLDER InsightAT/Tools)
+    set_property(TARGET isat_gpu_cascade_hashing_match PROPERTY FOLDER InsightAT/Tools)
+    message(STATUS "Tool: isat_gpu_cascade_hashing_match (CUDA cascade hashing) enabled")
+else()
+    message(STATUS "Tool: isat_gpu_cascade_hashing_match (CUDA cascade hashing) disabled - CUDAToolkit not found")
+endif()
 
 # isat_retrieve - Image pair retrieval tool
 add_executable(isat_retrieve tools/isat_retrieve.cpp)
@@ -641,6 +651,26 @@ set_property(TARGET isat_camera_estimator PROPERTY FOLDER InsightAT/Tools)
 
 # isat_sfm - End-to-end SfM pipeline driver (invokes sibling tools as subprocesses)
 add_executable(isat_sfm tools/isat_sfm.cpp)
+
+# Inject compile-time configuration based on CUDA availability
+if(CUDAToolkit_FOUND)
+    target_compile_definitions(isat_sfm PRIVATE
+        ISAT_SFM_DEFAULT_EXTRACT_BACKEND="cuda"
+        ISAT_SFM_DEFAULT_MATCH_BACKEND="cuda"
+        ISAT_SFM_DEFAULT_GEO_BACKEND="cuda"
+        ISAT_SFM_DEFAULT_EXTRACT_IMPL="popsift"
+        ISAT_SFM_DEFAULT_MATCH_IMPL="cascade-gpu"
+    )
+else()
+    target_compile_definitions(isat_sfm PRIVATE
+        ISAT_SFM_DEFAULT_EXTRACT_BACKEND="glsl"
+        ISAT_SFM_DEFAULT_MATCH_BACKEND="cpu"
+        ISAT_SFM_DEFAULT_GEO_BACKEND="gpu"
+        ISAT_SFM_DEFAULT_EXTRACT_IMPL="siftgpu"
+        ISAT_SFM_DEFAULT_MATCH_IMPL="cascade"
+    )
+endif()
+
 target_link_libraries(isat_sfm
     PRIVATE
         insightat_tools_logging

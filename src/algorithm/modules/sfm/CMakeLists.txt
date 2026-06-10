@@ -17,12 +17,17 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# Enable CUDA language
-enable_language(CUDA)
+# Enable CUDA language only if CUDA is available
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+    enable_language(CUDA)
+endif()
 
 find_package(Eigen3 REQUIRED)
-find_package(Ceres REQUIRED)
-find_package(CUDA REQUIRED)
+find_package(Ceres QUIET)
+if(CUDAToolkit_FOUND)
+    find_package(CUDA QUIET)
+endif()
 find_package(OpenMP REQUIRED)
 
 if(NOT OPENGL_FOUND)
@@ -37,7 +42,7 @@ if(NOT EGL_FOUND)
 endif()
 
 # Set CUDA architecture (volta, turing, ampere)
-if(NOT CMAKE_CUDA_ARCHITECTURES)
+if(CUDAToolkit_FOUND AND NOT CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 75 80 86)  # Turing, Ampere, RTX 3000
 endif()
 
@@ -46,7 +51,6 @@ add_library(sfm_module STATIC
     two_view_reconstruction.h
     gpu_twoview_sfm.cpp
     gpu_twoview_sfm.h
-    gpu_twoview_sfm_cuda.cu
     track_store.cpp
     track_store.h
     scene_normalization.cpp
@@ -60,6 +64,11 @@ add_library(sfm_module STATIC
     # incremental_sfm_helpers.h
 )
 
+# Add CUDA kernels only if CUDA is available
+if(CUDAToolkit_FOUND)
+    target_sources(sfm_module PRIVATE gpu_twoview_sfm_cuda.cu)
+endif()
+
 # ── Unit test: analytic BA ─────────────────────────────────────────────────
 add_executable(test_ba_analytic bundle_adjustment_analytic_test.cpp)
 target_link_libraries(test_ba_analytic
@@ -67,7 +76,7 @@ target_link_libraries(test_ba_analytic
         sfm_module
         algorithm_camera
         Eigen3::Eigen
-        Ceres::ceres
+        ceres
         glog::glog
 )
 set_property(TARGET test_ba_analytic PROPERTY FOLDER InsightAT/Tests)
@@ -79,7 +88,7 @@ target_link_libraries(test_track_ray_lambda_ceres
         sfm_module
         algorithm_camera
         Eigen3::Eigen
-        Ceres::ceres
+        ceres
         glog::glog
 )
 set_property(TARGET test_track_ray_lambda_ceres PROPERTY FOLDER InsightAT/Tests)
@@ -119,15 +128,19 @@ target_link_libraries(sfm_module
     PUBLIC
         Eigen3::Eigen
         EGL::EGL
-        Ceres::ceres
+        ceres
         algorithm_camera
         ${OPENGL_LIBRARIES}
         ${GLEW_LIBRARIES}
-        ${CUDA_LIBRARIES}
     PRIVATE
         glog::glog
         OpenMP::OpenMP_CXX
 )
+
+# Link CUDA libraries only if CUDA is available
+if(CUDAToolkit_FOUND AND DEFINED CUDA_LIBRARIES)
+    target_link_libraries(sfm_module PUBLIC ${CUDA_LIBRARIES})
+endif()
 
 target_compile_features(sfm_module PUBLIC cxx_std_17)
 set_property(TARGET sfm_module PROPERTY FOLDER "InsightAT/Modules")

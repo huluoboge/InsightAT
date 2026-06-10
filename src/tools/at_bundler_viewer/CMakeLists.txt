@@ -1,6 +1,7 @@
 # 独立工具：Bundler 结果可视化（不依赖 InsightATDatabase / 主工程 UI）
 
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets OpenGL)
+find_package(Threads REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
 
@@ -21,6 +22,7 @@ target_link_libraries(at_bundler_viewer
     Qt5::Gui
     Qt5::Widgets
     Qt5::OpenGL
+    Threads::Threads
     render
     glog::glog
 )

@@ -12,7 +12,7 @@ SET(SIFTGPU_ENABLE_OPENCL FALSE)
 # Respect a top-level setting: if `SIFTGPU_ENABLE_CUDA` is already defined
 # (for example by the top-level CMakeLists or via `-D`), don't override it here.
 if(NOT DEFINED SIFTGPU_ENABLE_CUDA)
-  option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA (faster extraction and matching)" ON)
+  option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA (faster extraction and matching)" OFF)
 else()
   message(STATUS "SiftGPU: SIFTGPU_ENABLE_CUDA already set to ${SIFTGPU_ENABLE_CUDA} (inherited from top-level or cache)")
 endif()
