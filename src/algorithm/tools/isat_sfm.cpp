@@ -816,6 +816,12 @@ int main(int argc, char* argv[]) {
     }
   }
   
+  
+  // Auto-add undistort step if --undistort is specified
+  if (cmd.used("undistort")) {
+    active_steps.insert("undistort");
+  }
+  
   {
     std::string active_list;
     for (const auto& s : ALL_STEPS)
@@ -1363,12 +1369,16 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Undistort ===";
 
     const fs::path tracks_idc = sfm_out / "tracks.isat_tracks";
+    const fs::path poses_json = sfm_out / "poses.json";
     if (!fs::exists(tracks_idc)) {
       LOG(ERROR) << "Undistort skipped: " << tracks_idc << " not found (run incremental_sfm first)";
+    } else if (!fs::exists(poses_json)) {
+      LOG(ERROR) << "Undistort skipped: " << poses_json << " not found (run incremental_sfm first)";
     } else {
       std::vector<std::string> ud_cmd = {tool_path("isat_undistort"),
                                          "-p", images_all.string(),
                                          "-t", tracks_idc.string(),
+                                         "-j", poses_json.string(),
                                          "-o", sfm_out.string()};
       if (cmd.used("binary"))
         ud_cmd.push_back("--binary");
