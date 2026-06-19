@@ -493,5 +493,455 @@ bool load_colmap_text_directory(const std::string& colmap_sparse_dir, BundlerSce
   return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Binary COLMAP reader  (cameras.bin / images.bin / points3D.bin)
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Map COLMAP camera model_id to number of double parameters.
+/// See https://colmap.github.io/format.html#output-format
+static int colmap_model_num_params(int model_id) {
+  switch (model_id) {
+    case 0:  return 3;   // SIMPLE_PINHOLE: f, cx, cy
+    case 1:  return 4;   // PINHOLE: fx, fy, cx, cy
+    case 2:  return 4;   // SIMPLE_RADIAL: f, cx, cy, k
+    case 3:  return 5;   // RADIAL: f, cx, cy, k1, k2
+    case 4:  return 8;   // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+    case 5:  return 8;   // OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+    case 6:  return 12;  // FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
+    case 7:  return 5;   // FOV: fx, fy, cx, cy, omega
+    case 8:  return 4;   // SIMPLE_RADIAL_FISHEYE: f, cx, cy, k
+    case 9:  return 5;   // RADIAL_FISHEYE: f, cx, cy, k1, k2
+    case 10: return 12;  // THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1
+    default: return -1;  // unknown
+  }
+}
+
+/// Convert binary model_id to the text-format model name string (for reuse of parse_camera_intrinsics).
+static std::string colmap_model_name(int model_id) {
+  switch (model_id) {
+    case 0:  return "SIMPLE_PINHOLE";
+    case 1:  return "PINHOLE";
+    case 2:  return "SIMPLE_RADIAL";
+    case 3:  return "RADIAL";
+    case 4:  return "OPENCV";
+    case 5:  return "OPENCV_FISHEYE";
+    case 6:  return "FULL_OPENCV";
+    case 7:  return "FOV";
+    case 8:  return "SIMPLE_RADIAL_FISHEYE";
+    case 9:  return "RADIAL_FISHEYE";
+    case 10: return "THIN_PRISM_FISHEYE";
+    default: return "PINHOLE";
+  }
+}
+
+/// Read cameras.bin.  Layout (per COLMAP spec, all little-endian):
+///   uint64_t      num_cameras
+///   for each:
+///     uint32_t    camera_id
+///     int32_t     model_id
+///     uint64_t    width
+///     uint64_t    height
+///     double[N]   params  (N = colmap_model_num_params(model_id))
+static bool read_cameras_bin(const fs::path& path, std::unordered_map<int, ColmapCameraRow>* out,
+                             std::string* err) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    *err = "cannot open " + path.string();
+    return false;
+  }
+
+  uint64_t num_cams = 0;
+  in.read(reinterpret_cast<char*>(&num_cams), sizeof(uint64_t));
+  if (!in || num_cams == 0) {
+    *err = "cameras.bin: empty or missing count";
+    return false;
+  }
+  if (num_cams > 100'000'000ULL) {
+    *err = "cameras.bin: unreasonably large camera count " + std::to_string(num_cams);
+    return false;
+  }
+
+  out->reserve(static_cast<size_t>(num_cams));
+  for (uint64_t i = 0; i < num_cams; ++i) {
+    uint32_t cam_id = 0;
+    int32_t  model_id = 0;
+    uint64_t w = 0, h = 0;
+    in.read(reinterpret_cast<char*>(&cam_id), sizeof(uint32_t));
+    in.read(reinterpret_cast<char*>(&model_id), sizeof(int32_t));
+    in.read(reinterpret_cast<char*>(&w), sizeof(uint64_t));
+    in.read(reinterpret_cast<char*>(&h), sizeof(uint64_t));
+
+    const int np = colmap_model_num_params(model_id);
+    if (np < 0) {
+      *err = "cameras.bin: camera " + std::to_string(cam_id) +
+             " has unknown model_id " + std::to_string(model_id);
+      return false;
+    }
+
+    ColmapCameraRow row;
+    row.id = static_cast<int>(cam_id);
+    row.model = colmap_model_name(model_id);
+    row.width = static_cast<int>(w);
+    row.height = static_cast<int>(h);
+    row.params.resize(static_cast<size_t>(np));
+
+    in.read(reinterpret_cast<char*>(row.params.data()), static_cast<std::streamsize>(np * sizeof(double)));
+    if (!in) {
+      *err = "cameras.bin: unexpected EOF at camera " + std::to_string(cam_id);
+      return false;
+    }
+    (*out)[row.id] = std::move(row);
+  }
+  return true;
+}
+
+/// Read images.bin.  Layout:
+///   uint64_t        num_images
+///   for each registered image:
+///     uint32_t      image_id
+///     double[4]     qvec  (qw, qx, qy, qz) — world-to-camera rotation
+///     double[3]     tvec  (tx, ty, tz)
+///     uint32_t      camera_id
+///     char[]        name  (null-terminated)
+///     uint64_t      num_points2D
+///     for each point2D:
+///       double      x
+///       double      y
+///       uint64_t    point3D_id  (UINT64_MAX = no association)
+static bool read_images_bin(const fs::path& path,
+                            const std::unordered_map<int, ColmapCameraRow>& cam_rows,
+                            std::vector<ImageBlock>* images_out, std::string* err,
+                            const ReconstructionLoadProgress* progress) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    *err = "cannot open " + path.string();
+    return false;
+  }
+
+  uint64_t num_imgs = 0;
+  in.read(reinterpret_cast<char*>(&num_imgs), sizeof(uint64_t));
+  if (!in || num_imgs == 0) {
+    *err = "images.bin: empty or missing count";
+    return false;
+  }
+  if (num_imgs > 10'000'000ULL) {
+    *err = "images.bin: unreasonably large image count " + std::to_string(num_imgs);
+    return false;
+  }
+
+  if (progress && *progress)
+    (*progress)(0, -1, "images");
+
+  images_out->reserve(static_cast<size_t>(num_imgs));
+
+  for (uint64_t i = 0; i < num_imgs; ++i) {
+    uint32_t image_id = 0;
+    double qvec[4] = {0, 0, 0, 0};
+    double tvec[3] = {0, 0, 0};
+    uint32_t camera_id = 0;
+
+    in.read(reinterpret_cast<char*>(&image_id), sizeof(uint32_t));
+    in.read(reinterpret_cast<char*>(qvec), 4 * sizeof(double));
+    in.read(reinterpret_cast<char*>(tvec), 3 * sizeof(double));
+    in.read(reinterpret_cast<char*>(&camera_id), sizeof(uint32_t));
+
+    // null-terminated name
+    std::string name;
+    std::getline(in, name, '\0');
+    if (!in) {
+      *err = "images.bin: unexpected EOF at image " + std::to_string(image_id);
+      return false;
+    }
+
+    uint64_t num_pts2d = 0;
+    in.read(reinterpret_cast<char*>(&num_pts2d), sizeof(uint64_t));
+    if (!in) {
+      *err = "images.bin: unexpected EOF reading num_points2D for image " + std::to_string(image_id);
+      return false;
+    }
+
+    ImageBlock blk;
+    blk.image_id = static_cast<int>(image_id);
+    blk.camera_id = static_cast<int>(camera_id);
+    blk.name = name;
+
+    // Quaternion → rotation
+    Eigen::Quaterniond q(qvec[0], qvec[1], qvec[2], qvec[3]);
+    q.normalize();
+    blk.R = q.toRotationMatrix();
+    blk.t = Eigen::Vector3d(tvec[0], tvec[1], tvec[2]);
+
+    auto cit = cam_rows.find(blk.camera_id);
+    if (cit == cam_rows.end()) {
+      *err = "images.bin: unknown CAMERA_ID " + std::to_string(blk.camera_id) +
+             " for IMAGE_ID " + std::to_string(blk.image_id);
+      return false;
+    }
+    blk.width_hint = cit->second.width;
+    blk.height_hint = cit->second.height;
+    if (!parse_camera_intrinsics(cit->second, &blk.focal, &blk.k1, &blk.k2)) {
+      blk.focal = 0.5 * static_cast<double>(blk.width_hint + blk.height_hint);
+      LOG(WARNING) << "colmap bin: could not parse intrinsics for CAMERA_ID " << blk.camera_id
+                     << ", using heuristic focal";
+    }
+
+    // Read 2D points
+    if (num_pts2d > 0) {
+      blk.uv_by_idx.reserve(static_cast<size_t>(num_pts2d));
+      // Batch-read to reduce I/O calls
+      constexpr size_t kBufSize = 8192;
+      struct { double x, y; uint64_t pt3d_id; } buf[kBufSize];
+      uint64_t remaining = num_pts2d;
+      while (remaining > 0) {
+        const size_t chunk = static_cast<size_t>(std::min(remaining, uint64_t{kBufSize}));
+        in.read(reinterpret_cast<char*>(buf),
+                static_cast<std::streamsize>(chunk * (2 * sizeof(double) + sizeof(uint64_t))));
+        if (!in) {
+          *err = "images.bin: unexpected EOF reading point2D for image " + std::to_string(image_id);
+          return false;
+        }
+        for (size_t j = 0; j < chunk; ++j)
+          blk.uv_by_idx.emplace_back(static_cast<float>(buf[j].x), static_cast<float>(buf[j].y));
+        remaining -= static_cast<uint64_t>(chunk);
+      }
+    }
+
+    images_out->push_back(std::move(blk));
+
+    if (progress && *progress &&
+        (images_out->size() % 256u == 0u || images_out->size() == 1u))
+      (*progress)(static_cast<int64_t>(images_out->size()), -1, "images");
+  }
+
+  if (images_out->empty()) {
+    *err = "no images in " + path.string();
+    return false;
+  }
+  std::sort(images_out->begin(), images_out->end(),
+            [](const ImageBlock& a, const ImageBlock& b) { return a.image_id < b.image_id; });
+  return true;
+}
+
+/// Read points3D.bin.  Layout:
+///   uint64_t        num_points
+///   for each point:
+///     uint64_t      point3D_id
+///     double[3]     xyz
+///     uint8_t[3]    rgb
+///     double        error
+///     uint64_t      track_length
+///     for each track element:
+///       uint32_t    image_id
+///       uint32_t    point2D_idx
+static bool read_points3d_bin(
+    const fs::path& path,
+    const std::unordered_map<int, int>& image_id_to_cam_idx,
+    const std::vector<ImageBlock>& images_by_sorted_idx,
+    std::vector<BundlerPoint>* points_out, std::string* err,
+    const ReconstructionLoadProgress* progress) {
+
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    *err = "cannot open " + path.string();
+    return false;
+  }
+
+  uint64_t num_pts = 0;
+  in.read(reinterpret_cast<char*>(&num_pts), sizeof(uint64_t));
+  if (!in) {
+    // Empty file or read error — treat as zero points (valid empty reconstruction).
+    if (in.eof() && in.gcount() == 0) {
+      // File is 0 bytes — valid but empty.
+      num_pts = 0;
+      in.clear(); // clear EOF so further checks pass
+    } else {
+      *err = "points3D.bin: failed to read point count";
+      return false;
+    }
+  }
+  if (num_pts == 0) {
+    // Valid empty reconstruction — return with empty points_out.
+    if (progress && *progress)
+      (*progress)(0, -1, "points3D");
+    return true;
+  }
+  if (num_pts > 500'000'000ULL) {
+    *err = "points3D.bin: unreasonably large point count " + std::to_string(num_pts);
+    return false;
+  }
+
+  // uv_lookup: resolves (image_id, point2D_idx) → (u, v)
+  auto uv_lookup = [&](int image_id, int p2d_idx, float* u, float* v) -> bool {
+    auto it = image_id_to_cam_idx.find(image_id);
+    if (it == image_id_to_cam_idx.end())
+      return false;
+    const int cam_idx = it->second;
+    if (cam_idx < 0 || cam_idx >= static_cast<int>(images_by_sorted_idx.size()))
+      return false;
+    const auto& im = images_by_sorted_idx[static_cast<size_t>(cam_idx)];
+    if (p2d_idx < 0 || p2d_idx >= static_cast<int>(im.uv_by_idx.size()))
+      return false;
+    *u = im.uv_by_idx[static_cast<size_t>(p2d_idx)].first;
+    *v = im.uv_by_idx[static_cast<size_t>(p2d_idx)].second;
+    return true;
+  };
+
+  if (progress && *progress)
+    (*progress)(0, -1, "points3D");
+
+  points_out->reserve(static_cast<size_t>(std::min(num_pts, uint64_t{10'000'000})));
+
+  constexpr int64_t kPtsStride = 2048;
+  int64_t n_loaded = 0;
+
+  for (uint64_t i = 0; i < num_pts; ++i) {
+    uint64_t point_id = 0;
+    double xyz[3] = {0, 0, 0};
+    uint8_t rgb[3] = {0, 0, 0};
+    double error_val = 0.0;
+    uint64_t track_len = 0;
+
+    in.read(reinterpret_cast<char*>(&point_id), sizeof(uint64_t));
+    in.read(reinterpret_cast<char*>(xyz), 3 * sizeof(double));
+    in.read(reinterpret_cast<char*>(rgb), 3);
+    in.read(reinterpret_cast<char*>(&error_val), sizeof(double));
+    in.read(reinterpret_cast<char*>(&track_len), sizeof(uint64_t));
+
+    if (!in) {
+      *err = "points3D.bin: unexpected EOF at point " + std::to_string(point_id);
+      return false;
+    }
+
+    BundlerPoint p;
+    p.xyz = Eigen::Vector3d(xyz[0], xyz[1], xyz[2]);
+    p.rgb = Eigen::Vector3d(static_cast<double>(rgb[0]),
+                            static_cast<double>(rgb[1]),
+                            static_cast<double>(rgb[2]));
+    (void)error_val; // not used in BundlerScene
+
+    if (track_len > 0) {
+      p.observations.reserve(static_cast<size_t>(track_len));
+      // Batch-read track entries
+      constexpr size_t kTrackBufSize = 4096;
+      struct { uint32_t img_id; uint32_t p2d_idx; } track_buf[kTrackBufSize];
+      uint64_t remaining = track_len;
+      while (remaining > 0) {
+        const size_t chunk = static_cast<size_t>(std::min(remaining, uint64_t{kTrackBufSize}));
+        in.read(reinterpret_cast<char*>(track_buf),
+                static_cast<std::streamsize>(chunk * 2 * sizeof(uint32_t)));
+        if (!in) {
+          *err = "points3D.bin: unexpected EOF reading track for point " + std::to_string(point_id);
+          return false;
+        }
+        for (size_t j = 0; j < chunk; ++j) {
+          const int img_id = static_cast<int>(track_buf[j].img_id);
+          const int p2d_idx = static_cast<int>(track_buf[j].p2d_idx);
+          float u = 0, v = 0;
+          if (!uv_lookup(img_id, p2d_idx, &u, &v))
+            continue;
+          auto it = image_id_to_cam_idx.find(img_id);
+          if (it == image_id_to_cam_idx.end())
+            continue;
+          BundlerObservation o;
+          o.cam_idx = it->second;
+          o.key_idx = p2d_idx;
+          o.u = u;
+          o.v = v;
+          p.observations.push_back(o);
+        }
+        remaining -= static_cast<uint64_t>(chunk);
+      }
+    }
+
+    points_out->push_back(std::move(p));
+    ++n_loaded;
+    if (progress && *progress && (n_loaded == 1 || (n_loaded % kPtsStride == 0)))
+      (*progress)(n_loaded, -1, "points3D");
+  }
+
+  if (progress && *progress && n_loaded > 0 && (n_loaded % kPtsStride != 0))
+    (*progress)(n_loaded, -1, "points3D");
+
+  return true;
+}
+
+} // namespace
+
+bool load_colmap_binary_directory(const std::string& colmap_sparse_dir, BundlerScene* scene,
+                                  std::string* error_message, ReconstructionLoadProgress progress) {
+  if (!scene || !error_message)
+    return false;
+
+  GdalUtils::InitGDAL();
+
+  std::error_code ec;
+  const fs::path root = fs::absolute(colmap_sparse_dir, ec);
+  if (ec || !fs::is_directory(root)) {
+    *error_message = "not a directory: " + colmap_sparse_dir;
+    return false;
+  }
+
+  const fs::path cam_path = root / "cameras.bin";
+  const fs::path img_path = root / "images.bin";
+  const fs::path pts_path = root / "points3D.bin";
+  if (!fs::exists(cam_path) || !fs::exists(img_path) || !fs::exists(pts_path)) {
+    *error_message =
+        "COLMAP binary model requires cameras.bin, images.bin, points3D.bin in " + root.string();
+    return false;
+  }
+
+  std::unordered_map<int, ColmapCameraRow> cam_rows;
+  if (!read_cameras_bin(cam_path, &cam_rows, error_message))
+    return false;
+
+  const ReconstructionLoadProgress* prog_ptr = progress ? &progress : nullptr;
+
+  std::vector<ImageBlock> blocks;
+  if (!read_images_bin(img_path, cam_rows, &blocks, error_message, prog_ptr))
+    return false;
+
+  // Build image_id → sorted cam_idx map (same pattern as text loader)
+  std::unordered_map<int, int> image_id_to_cam_idx;
+  for (size_t i = 0; i < blocks.size(); ++i)
+    image_id_to_cam_idx[blocks[i].image_id] = static_cast<int>(i);
+
+  scene->image_paths.clear();
+  scene->cameras.clear();
+  scene->points.clear();
+
+  scene->image_paths.reserve(blocks.size());
+  scene->cameras.reserve(blocks.size());
+
+  for (const ImageBlock& blk : blocks) {
+    BundlerCamera c;
+    c.focal = blk.focal;
+    c.k1 = blk.k1;
+    c.k2 = blk.k2;
+    c.R = kColmapCvCameraToBundlerLikeCamera * blk.R;
+    c.t = kColmapCvCameraToBundlerLikeCamera * blk.t;
+    c.image_width = blk.width_hint;
+    c.image_height = blk.height_hint;
+    auto crow = cam_rows.find(blk.camera_id);
+    if (crow != cam_rows.end())
+      fill_bundler_camera_principal_from_colmap_row(crow->second, &c);
+    else {
+      c.principal_cx = 0.5 * static_cast<double>(blk.width_hint);
+      c.principal_cy = 0.5 * static_cast<double>(blk.height_hint);
+    }
+    scene->cameras.push_back(c);
+    scene->image_paths.push_back(resolve_image_path(root, blk.name));
+  }
+
+  if (!read_points3d_bin(pts_path, image_id_to_cam_idx, blocks, &scene->points, error_message,
+                         prog_ptr))
+    return false;
+
+  LOG(INFO) << "colmap binary: " << scene->cameras.size() << " cameras, "
+            << scene->points.size() << " points from " << root.string();
+  return true;
+}
+
 } // namespace render
 } // namespace insight
