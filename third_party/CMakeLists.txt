@@ -29,10 +29,11 @@ else()
 endif()
 
 # PopSift for default SIFT extraction/matching backend.
+# Only build PopSift when CUDA is available (CPU version not supported).
 if(INSIGHTAT_BUILD_GUI_ONLY)
   message(STATUS "Third-party: GUI-only mode, skipping PopSift")
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/popsift/CMakeLists.txt")
-  message(STATUS "Third-party: enabling PopSift build (default backend)")
+elseif(CUDAToolkit_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/popsift/CMakeLists.txt")
+  message(STATUS "Third-party: enabling PopSift build (CUDA backend available)")
   add_subdirectory(popsift)
   # Ensure a stable namespaced target for downstream links even when PopSift
   # examples are disabled.
@@ -40,8 +41,7 @@ elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/popsift/CMakeLists.txt")
     add_library(PopSift::popsift ALIAS popsift)
   endif()
 else()
-  message(FATAL_ERROR
-    "third_party/popsift was not found. PopSift is required as the default backend.")
+  message(STATUS "Third-party: PopSift skipped (CUDA not available or popsift directory not found)")
 endif()
 
 # PoseLib for alternate resection / absolute-pose backend

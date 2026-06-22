@@ -13,3 +13,4 @@ __pycache__/
 cudss-local*
 InsightMap
 tilesgm
+colmap

@@ -509,8 +509,26 @@ int main(int argc, char* argv[]) {
   std::string input_dir;
   std::string work_dir;
   std::string steps_str = "create,extract,match,tracks,seed_eval,incremental_sfm";
-  std::string extract_backend = "cuda";
-  std::string match_backend = "cuda";
+  
+  // Default backends based on compile-time CUDA availability
+#ifdef ISAT_SFM_DEFAULT_EXTRACT_BACKEND
+  std::string extract_backend = ISAT_SFM_DEFAULT_EXTRACT_BACKEND;
+#else
+  std::string extract_backend = "cuda";  // fallback
+#endif
+  
+#ifdef ISAT_SFM_DEFAULT_MATCH_BACKEND
+  std::string match_backend = ISAT_SFM_DEFAULT_MATCH_BACKEND;
+#else
+  std::string match_backend = "cuda";  // fallback
+#endif
+  
+#ifdef ISAT_SFM_DEFAULT_GEO_BACKEND
+  std::string geo_backend = ISAT_SFM_DEFAULT_GEO_BACKEND;
+#else
+  std::string geo_backend = "cuda";  // fallback
+#endif
+  
   std::string match_impl = "cascade-gpu";
   int cascade_gpu_device = 0;
   int cascade_gpu_image_block_size = 1000;
@@ -520,6 +538,11 @@ int main(int argc, char* argv[]) {
   std::string cascade_cpu_preset = "modern";
   bool use_pop_sift = false;
   bool use_sift_gpu = false;
+  
+  // Override match_impl default based on compile-time CUDA availability
+#ifdef ISAT_SFM_DEFAULT_MATCH_IMPL
+  match_impl = ISAT_SFM_DEFAULT_MATCH_IMPL;
+#endif
   std::string ext = ".jpg,.tif,.png";
   std::string log_level;
   int max_sample = 5;
@@ -532,10 +555,11 @@ int main(int argc, char* argv[]) {
   int auto_exhaustive_max_images = 60;
   /// Geometry backend selection for SfM geometry stage.
   /// Accepted values:
-  ///   cuda    -> isat_geo_cuda (default)
+  ///   cuda    -> isat_geo_cuda (default when CUDA available)
   ///   gpu     -> legacy isat_geo --backend gpu-gl (explicit OpenGL fallback)
   ///   poselib -> legacy isat_geo --backend poselib
-  std::string geo_backend = "cuda";
+  // Note: geo_backend already initialized above with compile-time defaults
+  
   /// Passed to isat_geo --min-inliers (F/E/H RANSAC inlier count gate for pairs.json).
   int geo_min_inliers = 10;
   /// Passed to isat_geo -t / --thresh-f (F 内点 Sampson 门限，单位像素；越大越宽松).
@@ -750,8 +774,20 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
-  if (!use_pop_sift && !use_sift_gpu)
+  
+  // If neither switch is set, use compile-time default
+  if (!use_pop_sift && !use_sift_gpu) {
+#ifdef ISAT_SFM_DEFAULT_EXTRACT_IMPL
+    if (std::string(ISAT_SFM_DEFAULT_EXTRACT_IMPL) == "popsift") {
+      use_pop_sift = true;
+    } else {
+      use_sift_gpu = true;
+    }
+#else
+    // Fallback: prefer PopSift if available (default historical behavior)
     use_pop_sift = true;
+#endif
+  }
 
   if (io_threads == -1) {
     const unsigned int hw = std::thread::hardware_concurrency();

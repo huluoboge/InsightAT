@@ -34,8 +34,18 @@ endif ()
 # INSIGHTAT build options
 # ==============================================================================
 option(INSIGHTAT_BUILD_GUI_ONLY "Build only GUI-related targets and skip CUDA-dependent components" OFF)
-option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend (optional)" OFF)
-option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" ON)
+
+# Auto-enable SiftGPU when CUDA is not available (for CPU+EGL fallback)
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+    option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend (optional)" OFF)
+    option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" OFF)
+else()
+    # Force SiftGPU when CUDA is not available (CPU+EGL mode)
+    option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend (optional)" ON)
+    option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" OFF)
+    message(STATUS "Top-level: CUDA not found, forcing CPU+EGL mode with SiftGPU")
+endif()
 
 if(INSIGHTAT_BUILD_GUI_ONLY)
     message(STATUS "Top-level: INSIGHTAT_BUILD_GUI_ONLY=ON, skipping algorithm/CUDA components")

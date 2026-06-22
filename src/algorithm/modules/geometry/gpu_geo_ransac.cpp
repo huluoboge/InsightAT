@@ -20,6 +20,9 @@
 
 #include "gpu_geo_ransac.h"
 
+#include <Eigen/Dense>
+#include <Eigen/SVD>
+
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/glew.h>
@@ -33,9 +36,6 @@
 #include <cstring>
 #include <string>
 #include <vector>
-
-#include <Eigen/Dense>
-#include <Eigen/SVD>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration + globals
