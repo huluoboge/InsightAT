@@ -10,6 +10,7 @@ build-appimage/
 .cursor
 .kiro
 __pycache__/
+node_modules/
 cudss-local*
 InsightMap
 tilesgm
