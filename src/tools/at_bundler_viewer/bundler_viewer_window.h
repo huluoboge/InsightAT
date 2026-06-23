@@ -11,6 +11,7 @@
 #include <QMainWindow>
 #include <QPushButton>
 #include <QSlider>
+#include <QSplitter>
 #include <QTextEdit>
 
 #include "render/bundler_loader.h"
@@ -18,8 +19,12 @@
 namespace insight {
 namespace render {
 class RenderTracks;
-class RenderWidget;
 } // namespace render
+
+class EglRenderWidget;
+struct ObservationRecord;
+class ObservationListWidget;
+class ObservationImageView;
 } // namespace insight
 
 namespace insight {
@@ -55,6 +60,7 @@ private slots:
   void on_frustum_larger();
   void on_point_size_smaller();
   void on_point_size_larger();
+  void on_min_observations_changed(int value);
 
   void on_prev_iter();
   void on_next_iter();
@@ -68,6 +74,8 @@ private:
   void load_iter_at(int idx);
   /// Update label + slider + button states based on current_iter_idx_.
   void update_iter_controls();
+  /// Update overlap filter slider bounds and summary text from the current tracks.
+  void update_observation_filter_controls();
 
   /// Return the BundlerScene for iter idx, from cache or disk (blocking).
   /// Sets *from_cache=true if no disk I/O was needed (either cached or prefetch completed).
@@ -85,11 +93,23 @@ private:
   /// Show pick result in the info panel.
   void show_pick_info(const QString& text);
 
-  render::RenderWidget* render_widget_ = nullptr;
+  /// Build observation records and show the detail panel for a picked 3D point.
+  void on_track_picked(int track_idx);
+
+  /// Load the image referenced by an observation record and draw its feature point.
+  void on_observation_selected(const ObservationRecord& rec);
+
+  EglRenderWidget*      render_widget_ = nullptr;
   render::RenderTracks* tracks_ = nullptr;
 
   // ── Current scene (kept for pick queries) ───────────────────────────────────
   std::shared_ptr<render::BundlerScene> current_scene_;
+
+  // ── Observation detail panel (shown below 3D view when a point is picked) ──
+  QSplitter*             main_splitter_    = nullptr;
+  QWidget*               obs_detail_panel_ = nullptr;
+  ObservationListWidget* obs_list_widget_  = nullptr;
+  ObservationImageView*  obs_image_view_   = nullptr;
 
   // ── Iteration series ────────────────────────────────────────────────────────
   std::vector<std::string> iter_dirs_; ///< Sorted list of iter_NNNN sub-directories.
@@ -115,6 +135,10 @@ private:
   QPushButton* btn_pick_mode_    = nullptr;
   QTextEdit*   pick_info_panel_  = nullptr;
   bool         pick_mode_active_ = false;
+
+  // Track observation overlap filter
+  QSlider* min_observations_slider_ = nullptr;
+  QLabel*  min_observations_label_  = nullptr;
 };
 
 } // namespace insight

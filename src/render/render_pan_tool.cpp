@@ -4,6 +4,7 @@
 #include <QDebug>
 #include <QEvent>
 #include <QGLWidget>
+#include <QOpenGLWidget>
 #include <QWheelEvent>
 #include <cmath>
 
@@ -133,7 +134,7 @@ void RenderPanTool2::resizeEvent(QResizeEvent* event) {
 
   int w = event->size().width();
   int h = event->size().height();
-  render_context()->widget->makeCurrent();
+  if (auto* ow = dynamic_cast<QOpenGLWidget*>(render_context()->widget)) ow->makeCurrent(); else if (auto* glw = dynamic_cast<QGLWidget*>(render_context()->widget)) glw->makeCurrent();
   glViewport(0, 0, w, h);
   camera->scale_ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -10000, 10000);
 
@@ -229,7 +230,7 @@ void RenderPanTool2::zoom(float ratio) {
 void RenderPanTool2::resize_window(int w, int h) {
   RenderCamera2d* camera = (RenderCamera2d*)render_context()->camera;
 
-  render_context()->widget->makeCurrent();
+  if (auto* ow = dynamic_cast<QOpenGLWidget*>(render_context()->widget)) ow->makeCurrent(); else if (auto* glw = dynamic_cast<QGLWidget*>(render_context()->widget)) glw->makeCurrent();
   glViewport(0, 0, w, h);
   camera->scale_ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -10000, 10000);
 

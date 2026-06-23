@@ -57,6 +57,37 @@ RenderTracks::RenderTracks() : show_photo_(true), show_vertex_(true) {}
 
 RenderTracks::~RenderTracks() {}
 
+bool RenderTracks::is_track_visible_by_filter(const Track& track) const {
+  return static_cast<int>(track.obs.size()) >= min_track_observations_;
+}
+
+bool RenderTracks::is_track_visible_by_filter(int track_idx) const {
+  return track_idx >= 0 && track_idx < static_cast<int>(tracks_.size()) &&
+         is_track_visible_by_filter(tracks_[track_idx]);
+}
+
+void RenderTracks::set_min_track_observations(int min_observations) {
+  min_track_observations_ = std::max(1, min_observations);
+  if (selected_track_ >= 0 && !is_track_visible_by_filter(selected_track_))
+    selected_track_ = -1;
+}
+
+int RenderTracks::max_track_observations() const {
+  int max_obs = 1;
+  for (const auto& track : tracks_)
+    max_obs = std::max(max_obs, static_cast<int>(track.obs.size()));
+  return max_obs;
+}
+
+int RenderTracks::visible_track_count() const {
+  int count = 0;
+  for (const auto& track : tracks_) {
+    if (is_track_visible_by_filter(track))
+      ++count;
+  }
+  return count;
+}
+
 void RenderTracks::rebuild_cam_to_tracks() {
   cam_to_tracks_.clear();
   if (photos_.empty())
@@ -159,11 +190,12 @@ void RenderTracks::draw(RenderContext* rc) {
     // highlight all tracks observed by this camera
     if (selected_camera_ < static_cast<int>(cam_to_tracks_.size())) {
       for (int ti : cam_to_tracks_[selected_camera_])
-        if (ti >= 0 && ti < static_cast<int>(hl_track.size()))
+        if (ti >= 0 && ti < static_cast<int>(hl_track.size()) && is_track_visible_by_filter(ti))
           hl_track[ti] = true;
     }
   }
-  if (selected_track_ >= 0 && selected_track_ < static_cast<int>(tracks_.size())) {
+  if (selected_track_ >= 0 && selected_track_ < static_cast<int>(tracks_.size()) &&
+      is_track_visible_by_filter(selected_track_)) {
     hl_track[selected_track_] = true;
     for (const auto& ob : tracks_[selected_track_].obs)
       if (ob.photoId >= 0 && ob.photoId < static_cast<int>(hl_cam.size()))
@@ -183,6 +215,7 @@ void RenderTracks::draw(RenderContext* rc) {
     glPointSize(render_options_.vetexSize);
     glBegin(GL_POINTS);
     for (size_t i = 0; i < tracks_.size(); ++i) {
+      if (!is_track_visible_by_filter(static_cast<int>(i))) continue;
       if (hl_track[i]) continue; // drawn separately below
       glColor3dv(tracks_[i].color.data());
       glVertex3d(tracks_[i].x, tracks_[i].y, tracks_[i].z);
@@ -198,6 +231,7 @@ void RenderTracks::draw(RenderContext* rc) {
       glColor3d(1.0, 0.9, 0.0);
       for (size_t i = 0; i < tracks_.size(); ++i) {
         if (!hl_track[i]) continue;
+        if (!is_track_visible_by_filter(static_cast<int>(i))) continue;
         glVertex3d(tracks_[i].x, tracks_[i].y, tracks_[i].z);
       }
       glEnd();
@@ -226,6 +260,7 @@ void RenderTracks::draw(RenderContext* rc) {
       glBegin(GL_LINES);
       for (int ti : cam_to_tracks_[selected_camera_]) {
         if (ti < 0 || ti >= static_cast<int>(tracks_.size())) continue;
+        if (!is_track_visible_by_filter(ti)) continue;
         const auto& tk = tracks_[ti];
         glVertex3d(cam_c.x(), cam_c.y(), cam_c.z());
         glVertex3d(tk.x, tk.y, tk.z);
@@ -236,7 +271,8 @@ void RenderTracks::draw(RenderContext* rc) {
   }
 
   // Case 2: selected track → draw lines to all observing cameras
-  if (selected_track_ >= 0 && selected_track_ < static_cast<int>(tracks_.size())) {
+  if (selected_track_ >= 0 && selected_track_ < static_cast<int>(tracks_.size()) &&
+      is_track_visible_by_filter(selected_track_)) {
     const auto& tk = tracks_[selected_track_];
     GLfloat lw = 1.f;
     glGetFloatv(GL_LINE_WIDTH, &lw);
@@ -327,6 +363,8 @@ bool RenderTracks::world_axis_aligned_bounds(Vec3* bmin, Vec3* bmax) const {
     }
   }
   for (const auto& t : tracks_) {
+    if (!is_track_visible_by_filter(t))
+      continue;
     merge(Vec3(t.x, t.y, t.z));
   }
   for (const auto& g : gcps_) {
@@ -361,8 +399,11 @@ bool RenderTracks::fit_framing_radius_about_origin(const Vec3& origin, double po
 
   std::vector<double> pt_d;
   pt_d.reserve(tracks_.size() + gcps_.size());
-  for (const auto& t : tracks_)
+  for (const auto& t : tracks_) {
+    if (!is_track_visible_by_filter(t))
+      continue;
     pt_d.push_back((Vec3(t.x, t.y, t.z) - origin).norm());
+  }
   for (const auto& g : gcps_)
     pt_d.push_back((Vec3(g.x, g.y, g.z) - origin).norm());
 
@@ -505,6 +546,7 @@ int RenderTracks::pick_screen(int px, int py, bool* is_camera, double threshold_
   double best_pt_d2 = thresh2;
   if (show_vertex_) {
     for (int i = 0; i < static_cast<int>(tracks_.size()); ++i) {
+      if (!is_track_visible_by_filter(i)) continue;
       const auto& tk = tracks_[i];
       double sx, sy;
       if (!project_pt(tk.x, tk.y, tk.z, &sx, &sy)) continue;

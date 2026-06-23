@@ -6,6 +6,7 @@
 #include <QDebug>
 #include <QEvent>
 #include <QGLWidget>
+#include <QOpenGLWidget>
 #include <QMouseEvent>
 #include <iostream>
 
@@ -82,7 +83,8 @@ void RenderRotationTool::mouseMoveEvent(QMouseEvent* event) {
 }
 
 Vec3 RenderRotationTool::convert_mouse_position_to_orientation(int x, int y) {
-  render_context()->widget->makeCurrent();
+  if (auto* ow = dynamic_cast<QOpenGLWidget*>(render_context()->widget)) ow->makeCurrent();
+  else if (auto* glw = dynamic_cast<QGLWidget*>(render_context()->widget)) glw->makeCurrent();
   GLdouble modelview[16];
   GLdouble projection[16];
   GLint viewport[4];

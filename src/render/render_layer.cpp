@@ -6,6 +6,7 @@
 #include <glog/logging.h>
 
 #include <QFileInfo>
+#include <QGLWidget>
 #include <QString>
 
 namespace insight {
@@ -278,7 +279,10 @@ void RenderTileImageLayer::draw(RenderContext* rc) {
         hh = -h;
       }
       glColor3f(0.0, 1.0, 0.0);
-      rc->widget->renderText(0.0, hh, 0.0, name());
+      if (rc->widget) {
+                auto* glw = dynamic_cast<QGLWidget*>(rc->widget);
+                if (glw) glw->renderText(0.0, hh, 0.0, name());
+              }
     }
   }
 }
