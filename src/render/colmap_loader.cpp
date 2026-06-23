@@ -159,40 +159,105 @@ static void fill_bundler_camera_principal_from_colmap_row(const ColmapCameraRow&
   }
 }
 
-static std::string resolve_image_path(const fs::path& sparse_dir, const std::string& name) {
-  fs::path n(name);
-  if (n.is_absolute() && fs::exists(n))
-    return n.string();
+/// Generate alternate filenames from common COLMAP naming conventions.
+/// E.g. "image_08749.jpg" → {"00008749.jpg", "08749.jpg", "8749.jpg"}
+static std::vector<std::string> alternate_names(const std::string& name) {
+  std::vector<std::string> alts;
+  const std::string stem = fs::path(name).stem().string();
+  const std::string ext  = fs::path(name).extension().string();
 
-  const fs::path try1 = sparse_dir / n;
-  if (fs::exists(try1))
-    return fs::weakly_canonical(try1).string();
+  // Strip known prefixes: "image_", "img_", "frame_"
+  for (const char* prefix : {"image_", "img_", "frame_"}) {
+    if (stem.size() > strlen(prefix) && stem.compare(0, strlen(prefix), prefix) == 0) {
+      std::string num = stem.substr(strlen(prefix));
+      // Try zero-padding to 4, 5, 6, 8 digits (common COLMAP formats).
+      for (int width : {8, 6, 5, 4}) {
+        if (num.size() < static_cast<size_t>(width)) {
+          std::string padded(width - num.size(), '0');
+          alts.push_back(padded + num + ext);
+        }
+      }
+      // Also try without padding.
+      alts.push_back(num + ext);
+      break;
+    }
+  }
+  return alts;
+}
 
-  const fs::path base = n.filename();
-  const fs::path images_sibling = sparse_dir.parent_path().parent_path() / "images" / base;
-  if (fs::exists(images_sibling))
-    return fs::weakly_canonical(images_sibling).string();
+/// Try to find `candidate` at each of the standard search directories.
+/// Returns the resolved path on first hit, empty string if not found.
+static std::string try_resolve(const fs::path& sparse_dir, const std::string& candidate) {
+  const fs::path base = fs::path(candidate).filename();
 
-  const fs::path images_up = sparse_dir / ".." / "images" / base;
-  if (fs::exists(images_up))
-    return fs::weakly_canonical(images_up).string();
+  // Same-directory
+  fs::path p = sparse_dir / base;
+  if (fs::exists(p))
+    return fs::weakly_canonical(p).string();
 
-  // ETH3D 等：images.txt 常为另一台机器上的绝对路径 .../gt/dslr_images/xxx.JPG；在本机数据根下
-  // 向上查找存在的 gt/dslr_images/<basename>。
+  // ../../images/
+  p = sparse_dir.parent_path().parent_path() / "images" / base;
+  if (fs::exists(p))
+    return fs::weakly_canonical(p).string();
+
+  // ../images/
+  p = sparse_dir / ".." / "images" / base;
+  if (fs::exists(p))
+    return fs::weakly_canonical(p).string();
+
+  // ../../images/
+  p = sparse_dir / ".." / ".." / "images" / base;
+  if (fs::exists(p))
+    return fs::weakly_canonical(p).string();
+
+  // ../../../images/
+  p = sparse_dir / ".." / ".." / ".." / "images" / base;
+  if (fs::exists(p))
+    return fs::weakly_canonical(p).string();
+
+  // Walk up looking for images/<base>
   fs::path walk = sparse_dir;
-  for (int depth = 0; depth < 8; ++depth) {
-    const fs::path gt_dslr = walk / "gt" / "dslr_images" / base;
-    if (fs::exists(gt_dslr))
-      return fs::weakly_canonical(gt_dslr).string();
+  for (int depth = 0; depth < 10; ++depth) {
+    p = walk / "images" / base;
+    if (fs::exists(p))
+      return fs::weakly_canonical(p).string();
+    p = walk / "gt" / "dslr_images" / base;
+    if (fs::exists(p))
+      return fs::weakly_canonical(p).string();
     if (walk.has_parent_path())
       walk = walk.parent_path();
     else
       break;
   }
+  return {};
+}
 
+static std::string resolve_image_path(const fs::path& sparse_dir, const std::string& name) {
+  fs::path n(name);
+
+  // Absolute path that already exists.
+  if (n.is_absolute() && fs::exists(n))
+    return n.string();
+
+  // 1) Try the original name.
+  std::string found = try_resolve(sparse_dir, name);
+  if (!found.empty())
+    return found;
+
+  // 2) Try alternate namings (image_08749.jpg → 00008749.jpg etc.)
+  for (const auto& alt : alternate_names(name)) {
+    found = try_resolve(sparse_dir, alt);
+    if (!found.empty()) {
+      LOG(INFO) << "resolve_image_path: mapped '" << name << "' -> '" << alt
+                << "' -> " << found;
+      return found;
+    }
+  }
+
+  // 3) Absolute-but-missing path, or guarded fallback.
   if (n.is_absolute())
     return n.string();
-  return try1.string();
+  return (sparse_dir / n).string();
 }
 
 struct ImageBlock {

@@ -8,6 +8,14 @@ add_executable(at_bundler_viewer
   main.cpp
   bundler_viewer_window.cpp
   bundler_viewer_window.h
+  egl_render_widget.cpp
+  egl_render_widget.h
+  feature_overlay_layer.cpp
+  feature_overlay_layer.h
+  observation_image_view.cpp
+  observation_image_view.h
+  observation_list_widget.cpp
+  observation_list_widget.h
 )
 
 target_include_directories(at_bundler_viewer

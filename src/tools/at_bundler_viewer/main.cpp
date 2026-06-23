@@ -20,10 +20,18 @@
 #include <QMenuBar>
 #include <QRegularExpression>
 #include <QString>
+#include <QSurfaceFormat>
 
 int main(int argc, char* argv[]) {
   google::InitGoogleLogging(argv[0]);
   FLAGS_logtostderr = 1;
+
+  // ── EGL / MSAA configuration for smooth point-cloud rendering ───────────
+  // Set QT_XCB_GL_INTEGRATION=xcb_egl in environment to force EGL backend.
+  QSurfaceFormat default_fmt;
+  default_fmt.setSamples(8); // 8× MSAA for smooth point edges
+  default_fmt.setSwapInterval(1);
+  QSurfaceFormat::setDefaultFormat(default_fmt);
 
   QApplication app(argc, argv);
 

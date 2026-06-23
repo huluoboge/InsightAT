@@ -196,19 +196,16 @@ bool ImageStream::ReadRange(int nLevel, int nFileSX, int nFileSY, int nFileXSize
         nPixelSpace = GDALGetDataTypeSize(eType) / 8;
         nLineSpace = nPixelSpace * nBufXSize;
         nBandSpace = nLineSpace * nBufYSize;
-        printf("IMG_BSQ\n");
         break;
     case IMG_BIP: // PIXEL
         nPixelSpace = GDALGetDataTypeSize(eType) / 8 * nBandNum;
         nLineSpace = nPixelSpace * nBufXSize;
         nBandSpace = GDALGetDataTypeSize(eType) / 8;
-        printf("IMG_BIP\n");
         break;
     case IMG_BIL: // LINE;
         nPixelSpace = GDALGetDataTypeSize(eType) / 8;
         nLineSpace = nPixelSpace * nBufXSize * nBandNum;
         nBandSpace = nPixelSpace * nBufXSize;
-        printf("IMG_BIL\n");
         break;
     default:
         throw std::runtime_error("unkown gdal data type");

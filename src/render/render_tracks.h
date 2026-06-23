@@ -147,7 +147,12 @@ public:
   int cam_to_tracks_size() const { return static_cast<int>(cam_to_tracks_.size()); }
   int cam_track_count(int cam_idx) const {
     if (cam_idx < 0 || cam_idx >= static_cast<int>(cam_to_tracks_.size())) return 0;
-    return static_cast<int>(cam_to_tracks_[cam_idx].size());
+    int count = 0;
+    for (int ti : cam_to_tracks_[cam_idx]) {
+      if (is_track_visible_by_filter(ti))
+        ++count;
+    }
+    return count;
   }
 
   // ── Pick: unproject screen pixel to world-space ray ─────────────────────
@@ -195,6 +200,11 @@ public:
   bool is_photo_visible() const { return show_photo_; }
   bool is_vertex_visible() const { return show_vertex_; }
 
+  void set_min_track_observations(int min_observations);
+  int min_track_observations() const { return min_track_observations_; }
+  int max_track_observations() const;
+  int visible_track_count() const;
+
   void set_grid_visible(bool vis) { show_grid_ = vis; }
 
   void set_grid(const Grid& grid) { grid_ = grid; }
@@ -204,12 +214,15 @@ protected:
   void render_photo(const Photo& p, bool highlighted = false);
   void draw_highlight_overlay();
   void rebuild_cam_to_tracks(); ///< Build cam_to_tracks_ index from tracks_.
+  bool is_track_visible_by_filter(int track_idx) const;
+  bool is_track_visible_by_filter(const Track& track) const;
 
 protected:
   bool show_photo_;
   bool show_vertex_;
   bool show_grid_ = false;
   bool show_axis_ = true;
+  int min_track_observations_ = 1;
 
   Tracks tracks_;
   Tracks gcps_;
