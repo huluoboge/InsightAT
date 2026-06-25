@@ -2,7 +2,7 @@
 #include "render_global.h"
 #include "render_types.h"
 
-#include <QGLWidget>
+#include <QWidget>
 
 namespace insight {
 
@@ -12,8 +12,8 @@ class RenderContext {
 public:
   int w = 0;
   int h = 0;
-  RenderCamera* camera = nullptr; //
-  QGLWidget* widget = nullptr;    //
+  RenderCamera* camera = nullptr;
+  QWidget* widget = nullptr; // QGLWidget or QOpenGLWidget
 
   // opengl modelview
   Mat4 modelview;

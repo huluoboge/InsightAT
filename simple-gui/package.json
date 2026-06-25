@@ -1,0 +1,14 @@
+{
+  "name": "insightat-simple-gui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Beginner-friendly InsightAT SfM desktop shell driven by CLI tools.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron --no-sandbox .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/pipeline.js && node --check src/renderer.js"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}

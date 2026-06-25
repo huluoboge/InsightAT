@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightAT Simple</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">AT</div>
+          <div>
+            <h1>InsightAT Simple</h1>
+            <p>CLI driven SfM workflow</p>
+          </div>
+        </div>
+
+        <nav class="steps" aria-label="Workflow">
+          <div class="step active" data-step="project">
+            <span class="step-index">1</span>
+            <span>Project</span>
+          </div>
+          <div class="step" data-step="folders">
+            <span class="step-index">2</span>
+            <span>Folders</span>
+          </div>
+          <div class="step" data-step="reconstruct">
+            <span class="step-index">3</span>
+            <span>Reconstruction</span>
+          </div>
+        </nav>
+
+        <section class="status-panel">
+          <h2>Status</h2>
+          <dl>
+            <div>
+              <dt>Work directory</dt>
+              <dd id="workDir">Not selected</dd>
+            </div>
+            <div>
+              <dt>Groups</dt>
+              <dd id="groupCount">0</dd>
+            </div>
+            <div>
+              <dt>Images</dt>
+              <dd id="imageCount">0</dd>
+            </div>
+          </dl>
+        </section>
+      </aside>
+
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <h2 id="projectTitle">No project open</h2>
+            <p id="projectSubtitle">Create a project, add image folders, then run reconstruction.</p>
+          </div>
+          <button id="revealBtn" class="icon-button" type="button" title="Open work directory" disabled>
+            <span class="button-icon">[]</span>
+            <span>Open Folder</span>
+          </button>
+        </header>
+
+        <section class="actions-grid">
+          <article class="action-card">
+            <div class="action-head">
+              <span class="action-number">1</span>
+              <h3>Project</h3>
+            </div>
+            <label>
+              Project name
+              <input id="projectName" type="text" value="InsightAT_Project" autocomplete="off">
+            </label>
+            <label>
+              CLI bin directory
+              <input id="binDir" type="text" placeholder="Optional, or use ISAT_BIN_DIR">
+            </label>
+            <div class="button-row">
+              <button id="createBtn" type="button">
+                <span class="button-icon">+</span>
+                <span>New Project</span>
+              </button>
+              <button id="openBtn" class="secondary" type="button">
+                <span class="button-icon">^</span>
+                <span>Open</span>
+              </button>
+            </div>
+          </article>
+
+          <article class="action-card">
+            <div class="action-head">
+              <span class="action-number">2</span>
+              <h3>Image Folders</h3>
+            </div>
+            <p class="quiet">Each folder is scanned, split into camera groups, and assigned estimated intrinsics automatically.</p>
+            <button id="addFolderBtn" type="button" disabled>
+              <span class="button-icon">+</span>
+              <span>Add Image Folder</span>
+            </button>
+          </article>
+
+          <article class="action-card run-card">
+            <div class="action-head">
+              <span class="action-number">3</span>
+              <h3>Reconstruction</h3>
+            </div>
+            <p class="quiet">Runs `isat_project create-at-task`, exports `images_all.json`, then starts `isat_sfm --existing-task`.</p>
+            <button id="runBtn" class="primary" type="button" disabled>
+              <span class="button-icon">></span>
+              <span>Run Reconstruction</span>
+            </button>
+            <div id="runState" class="run-state">Waiting for image folders</div>
+          </article>
+        </section>
+
+        <section class="workspace">
+          <div class="list-pane">
+            <div class="section-head">
+              <h3>Imported Groups</h3>
+              <span id="folderCount">0 folders</span>
+            </div>
+            <div id="groupList" class="group-list empty">No image folders imported yet.</div>
+          </div>
+
+          <div class="log-pane">
+            <div class="section-head">
+              <h3>CLI Log</h3>
+              <button id="clearLogBtn" class="ghost" type="button">Clear</button>
+            </div>
+            <pre id="logOutput"></pre>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

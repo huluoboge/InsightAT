@@ -18,9 +18,12 @@
 #include <cstring>
 #include <memory>
 
+#include "egl_render_widget.h"
+#include "observation_image_view.h"
+#include "observation_list_widget.h"
 #include "render/bundler_loader.h"
 #include "render/render_tracks.h"
-#include "render/render_widget.h"
+#include "ImageIO/gdal_utils.h"
 
 #include <glog/logging.h>
 
@@ -29,6 +32,7 @@
 #include <QElapsedTimer>
 #include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMenuBar>
@@ -94,36 +98,6 @@ QPushButton* make_push(const QString& text, const QString& tooltip) {
 
 } // namespace
 
-/// RenderWidget subclass that emits a signal on left-click (for pick mode).
-class PickableRenderWidget : public render::RenderWidget {
-  Q_OBJECT
-public:
-  explicit PickableRenderWidget(QWidget* parent = nullptr) : render::RenderWidget(parent) {}
-
-  void set_pick_mode(bool enabled) { pick_mode_ = enabled; }
-
-signals:
-  void clicked(int px, int py);
-
-protected:
-  void mousePressEvent(QMouseEvent* event) override {
-    if (pick_mode_ && event->button() == Qt::LeftButton)
-      m_press_pos = event->pos();
-    render::RenderWidget::mousePressEvent(event);
-  }
-  void mouseReleaseEvent(QMouseEvent* event) override {
-    if (pick_mode_ && event->button() == Qt::LeftButton) {
-      if ((event->pos() - m_press_pos).manhattanLength() < 8)
-        emit clicked(event->pos().x(), event->pos().y());
-    }
-    render::RenderWidget::mouseReleaseEvent(event);
-  }
-
-private:
-  QPoint m_press_pos;
-  bool   pick_mode_ = false;
-};
-
 // ── Construction ─────────────────────────────────────────────────────────────
 
 BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QWidget(parent) {
@@ -174,9 +148,32 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QWidget(parent) {
 
   bar->addSpacing(12);
 
+  min_observations_label_ = new QLabel(tr("Min obs: 1"));
+  min_observations_label_->setMinimumWidth(180);
+  min_observations_label_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+  bar->addWidget(min_observations_label_);
+
+  min_observations_slider_ = new QSlider(Qt::Horizontal);
+  min_observations_slider_->setMinimum(1);
+  min_observations_slider_->setMaximum(1);
+  min_observations_slider_->setValue(1);
+  min_observations_slider_->setTickPosition(QSlider::TicksBelow);
+  min_observations_slider_->setToolTip(
+      tr("Hide 3D points with fewer observations than this value."));
+  min_observations_slider_->setFixedWidth(160);
+  connect(min_observations_slider_, &QSlider::valueChanged, this,
+          &BundlerViewerWindow::on_min_observations_changed);
+  bar->addWidget(min_observations_slider_);
+
+  bar->addSpacing(12);
+
   btn_pick_mode_ = make_toggle(tr("Pick"), tr("Enable pick mode: click a camera to see its name, click a 3D point to see its track observations."), false);
   connect(btn_pick_mode_, &QPushButton::toggled, this, &BundlerViewerWindow::on_pick_mode_toggled);
   bar->addWidget(btn_pick_mode_);
+
+  auto* btn_edl = make_toggle(tr("EDL"), tr("Eye-Dome Lighting: enhance depth edges on point cloud."), true);
+  connect(btn_edl, &QPushButton::toggled, [this](bool on) { render_widget_->set_edl_enabled(on); });
+  bar->addWidget(btn_edl);
 
   bar->addStretch(1);
   outer->addLayout(bar);
@@ -210,26 +207,55 @@ BundlerViewerWindow::BundlerViewerWindow(QWidget* parent) : QWidget(parent) {
   iter_bar_widget_->setVisible(false);
   outer->addWidget(iter_bar_widget_);
 
-  // ── 3D view + pick info panel ────────────────────────────────────────────────
-  auto* splitter = new QSplitter(Qt::Horizontal);
+  // ── Main vertical splitter: 3D view (top) | detail panel (bottom) ────────
+  main_splitter_ = new QSplitter(Qt::Vertical);
 
-  auto* pickable = new PickableRenderWidget(splitter);
+  // Top: 3D view + pick info panel
+  auto* top_splitter = new QSplitter(Qt::Horizontal);
+
+  auto* pickable = new EglRenderWidget(top_splitter);
   render_widget_ = pickable;
-  connect(pickable, &PickableRenderWidget::clicked,
+  connect(pickable, &EglRenderWidget::clicked,
           this, &BundlerViewerWindow::on_render_widget_clicked);
-  splitter->addWidget(render_widget_);
+  top_splitter->addWidget(render_widget_);
 
-  pick_info_panel_ = new QTextEdit(splitter);
+  pick_info_panel_ = new QTextEdit(top_splitter);
   pick_info_panel_->setReadOnly(true);
   pick_info_panel_->setPlaceholderText(tr("Enable Pick mode and click a camera or 3D point."));
   pick_info_panel_->setMinimumWidth(220);
   pick_info_panel_->setMaximumWidth(400);
   pick_info_panel_->setVisible(false);
-  splitter->addWidget(pick_info_panel_);
-  splitter->setStretchFactor(0, 1);
-  splitter->setStretchFactor(1, 0);
+  top_splitter->addWidget(pick_info_panel_);
+  top_splitter->setStretchFactor(0, 1);
+  top_splitter->setStretchFactor(1, 0);
 
-  outer->addWidget(splitter, 1);
+  main_splitter_->addWidget(top_splitter);
+
+  // Bottom: observation detail panel (hidden until a 3D point is picked)
+  obs_detail_panel_ = new QWidget();
+  auto* obs_layout = new QVBoxLayout(obs_detail_panel_);
+  obs_layout->setContentsMargins(0, 0, 0, 0);
+
+  auto* obs_splitter = new QSplitter(Qt::Horizontal);
+  obs_list_widget_ = new ObservationListWidget(obs_splitter);
+  connect(obs_list_widget_, &ObservationListWidget::observation_selected,
+          this, &BundlerViewerWindow::on_observation_selected);
+  obs_splitter->addWidget(obs_list_widget_);
+
+  obs_image_view_ = new ObservationImageView(obs_splitter);
+  obs_splitter->addWidget(obs_image_view_);
+  obs_splitter->setStretchFactor(0, 1);
+  obs_splitter->setStretchFactor(1, 2);
+  obs_splitter->setSizes({250, 450});
+
+  obs_layout->addWidget(obs_splitter);
+  obs_detail_panel_->setVisible(false);
+  main_splitter_->addWidget(obs_detail_panel_);
+  main_splitter_->setStretchFactor(0, 3);
+  main_splitter_->setStretchFactor(1, 1);
+  main_splitter_->setSizes({600, 250});
+
+  outer->addWidget(main_splitter_, 1);
 
   tracks_ = new render::RenderTracks;
   render_widget_->data_root()->render_objects().push_back(tracks_);
@@ -323,11 +349,12 @@ void BundlerViewerWindow::open_reconstruction_path(const QString& dir) {
 
   // Keep a copy of the scene for pick queries
   current_scene_ = std::make_shared<render::BundlerScene>(std::move(scene));
+  update_observation_filter_controls();
 
   setWindowTitle(tr("Bundler viewer — %1").arg(QDir(dir).dirName()));
 
   render_widget_->fit_scene_to_view();
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 // ── Iteration-series open ───────────────────────────────────────────────────
@@ -557,11 +584,12 @@ void BundlerViewerWindow::load_iter_at(int idx) {
   current_iter_idx_ = idx;
   current_scene_ = scene;
   tracks_->clear_selection();
+  update_observation_filter_controls();
   update_iter_controls();
 
   if (do_fit)
     render_widget_->fit_scene_to_view();
-  render_widget_->updateGL();
+  render_widget_->update();
 
   // Start prefetching adjacent iterations in the background.
   start_prefetch(idx);
@@ -587,6 +615,27 @@ void BundlerViewerWindow::update_iter_controls() {
   btn_next_iter_->setEnabled(idx < n - 1);
 
   setWindowTitle(tr("Bundler viewer — %1  [%2 / %3]").arg(folder_name).arg(idx + 1).arg(n));
+}
+
+void BundlerViewerWindow::update_observation_filter_controls() {
+  if (!tracks_ || !min_observations_slider_ || !min_observations_label_)
+    return;
+
+  const int max_obs = tracks_->max_track_observations();
+  int value = std::clamp(tracks_->min_track_observations(), 1, max_obs);
+  tracks_->set_min_track_observations(value);
+
+  min_observations_slider_->blockSignals(true);
+  min_observations_slider_->setMaximum(max_obs);
+  min_observations_slider_->setValue(value);
+  min_observations_slider_->setTickInterval(std::max(1, max_obs / 10));
+  min_observations_slider_->blockSignals(false);
+  min_observations_slider_->setEnabled(max_obs > 1);
+
+  min_observations_label_->setText(tr("Min obs: %1  (%2 / %3)")
+                                       .arg(value)
+                                       .arg(tracks_->visible_track_count())
+                                       .arg(static_cast<qulonglong>(tracks_->tracks().size())));
 }
 
 // ── Navigation slots ────────────────────────────────────────────────────────
@@ -630,55 +679,65 @@ void BundlerViewerWindow::keyPressEvent(QKeyEvent* event) {
 
 void BundlerViewerWindow::on_reset_view() {
   render_widget_->fit_scene_to_view();
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 void BundlerViewerWindow::on_pivot_toggled(bool visible) {
   render_widget_->set_pivot_visible(visible);
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 void BundlerViewerWindow::on_cameras_toggled(bool visible) {
   tracks_->set_photo_visible(visible);
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 void BundlerViewerWindow::on_points_toggled(bool visible) {
   tracks_->set_vertex_visible(visible);
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 void BundlerViewerWindow::on_frustum_smaller() {
   tracks_->photo_smaller();
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 void BundlerViewerWindow::on_frustum_larger() {
   tracks_->photo_larger();
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 void BundlerViewerWindow::on_point_size_smaller() {
   tracks_->vertex_smaller();
-  render_widget_->updateGL();
+  render_widget_->update();
 }
 
 void BundlerViewerWindow::on_point_size_larger() {
   tracks_->vertex_large();
-  render_widget_->updateGL();
+  render_widget_->update();
+}
+
+void BundlerViewerWindow::on_min_observations_changed(int value) {
+  tracks_->set_min_track_observations(value);
+  update_observation_filter_controls();
+  if (tracks_->selected_track() < 0 && obs_detail_panel_)
+    obs_detail_panel_->setVisible(false);
+  render_widget_->update();
 }
 
 // ── Pick mode ───────────────────────────────────────────────────────────────
 
 void BundlerViewerWindow::on_pick_mode_toggled(bool enabled) {
   pick_mode_active_ = enabled;
-  static_cast<PickableRenderWidget*>(render_widget_)->set_pick_mode(enabled);
+  render_widget_->set_pick_mode(enabled);
   pick_info_panel_->setVisible(enabled);
   if (enabled) {
     pick_info_panel_->setPlainText(tr("Click a camera frustum or 3D point to inspect it."));
   } else {
     tracks_->clear_selection();
-    render_widget_->updateGL();
+    if (obs_detail_panel_)
+      obs_detail_panel_->setVisible(false);
+    render_widget_->update();
   }
 }
 
@@ -698,7 +757,7 @@ void BundlerViewerWindow::on_render_widget_clicked(int px, int py) {
 
   if (idx < 0) {
     tracks_->clear_selection();
-    render_widget_->updateGL();
+    render_widget_->update();
     show_pick_info(tr("Nothing picked. Try clicking closer to a camera or point."));
     return;
   }
@@ -744,9 +803,91 @@ void BundlerViewerWindow::on_render_widget_clicked(int px, int py) {
     }
     show_pick_info(info);
     tracks_->set_selected_track(idx);
+    on_track_picked(idx);
   }
 
-  render_widget_->updateGL();
+  render_widget_->update();
+}
+
+// ── Observation panel helpers ───────────────────────────────────────────────
+
+void BundlerViewerWindow::on_track_picked(int track_idx) {
+  if (!current_scene_ || track_idx < 0 ||
+      track_idx >= static_cast<int>(current_scene_->points.size()))
+    return;
+
+  const render::BundlerPoint& pt = current_scene_->points[track_idx];
+
+  std::vector<ObservationRecord> records;
+  records.reserve(pt.observations.size());
+
+  for (const auto& ob : pt.observations) {
+    ObservationRecord rec;
+    rec.photo_id = ob.cam_idx;
+    rec.track_id = track_idx;
+    rec.u        = ob.u;
+    rec.v        = ob.v;
+
+    // Resolve image path from cam_idx.
+    if (ob.cam_idx >= 0 &&
+        ob.cam_idx < static_cast<int>(current_scene_->image_paths.size())) {
+      rec.image_path = current_scene_->image_paths[ob.cam_idx];
+      // Extract basename for display.
+      size_t slash = rec.image_path.rfind('/');
+      if (slash == std::string::npos)
+        slash = rec.image_path.rfind('\\');
+      rec.image_name = (slash != std::string::npos)
+                           ? rec.image_path.substr(slash + 1)
+                           : rec.image_path;
+    } else {
+      rec.image_path = "";
+      rec.image_name = "unknown";
+    }
+
+    // Resolve image dimensions from camera if available.
+    if (ob.cam_idx >= 0 &&
+        ob.cam_idx < static_cast<int>(current_scene_->cameras.size())) {
+      rec.image_width  = current_scene_->cameras[ob.cam_idx].image_width;
+      rec.image_height = current_scene_->cameras[ob.cam_idx].image_height;
+    } else {
+      rec.image_width  = 0;
+      rec.image_height = 0;
+    }
+
+    records.push_back(rec);
+  }
+
+  obs_list_widget_->set_observations(records);
+  obs_image_view_->clear();
+  obs_detail_panel_->setVisible(true);
+}
+
+void BundlerViewerWindow::on_observation_selected(const ObservationRecord& rec) {
+  if (rec.image_path.empty() ||
+      !QFileInfo(QString::fromStdString(rec.image_path)).exists()) {
+    LOG(WARNING) << "Image file not found: " << rec.image_path;
+    obs_image_view_->clear();
+    return;
+  }
+
+  double img_w = rec.image_width;
+  double img_h = rec.image_height;
+  if (img_w <= 0 || img_h <= 0) {
+    // Fall back to GDAL for dimensions.
+    int w = 0, h = 0;
+    if (GdalUtils::GetWidthHeightPixel(rec.image_path.c_str(), w, h)) {
+      img_w = static_cast<double>(w);
+      img_h = static_cast<double>(h);
+    }
+  }
+
+  if (img_w <= 0 || img_h <= 0) {
+    LOG(WARNING) << "Cannot determine image dimensions for: " << rec.image_path;
+    return;
+  }
+
+  obs_image_view_->load_image_with_feature(rec.image_path, rec.u, rec.v,
+                                           img_w, img_h);
 }
 
 } // namespace insight

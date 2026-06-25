@@ -464,14 +464,14 @@ static bool write_colmap_binary(
     idx_to_pose[poses.image_indices[pi]] = pi;
 
   // Build per-image 2D observations + 3D points
-  struct Pt2D { double x, y; int64_t pt3d_id; };
+  struct Pt2D { double x, y; uint64_t pt3d_id; };
   std::vector<std::vector<Pt2D>> img_pts(tasks.size());
 
   struct Pt3D {
     uint64_t id;
     double x, y, z;
     double error;
-    std::vector<std::pair<uint32_t, uint32_t>> track;
+    std::vector<std::pair<uint32_t, uint32_t>> track;  // (image_id: uint32_t, point2D_idx: uint32_t)
   };
   std::vector<Pt3D> points3d;
   uint64_t next_pt_id = 1;
@@ -512,18 +512,23 @@ static bool write_colmap_binary(
           insight::camera::undistort_point(cam_intr[static_cast<size_t>(ci)], o.u, o.v, &uu, &vu);
 
         const uint32_t pt2d_idx = static_cast<uint32_t>(img_pts[task_idx].size());
-        img_pts[task_idx].push_back({uu, vu, static_cast<int64_t>(next_pt_id)});
+        img_pts[task_idx].push_back({uu, vu, static_cast<uint64_t>(next_pt_id)});
         pt.track.emplace_back(static_cast<uint32_t>(tasks[task_idx].colmap_image_id), pt2d_idx);
 
-        // Reprojection error
+        // Reprojection error (in pixel units, using the PINHOLE projection)
         auto pit = idx_to_pose.find(img_idx);
         if (pit != idx_to_pose.end()) {
           const Eigen::Vector3d Xw(pt.x, pt.y, pt.z);
           const size_t pi = pit->second;
-          Eigen::Vector3d p = poses.poses_R[pi] * (Xw - poses.poses_C[pi]);
-          if (p(2) > 1e-12) {
-            double du = uu - (p(0) / p(2));
-            double dv = vu - (p(1) / p(2));
+          Eigen::Vector3d pc = poses.poses_R[pi] * (Xw - poses.poses_C[pi]);
+          if (pc(2) > 1e-12) {
+            const double inv_z = 1.0 / pc(2);
+            const int ci_err = tasks[task_idx].camera_idx;
+            const auto& Kc = cam_intr[static_cast<size_t>(ci_err)];
+            const double proj_u = Kc.fx * pc(0) * inv_z + Kc.cx;
+            const double proj_v = Kc.fy * pc(1) * inv_z + Kc.cy;
+            double du = uu - proj_u;
+            double dv = vu - proj_v;
             sum_err += std::sqrt(du * du + dv * dv);
             ++n_err;
           }
@@ -541,7 +546,7 @@ static bool write_colmap_binary(
   // ── cameras.bin ──
   {
     const std::string p = sparse_dir + "/cameras.bin";
-    std::ofstream f(p, std::ios::binary);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
     if (!f.is_open()) { LOG(ERROR) << "Cannot write " << p; return false; }
     const uint64_t n_cams = static_cast<uint64_t>(cam_idx_to_colmap_id.size());
     f.write(reinterpret_cast<const char*>(&n_cams), sizeof(uint64_t));
@@ -558,13 +563,15 @@ static bool write_colmap_binary(
       f.write(reinterpret_cast<const char*>(&h), sizeof(uint64_t));
       f.write(reinterpret_cast<const char*>(params), 4 * sizeof(double));
     }
+    f.close();
+    if (f.fail()) { LOG(ERROR) << "Write failed for " << p; return false; }
     LOG(INFO) << "Wrote " << p;
   }
 
   // ── images.bin ──
   {
     const std::string p = sparse_dir + "/images.bin";
-    std::ofstream f(p, std::ios::binary);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
     if (!f.is_open()) { LOG(ERROR) << "Cannot write " << p; return false; }
     const uint64_t n_imgs = static_cast<uint64_t>(tasks.size());
     f.write(reinterpret_cast<const char*>(&n_imgs), sizeof(uint64_t));
@@ -577,8 +584,7 @@ static bool write_colmap_binary(
       const Eigen::Vector3d tr = poses.poses_R[pi] * (-poses.poses_C[pi]);
 
       const uint32_t img_id = static_cast<uint32_t>(t.colmap_image_id);
-      const float qvec[4] = {static_cast<float>(q.w()), static_cast<float>(q.x()),
-                              static_cast<float>(q.y()), static_cast<float>(q.z())};
+      const double qvec[4] = {q.w(), q.x(), q.y(), q.z()};
       const double tvec[3] = {tr(0), tr(1), tr(2)};
       const uint32_t cam_id = static_cast<uint32_t>(cam_idx_to_colmap_id[t.camera_idx]);
 
@@ -587,7 +593,7 @@ static bool write_colmap_binary(
       const std::string name = ss.str();
 
       f.write(reinterpret_cast<const char*>(&img_id), sizeof(uint32_t));
-      f.write(reinterpret_cast<const char*>(qvec), 4 * sizeof(float));
+      f.write(reinterpret_cast<const char*>(qvec), 4 * sizeof(double));
       f.write(reinterpret_cast<const char*>(tvec), 3 * sizeof(double));
       f.write(reinterpret_cast<const char*>(&cam_id), sizeof(uint32_t));
       f.write(name.c_str(), name.size() + 1);
@@ -599,16 +605,18 @@ static bool write_colmap_binary(
       for (const auto& p2 : pts) {
         const double xy[2] = {p2.x, p2.y};
         f.write(reinterpret_cast<const char*>(xy), 2 * sizeof(double));
-        f.write(reinterpret_cast<const char*>(&p2.pt3d_id), sizeof(int64_t));
+        f.write(reinterpret_cast<const char*>(&p2.pt3d_id), sizeof(uint64_t));
       }
     }
+    f.close();
+    if (f.fail()) { LOG(ERROR) << "Write failed for " << p; return false; }
     LOG(INFO) << "Wrote " << p;
   }
 
   // ── points3D.bin ──
   {
     const std::string p = sparse_dir + "/points3D.bin";
-    std::ofstream f(p, std::ios::binary);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
     if (!f.is_open()) { LOG(ERROR) << "Cannot write " << p; return false; }
     const uint64_t n_pts = static_cast<uint64_t>(points3d.size());
     f.write(reinterpret_cast<const char*>(&n_pts), sizeof(uint64_t));
@@ -626,6 +634,8 @@ static bool write_colmap_binary(
         f.write(reinterpret_cast<const char*>(&pt2d_idx), sizeof(uint32_t));
       }
     }
+    f.close();
+    if (f.fail()) { LOG(ERROR) << "Write failed for " << p; return false; }
     LOG(INFO) << "Wrote " << p << " (" << points3d.size() << " points)";
   }
   return true;

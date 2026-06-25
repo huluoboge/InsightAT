@@ -34,10 +34,16 @@ bool load_reconstruction_directory(const std::string& dir, BundlerScene* scene,
     *error_message = "not a directory: " + dir;
     return false;
   }
-  const bool has_colmap = fs::exists(root / "cameras.txt") && fs::exists(root / "images.txt") &&
-                          fs::exists(root / "points3D.txt");
-  if (has_colmap)
+  const bool has_colmap_text =
+      fs::exists(root / "cameras.txt") && fs::exists(root / "images.txt") &&
+      fs::exists(root / "points3D.txt");
+  const bool has_colmap_bin =
+      fs::exists(root / "cameras.bin") && fs::exists(root / "images.bin") &&
+      fs::exists(root / "points3D.bin");
+  if (has_colmap_text)
     return load_colmap_text_directory(dir, scene, error_message, std::move(progress));
+  if (has_colmap_bin)
+    return load_colmap_binary_directory(dir, scene, error_message, std::move(progress));
   return load_bundler_directory(dir, scene, error_message, std::move(progress));
 }
 

@@ -93,6 +93,14 @@ set(UI_SOURCES
     panels/at_task_panel.cpp
     ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/bundler_viewer_window.h
     ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/bundler_viewer_window.cpp
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/egl_render_widget.h
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/egl_render_widget.cpp
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/feature_overlay_layer.h
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/feature_overlay_layer.cpp
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/observation_image_view.h
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/observation_image_view.cpp
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/observation_list_widget.h
+    ${CMAKE_SOURCE_DIR}/src/tools/at_bundler_viewer/observation_list_widget.cpp
 )
 
 set(UI_HEADERS

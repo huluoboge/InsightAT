@@ -19,6 +19,12 @@ RENDER_EXPORT bool load_colmap_text_directory(const std::string& colmap_sparse_d
                                               BundlerScene* scene, std::string* error_message,
                                               ReconstructionLoadProgress progress = {});
 
+/// 目录下需同时存在 cameras.bin、images.bin、points3D.bin。
+/// 二进制格式规范与 COLMAP 完全一致（所有浮点为 double，track 中 point2D_idx 为 uint32_t）。
+RENDER_EXPORT bool load_colmap_binary_directory(const std::string& colmap_sparse_dir,
+                                                BundlerScene* scene, std::string* error_message,
+                                                ReconstructionLoadProgress progress = {});
+
 } // namespace render
 } // namespace insight
 
