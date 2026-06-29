@@ -9,6 +9,7 @@ const ui = {
   openBtn: $('openBtn'),
   addFolderBtn: $('addFolderBtn'),
   runBtn: $('runBtn'),
+  viewBtn: $('viewBtn'),
   revealBtn: $('revealBtn'),
   clearLogBtn: $('clearLogBtn'),
   logOutput: $('logOutput'),
@@ -33,7 +34,7 @@ function appendLog(text) {
 function setBusy(nextBusy, label) {
   busy = nextBusy;
   document.body.classList.toggle('busy', busy);
-  for (const button of [ui.createBtn, ui.openBtn, ui.addFolderBtn, ui.runBtn, ui.revealBtn]) {
+  for (const button of [ui.createBtn, ui.openBtn, ui.addFolderBtn, ui.runBtn, ui.viewBtn, ui.revealBtn]) {
     button.disabled = busy;
   }
   applyState(state);
@@ -63,7 +64,15 @@ function applyState(nextState) {
   ui.addFolderBtn.disabled = busy || !hasProject;
   ui.runBtn.disabled = busy || !hasProject || groupCount === 0;
   ui.revealBtn.disabled = busy || !hasProject;
-  ui.runState.textContent = groupCount > 0 ? 'Ready to reconstruct' : 'Waiting for image folders';
+
+  const hasViewResult = Boolean(hasProject && state.reconstructionViewPath);
+  ui.viewBtn.disabled = busy || !hasViewResult;
+  ui.viewBtn.style.display = hasViewResult ? '' : 'none';
+  ui.runBtn.style.display = '';
+
+  ui.runState.textContent = hasViewResult
+    ? 'Reconstruction complete'
+    : (groupCount > 0 ? 'Ready to reconstruct' : 'Waiting for image folders');
   if (hasProject) {
     ui.projectName.value = state.name || ui.projectName.value;
     ui.binDir.value = state.binDir || ui.binDir.value;
@@ -149,6 +158,10 @@ ui.runBtn.addEventListener('click', () => {
   runAction('Run reconstruction', () => window.insightAT.runReconstruction({
     binDir: ui.binDir.value.trim()
   }));
+});
+
+ui.viewBtn.addEventListener('click', () => {
+  window.insightAT.viewReconstruction();
 });
 
 ui.revealBtn.addEventListener('click', () => {

@@ -320,6 +320,10 @@ input:focus {
   margin-top: auto;
 }
 
+.run-card .view-btn {
+  background: var(--accent);
+}
+
 .run-state {
   margin-top: 10px;
   color: var(--muted);

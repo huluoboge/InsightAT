@@ -2,6 +2,7 @@
 
 const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
+const { spawn } = require('child_process');
 const pipeline = require('./pipeline');
 
 let mainWindow = null;
@@ -80,6 +81,24 @@ ipcMain.handle('project:runReconstruction', async (_event, options) => {
 ipcMain.handle('project:revealWorkDir', async () => {
   const state = requireState();
   await shell.openPath(state.workDir);
+  return true;
+});
+
+ipcMain.handle('project:viewReconstruction', async () => {
+  const state = requireState();
+  const viewPath = pipeline.reconstructionViewPath(state.workDir);
+  if (!viewPath) {
+    throw new Error('No reconstruction result found. Run reconstruction first.');
+  }
+  const viewerExe = pipeline.findTool(state.binDir, 'at_bundler_viewer');
+  spawn(viewerExe, [viewPath], {
+    cwd: state.workDir,
+    detached: true,
+    stdio: 'ignore'
+  }).on('error', (err) => {
+    sendLog(`Failed to launch viewer: ${err.message}\n`);
+  });
+  sendLog(`Launched: ${viewerExe} ${viewPath}\n`);
   return true;
 });
 

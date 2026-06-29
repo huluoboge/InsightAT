@@ -339,8 +339,36 @@ async function prepareImagesAll(state, options = {}, onLog) {
 
 async function runReconstruction(state, options = {}, onLog) {
   const next = await prepareImagesAll(state, options, onLog);
-  await runCommand(next, 'isat_sfm', ['--existing-task', '-w', next.workDir, '-v'], onLog);
+  await runCommand(next, 'isat_sfm', ['--existing-task', '-w', next.workDir, '-v', '--undistort'], onLog);
   return loadSummary(saveState(next));
+}
+
+function reconstructionViewPath(workDir) {
+  const sfmDir = path.join(workDir, 'incremental_sfm');
+  if (!fs.existsSync(sfmDir)) return null;
+
+  // Prefer COLMAP text format (more accurate camera models)
+  const colmapDir = path.join(sfmDir, 'colmap', 'sparse', '0');
+  if (fs.existsSync(path.join(colmapDir, 'cameras.txt')) &&
+      fs.existsSync(path.join(colmapDir, 'images.txt')) &&
+      fs.existsSync(path.join(colmapDir, 'points3D.txt'))) {
+    return colmapDir;
+  }
+
+  // Check COLMAP binary format
+  if (fs.existsSync(path.join(colmapDir, 'cameras.bin')) &&
+      fs.existsSync(path.join(colmapDir, 'images.bin')) &&
+      fs.existsSync(path.join(colmapDir, 'points3D.bin'))) {
+    return colmapDir;
+  }
+
+  // Fall back to Bundler format
+  if (fs.existsSync(path.join(sfmDir, 'bundle.out')) &&
+      fs.existsSync(path.join(sfmDir, 'list.txt'))) {
+    return sfmDir;
+  }
+
+  return null;
 }
 
 function loadSummary(state) {
@@ -353,12 +381,14 @@ function loadSummary(state) {
       imageCount = 0;
     }
   }
+  const viewPath = reconstructionViewPath(state.workDir);
   return {
     ...state,
     imageCount,
     groupCount: Array.isArray(state.groups) ? state.groups.length : 0,
     hasImagesAll: fs.existsSync(state.imagesAllPath),
-    hasResult: fs.existsSync(path.join(state.workDir, 'incremental_sfm'))
+    hasResult: fs.existsSync(path.join(state.workDir, 'incremental_sfm')),
+    reconstructionViewPath: viewPath
   };
 }
 
@@ -378,5 +408,6 @@ module.exports = {
   addFolder,
   prepareImagesAll,
   runReconstruction,
-  loadSummary
+  loadSummary,
+  reconstructionViewPath
 };
