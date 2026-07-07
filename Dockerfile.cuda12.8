@@ -7,7 +7,7 @@
 # Base: nvidia/cuda:12.8.0-devel-ubuntu22.04
 #   - Ubuntu 22.04 (glibc 2.35) → best AppImage compatibility before glibc
 #     becomes too new for older distros.
-#   - CUDA 12.8 toolkit + cuDSS (NVIDIA apt repo)
+#   - CUDA 12.8 toolkit + cuDSS (NVIDIA CUDA apt repo)
 #
 # Usage:
 #   docker build -t insightat:cuda12.8 -f Dockerfile.cuda12.8 .
@@ -33,7 +33,8 @@ WORKDIR /workspace/insightat
 # ── System dependencies ──────────────────────────────────────────────────────
 # NOTE: libceres-dev from apt is intentionally excluded — we build a custom
 # Ceres with CUDA+cuDSS support from huluoboge/ceres-solver hy branch.
-# cuDSS is installed from NVIDIA's CUDA 12.8 apt repository.
+# cuDSS is installed from NVIDIA's CUDA apt repository in the base image.
+ARG CUDSS_CUDA12_VERSION=0.7.1.4-1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
@@ -64,19 +65,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     fuse \
     libfuse2 \
+    "cudss-cuda-12=${CUDSS_CUDA12_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir "cmake>=3.24" \
     && cmake --version
-
-# ── cuDSS (NVIDIA CUDA Direct Sparse Solver) ──────────────────────────────
-# Install from local repo .deb (the user provided cudss-local-repo-... .deb).
-# This repo provides libcudss-dev headers + shared libs needed by Ceres.
-COPY cudss-local-repo-ubuntu2204-0.7.1_0.7.1-1_amd64.deb /tmp/cudss-local-repo.deb
-RUN dpkg -i /tmp/cudss-local-repo.deb \
-    && cp /var/cudss-local-repo-ubuntu2204-0.7.1/cudss-*-keyring.gpg /usr/share/keyrings/ \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends cudss \
-    && rm -rf /var/lib/apt/lists/* /tmp/cudss-local-repo.deb
 
 # ── Custom Ceres-Solver (CUDA 12 + cuDSS) ────────────────────────────────────
 # Fork:   https://github.com/huluoboge/ceres-solver (hy branch)
@@ -111,9 +103,10 @@ RUN cmake -S . -B build-ceres-12.8 \
 RUN build-ceres-12.8/isat_project --help 2>&1 | head -5 && echo "Smoke test OK"
 
 # ── Package AppImage ─────────────────────────────────────────────────────────
+ARG INSIGHTAT_VERSION=0.2.5-cuda12.8
 ENV INSIGHTAT_BUILD_DIR=/workspace/insightat/build-ceres-12.8 \
     CUDA_LIBS_DIR=/usr/local/cuda-12.8/lib64 \
-    VERSION=0.2.5-cuda12.8 \
+    VERSION=${INSIGHTAT_VERSION} \
     APPIMAGE_OUT_DIR=/workspace/insightat/build-appimage-cuda12.8 \
     APPIMAGE_EXTRACT_AND_RUN=1
 
