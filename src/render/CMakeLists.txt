@@ -97,5 +97,8 @@ endif()
 set_property(TARGET render PROPERTY FOLDER INSIGHTMAP/lib)
 
 # ── 属性测试 ──────────────────────────────────────────────────────────────────
-add_subdirectory(tests)
-
+if(INSIGHTAT_BUILD_RENDER_TESTS)
+    add_subdirectory(tests)
+else()
+    message(STATUS "Render property tests disabled")
+endif()

@@ -34,6 +34,7 @@ endif ()
 # INSIGHTAT build options
 # ==============================================================================
 option(INSIGHTAT_BUILD_GUI_ONLY "Build only GUI-related targets and skip CUDA-dependent components" OFF)
+option(INSIGHTAT_BUILD_RENDER_TESTS "Build render property tests (requires RapidCheck download/cache)" ON)
 
 # Auto-enable SiftGPU when CUDA is not available (for CPU+EGL fallback)
 find_package(CUDAToolkit QUIET)
@@ -208,7 +209,6 @@ include_directories(src)
 
 add_subdirectory(third_party)
 add_subdirectory(src)
-
 
 
 

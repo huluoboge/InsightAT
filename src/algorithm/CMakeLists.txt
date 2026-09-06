@@ -60,6 +60,8 @@ set(ALGORITHM_SOURCES
     io/geopack_index.cpp
     io/track_store_idc.h
     io/track_store_idc.cpp
+    io/track_graph_idc.h
+    io/track_graph_idc.cpp
     io/exif/exif.h
     io/exif/exif.cpp
     io/exif/exif_IO.hpp

@@ -67,6 +67,8 @@ void TrackStore::reserve_tracks(size_t cap) {
   dirty_track_mark_.reserve(cap);
   retri_pending_mark_.reserve(cap);
   track_last_tri_epoch_.reserve(cap);
+  track_graph_id_.reserve(cap);
+  track_parent_id_.reserve(cap);
 }
 
 void TrackStore::reserve_observations(size_t cap) {
@@ -85,6 +87,8 @@ int TrackStore::add_track(float x, float y, float z) {
   track_xyz_.push_back(y);
   track_xyz_.push_back(z);
   track_flags_.push_back(track_flags::kAlive);
+  track_graph_id_.push_back(kInvalidGraphId);
+  track_parent_id_.push_back(kInvalidTrackId);
   track_obs_ids_.emplace_back();
   dirty_track_mark_.push_back(0u);
   retri_pending_mark_.push_back(0u);
@@ -92,6 +96,32 @@ int TrackStore::add_track(float x, float y, float z) {
   mark_dirty_track(track_id);
   ++registration_epoch_;
   return track_id;
+}
+
+bool TrackStore::attach_existing_observation(int track_id, int obs_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= num_tracks() ||
+      obs_id < 0 || static_cast<size_t>(obs_id) >= num_observations() ||
+      (!is_track_valid(track_id) && !is_track_split_parent(track_id)) || !is_obs_valid(obs_id))
+    return false;
+  auto& ids = track_obs_ids_[static_cast<size_t>(track_id)];
+  if (std::find(ids.begin(), ids.end(), obs_id) == ids.end())
+    ids.push_back(obs_id);
+  obs_track_id_[static_cast<size_t>(obs_id)] = track_id;
+  mark_dirty_track(track_id);
+  mark_dirty_image(static_cast<int>(obs_image_id_[static_cast<size_t>(obs_id)]));
+  ++registration_epoch_;
+  return true;
+}
+
+bool TrackStore::retain_observation_in_track_history(int track_id, int obs_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= num_tracks() ||
+      obs_id < 0 || static_cast<size_t>(obs_id) >= num_observations() ||
+      !is_track_split_parent(track_id))
+    return false;
+  auto& ids = track_obs_ids_[static_cast<size_t>(track_id)];
+  if (std::find(ids.begin(), ids.end(), obs_id) == ids.end())
+    ids.push_back(obs_id);
+  return true;
 }
 
 int TrackStore::add_observation(int track_id, uint32_t image_index, uint32_t feature_id, float u,
@@ -130,6 +160,51 @@ bool TrackStore::is_track_valid(int track_id) const {
   if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
     return false;
   return (track_flags_[static_cast<size_t>(track_id)] & track_flags::kAlive) != 0;
+}
+
+bool TrackStore::is_track_split_parent(int track_id) const {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
+    return false;
+  return (track_flags_[static_cast<size_t>(track_id)] & track_flags::kSplitParent) != 0;
+}
+
+void TrackStore::set_track_split_parent(int track_id, bool value) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
+    return;
+  auto& f = track_flags_[static_cast<size_t>(track_id)];
+  if (value) {
+    f = static_cast<uint8_t>((f | track_flags::kSplitParent) & ~track_flags::kAlive);
+  } else {
+    f = static_cast<uint8_t>((f | track_flags::kAlive) & ~track_flags::kSplitParent);
+  }
+  mark_dirty_track(track_id);
+  ++registration_epoch_;
+}
+
+uint32_t TrackStore::track_graph_id(int track_id) const {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_graph_id_.size())
+    return kInvalidGraphId;
+  return track_graph_id_[static_cast<size_t>(track_id)];
+}
+
+void TrackStore::set_track_graph_id(int track_id, uint32_t graph_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_graph_id_.size())
+    return;
+  track_graph_id_[static_cast<size_t>(track_id)] = graph_id;
+  mark_dirty_track(track_id);
+}
+
+int32_t TrackStore::track_parent_id(int track_id) const {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_parent_id_.size())
+    return kInvalidTrackId;
+  return track_parent_id_[static_cast<size_t>(track_id)];
+}
+
+void TrackStore::set_track_parent_id(int track_id, int32_t parent_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_parent_id_.size())
+    return;
+  track_parent_id_[static_cast<size_t>(track_id)] = parent_id;
+  mark_dirty_track(track_id);
 }
 
 bool TrackStore::track_has_triangulated_xyz(int track_id) const {
@@ -482,6 +557,73 @@ void TrackStore::mark_track_deleted(int track_id) {
     mark_dirty_track(track_id);
     mark_track_observation_images_dirty(track_id);
   }
+}
+
+void TrackStore::mark_track_split_parent(int track_id) {
+  if (track_id < 0 || static_cast<size_t>(track_id) >= track_flags_.size())
+    return;
+  set_track_split_parent(track_id, true);
+  clear_track_xyz(track_id);
+}
+
+void TrackStore::capture_graph_mutation_state(GraphMutationState* out) const {
+  if (!out)
+    return;
+  out->track_flags = track_flags_;
+  out->track_graph_id = track_graph_id_;
+  out->track_parent_id = track_parent_id_;
+  out->track_xyz = track_xyz_;
+  out->track_obs_ids = track_obs_ids_;
+  out->obs_track_id = obs_track_id_;
+  out->obs_flags = obs_flags_;
+  out->retri_pending_ids = retri_pending_ids_;
+  out->retri_pending_mark = retri_pending_mark_;
+  out->dirty_images = dirty_images_;
+  out->dirty_tracks = dirty_tracks_;
+  out->dirty_image_mark = dirty_image_mark_;
+  out->dirty_track_mark = dirty_track_mark_;
+  out->image_n_tri = image_n_tri_;
+  out->num_triangulated = num_triangulated_;
+  out->n_valid_obs = n_valid_obs_;
+  out->obs_epoch = obs_epoch_;
+  out->xyz_epoch = xyz_epoch_;
+  out->registration_epoch = registration_epoch_;
+  out->tri_status_epoch = tri_status_epoch_;
+  out->track_last_tri_epoch = track_last_tri_epoch_;
+}
+
+bool TrackStore::restore_graph_mutation_state(const GraphMutationState& state) {
+  if (state.track_flags.size() > track_flags_.size() ||
+      state.track_graph_id.size() != state.track_flags.size() ||
+      state.track_parent_id.size() != state.track_flags.size() ||
+      state.track_xyz.size() != state.track_flags.size() * 3u ||
+      state.track_obs_ids.size() != state.track_flags.size() ||
+      state.obs_track_id.size() > obs_track_id_.size() ||
+      state.obs_flags.size() > obs_flags_.size() ||
+      state.track_last_tri_epoch.size() != state.track_flags.size())
+    return false;
+  track_flags_ = state.track_flags;
+  track_graph_id_ = state.track_graph_id;
+  track_parent_id_ = state.track_parent_id;
+  track_xyz_ = state.track_xyz;
+  track_obs_ids_ = state.track_obs_ids;
+  obs_track_id_ = state.obs_track_id;
+  obs_flags_ = state.obs_flags;
+  retri_pending_ids_ = state.retri_pending_ids;
+  retri_pending_mark_ = state.retri_pending_mark;
+  dirty_images_ = state.dirty_images;
+  dirty_tracks_ = state.dirty_tracks;
+  dirty_image_mark_ = state.dirty_image_mark;
+  dirty_track_mark_ = state.dirty_track_mark;
+  image_n_tri_ = state.image_n_tri;
+  num_triangulated_ = state.num_triangulated;
+  n_valid_obs_ = state.n_valid_obs;
+  obs_epoch_ = state.obs_epoch;
+  xyz_epoch_ = state.xyz_epoch;
+  registration_epoch_ = state.registration_epoch;
+  tri_status_epoch_ = state.tri_status_epoch;
+  track_last_tri_epoch_ = state.track_last_tri_epoch;
+  return true;
 }
 
 void TrackStore::mark_observation_deleted(int obs_id) {

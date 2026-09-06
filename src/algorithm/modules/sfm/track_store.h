@@ -48,6 +48,8 @@ constexpr uint8_t kHasTriangulated =
 /// Persists across BA calls; cleared and recomputed every ba_grid_reselect_every_n calls.
 /// Does NOT affect triangulation, outlier rejection, or re-triangulation paths.
 constexpr uint8_t kSkipFromBA = 1u << 3;
+/// Track is retained as the immutable owner of a graph after a soft split.
+constexpr uint8_t kSplitParent = 1u << 4;
 } // namespace track_flags
 
 namespace obs_flags {
@@ -81,6 +83,9 @@ class TrackStore {
 public:
   TrackStore() = default;
 
+  static constexpr uint32_t kInvalidGraphId = 0xffffffffu;
+  static constexpr int32_t kInvalidTrackId = -1;
+
   /// Number of images. Indices 0..n-1; set before add_observation. Order = export image list order.
   void set_num_images(int n);
   int num_images() const { return num_images_; }
@@ -95,9 +100,21 @@ public:
   /// Add observation to an existing track; updates reverse index. Returns global observation index.
   int add_observation(int track_id, uint32_t image_index, uint32_t feature_id, float u, float v,
                       float scale = 1.f);
+  /// Attach an existing observation to a new track without allocating a new observation id.
+  /// The image reverse index is intentionally unchanged.
+  bool attach_existing_observation(int track_id, int obs_id);
+  /// Retain an observation in a historical parent's structural list without
+  /// changing its current active-track ownership.
+  bool retain_observation_in_track_history(int track_id, int obs_id);
 
   /// Query track
   bool is_track_valid(int track_id) const;
+  bool is_track_split_parent(int track_id) const;
+  void set_track_split_parent(int track_id, bool value);
+  uint32_t track_graph_id(int track_id) const;
+  void set_track_graph_id(int track_id, uint32_t graph_id);
+  int32_t track_parent_id(int track_id) const;
+  void set_track_parent_id(int track_id, int32_t parent_id);
   bool track_has_triangulated_xyz(int track_id) const;
   void get_track_xyz(int track_id, float* x, float* y, float* z) const;
   void set_track_xyz(int track_id, float x, float y, float z);
@@ -213,6 +230,9 @@ public:
 
   /// Logical delete (set flag only)
   void mark_track_deleted(int track_id);
+  /// Mark a track inactive while retaining its structural observation list.
+  /// Unlike mark_track_deleted this explicitly represents a split history parent.
+  void mark_track_split_parent(int track_id);
   /// Logically delete one observation; also enqueues the parent track for run_retriangulation
   /// (restore deleted views when XYZ is still valid, or re-triangulate after clear_track_xyz).
   void mark_observation_deleted(int obs_id);
@@ -233,6 +253,34 @@ public:
   /// O(1): number of alive tracks that have been triangulated.
   int num_triangulated_tracks() const { return num_triangulated_; }
 
+  /// Capture/restore the mutable per-track and observation ownership state used by
+  /// TrackGraphStore transactions. These APIs deliberately do not expose SoA storage.
+  struct GraphMutationState {
+    std::vector<uint8_t> track_flags;
+    std::vector<uint32_t> track_graph_id;
+    std::vector<int32_t> track_parent_id;
+    std::vector<float> track_xyz;
+    std::vector<std::vector<int>> track_obs_ids;
+    std::vector<int> obs_track_id;
+    std::vector<uint8_t> obs_flags;
+    std::vector<int> retri_pending_ids;
+    std::vector<uint8_t> retri_pending_mark;
+    std::vector<int> dirty_images;
+    std::vector<int> dirty_tracks;
+    std::vector<uint8_t> dirty_image_mark;
+    std::vector<uint8_t> dirty_track_mark;
+    std::vector<int> image_n_tri;
+    int num_triangulated = 0;
+    int n_valid_obs = 0;
+    uint64_t obs_epoch = 0;
+    uint64_t xyz_epoch = 0;
+    uint64_t registration_epoch = 0;
+    uint64_t tri_status_epoch = 0;
+    std::vector<uint64_t> track_last_tri_epoch;
+  };
+  void capture_graph_mutation_state(GraphMutationState* out) const;
+  bool restore_graph_mutation_state(const GraphMutationState& state);
+
 private:
   void mark_dirty_image(int image_index);
   void mark_dirty_track(int track_id);
@@ -241,6 +289,8 @@ private:
   int num_images_ = 0;
   std::vector<float> track_xyz_;
   std::vector<uint8_t> track_flags_;
+  std::vector<uint32_t> track_graph_id_;
+  std::vector<int32_t> track_parent_id_;
   std::vector<std::vector<int>>
       track_obs_ids_; // per-track list of global obs indices (for iteration)
 

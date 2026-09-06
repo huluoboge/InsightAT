@@ -17,6 +17,13 @@
 
 cmake_minimum_required(VERSION 3.16)
 
+# Ceres' installed cuDSS package promotes imported targets to global scope.
+# CMake 3.24+ otherwise rejects that promotion when Ceres is found from this
+# nested directory (the project supports older CMake versions as well).
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+    set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL TRUE)
+endif()
+
 # Enable CUDA language only if CUDA is available
 find_package(CUDAToolkit QUIET)
 if(CUDAToolkit_FOUND)
@@ -53,6 +60,8 @@ add_library(sfm_module STATIC
     gpu_twoview_sfm.h
     track_store.cpp
     track_store.h
+    track_graph_store.cpp
+    track_graph_store.h
     scene_normalization.cpp
     scene_normalization.h
     view_graph.cpp
@@ -101,6 +110,10 @@ target_link_libraries(test_track_store_state_cache
         glog::glog
 )
 set_property(TARGET test_track_store_state_cache PROPERTY FOLDER InsightAT/Tests)
+
+add_executable(test_track_graph test_track_graph.cpp)
+target_link_libraries(test_track_graph PRIVATE sfm_module glog::glog)
+set_property(TARGET test_track_graph PROPERTY FOLDER InsightAT/Tests)
 
 # ── Unit test: PnP resection ──────────────────────────────────────────────
 # add_executable(test_pnp_resection test_pnp_resection.cpp resection.cpp resection.h)

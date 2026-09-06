@@ -20,6 +20,7 @@ namespace insight {
 namespace sfm {
 
 class ViewGraph;
+class TrackGraphStore;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SfM pose / intrinsics data (optional, embedded in schema >= 1.3)
@@ -49,6 +50,8 @@ struct TrackSaveOptions {
 
     // ── Optional embedded pose/intrinsics (schema 1.3) ──────────────────────
     const SfMResultData* sfm_pose = nullptr;
+    /// Optional graph lineage fields. The graph payload itself is stored in .isat_graph.
+    bool include_graph_lineage = false;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,7 +61,8 @@ struct TrackSaveOptions {
 bool load_track_store_from_idc(const std::string& path, TrackStore* store_out,
                                std::vector<uint32_t>* image_indices_out = nullptr,
                                ViewGraph* view_graph_out = nullptr,
-                               SfMResultData* sfm_pose_out = nullptr);
+                               SfMResultData* sfm_pose_out = nullptr,
+                               TrackGraphStore* track_graph_out = nullptr);
 
 bool save_track_store_to_idc(const TrackStore& store, const std::vector<uint32_t>& image_indices,
                              const std::string& path,

@@ -40,7 +40,9 @@
 #include "../io/idc_reader.h"
 #include "../io/geopack_index.h"
 #include "../io/track_store_idc.h"
+#include "../io/track_graph_idc.h"
 #include "../modules/sfm/track_store.h"
+#include "../modules/sfm/track_graph_store.h"
 #include "../modules/sfm/view_graph.h"
 #include "../modules/sfm/view_graph_loader.h"
 #include "cli_logging.h"
@@ -210,14 +212,9 @@ struct UnionFind {
     return root;
   }
 
-  // Merge two features into the same track.  Creates nodes (storing coords) if they don't
-  // exist yet.  Returns false only when the merge would put two features from the same image
-  // into the same track (one-feature-per-image-per-track invariant).
-  bool merge_keys(uint64_t k1, uint64_t k2,
-                  float u1, float v1, float s1,
-                  float u2, float v2, float s2) {
-    int id1 = get_or_create(k1, u1, v1, s1);
-    int id2 = get_or_create(k2, u2, v2, s2);
+  // Merge existing nodes. Returns false only when the merge would put two features
+  // from the same image into one track.
+  bool merge_ids(int id1, int id2) {
     int a = find_by_id(id1);
     int b = find_by_id(id2);
     if (a == b) return true;
@@ -243,6 +240,12 @@ struct UnionFind {
     src.shrink_to_fit();
     return true;
   }
+
+  bool merge_keys(uint64_t k1, uint64_t k2,
+                  float u1, float v1, float s1,
+                  float u2, float v2, float s2) {
+    return merge_ids(get_or_create(k1, u1, v1, s1), get_or_create(k2, u2, v2, s2));
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,6 +268,21 @@ struct InlierMatch {
 struct PairRawData {
   std::vector<InlierMatch> matches;
 };
+
+struct SpoolEdge {
+  int32_t node1 = -1;
+  int32_t node2 = -1;
+};
+
+static std::string graph_sidecar_path(const std::string& tracks_path) {
+  constexpr const char* suffix = ".isat_tracks";
+  if (tracks_path.size() >= std::char_traits<char>::length(suffix) &&
+      tracks_path.compare(tracks_path.size() - std::char_traits<char>::length(suffix),
+                          std::char_traits<char>::length(suffix), suffix) == 0)
+    return tracks_path.substr(0, tracks_path.size() - std::char_traits<char>::length(suffix)) +
+           ".isat_graph";
+  return tracks_path + ".isat_graph";
+}
 
 /**
  * Phase 0+1 pipeline: block-interleaved parallel I/O + serial Union-Find.
@@ -308,7 +326,7 @@ static void fill_pair_raw(PairRawData& out,
 // Serial UF over one block of pre-loaded pairs, capturing coords on first node creation.
 static void uf_block(UnionFind* uf, const std::vector<PairDesc>& pairs,
                      const std::vector<int>& idx_list, const std::vector<PairRawData>& blk_raw,
-                     int& merged, int& rejected) {
+                     int& merged, int& rejected, std::ofstream* edge_spool) {
   const int blk_n = static_cast<int>(idx_list.size());
   for (int bi = 0; bi < blk_n; ++bi) {
     const PairRawData& rd = blk_raw[static_cast<size_t>(bi)];
@@ -316,8 +334,13 @@ static void uf_block(UnionFind* uf, const std::vector<PairDesc>& pairs,
     const uint32_t img1 = pairs[static_cast<size_t>(idx_list[bi])].image1_index;
     const uint32_t img2 = pairs[static_cast<size_t>(idx_list[bi])].image2_index;
     for (const InlierMatch& im : rd.matches) {
-      if (uf->merge_keys(node_key(img1, im.idx1), node_key(img2, im.idx2),
-                         im.x1, im.y1, im.s1, im.x2, im.y2, im.s2))
+      const int node1 = uf->get_or_create(node_key(img1, im.idx1), im.x1, im.y1, im.s1);
+      const int node2 = uf->get_or_create(node_key(img2, im.idx2), im.x2, im.y2, im.s2);
+      if (edge_spool && edge_spool->is_open()) {
+        const SpoolEdge edge{node1, node2};
+        edge_spool->write(reinterpret_cast<const char*>(&edge), sizeof(edge));
+      }
+      if (uf->merge_ids(node1, node2))
         ++merged;
       else
         ++rejected;
@@ -326,7 +349,8 @@ static void uf_block(UnionFind* uf, const std::vector<PairDesc>& pairs,
 }
 
 static void phase0_1_pipeline(const std::vector<PairDesc>& pairs, UnionFind* uf,
-                               int& total_loaded, int& total_skipped) {
+                               int& total_loaded, int& total_skipped,
+                               std::ofstream* edge_spool) {
   const int n = static_cast<int>(pairs.size());
   const int log_interval = std::max(1, n / 20);
   std::atomic<int> total_done{0};
@@ -416,7 +440,7 @@ static void phase0_1_pipeline(const std::vector<PairDesc>& pairs, UnionFind* uf,
 
     // Phase 1 for this block (serial, coord-capturing UF).
     int blk_merged = 0, blk_rejected = 0;
-    uf_block(uf, pairs, idx_list, blk_raw, blk_merged, blk_rejected);
+    uf_block(uf, pairs, idx_list, blk_raw, blk_merged, blk_rejected, edge_spool);
     merged_total  += blk_merged;
     rejected_total += blk_rejected;
     total_loaded  += blk_loaded;
@@ -471,7 +495,7 @@ static void phase0_1_pipeline(const std::vector<PairDesc>& pairs, UnionFind* uf,
       }
     }
     int leg_merged = 0, leg_rejected = 0;
-    uf_block(uf, pairs, legacy_idx, leg_raw, leg_merged, leg_rejected);
+    uf_block(uf, pairs, legacy_idx, leg_raw, leg_merged, leg_rejected, edge_spool);
     merged_total  += leg_merged;
     rejected_total += leg_rejected;
     total_loaded  += leg_loaded;
@@ -495,9 +519,11 @@ static void phase0_1_pipeline(const std::vector<PairDesc>& pairs, UnionFind* uf,
 // Memory: ~20 M × 28 B = ~560 MB temporary sort buffer, freed after insert.
 // ─────────────────────────────────────────────────────────────────────────────
 static void phase2_from_nodes(TrackStore* store, UnionFind& uf,
-                               const std::unordered_map<int, int>& root_to_track_id) {
+                               const std::unordered_map<int, int>& root_to_track_id,
+                               std::vector<int>* node_to_obs) {
   struct ObsEntry {
     int      track_id;
+    int      node_id;
     uint32_t image_index;
     uint32_t feature_id;
     float    u, v, scale;
@@ -510,7 +536,7 @@ static void phase2_from_nodes(TrackStore* store, UnionFind& uf,
     const int root = uf.find_by_id(id);
     auto it = root_to_track_id.find(root);
     if (it == root_to_track_id.end()) continue;
-    obs.push_back({it->second,
+    obs.push_back({it->second, id,
                    image_index_from_node_key(key),
                    static_cast<uint32_t>(key & 0xFFFFFFFFu),
                    uf.node_u_[static_cast<size_t>(id)],
@@ -525,12 +551,86 @@ static void phase2_from_nodes(TrackStore* store, UnionFind& uf,
     return a.feature_id < b.feature_id;
   });
 
-  for (const ObsEntry& e : obs)
-    store->add_observation(e.track_id, e.image_index, e.feature_id, e.u, e.v, e.scale);
+  if (node_to_obs) node_to_obs->assign(uf.parent_.size(), -1);
+  for (const ObsEntry& e : obs) {
+    const int obs_id = store->add_observation(e.track_id, e.image_index, e.feature_id, e.u, e.v, e.scale);
+    if (node_to_obs) (*node_to_obs)[static_cast<size_t>(e.node_id)] = obs_id;
+  }
 
   LOG(INFO) << "Phase 2: " << obs.size() << " observations from "
             << uf.node_id_.size() << " unique features";
   // obs freed here (~560 MB released).
+}
+
+// Build sparse graphs from the real verified edge spool. The spool is intentionally
+// replayed after UF and observation creation, so no inferred complete graph edges can enter.
+static bool build_initial_graphs(TrackStore* store, const std::string& spool_path,
+                                 const std::vector<int>& node_to_obs,
+                                 TrackGraphStore* graphs, int* removed_obs) {
+  if (!store || !graphs) return false;
+  const size_t n_tracks = store->num_tracks();
+  std::vector<std::vector<TrackGraphStore::Edge>> edges_by_track(n_tracks);
+  std::vector<int32_t> obs_to_local(store->num_observations(), -1);
+  int removed = 0;
+  for (size_t t = 0; t < n_tracks; ++t) {
+    const auto& ids = store->track_all_obs_ids_view(static_cast<int>(t));
+    size_t alive_degree = 0;
+    for (int obs_id : ids) if (store->is_obs_valid(obs_id)) ++alive_degree;
+    if (alive_degree <= 3) {
+      for (int obs_id : ids) {
+        if (store->is_obs_valid(obs_id)) {
+          store->mark_observation_deleted(obs_id);
+          ++removed;
+        }
+      }
+      continue;
+    }
+    size_t local = 0;
+    for (int obs_id : ids) {
+      if (!store->is_obs_valid(obs_id)) continue;
+      obs_to_local[static_cast<size_t>(obs_id)] = static_cast<int32_t>(local++);
+    }
+  }
+
+  std::ifstream spool(spool_path, std::ios::binary);
+  if (!spool.is_open()) return false;
+  SpoolEdge raw;
+  while (spool.read(reinterpret_cast<char*>(&raw), sizeof(raw))) {
+    if (raw.node1 < 0 || raw.node2 < 0 ||
+        static_cast<size_t>(raw.node1) >= node_to_obs.size() ||
+        static_cast<size_t>(raw.node2) >= node_to_obs.size())
+      continue;
+    const int obs1 = node_to_obs[static_cast<size_t>(raw.node1)];
+    const int obs2 = node_to_obs[static_cast<size_t>(raw.node2)];
+    if (obs1 < 0 || obs2 < 0 || static_cast<size_t>(obs1) >= obs_to_local.size() ||
+        static_cast<size_t>(obs2) >= obs_to_local.size())
+      continue;
+    const int32_t local1 = obs_to_local[static_cast<size_t>(obs1)];
+    const int32_t local2 = obs_to_local[static_cast<size_t>(obs2)];
+    if (local1 < 0 || local2 < 0) continue;
+    const int t1 = store->obs_track_id(obs1);
+    const int t2 = store->obs_track_id(obs2);
+    if (t1 < 0 || t1 != t2 || !store->is_obs_valid(obs1) || !store->is_obs_valid(obs2)) continue;
+    if (store->obs_image_index(obs1) == store->obs_image_index(obs2)) continue;
+    edges_by_track[static_cast<size_t>(t1)].push_back(
+        {static_cast<uint32_t>(local1), static_cast<uint32_t>(local2)});
+  }
+  for (size_t t = 0; t < n_tracks; ++t) {
+    const auto& ids = store->track_all_obs_ids_view(static_cast<int>(t));
+    size_t degree = 0;
+    for (int obs_id : ids) if (store->is_obs_valid(obs_id)) ++degree;
+    if (degree < 4) continue;
+    std::string error;
+    const uint32_t graph_id = graphs->add_graph(static_cast<uint32_t>(t), degree,
+                                                  edges_by_track[t], &error);
+    if (graph_id == TrackStore::kInvalidGraphId) {
+      LOG(ERROR) << "build_initial_graphs: " << error << " track=" << t;
+      return false;
+    }
+    store->set_track_graph_id(static_cast<int>(t), graph_id);
+  }
+  if (removed_obs) *removed_obs = removed;
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -636,20 +736,45 @@ int main(int argc, char* argv[]) {
 
   if (stats_only) {
     TrackStore store;
+    TrackGraphStore graph_store;
     std::vector<uint32_t> image_indices;
     ViewGraph view_graph;
-    if (!load_track_store_from_idc(output_path, &store, &image_indices, &view_graph))
+    if (!load_track_store_from_idc(output_path, &store, &image_indices, &view_graph, nullptr,
+                                   &graph_store))
       return 1;
+    bool graph_valid = true;
+    std::string graph_error;
+    for (uint32_t g = 0; g < graph_store.num_graphs(); ++g) {
+      if (!graph_store.validate_graph(g, &graph_error)) {
+        graph_valid = false;
+        break;
+      }
+    }
+    const auto& graph_nodes = graph_store.graph_node_offset();
+    const auto& graph_adj = graph_store.graph_adj_offset();
+    const uint64_t total_nodes = graph_nodes.empty() ? 0u : graph_nodes.back();
+    const uint64_t total_adj = graph_adj.empty() ? 0u : graph_adj.back();
     LOG(INFO) << "Tracks: " << store.num_tracks() << "  Observations: " << store.num_observations()
               << "  Images: " << image_indices.size()
-              << "  view_graph_pairs: " << view_graph.num_pairs();
+              << "  view_graph_pairs: " << view_graph.num_pairs()
+              << "  track_graphs: " << graph_store.num_graphs()
+              << "  graph_nodes: " << total_nodes
+              << "  graph_edges: " << total_adj / 2u;
     print_event({{"type", "tracks.stats"},
                 {"ok", true},
                 {"data",
                  {{"num_tracks", static_cast<int>(store.num_tracks())},
                   {"num_observations", static_cast<int>(store.num_observations())},
                   {"num_images", static_cast<int>(image_indices.size())},
-                  {"view_graph_pairs", static_cast<int>(view_graph.num_pairs())}}}});
+                  {"view_graph_pairs", static_cast<int>(view_graph.num_pairs())},
+                  {"track_graphs", static_cast<int>(graph_store.num_graphs())},
+                  {"graph_nodes", static_cast<uint64_t>(total_nodes)},
+                  {"graph_adjacency_entries", static_cast<uint64_t>(total_adj)},
+                  {"graph_undirected_edges", static_cast<uint64_t>(total_adj / 2u)},
+                  {"graph_csr_valid", graph_valid},
+                  {"graph_error", graph_valid ? std::string() : graph_error}}}});
+    if (!graph_valid)
+      return 1;
     return 0;
   }
 
@@ -716,7 +841,14 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Phase 0+1: loading+UF " << pairs.size() << " pairs (block-interleaved)...";
   auto t0 = std::chrono::steady_clock::now();
   int loaded_count = 0, skipped_count = 0;
-  phase0_1_pipeline(pairs, &uf, loaded_count, skipped_count);
+  const std::string spool_path = output_path + ".graph_edges.tmp";
+  std::ofstream edge_spool(spool_path, std::ios::binary | std::ios::trunc);
+  if (!edge_spool.is_open()) {
+    LOG(ERROR) << "Cannot create graph edge spool: " << spool_path;
+    return 1;
+  }
+  phase0_1_pipeline(pairs, &uf, loaded_count, skipped_count, &edge_spool);
+  edge_spool.close();
   auto t1 = std::chrono::steady_clock::now();
   LOG(INFO) << "Phase 0+1 wall time: "
             << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms";
@@ -743,11 +875,22 @@ int main(int argc, char* argv[]) {
   // ── Phase 2: observations from UF node iteration (O(N_unique_features)) ───
   LOG(INFO) << "Phase 2: filling " << uf.node_id_.size() << " unique feature observations...";
   auto t2 = std::chrono::steady_clock::now();
-  phase2_from_nodes(&store, uf, root_to_track_id);
+  std::vector<int> node_to_obs;
+  phase2_from_nodes(&store, uf, root_to_track_id, &node_to_obs);
   auto t3 = std::chrono::steady_clock::now();
   LOG(INFO) << "Phase 2 wall time: "
             << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms";
   LOG(INFO) << "Phase 2: " << store.num_observations() << " observations";
+
+  TrackGraphStore graph_store;
+  int removed_low_degree_obs = 0;
+  if (!build_initial_graphs(&store, spool_path, node_to_obs, &graph_store,
+                            &removed_low_degree_obs)) {
+    LOG(ERROR) << "Failed to build initial track graphs";
+    fs::remove(spool_path);
+    return 1;
+  }
+  fs::remove(spool_path);
 
   // Release UF (~1.1 GB: node_id_ ~400 MB, node_uvs ~240 MB, component_images_ headers ~480 MB)
   // and root_to_track_id (~400 MB elements + ~128 MB bucket array) immediately.
@@ -756,42 +899,34 @@ int main(int argc, char* argv[]) {
   uf = UnionFind{};
   root_to_track_id = std::unordered_map<int,int>();
 
-  // ── Optional degree filter ─────────────────────────────────────────────────
-  const TrackStore* store_to_save = &store;
-  TrackStore filtered_store;
-  if (min_track_length > 1) {
-    const FilterStats fstats = compact_tracks_min_degree(store, n_images, min_track_length,
-                                                         &filtered_store);
-    LOG(INFO) << "Degree filter (min=" << min_track_length << "):"
-              << "  removed_tracks=" << fstats.removed_tracks
-              << "  removed_obs=" << fstats.removed_obs
-              << "  kept_tracks=" << fstats.out_tracks
-              << "  kept_obs=" << fstats.out_obs;
-    store_to_save = &filtered_store;
-    // Release the unfiltered store (~560 MB) now that filtered_store is canonical.
-    store = TrackStore{};
-  }
-
   std::vector<std::pair<uint32_t, uint32_t>> direct_pairs;
   direct_pairs.reserve(pairs.size());
   for (const auto& p : pairs)
     direct_pairs.emplace_back(p.image1_index, p.image2_index);
 
   ViewGraph view_graph;
-  if (!build_view_graph_from_pairs_list_and_track_store(direct_pairs, geo_dir, *store_to_save,
+  if (!build_view_graph_from_pairs_list_and_track_store(direct_pairs, geo_dir, store,
                                                       &view_graph)) {
-    LOG(ERROR) << "Failed to build view graph from pairs list + filtered tracks + geo_dir";
+    LOG(ERROR) << "Failed to build view graph from pairs list + graph tracks + geo_dir";
     return 1;
   }
-  if (!save_track_store_to_idc(*store_to_save, image_indices, output_path, &view_graph))
+  TrackSaveOptions save_options;
+  save_options.include_graph_lineage = true;
+  if (!save_track_store_to_idc(store, image_indices, output_path, &view_graph, &save_options))
+    return 1;
+  if (!save_track_graph_to_idc(graph_store, graph_sidecar_path(output_path)))
     return 1;
   print_event({{"type", "tracks.build"},
               {"ok", true},
               {"data",
-               {{"output", output_path},
+                {{"output", output_path},
+                {"graph_output", graph_sidecar_path(output_path)},
                 {"min_track_length", min_track_length},
-                {"num_tracks", static_cast<int>(store_to_save->num_tracks())},
-                {"num_observations", static_cast<int>(store_to_save->num_observations())},
+                {"design_min_graph_degree", 4},
+                {"removed_low_degree_observations", removed_low_degree_obs},
+                {"num_tracks", static_cast<int>(store.num_tracks())},
+                {"num_observations", static_cast<int>(store.num_observations())},
+                {"num_graphs", static_cast<int>(graph_store.num_graphs())},
                 {"view_graph_pairs", static_cast<int>(view_graph.num_pairs())}}}});
   return 0;
 }
