@@ -72,7 +72,12 @@ jobs:
           }
 
           $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
-          & $nvcc_path --version
+          Write-Host "Using nvcc: $nvcc_path"
+          $nvcc = Start-Process -FilePath $nvcc_path -ArgumentList @("--version") -Wait -NoNewWindow -PassThru
+          if ($nvcc.ExitCode -ne 0) {
+            Write-Error "nvcc --version failed with exit code $($nvcc.ExitCode)"
+            exit 1
+          }
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $cuda_path "bin")
           Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=$cuda_path"
           Add-Content -Path $env:GITHUB_ENV -Value "CUDA_BIN_PATH=$(Join-Path $cuda_path 'bin')"
