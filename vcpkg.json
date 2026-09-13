@@ -12,9 +12,6 @@
         "schur"
       ]
     },
-    "boost-filesystem",
-    "boost-program-options",
-    "boost-system",
     "egl",
     "eigen3",
     "gflags",
