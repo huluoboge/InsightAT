@@ -9,6 +9,11 @@ BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build-cuda-12.8}"
 OUTPUT_DIR="${DEB_OUTPUT_DIR:-${REPO_ROOT}/build-deb}"
 UPSTREAM_VERSION="${VERSION:-$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")}"
 DEB_VERSION="${DEB_VERSION:-${UPSTREAM_VERSION}-1}"
+# Debian versions must begin with a digit (or an epoch). CI versions may use a
+# short commit SHA, so keep their ordering while making them dpkg-compatible.
+if [[ ! "${DEB_VERSION}" =~ ^[0-9] && ! "${DEB_VERSION}" =~ ^[0-9]+: ]]; then
+  DEB_VERSION="0~${DEB_VERSION}"
+fi
 PACKAGE_NAME="${DEB_PACKAGE_NAME:-insightat}"
 ARCH="$(dpkg --print-architecture)"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/insightat-deb.XXXXXX")"

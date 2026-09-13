@@ -14,6 +14,10 @@ APPIMAGE_RUNTIME_FILE="${APPIMAGE_RUNTIME_FILE:-${LDAI_RUNTIME_FILE:-}}"
 KEEP_APPDIR="${KEEP_APPDIR:-0}"
 VERSION="${VERSION:-$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")-cuda12.8}"
 PACKAGE_NAME="${GUI_DEB_PACKAGE_NAME:-insightat-simple-gui}"
+DEB_VERSION="${GUI_DEB_VERSION:-${VERSION}-1}"
+if [[ ! "${DEB_VERSION}" =~ ^[0-9] && ! "${DEB_VERSION}" =~ ^[0-9]+: ]]; then
+  DEB_VERSION="0~${DEB_VERSION}"
+fi
 ELECTRON_VERSION="$(node -p "require('${GUI_DIR}/package.json').devDependencies.electron")"
 ELECTRON_DIST="${GUI_DIR}/node_modules/electron/dist"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/insightat-simple-gui.XXXXXX")"
@@ -204,7 +208,7 @@ write_app_files "${DEB_ROOT}"
 mkdir -p "${DEB_ROOT}/DEBIAN"
 cat > "${DEB_ROOT}/DEBIAN/control" <<EOF
 Package: ${PACKAGE_NAME}
-Version: ${VERSION}-1
+Version: ${DEB_VERSION}
 Section: graphics
 Priority: optional
 Architecture: amd64
@@ -219,7 +223,7 @@ cat > "${DEB_ROOT}/usr/bin/insightat-simple" <<'EOF'
 exec /usr/lib/insightat-simple/InsightAT-Simple --no-sandbox "$@"
 EOF
 chmod +x "${DEB_ROOT}/usr/bin/insightat-simple"
-dpkg-deb --build --root-owner-group "${DEB_ROOT}" "${DEB_OUTPUT_DIR}/${PACKAGE_NAME}_${VERSION}-1_amd64.deb" >/dev/null
+dpkg-deb --build --root-owner-group "${DEB_ROOT}" "${DEB_OUTPUT_DIR}/${PACKAGE_NAME}_${DEB_VERSION}_amd64.deb" >/dev/null
 
 echo "Simple GUI AppImage: ${FINAL_APPIMAGE}"
-echo "Simple GUI DEB: ${DEB_OUTPUT_DIR}/${PACKAGE_NAME}_${VERSION}-1_amd64.deb"
+echo "Simple GUI DEB: ${DEB_OUTPUT_DIR}/${PACKAGE_NAME}_${DEB_VERSION}_amd64.deb"
