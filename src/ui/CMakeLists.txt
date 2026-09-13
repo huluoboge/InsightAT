@@ -142,7 +142,7 @@ target_link_libraries(InsightATUI
         util
         stlplus3
         render
-        pthread
+        Threads::Threads
         ${GDAL_LIBRARIES}
 )
 

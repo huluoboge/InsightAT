@@ -5,9 +5,9 @@
 Build from the **repository root**:
 
 ```bash
-./compile_appimage.sh
+./scripts/package/compile_appimage.sh
 # optional:
-#   INSIGHTAT_BUILD_DIR=/path/to/build ./compile_appimage.sh
+#   INSIGHTAT_BUILD_DIR=/path/to/build ./scripts/package/compile_appimage.sh
 #   BUNDLE_PYTHON=0                 # do not ship host python3 + stdlib
 #   BUNDLE_PYTHON_DIST=1            # also copy Debian dist-packages (numpy/matplotlib; large)
 ```
@@ -46,6 +46,6 @@ Output: `build-appimage/InsightAT-x86_64.AppImage` (under `build-*`, gitignored)
 # Then run scripts under the printed .../usr/share/InsightAT/scripts/ using the same AppImage + python3 prefix.
 ```
 
-For `numpy`-heavy scripts, rebuild with `BUNDLE_PYTHON_DIST=1 ./compile_appimage.sh` (larger image).
+For `numpy`-heavy scripts, rebuild with `BUNDLE_PYTHON_DIST=1 ./scripts/package/compile_appimage.sh` (larger image).
 
-**Qt / `at_bundler_viewer`:** if you see `Cannot mix incompatible Qt library (5.15.A) with this library (5.15.B)`, the AppImage was loading **Qt from the system** (plugins/platforms) and **Qt from the bundle** (libs) from two different patch releases. The script uses **`linuxdeploy-plugin-qt`** and **`QMAKE` must match the Qt that built `at_bundler_viewer`**. The default is to read `Qt5Core_QMAKE_EXECUTABLE` from `INSIGHTAT_BUILD_DIR/CMakeCache.txt`, or you can set `INSIGHTAT_QMAKE=/path/to/qmake` before running `./compile_appimage.sh`. Rebuild the AppImage after this change; no change is needed to your library install on the target machine.
+**Qt / `at_bundler_viewer`:** if you see `Cannot mix incompatible Qt library (5.15.A) with this library (5.15.B)`, the AppImage was loading **Qt from the system** (plugins/platforms) and **Qt from the bundle** (libs) from two different patch releases. The script uses **`linuxdeploy-plugin-qt`** and **`QMAKE` must match the Qt that built `at_bundler_viewer`**. The default is to read `Qt5Core_QMAKE_EXECUTABLE` from `INSIGHTAT_BUILD_DIR/CMakeCache.txt`, or you can set `INSIGHTAT_QMAKE=/path/to/qmake` before running `./scripts/package/compile_appimage.sh`. Rebuild the AppImage after this change; no change is needed to your library install on the target machine.

@@ -33,4 +33,4 @@ Two families are kept explicit to avoid cross-domain confusion:
 - **Library** — `rotation_utils.h` converts between OPK, ypr, quaternions, and `Eigen::Matrix3d`
 - **Config** — `CoordinateSystemDescriptor::rotation_convention` records the active convention so transforms stay consistent and avoid ad hoc assumptions
 
-For deeper rotation notes (Chinese), see [dev-notes/rotation/rotation_readme.md](../../dev-notes/rotation/rotation_readme.md).
+For the detailed rotation standards and quick reference, see [design/rotation/](rotation/README.md).

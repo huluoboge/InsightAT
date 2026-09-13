@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# compile-11.8-1060.sh
+# Build InsightAT with CUDA 11.8 on GTX 1060 (sm_61).
+#
+# Fixes addressed:
+#   1. Force CUDA 11.8 nvcc (/usr/local/cuda-11.8/bin/nvcc) to avoid the
+#      system-installed /usr/bin/nvcc wrapper (CUDA 11.5) being picked up
+#      by CMake, which does not support compute_89/90.
+#   2. CUDA architectures: native binaries for Pascal→Ada + PTX for forward
+#      compat (89-virtual covers Ada and newer via JIT).
+#   3. SIFTGPU_ENABLE_CUDA=ON explicitly passed so SiftGPU CUDA backend builds.
+
+set -e
+
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build-ceres-11.8}"
+CUDA_ROOT="${INSIGHTAT_CUDA_ROOT:-/usr/local/cuda-11.8}"
+NVCC="${INSIGHTAT_NVCC:-${CUDA_ROOT}/bin/nvcc}"
+
+if [[ ! -x "${NVCC}" ]]; then
+    echo "ERROR: nvcc not found at ${NVCC}" >&2
+    exit 1
+fi
+
+mkdir -p "${BUILD_DIR}"
+cd "${BUILD_DIR}"
+
+cmake "${REPO_ROOT}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_COMPILER="${NVCC}" \
+    -DCUDAToolkit_ROOT="${CUDA_ROOT}" \
+    -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" \
+    -DCeres_DIR="$HOME/.local/ceres-cuda118/lib/cmake/Ceres" \
+    -DSIFTGPU_ENABLE_CUDA=ON \
+    "$@"
+
+make -j"$(nproc)"

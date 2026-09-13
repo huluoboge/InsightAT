@@ -1,0 +1,87 @@
+name: Build Linux Packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-packages-main
+  cancel-in-progress: true
+
+jobs:
+  build-linux-packages:
+    name: Build CUDA 12.8 Linux packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      IMAGE_NAME: insightat:cuda12.8-${{ github.sha }}
+      OUTPUT_DIR: linux-packages
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
+
+      - name: Build Docker image
+        run: |
+          docker build --progress=plain \
+            --file cuda12.8.dockerfile \
+            --tag "${IMAGE_NAME}" \
+            --build-arg INSIGHTAT_VERSION="${GITHUB_SHA::12}-cuda12.8" \
+            .
+
+      - name: Extract package artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p "${OUTPUT_DIR}/appimage" "${OUTPUT_DIR}/deb"
+          container_id="$(docker create "${IMAGE_NAME}")"
+          cleanup() {
+            docker rm -f "${container_id}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker cp "${container_id}:/workspace/insightat/build-appimage-cuda12.8/." "${OUTPUT_DIR}/appimage/"
+          docker cp "${container_id}:/workspace/insightat/build-deb-cuda12.8/." "${OUTPUT_DIR}/deb/"
+          docker cp "${container_id}:/workspace/insightat/build-appimage-simple-gui/." "${OUTPUT_DIR}/appimage/"
+          docker cp "${container_id}:/workspace/insightat/build-deb-simple-gui/." "${OUTPUT_DIR}/deb/"
+
+          appimage="$(find "${OUTPUT_DIR}/appimage" -maxdepth 1 -type f -name 'InsightAT-*.AppImage' ! -name 'InsightAT-Simple-*.AppImage' -print -quit)"
+          simple_appimage="$(find "${OUTPUT_DIR}/appimage" -maxdepth 1 -type f -name 'InsightAT-Simple-*.AppImage' -print -quit)"
+          deb="$(find "${OUTPUT_DIR}/deb" -maxdepth 1 -type f -name 'insightat_*.deb' -print -quit)"
+          simple_deb="$(find "${OUTPUT_DIR}/deb" -maxdepth 1 -type f -name 'insightat-simple-gui_*.deb' -print -quit)"
+          test -n "${appimage}" && test -n "${simple_appimage}"
+          test -n "${deb}" && test -n "${simple_deb}"
+
+          (
+            cd "$(dirname "${appimage}")"
+            sha256sum -c "$(basename "${appimage}").sha256"
+            sha256sum -c "$(basename "${simple_appimage}").sha256"
+          )
+          dpkg-deb --info "${deb}"
+          dpkg-deb --info "${simple_deb}"
+          dpkg-deb --contents "${deb}" | sed -n '1,40p'
+          dpkg-deb --contents "${simple_deb}" | sed -n '1,40p'
+
+      - name: Upload AppImage and DEB artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: InsightAT-linux-cuda12.8-${{ github.sha }}
+          path: |
+            linux-packages/appimage/*.AppImage
+            linux-packages/appimage/*.sha256
+            linux-packages/deb/*.deb
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

@@ -130,8 +130,12 @@ function commandCandidates(binDir, exeName) {
   if (binDir) candidates.push(path.join(binDir, exeName));
   if (process.env.ISAT_BIN_DIR) candidates.push(path.join(process.env.ISAT_BIN_DIR, exeName));
 
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'bin', exeName));
+  }
+
   const repoRoot = path.resolve(__dirname, '..', '..');
-  for (const dir of ['build-ceres-12.8', 'build-local', 'build']) {
+  for (const dir of ['build-cuda-12.8', 'build-local', 'build']) {
     candidates.push(path.join(repoRoot, dir, exeName));
   }
   candidates.push(exeName);
@@ -156,9 +160,13 @@ function sensorDbCandidates(binDir) {
     candidates.push(path.join(process.env.ISAT_BIN_DIR, 'data', 'config', 'camera_sensor_database.txt'));
     candidates.push(path.join(process.env.ISAT_BIN_DIR, 'config', 'camera_sensor_database.txt'));
   }
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'data', 'config', 'camera_sensor_database.txt'));
+    candidates.push(path.join(process.resourcesPath, 'bin', 'data', 'config', 'camera_sensor_database.txt'));
+  }
   const repoRoot = path.resolve(__dirname, '..', '..');
-  candidates.push(path.join(repoRoot, 'build-ceres-12.8', 'data', 'config', 'camera_sensor_database.txt'));
-  candidates.push(path.join(repoRoot, 'build-ceres-12.8', 'config', 'camera_sensor_database.txt'));
+  candidates.push(path.join(repoRoot, 'build-cuda-12.8', 'data', 'config', 'camera_sensor_database.txt'));
+  candidates.push(path.join(repoRoot, 'build-cuda-12.8', 'config', 'camera_sensor_database.txt'));
   return candidates;
 }
 
@@ -220,6 +228,9 @@ function buildEnv(state, command) {
     binDir,
     path.join(binDir, 'third_party', 'popsift', 'Linux-x86_64')
   ];
+  if (process.resourcesPath) {
+    extraLibs.push(path.join(process.resourcesPath, 'lib'));
+  }
   env.LD_LIBRARY_PATH = [extraLibs.join(':'), env.LD_LIBRARY_PATH || ''].filter(Boolean).join(':');
   return env;
 }

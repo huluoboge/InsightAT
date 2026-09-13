@@ -24,7 +24,12 @@ if(CUDAToolkit_FOUND)
 endif()
 
 find_package(Eigen3 REQUIRED)
-find_package(Ceres QUIET)
+# Ceres is required by the top-level project and its imported cuDSS targets
+# must remain in the directory where the package was first loaded. Reusing the
+# existing target avoids re-running CeresConfig.cmake in this subdirectory.
+if(NOT Ceres_FOUND)
+    find_package(Ceres QUIET)
+endif()
 if(CUDAToolkit_FOUND)
     find_package(CUDA QUIET)
 endif()

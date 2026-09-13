@@ -9,7 +9,7 @@ Entry point for **installing, running, benchmarking, and integrating** InsightAT
 | Doc | What it is |
 |-----|------------|
 | [../../README.md](../../README.md) | Overview, **Docker-first** quick start, features, benchmark figures |
-| [../../DOCKER_BUILD.md](../../DOCKER_BUILD.md) | Image build, `docker-test.sh`, GPU and container notes |
+| [../../DOCKER_BUILD.md](../../DOCKER_BUILD.md) | Docker image build, `scripts/docker/` entry points, GPU and container notes |
 | [../../benchmarks/README.md](../../benchmarks/README.md) | ETH3D-style data prep, batch runs, comparison scripts |
 | [../../THIRD_PARTY_LICENSES.md](../../THIRD_PARTY_LICENSES.md) | Third-party licenses |
 

@@ -32,9 +32,9 @@ This area holds **comparatively stable** norms and system design. If it conflict
 
 **Audience:** maintainers; traceability for refactors, agent-assisted sessions, and draft plans.
 
-→ **[dev-notes/README.md](dev-notes/README.md)**
+→ **[dev-notes/README.md](dev-notes/README.md)** · **[dev-notes/archive/](dev-notes/archive/README.md)**
 
-**Nature:** process notes, scratch thinking, and experiments; **material that is not final** lives here (including per-tool write-ups under `tools/`, and `rotation/` notes). It is **not** a substitute for end-user documentation.
+**Nature:** process notes, scratch thinking, and experiments; **material that is not final** lives here (including per-tool write-ups under `tools/`, and `rotation/` notes). Completed reports and historical logs are grouped under [`dev-notes/archive/`](dev-notes/archive/README.md). It is **not** a substitute for end-user documentation.
 
 ---
 
@@ -48,7 +48,7 @@ Ad-hoc notes; promote into `develop/` or the root `README` when a topic matures.
 
 | Item | Note |
 |------|------|
-| [dev-notes/RELEASE_PLAN_v0.1.md](dev-notes/RELEASE_PLAN_v0.1.md) | v0.1 release **planning draft** (not a user guide) |
+| [dev-notes/archive/RELEASE_PLAN_v0.1.md](dev-notes/archive/RELEASE_PLAN_v0.1.md) | v0.1 release **planning draft** (not a user guide) |
 
 If `insightat_promo_*.md` (or similar) exists at the repo or `doc/` root, treat it as **marketing / community copy**, not an operator’s manual.
 

@@ -24,7 +24,7 @@ Batch outputs:
 Example:
   python3 scripts/run_seed_eval_batch.py \
     -d /home/jones/Data/01-benchmark/03-insightat/scenes \
-    --build-dir /home/jones/Git/01jones/InsightAT/build-ceres-12.8
+    --build-dir /home/jones/Git/01jones/InsightAT/build-cuda-12.8
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ def main() -> int:
     ap.add_argument("-d", "--dataset-root", required=True, help="Scenes root directory")
     ap.add_argument(
         "--build-dir",
-        default=str(REPO_ROOT / "build-ceres-12.8"),
+        default=str(REPO_ROOT / "build-cuda-12.8"),
         help="Build directory containing isat_seed_eval and isat_incremental_sfm",
     )
     ap.add_argument(

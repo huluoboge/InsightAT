@@ -10,7 +10,7 @@
 |-------|------|
 | **Design index (01–12)** | [design/index.md](design/index.md) |
 | **Coding style, CLI, IDC, …** | Numbered files under `design/` |
-| **Build, dependencies, Docker, optional Ceres+CUDA** | [build.md](build.md) (keep in sync with the root `Dockerfile` and `DOCKER_BUILD.md`) |
+| **Build, dependencies, Docker, optional Ceres+CUDA** | [build.md](build.md) (keep in sync with the root `*.dockerfile` files and `DOCKER_BUILD.md`) |
 
 ## `doc/develop/` vs `doc/dev-notes/`
 

@@ -46,7 +46,7 @@ Historical design notes and architecture drafts live under [doc/develop/design/]
 
 ### 构建与依赖
 
-- **CUDA 12.8**：提供与 Ceres 2.3+ **CUDA_SPARSE（cuDSS / cuSPARSE）** 协同的构建路径；默认关闭 **SiftGPU**（上游未适配 CUDA 12）。若需要 SiftGPU，可在 **CUDA 11.8** 下将 `INSIGHTAT_ENABLE_SIFTGPU=ON` 单独构建。参考根目录 `compile_appimage-12.8.sh` 对 `libcudss` 与 `LD_LIBRARY_PATH` 的说明。
+- **CUDA 12.8**：提供与 Ceres 2.3+ **CUDA_SPARSE（cuDSS / cuSPARSE）** 协同的构建路径；默认关闭 **SiftGPU**（上游未适配 CUDA 12）。若需要 SiftGPU，可在 **CUDA 11.8** 下将 `INSIGHTAT_ENABLE_SIFTGPU=ON` 单独构建。参考 [`scripts/package/compile_appimage-12.8.sh`](../../scripts/package/compile_appimage-12.8.sh) 对 `libcudss` 与 `LD_LIBRARY_PATH` 的说明。
 
 ### 算法与性能
 
@@ -61,12 +61,12 @@ Historical design notes and architecture drafts live under [doc/develop/design/]
 
 ### 基准与发布说明
 
-- ETH3D 训练子集 13 scenes 批跑对比表与作图脚本： [doc/dev-notes/release-v0.2.0.md](release-v0.2.0.md)、`benchmarks/sfm_compare/plot_eth3d_release_triple.py`。
+- ETH3D 训练子集 13 scenes 批跑对比表与作图脚本： [v0.2.0 发布说明](../develop/release/v0.2.0.md)、`benchmarks/sfm_compare/plot_eth3d_release_triple.py`。
 
 ---
 
 ## 版本说明
 
 - **Unreleased**：当前开发状态，API 与数据格式可能变动，不建议用于生产环境。
-- **0.2.0**：见上文与 [release-v0.2.0.md](release-v0.2.0.md)。
+- **0.2.0**：见上文与 [v0.2.0 发布说明](../develop/release/v0.2.0.md)。
 - **0.1.0**：首个带 AppImage/CLI 打包与公开版本说明的标签版本。
