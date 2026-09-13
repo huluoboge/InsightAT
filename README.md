@@ -37,8 +37,10 @@ See all assets and release notes on the [Releases page](https://github.com/huluo
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git
 cd InsightAT
-docker build -t insightat:cuda11.8 -f Dockerfile .
+docker build -t insightat:cuda11.8 -f cuda11.8.dockerfile .
 ```
+
+For CUDA-version-specific local builds, AppImage packaging, or the CUDA 12.8 Docker pipeline, see [`scripts/README.md`](scripts/README.md).
 
 ### Basic Usage
 The core executable is `isat_sfm`.

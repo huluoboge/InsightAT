@@ -14,12 +14,15 @@
         "suitesparse"
       ]
     },
-    "cuda",
+    "boost-filesystem",
+    "boost-program-options",
+    "boost-system",
     "egl",
     "eigen3",
     "gflags",
     "glew",
     "glog",
+    "gtest",
     {
       "name": "gdal",
       "default-features": false,

@@ -34,8 +34,10 @@ Ubuntu 用户可以根据系统版本下载对应的 AppImage：
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git
 cd InsightAT
-docker build -t insightat:cuda11.8 -f Dockerfile .
+docker build -t insightat:cuda11.8 -f cuda11.8.dockerfile .
 ```
+
+需要按 CUDA 版本编译、制作 AppImage 或运行 CUDA 12.8 Docker 流程时，参见 [`scripts/README.md`](scripts/README.md)。
 
 ### 使用说明
 重建主程序为 `isat_sfm`

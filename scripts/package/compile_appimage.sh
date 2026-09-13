@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)
 APPIMAGE_OUT_DIR="${APPIMAGE_OUT_DIR:-${REPO_ROOT}/build-appimage}"
 TOOLS_DIR="${APPIMAGE_OUT_DIR}/.tools"
 APPDIR="${APPIMAGE_OUT_DIR}/InsightAT.AppDir"
@@ -261,8 +261,9 @@ if [[ -n "$OUT_IMG" ]]; then
 
   # ── SHA256 checksum ────────────────────────────────────────────────────────
   SHA256_FILE="${OUT_IMG}.sha256"
+  OUT_BASENAME="$(basename "$OUT_IMG")"
   echo "Generating SHA256: $(sha256sum "$OUT_IMG" | cut -d' ' -f1)"
-  sha256sum "$OUT_IMG" > "$SHA256_FILE"
+  (cd "$(dirname "$OUT_IMG")" && sha256sum "$OUT_BASENAME") > "$SHA256_FILE"
   echo "SHA256 file: $SHA256_FILE"
 else
   echo "Expected an *.AppImage under ${APPIMAGE_OUT_DIR}/"

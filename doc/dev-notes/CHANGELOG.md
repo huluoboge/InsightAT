@@ -46,7 +46,7 @@ Historical design notes and architecture drafts live under [doc/develop/design/]
 
 ### 构建与依赖
 
-- **CUDA 12.8**：提供与 Ceres 2.3+ **CUDA_SPARSE（cuDSS / cuSPARSE）** 协同的构建路径；默认关闭 **SiftGPU**（上游未适配 CUDA 12）。若需要 SiftGPU，可在 **CUDA 11.8** 下将 `INSIGHTAT_ENABLE_SIFTGPU=ON` 单独构建。参考根目录 `compile_appimage-12.8.sh` 对 `libcudss` 与 `LD_LIBRARY_PATH` 的说明。
+- **CUDA 12.8**：提供与 Ceres 2.3+ **CUDA_SPARSE（cuDSS / cuSPARSE）** 协同的构建路径；默认关闭 **SiftGPU**（上游未适配 CUDA 12）。若需要 SiftGPU，可在 **CUDA 11.8** 下将 `INSIGHTAT_ENABLE_SIFTGPU=ON` 单独构建。参考 [`scripts/package/compile_appimage-12.8.sh`](../../scripts/package/compile_appimage-12.8.sh) 对 `libcudss` 与 `LD_LIBRARY_PATH` 的说明。
 
 ### 算法与性能
 

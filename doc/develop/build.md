@@ -96,16 +96,16 @@ work/incremental_sfm/
 
 ## Install
 
-> **Recommended:** for most people use the **repo-root `Dockerfile` + [DOCKER_BUILD.md](../../DOCKER_BUILD.md)** to avoid a long `apt` list on the host. The “from source” section below is for developers who `cmake` directly on the host.
+> **Recommended:** for most people use the **repo-root `cuda11.8.dockerfile` + [DOCKER_BUILD.md](../../DOCKER_BUILD.md)** to avoid a long `apt` list on the host. The “from source” section below is for developers who `cmake` directly on the host.
 
 ### Docker (same as repo root)
 
 ```bash
 # From repository root
-docker build -t insightat:cuda11.8 -f Dockerfile .
+docker build -t insightat:cuda11.8 -f cuda11.8.dockerfile .
 ```
 
-Run instructions and `docker-test.sh` are in **[DOCKER_BUILD.md](../../DOCKER_BUILD.md)**. Executables (e.g. `isat_sfm`) are on `PATH` inside the image.
+Run instructions and the Docker entry points under `scripts/docker/` are in **[DOCKER_BUILD.md](../../DOCKER_BUILD.md)**. Executables (e.g. `isat_sfm`) are on `PATH` inside the image.
 
 ### Build from source
 
@@ -152,6 +152,12 @@ cmake -S . -B build -DCeres_DIR=/path/to/ceres/lib/cmake/Ceres ...
 ```
 
 This is **not** in the root `README` to keep the default path simple; the distro Ceres is enough for development and normal runs.
+
+### Windows CI with vcpkg
+
+The repository uses vcpkg manifest mode for Windows. Dependencies are declared in [`vcpkg.json`](../../vcpkg.json), while [`vcpkg-configuration.json`](../../vcpkg-configuration.json) pins the registry baseline. CUDA is installed separately by the GitHub Actions runner; it is not installed through the vcpkg manifest.
+
+The `Windows Build` workflow checks out the pinned vcpkg baseline, installs the manifest for the `x64-windows` triplet, configures CMake with `vcpkg.cmake`, and uploads the Release binaries. It runs on `push` and pull requests targeting `main`. GitHub-hosted Windows runners do not provide an NVIDIA GPU, so the workflow compiles CUDA code but skips runtime tests that require actual GPU hardware.
 
 **GUI in Docker (X11 example; full notes in [DOCKER_BUILD.md](../../DOCKER_BUILD.md))**
 

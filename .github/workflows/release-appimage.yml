@@ -77,7 +77,7 @@ jobs:
       - name: Build Docker image
         run: |
           docker build \
-            --file Dockerfile.cuda12.8 \
+            --file cuda12.8.dockerfile \
             --build-arg CMAKE_CUDA_ARCHITECTURES="${{ steps.meta.outputs.cuda_architectures }}" \
             --build-arg INSIGHTAT_VERSION="${{ steps.meta.outputs.version }}" \
             --tag "${IMAGE_NAME}:${{ steps.meta.outputs.version }}" \
@@ -93,9 +93,11 @@ jobs:
           trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
 
           docker cp "${container_id}:/workspace/insightat/build-appimage-cuda12.8/." "${OUTPUT_DIR}/"
+          docker cp "${container_id}:/workspace/insightat/build-deb-cuda12.8/." "${OUTPUT_DIR}/"
 
           find "${OUTPUT_DIR}" -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.sha256' \) -print
           test -n "$(find "${OUTPUT_DIR}" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$(find "${OUTPUT_DIR}" -maxdepth 1 -type f -name '*.deb' -print -quit)"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -104,6 +106,7 @@ jobs:
           path: |
             ${{ env.OUTPUT_DIR }}/*.AppImage
             ${{ env.OUTPUT_DIR }}/*.sha256
+            ${{ env.OUTPUT_DIR }}/*.deb
           if-no-files-found: error
           retention-days: 30
 
@@ -115,4 +118,5 @@ jobs:
           gh release upload "${{ steps.meta.outputs.tag }}" \
             "${OUTPUT_DIR}"/*.AppImage \
             "${OUTPUT_DIR}"/*.sha256 \
+            "${OUTPUT_DIR}"/*.deb \
             --clobber

@@ -1,5 +1,5 @@
 # CUDA 11.8 + Ubuntu 22.04 — build InsightAT (default: PopSift, SiftGPU off).
-# Build:  docker build -t insightat:cuda11.8 -f Dockerfile .
+# Build:  docker build -t insightat:cuda11.8 -f cuda11.8.dockerfile .
 # Run:     docker run --rm --gpus all -it insightat:cuda11.8
 # Pipeline: isat_sfm (see README)
 
@@ -49,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 # Broad GPU coverage; adjust for your deployment (e.g. only 80;86 for datacenter A100s)
-# Updated to match compile-12.8-1060.sh script for consistency
+# Keep the container architecture list aligned with the supported local build presets.
 ARG CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89;90-virtual"
 RUN cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \

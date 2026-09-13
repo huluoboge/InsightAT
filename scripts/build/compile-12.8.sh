@@ -22,9 +22,10 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/build-ceres-12.8"
-NVCC="/usr/local/cuda-12.8/bin/nvcc"
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build-cuda-12.8}"
+CUDA_ROOT="${INSIGHTAT_CUDA_ROOT:-/usr/local/cuda-12.8}"
+NVCC="${INSIGHTAT_NVCC:-${CUDA_ROOT}/bin/nvcc}"
 
 if [[ ! -x "${NVCC}" ]]; then
     echo "ERROR: nvcc not found at ${NVCC}" >&2
@@ -32,7 +33,7 @@ if [[ ! -x "${NVCC}" ]]; then
 fi
 
 # cuDSS + CUDA 12.8 libs first (see note 6 above).
-export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/libcudss/12:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/libcudss/12:${CUDA_ROOT}/lib64:${LD_LIBRARY_PATH:-}"
 
 # CeresConfig find_dependency(CUDAToolkit): if the shell exports CUDAToolkit_ROOT to an
 # older CUDA (e.g. 11.8), CMake may ignore the -D and warn (CMP0074). Force 12.8 only.
@@ -59,10 +60,10 @@ fi
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
-cmake "${SCRIPT_DIR}" \
+cmake "${REPO_ROOT}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_COMPILER="${NVCC}" \
-    -DCUDAToolkit_ROOT=/usr/local/cuda-12.8 \
+    -DCUDAToolkit_ROOT="${CUDA_ROOT}" \
     -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" \
     -DPopSift_BUILD_EXAMPLES=OFF \
     -Dcudss_DIR="${INSIGHTAT_CUDSS_DIR}" \

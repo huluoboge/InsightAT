@@ -12,9 +12,10 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/build-ceres-11.8"
-NVCC="/usr/local/cuda-11.8/bin/nvcc"
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build-ceres-11.8}"
+CUDA_ROOT="${INSIGHTAT_CUDA_ROOT:-/usr/local/cuda-11.8}"
+NVCC="${INSIGHTAT_NVCC:-${CUDA_ROOT}/bin/nvcc}"
 
 if [[ ! -x "${NVCC}" ]]; then
     echo "ERROR: nvcc not found at ${NVCC}" >&2
@@ -24,10 +25,10 @@ fi
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
-cmake "${SCRIPT_DIR}" \
+cmake "${REPO_ROOT}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_COMPILER="${NVCC}" \
-    -DCUDAToolkit_ROOT=/usr/local/cuda-11.8 \
+    -DCUDAToolkit_ROOT="${CUDA_ROOT}" \
     -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" \
     -DCeres_DIR="$HOME/.local/ceres-cuda118/lib/cmake/Ceres" \
     -DSIFTGPU_ENABLE_CUDA=ON \
