@@ -165,7 +165,7 @@ This is **not** in the root `README` to keep the default path simple; the distro
 
 The repository uses vcpkg manifest mode for Windows. Dependencies are declared in [`vcpkg.json`](../../vcpkg.json), while [`vcpkg-configuration.json`](../../vcpkg-configuration.json) pins the registry baseline. CUDA is installed separately by the GitHub Actions runner; it is not installed through the vcpkg manifest.
 
-The `Windows Build` workflow checks out the pinned vcpkg baseline, installs the manifest for the `x64-windows` triplet, installs CUDA 12.8, configures CMake with `vcpkg.cmake`, and uploads both the raw Release binaries and a staged `InsightAT-Windows-*.zip` package containing the executable, data, Qt/vcpkg DLLs, and CUDA runtime DLLs. It runs on `push` and pull requests targeting `main`. GitHub-hosted Windows runners do not provide an NVIDIA GPU, so the workflow compiles CUDA code, runs CLI smoke tests, and skips runtime tests that require actual GPU hardware.
+The `Windows Build` workflow checks out the pinned vcpkg baseline, installs the manifest for the `x64-windows` triplet, detects a runner-provided CUDA toolkit when available, and otherwise builds the portable GLSL/SiftGPU path. It configures CMake with `vcpkg.cmake` and uploads both the raw Release binaries and a staged `InsightAT-Windows-*.zip` package containing the executables, data, Qt/vcpkg DLLs, and CUDA runtime DLLs when CUDA is available. It runs on `push` and pull requests targeting `main`. GitHub-hosted Windows runners do not provide an NVIDIA GPU, so runtime tests that require actual GPU hardware are skipped.
 
 **GUI in Docker (X11 example; full notes in [DOCKER_BUILD.md](../../DOCKER_BUILD.md))**
 

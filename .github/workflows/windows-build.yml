@@ -32,49 +32,48 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. Install CUDA through a GitHub Actions-aware installer. The runner
-      # has no NVIDIA GPU, but nvcc can still compile CUDA translation units.
-      - name: Install CUDA Toolkit
-        id: cuda-toolkit
-        uses: Jimver/cuda-toolkit@v0.2.36
-        with:
-          cuda: '12.8.0'
-          # The local-cache mode has repeatedly stalled on hosted runners.
-          # Network mode can use the GitHub cache while falling back to the
-          # installer, and the verification step below checks nvcc explicitly.
-          method: network
-          sub-packages: '["nvcc", "visual_studio_integration"]'
-          use-github-cache: true
-          use-local-cache: true
-          log-file-suffix: 'windows-${{ matrix.cuda }}.txt'
-
-      - name: Verify CUDA Toolkit
+      # 1. Prefer a runner-provided CUDA toolkit. GitHub-hosted Windows runners
+      # do not provide an NVIDIA GPU; when CUDA is absent, build the portable
+      # GLSL/SiftGPU path instead of installing a multi-gigabyte toolkit.
+      - name: Detect preinstalled CUDA Toolkit
+        id: detect-cuda
         shell: pwsh
         run: |
-          $cuda_path = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          if (-not $cuda_path) {
-            $cuda_path = $env:CUDA_PATH
-          }
-          $cuda_path = @(
-            $cuda_path,
+          $candidates = @(
+            $env:CUDA_PATH,
             "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
             "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
           ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin\nvcc.exe")) } | Select-Object -First 1
-          if ([string]::IsNullOrWhiteSpace($cuda_path)) {
-            Write-Error "A CUDA toolkit with nvcc.exe was not found"
-            exit 1
+          if ($candidates) {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "found=true"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "path=$candidates"
+            Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=$candidates"
+            Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $candidates "bin")
+            Write-Host "Using preinstalled CUDA toolkit: $candidates"
+          } else {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "found=false"
+            Write-Host "No preinstalled CUDA toolkit found; using GLSL/SiftGPU fallback."
           }
-          $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
-          if (-not (Test-Path $nvcc_path)) {
-            Write-Error "nvcc.exe not found at $nvcc_path"
-            exit 1
+
+      - name: Resolve CUDA build mode
+        shell: pwsh
+        run: |
+          $cuda_path = @(
+            $env:CUDA_PATH,
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin\nvcc.exe")) } | Select-Object -First 1
+          if ($cuda_path) {
+            $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
+            Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=$cuda_path"
+            Add-Content -Path $env:GITHUB_ENV -Value "INSIGHTAT_WINDOWS_CUDA=ON"
+            Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $cuda_path "bin")
+            Write-Host "Using CUDA toolkit: $cuda_path"
+            & $nvcc_path --version
+          } else {
+            Add-Content -Path $env:GITHUB_ENV -Value "INSIGHTAT_WINDOWS_CUDA=OFF"
+            Write-Warning "CUDA toolkit is unavailable; building the Windows GLSL/SiftGPU fallback."
           }
-          Write-Host "Using CUDA toolkit: $cuda_path"
-          Write-Host "Using nvcc: $nvcc_path"
-          & $nvcc_path --version
-          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $cuda_path "bin")
-          Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=$cuda_path"
-          Add-Content -Path $env:GITHUB_ENV -Value "CUDA_BIN_PATH=$(Join-Path $cuda_path 'bin')"
 
       # 2. 安装 Visual Studio Build Tools（如果需要）
       - name: Setup Visual Studio
@@ -146,36 +145,45 @@ jobs:
           & "$env:VCPKG_ROOT/vcpkg.exe" list
         shell: pwsh
 
-      # 5. Configure CMake with the vcpkg manifest toolchain and separately
-      # installed CUDA toolkit.
+      # 5. Configure CMake with the vcpkg manifest toolchain.
       - name: Configure CMake
         run: |
           $cuda_path = $env:CUDA_PATH
-          $nvcc_path = "$cuda_path\bin\nvcc.exe"
-          
-          if (-Not (Test-Path $nvcc_path)) {
-            Write-Error "nvcc.exe not found at $nvcc_path"
-            exit 1
+          $cuda_enabled = $env:INSIGHTAT_WINDOWS_CUDA -eq "ON"
+          $cmake_args = @(
+            "-B", "build",
+            "-S", ".",
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
+            "-DVCPKG_TARGET_TRIPLET=$env:VCPKG_DEFAULT_TRIPLET",
+            "-DVCPKG_MANIFEST_MODE=ON",
+            "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DINSIGHTAT_BUILD_RENDER_TESTS=OFF"
+          )
+          if ($cuda_enabled) {
+            $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
+            if (-not (Test-Path $nvcc_path)) {
+              Write-Error "CUDA mode was selected but nvcc.exe was not found at $nvcc_path"
+              exit 1
+            }
+            $cmake_args += @(
+              "-DCMAKE_CUDA_COMPILER=$nvcc_path",
+              "-DCUDAToolkit_ROOT=$cuda_path",
+              "-DCMAKE_CUDA_ARCHITECTURES=60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual",
+              "-DSIFTGPU_ENABLE_CUDA=OFF",
+              "-DINSIGHTAT_ENABLE_SIFTGPU=OFF"
+            )
+          } else {
+            Write-Host "Configuring the Windows GLSL/SiftGPU fallback without CUDA."
+            $cmake_args += @(
+              "-DCMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit=TRUE",
+              "-DSIFTGPU_ENABLE_CUDA=OFF",
+              "-DINSIGHTAT_ENABLE_SIFTGPU=ON"
+            )
           }
-          
-          Write-Host "Configuring CMake with CUDA support..."
-          Write-Host "CUDA path: $cuda_path"
-          Write-Host "NVCC path: $nvcc_path"
-          
-          cmake -B build -S . `
-            -G "Visual Studio 17 2022" `
-            -A x64 `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET="$env:VCPKG_DEFAULT_TRIPLET" `
-            -DVCPKG_MANIFEST_MODE=ON `
-            -DVCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE" `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_CUDA_COMPILER="$nvcc_path" `
-            -DCUDAToolkit_ROOT="$cuda_path" `
-            -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" `
-            -DINSIGHTAT_BUILD_RENDER_TESTS=OFF `
-            -DSIFTGPU_ENABLE_CUDA=OFF `
-            -DINSIGHTAT_ENABLE_SIFTGPU=OFF
+          cmake @cmake_args
           
           if ($LASTEXITCODE -ne 0) {
             Write-Error "CMake configuration failed"
@@ -239,16 +247,18 @@ jobs:
             Copy-Item (Join-Path $triplet_bin "*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
           }
 
-          $cuda_bin = Join-Path $env:CUDA_PATH "bin"
-          Copy-Item (Join-Path $cuda_bin "cudart64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "cublas64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "cusolver64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "cusparse64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "cufft64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "cublasLt64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "nvJitLink_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "nvrtc64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          Copy-Item (Join-Path $cuda_bin "nvrtc-builtins64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          if ($env:INSIGHTAT_WINDOWS_CUDA -eq "ON") {
+            $cuda_bin = Join-Path $env:CUDA_PATH "bin"
+            Copy-Item (Join-Path $cuda_bin "cudart64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "cublas64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "cusolver64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "cusparse64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "cufft64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "cublasLt64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "nvJitLink_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "nvrtc64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $cuda_bin "nvrtc-builtins64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          }
 
           $windeployqt = Get-ChildItem -Path (Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET") -Filter windeployqt.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($null -ne $windeployqt) {
