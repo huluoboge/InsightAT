@@ -49,6 +49,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libegl1-mesa-dev \
     libglu1-mesa-dev \
     libopengl0 \
+    libgtk-3-0 \
+    libnss3 \
+    libasound2 \
+    libxss1 \
+    libxtst6 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libgbm1 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libxkbcommon0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libdbus-1-3 \
     libsuitesparse-dev \
     libmetis-dev \
     libtbb-dev \
