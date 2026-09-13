@@ -1,5 +1,6 @@
 build
 build_*
+!scripts/package/build_simple_gui.sh
 build-*
 .vscode
 .cursor

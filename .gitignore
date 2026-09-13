@@ -1,6 +1,7 @@
 build
 build-*
 build_*
+!scripts/package/build_simple_gui.sh
 build-appimage/
 
 # AppImage artifacts in repo root (use build-appimage/ via compile_appimage.sh)
@@ -11,6 +12,7 @@ build-appimage/
 .kiro
 __pycache__/
 node_modules/
+squashfs-root/
 simple-gui/packaging/resources/
 simple-gui/dist/
 cudss-local*

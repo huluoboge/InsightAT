@@ -12,6 +12,8 @@
 #   VERSION             — Version string for the AppImage (default: read from VERSION file at project root)
 #   APPIMAGE_OUT_DIR    — Output directory for the AppImage (default: build-appimage)
 #   BUNDLE_PYTHON_DIST  — Copy dist-packages (default: 0)
+#   APPIMAGE_RUNTIME_FILE — Optional cached AppImage type-2 runtime. Passed to
+#                           linuxdeploy-plugin-appimage as LDAI_RUNTIME_FILE.
 #
 set -euo pipefail
 
@@ -28,6 +30,17 @@ ICON_SRC="${REPO_ROOT}/packaging/appimage/app.png"
 BUNDLE_PYTHON="${BUNDLE_PYTHON:-1}"
 # Set to 1 to also copy /usr/lib/python3/dist-packages (Debian/Ubuntu; may add ~100–300 MiB, needed for numpy/matplotlib in scripts)
 BUNDLE_PYTHON_DIST="${BUNDLE_PYTHON_DIST:-0}"
+APPIMAGE_RUNTIME_FILE="${APPIMAGE_RUNTIME_FILE:-${LDAI_RUNTIME_FILE:-}}"
+KEEP_APPDIR="${KEEP_APPDIR:-0}"
+
+if [[ -n "${APPIMAGE_RUNTIME_FILE}" ]]; then
+  if [[ ! -f "${APPIMAGE_RUNTIME_FILE}" ]]; then
+    echo "ERROR: APPIMAGE_RUNTIME_FILE does not exist: ${APPIMAGE_RUNTIME_FILE}" >&2
+    exit 1
+  fi
+  export LDAI_RUNTIME_FILE="${APPIMAGE_RUNTIME_FILE}"
+  echo "Using cached AppImage runtime: ${APPIMAGE_RUNTIME_FILE}"
+fi
 
 if [[ ! -f "$ICON_SRC" ]]; then
   echo "Missing $ICON_SRC"
@@ -268,6 +281,10 @@ if [[ -n "$OUT_IMG" ]]; then
 else
   echo "Expected an *.AppImage under ${APPIMAGE_OUT_DIR}/"
   exit 1
+fi
+
+if [[ "${KEEP_APPDIR}" != "1" ]]; then
+  rm -rf "${APPDIR}"
 fi
 
 echo "Done."

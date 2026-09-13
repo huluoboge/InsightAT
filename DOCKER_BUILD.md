@@ -1,8 +1,8 @@
-# InsightAT Docker Build Guide (CUDA 11.8 + GCC 11)
+# InsightAT Docker Build Guide (CUDA 12.8 + Ubuntu 22.04)
 
 **Recommended** way to get a reproducible build: the image installs all heavy native dependencies and compiles the project. Use this if you do not want to install Eigen, Ceres, OpenCV, GDAL, Qt, and related dev packages on the host.
 
-This guide explains how to build InsightAT using Docker with CUDA 11.8 and GCC 11.
+This guide explains how to build InsightAT using Docker with CUDA 12.8 and Ubuntu 22.04.
 
 ## Quick Start
 
@@ -10,28 +10,28 @@ This guide explains how to build InsightAT using Docker with CUDA 11.8 and GCC 1
 # Navigate to InsightAT root
 cd /path/to/InsightAT
 
-# Build Docker image
-./scripts/docker/docker-build.sh
+# Build the CUDA 12.8 image and package all Linux artifacts
+./scripts/docker/docker-build-cuda12.8.sh run
 
-# The image is built as `insightat:cuda11.8`; use the extraction commands below
-# to copy binaries to `./build-cuda11.8/`.
+# The image is built as `insightat:cuda12.8` and extracts the native build,
+# main AppImage/DEB, and Simple GUI AppImage/DEB.
 ```
 
 ## Available Commands
 
 ```bash
 # Build Docker image (one-time, ~30-45 minutes)
-./scripts/docker/docker-build.sh
+./scripts/docker/docker-build-cuda12.8.sh build
 
-# Start interactive shell in the built image
-docker run --gpus all -it --rm insightat:cuda11.8 bash
+# Start interactive shell in the built CUDA 12.8 image
+docker run --gpus all -it --rm insightat:cuda12.8 bash
 
-# Extract compiled binaries from a temporary container
-docker create --name insightat-build insightat:cuda11.8
-docker cp insightat-build:/workspace/insightat/build ./build-cuda11.8
+# Extract the compiled build from a temporary container
+docker create --name insightat-build insightat:cuda12.8
+docker cp insightat-build:/workspace/insightat/build-cuda-12.8 ./build-cuda-12.8
 docker rm insightat-build
 
-# CUDA 12.8 + system Ceres build, AppImage, and DEB extraction
+# CUDA 12.8 + system Ceres build, main packages, and Simple GUI packages
 ./scripts/docker/docker-build-cuda12.8.sh run
 
 # Show the available CUDA 12.8 script commands
@@ -92,7 +92,7 @@ $ISAT_BIN_DIR/isat_extract --help
 
 ## Dockerfile Customization
 
-The CUDA 11.8 Dockerfile is located at `./cuda11.8.dockerfile` and can be customized:
+The CUDA 12.8 packaging image is located at `./cuda12.8.dockerfile` and can be customized. A separate `cuda11.8.dockerfile` remains available for a native CUDA 11.8 build without package generation.
 
 - **Base CUDA Image**: Change `nvidia/cuda:11.8.0-devel-ubuntu22.04` to a different CUDA version
 - **Compiler**: Modify GCC version installation (currently GCC 11)
@@ -106,11 +106,11 @@ To build with CUDA 12.1:
 FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
 ```
 
-Then rebuild:
+Then rebuild the CUDA 12.8 image:
 
 ```bash
 docker rmi insightat:cuda11.8
-./scripts/docker/docker-build.sh
+./scripts/docker/docker-build-cuda12.8.sh run
 ```
 
 ## Docker GPU Support
@@ -121,7 +121,7 @@ The Docker setup requires NVIDIA Docker runtime for GPU access:
 # Check if nvidia-docker is installed
 docker run --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
 
-# If not installed, install NVIDIA Docker:
+# If not installed, install NVIDIA Container Toolkit:
 # https://github.com/NVIDIA/nvidia-docker
 ```
 
@@ -161,7 +161,7 @@ docker-compose exec insightat bash
 
 ### CUDA Version Mismatch
 
-If you see CUDA errors, ensure your host NVIDIA driver supports CUDA 11.8:
+If you see CUDA errors, ensure your host NVIDIA driver supports the CUDA version used by the image:
 
 ```bash
 nvidia-smi  # Check driver version
@@ -172,7 +172,7 @@ nvidia-smi  # Check driver version
 If the build fails due to memory, reduce parallelism:
 
 ```bash
-# Modify scripts/docker/docker-build-cuda11.8.sh or cuda11.8.dockerfile:
+# Modify the Dockerfile or run the local build with fewer jobs:
 # Change: make -j$(nproc)
 # To:     make -j4
 ```
@@ -183,7 +183,7 @@ If a build fails missing a library:
 
 1. Check CMakeLists.txt for the required package
 2. Add the apt package to the appropriate `.dockerfile`
-3. Rebuild: `docker rmi insightat:cuda11.8 && ./scripts/docker/docker-build.sh`
+3. Rebuild: `scripts/docker/docker-build-cuda12.8.sh run`
 
 ## Comparison: CUDA 11.8 vs Host Build
 

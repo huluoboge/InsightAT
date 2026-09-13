@@ -7,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-2022
@@ -35,8 +38,8 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '12.8.0'
-          method: local
-          sub-packages: '["nvcc", "visual_studio_integration"]'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cusolver", "cusparse", "nvrtc", "visual_studio_integration"]'
           use-github-cache: true
           use-local-cache: true
           log-file-suffix: 'windows-${{ matrix.cuda }}.txt'
@@ -48,8 +51,13 @@ jobs:
           if (-not $cuda_path) {
             $cuda_path = $env:CUDA_PATH
           }
-          if (-not $cuda_path) {
-            Write-Error "CUDA_PATH was not provided by the CUDA setup action"
+          $cuda_path = @(
+            $cuda_path,
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin\nvcc.exe")) } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($cuda_path)) {
+            Write-Error "A CUDA toolkit with nvcc.exe was not found"
             exit 1
           }
           $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
@@ -160,6 +168,7 @@ jobs:
             -DCMAKE_CUDA_COMPILER="$nvcc_path" `
             -DCUDAToolkit_ROOT="$cuda_path" `
             -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" `
+            -DINSIGHTAT_BUILD_RENDER_TESTS=OFF `
             -DSIFTGPU_ENABLE_CUDA=OFF `
             -DINSIGHTAT_ENABLE_SIFTGPU=OFF
           
@@ -183,6 +192,87 @@ jobs:
           Write-Host "Build completed successfully"
         shell: pwsh
 
+      # Keep the artifact self-contained enough to run on a clean Windows
+      # machine. The C++ build itself remains in build/Release; this staging
+      # directory is only for the downloadable CI artifact.
+      - name: Stage Windows runtime package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $release_dir = Join-Path $env:GITHUB_WORKSPACE "build\Release"
+          $stage_dir = Join-Path $env:GITHUB_WORKSPACE "windows-package"
+          if (-not (Test-Path $release_dir)) {
+            Write-Error "Release output directory not found: $release_dir"
+            exit 1
+          }
+
+          $required = @(
+            "InsightAT.exe",
+            "isat_project.exe",
+            "isat_sfm.exe",
+            "isat_extract.exe",
+            "isat_match.exe",
+            "at_bundler_viewer.exe"
+          )
+          foreach ($name in $required) {
+            $path = Join-Path $release_dir $name
+            if (-not (Test-Path $path)) {
+              Write-Error "Required Windows executable was not built: $path"
+              exit 1
+            }
+          }
+
+          Remove-Item $stage_dir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stage_dir | Out-Null
+          Copy-Item (Join-Path $release_dir "*.exe") $stage_dir -Force
+          Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "build") -Recurse -Filter "*.dll" -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "data") (Join-Path $stage_dir "data") -Recurse -Force
+
+          $triplet_bin = Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET\bin"
+          if (Test-Path $triplet_bin) {
+            Copy-Item (Join-Path $triplet_bin "*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          }
+
+          $cuda_bin = Join-Path $env:CUDA_PATH "bin"
+          Copy-Item (Join-Path $cuda_bin "cudart64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "cublas64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "cusolver64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "cusparse64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "cufft64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "cublasLt64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "nvJitLink_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "nvrtc64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $cuda_bin "nvrtc-builtins64_*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+
+          $windeployqt = Get-ChildItem -Path (Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET") -Filter windeployqt.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -ne $windeployqt) {
+            foreach ($gui in @("InsightAT.exe", "at_bundler_viewer.exe")) {
+              $gui_path = Join-Path $stage_dir $gui
+              if (Test-Path $gui_path) {
+                & $windeployqt.FullName --release --no-translations $gui_path
+              }
+            }
+          } else {
+            Write-Warning "windeployqt.exe was not found; Qt DLLs must be supplied by the vcpkg runtime set."
+          }
+
+          @{
+            project = "InsightAT"
+            cuda = $env:CUDA_PATH
+            triplet = $env:VCPKG_DEFAULT_TRIPLET
+            commit = $env:GITHUB_SHA
+          } | ConvertTo-Json | Set-Content (Join-Path $stage_dir "build-info.json")
+
+          & (Join-Path $stage_dir "isat_project.exe") create -h
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "isat_project.exe create -h smoke test failed"
+            exit 1
+          }
+
+          $zip_path = Join-Path $env:GITHUB_WORKSPACE "InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip"
+          Compress-Archive -Path (Join-Path $stage_dir "*") -DestinationPath $zip_path -CompressionLevel Optimal -Force
+
       # 7. Clean temporary vcpkg build trees, but keep installed packages for
       # cache save.
       - name: Cleanup temporary files
@@ -205,15 +295,14 @@ jobs:
         working-directory: build
         shell: pwsh
 
-      # 9. Upload build artifacts
+      # 9. Upload a runnable Windows package and the raw build output.
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: success()
         with:
           name: insightat-windows-cuda-${{ matrix.cuda }}
           path: |
+            InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip
+            windows-package/**
             build/Release/*.exe
-            build/*.exe
-            build/Release/*.dll
-            build/*.dll
           retention-days: 30

@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgdal-dev \
     libglew-dev \
     libegl1-mesa-dev \
+    libglu1-mesa-dev \
     libopengl0 \
     libsuitesparse-dev \
     libmetis-dev \
@@ -66,6 +67,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     fuse \
     libfuse2 \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir "cmake>=3.24" \
     && cmake --version \
@@ -78,6 +81,7 @@ ARG CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89;90-virtual"
 RUN cmake -S . -B build-cuda-12.8 \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES}" \
+    -DINSIGHTAT_BUILD_RENDER_TESTS=OFF \
     -DSIFTGPU_ENABLE_CUDA=OFF \
     && cmake --build build-cuda-12.8 -j"$(nproc)"
 
@@ -90,8 +94,14 @@ ENV INSIGHTAT_BUILD_DIR=/workspace/insightat/build-cuda-12.8 \
     CUDA_LIBS_DIR=/usr/local/cuda-12.8/lib64 \
     VERSION=${INSIGHTAT_VERSION} \
     APPIMAGE_OUT_DIR=/workspace/insightat/build-appimage-cuda12.8 \
+    APPIMAGE_RUNTIME_FILE=/workspace/insightat/build-appimage-cuda12.8/.tools/runtime-x86_64 \
     DEB_DEPENDS_EXTRA="libcudart12, libcublas12, libcusparse12, libcusolver11" \
     APPIMAGE_EXTRACT_AND_RUN=1
+
+RUN mkdir -p /workspace/insightat/build-appimage-cuda12.8/.tools \
+    && wget -q -O /workspace/insightat/build-appimage-cuda12.8/.tools/runtime-x86_64 \
+       https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 \
+    && chmod +x /workspace/insightat/build-appimage-cuda12.8/.tools/runtime-x86_64
 
 # Use ./ prefix so BASH_SOURCE resolves the directory correctly
 RUN cd /workspace/insightat && bash ./scripts/package/compile_appimage-12.8.sh
@@ -99,5 +109,12 @@ RUN cd /workspace/insightat && bash ./scripts/package/compile_appimage-12.8.sh
 # ── Package Debian artifact inside the same container ───────────────────────
 ENV DEB_OUTPUT_DIR=/workspace/insightat/build-deb-cuda12.8
 RUN cd /workspace/insightat && bash ./scripts/package/build_deb.sh
+
+# Package the Electron GUI from the same native build. This script consumes
+# build-cuda-12.8 and never reuses a host AppImage or rebuilds C++ code.
+ENV GUI_APPIMAGE_OUT_DIR=/workspace/insightat/build-appimage-simple-gui \
+    GUI_DEB_OUTPUT_DIR=/workspace/insightat/build-deb-simple-gui \
+    GUI_LINUXDEPLOY_PATH=/workspace/insightat/build-appimage-cuda12.8/.tools/linuxdeploy-x86_64.AppImage
+RUN cd /workspace/insightat && bash ./scripts/package/build_simple_gui.sh
 
 CMD ["/bin/bash"]

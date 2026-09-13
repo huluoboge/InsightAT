@@ -853,21 +853,21 @@ void ATTaskPanel::on_run_sfm_clicked() {
     m_sfmLogTextEdit->appendPlainText("");
     m_sfmLogTextEdit->appendPlainText("Solutions:");
     m_sfmLogTextEdit->appendPlainText("✓ Option 1: Set ISAT_BIN_DIR environment variable");
-    m_sfmLogTextEdit->appendPlainText("  export ISAT_BIN_DIR=/home/recon/Git/04jones/InsightAT/build-ceres-12.8");
+    m_sfmLogTextEdit->appendPlainText("  export ISAT_BIN_DIR=/home/recon/Git/04jones/InsightAT/build-cuda-12.8");
     m_sfmLogTextEdit->appendPlainText("  Then restart InsightAT");
     m_sfmLogTextEdit->appendPlainText("");
     m_sfmLogTextEdit->appendPlainText("✓ Option 2: Create symlink in InsightAT app directory");
     m_sfmLogTextEdit->appendPlainText(QString("  ln -s %1 %2")
-        .arg("$(pwd)/build-ceres-12.8/isat_sfm", "$(pwd)/build-ceres-12.8/InsightAT/../isat_sfm"));
+        .arg("$(pwd)/build-cuda-12.8/isat_sfm", "$(pwd)/build-cuda-12.8/InsightAT/../isat_sfm"));
     m_sfmLogTextEdit->appendPlainText("");
     m_sfmLogTextEdit->appendPlainText("✓ Option 3: Add build directory to PATH");
-    m_sfmLogTextEdit->appendPlainText("  export PATH=/home/recon/Git/04jones/InsightAT/build-ceres-12.8:$PATH");
+    m_sfmLogTextEdit->appendPlainText("  export PATH=/home/recon/Git/04jones/InsightAT/build-cuda-12.8:$PATH");
     
     QMessageBox::critical(this, "Error", 
         QString("Failed to start isat_sfm binary.\n\n"
                 "Error: %1\n\n"
                 "Please set environment variable:\n"
-                "export ISAT_BIN_DIR=/home/recon/Git/04jones/InsightAT/build-ceres-12.8\n\n"
+                "export ISAT_BIN_DIR=/home/recon/Git/04jones/InsightAT/build-cuda-12.8\n\n"
                 "Then restart InsightAT.").arg(error_msg));
     delete m_sfmProcess;
     m_sfmProcess = nullptr;
