@@ -24,6 +24,7 @@ jobs:
     env:
       VCPKG_ROOT: C:/vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_INSTALLED_DIR: C:/vcpkg/installed
       VCPKG_FEATURE_FLAGS: manifests,versions,binarycaching
       VCPKG_DEFAULT_BINARY_CACHE: C:/vcpkg/binary-cache
             
@@ -137,6 +138,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           & "$env:VCPKG_ROOT/vcpkg.exe" install `
             --x-manifest-root="$env:GITHUB_WORKSPACE" `
+            --x-install-root="$env:VCPKG_INSTALLED_DIR" `
             --triplet="$env:VCPKG_DEFAULT_TRIPLET" `
             --clean-after-build `
             --debug
@@ -159,6 +161,7 @@ jobs:
             "-A", "x64",
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
             "-DVCPKG_TARGET_TRIPLET=$env:VCPKG_DEFAULT_TRIPLET",
+            "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR",
             "-DVCPKG_MANIFEST_MODE=ON",
             "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE",
             "-DCMAKE_BUILD_TYPE=Release",
