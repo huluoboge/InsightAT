@@ -4,13 +4,36 @@
 
 **InsightAT: All-in-one Automated 3D Reconstruction System**
 
-InsightAT is an open-source all-in-one Structure-from-Motion system, built for user-friendly and fully automated 3D reconstruction.
+InsightAT is an open-source GPU-accelerated Structure-from-Motion system for turning a folder of photos into an automated sparse 3D reconstruction.
 
 **English | [简体中文](README_zh.md)**
 
+## Why InsightAT?
+
+- One-shot photo-to-sparse-reconstruction pipeline with `isat_sfm`
+- GPU-accelerated feature extraction and matching, with CUDA and GLSL paths
+- Docker build, Ubuntu AppImage, and a beginner-friendly desktop GUI source tree
+- Camera and sparse point-cloud inspection with `at_bundler_viewer`
+- COLMAP-compatible sparse output for downstream workflows
+
+![ETH3D-style benchmark comparison](doc/images/benchmarks/eth3d_colmap_vs_insightat_0.1_vs_0.2.png)
+
+Benchmark methodology and hardware notes: [benchmarks/README.md](benchmarks/README.md).
+
 ## 🚀 Quick Start
 
+### Download a prebuilt AppImage
+
+The current stable release is [v0.2.4](https://github.com/huluoboge/InsightAT/releases/tag/v0.2.4).
+For Ubuntu, download the AppImage that matches your system:
+
+- [Ubuntu 24.04 / CUDA 12.8](https://github.com/huluoboge/InsightAT/releases/download/v0.2.4/InsightAT-0.2.4-cuda12.8-x86_64-ubuntu24.04.AppImage)
+- [Ubuntu 22.04 / CUDA 12.8](https://github.com/huluoboge/InsightAT/releases/download/v0.2.4/InsightAT-0.2.4-cuda12.8-x86_64.ubuntu22.04.AppImage)
+
+See all assets and release notes on the [Releases page](https://github.com/huluoboge/InsightAT/releases).
+
 ### Build via Docker
+
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git
 cd InsightAT
@@ -30,15 +53,34 @@ isat_sfm -i /data/images -w /data/work
 at_bundler_viewer /data/work/incremental_sfm
 ```
 
-### Run AppImage on Ubuntu
-You can run the prebuilt AppImage directly without extra compilation and dependencies:
+### Run the AppImage on Ubuntu
+
+After downloading an AppImage, make it executable and run the same pipeline
+without compiling the project:
+
 ```bash
+chmod +x InsightAT-0.2.4-cuda12.8-x86_64-ubuntu24.04.AppImage
+
 # Start reconstruction
-InsightAT-XXX.AppImage isat_sfm -i /data/images -w /data/work 
+./InsightAT-0.2.4-cuda12.8-x86_64-ubuntu24.04.AppImage isat_sfm -i /data/images -w /data/work
 
 # View reconstruction result
-InsightAT-XXX.AppImage at_bundler_viewer /data/work/incremental_sfm
+./InsightAT-0.2.4-cuda12.8-x86_64-ubuntu24.04.AppImage at_bundler_viewer /data/work/incremental_sfm
 ```
+
+### Beginner-friendly GUI
+
+The repository includes a small Electron GUI for the CLI pipeline. It lets
+you create or open a work directory, add image folders, and run SfM from a
+simple desktop workflow. See [simple-gui/README.md](simple-gui/README.md) for
+setup instructions.
+
+## Community and feedback
+
+If InsightAT is useful for your reconstruction, photogrammetry, or computer
+vision workflow, please consider [starring the repository](https://github.com/huluoboge/InsightAT).
+Bug reports, compatibility notes, and reconstruction examples are welcome in
+[Issues](https://github.com/huluoboge/InsightAT/issues).
 
 ## License
 MIT License
