@@ -28,5 +28,5 @@
 
 1. **Algorithm & pipeline:** [01_algorithm_sfm_philosophy.md](01_algorithm_sfm_philosophy.md) → [04_functional_at_toolkit.md](04_functional_at_toolkit.md)  
 2. **Code & CLI:** [02-coding_style.md](02-coding_style.md) → [05_cli_io_conventions.md](05_cli_io_conventions.md)  
-3. **Numeric & frames:** [08_coordinate_and_rotation.md](08_coordinate_and_rotation.md), then [dev-notes/rotation/rotation_readme.md](../../dev-notes/rotation/rotation_readme.md) if needed  
+3. **Numeric & frames:** [08_coordinate_and_rotation.md](08_coordinate_and_rotation.md), then the [rotation standards](rotation/README.md) if needed
 4. **UI & persistence:** [06_ui_framework.md](06_ui_framework.md) → [07_serialization.md](07_serialization.md)  

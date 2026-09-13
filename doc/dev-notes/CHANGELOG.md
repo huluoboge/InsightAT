@@ -61,12 +61,12 @@ Historical design notes and architecture drafts live under [doc/develop/design/]
 
 ### 基准与发布说明
 
-- ETH3D 训练子集 13 scenes 批跑对比表与作图脚本： [doc/dev-notes/release-v0.2.0.md](release-v0.2.0.md)、`benchmarks/sfm_compare/plot_eth3d_release_triple.py`。
+- ETH3D 训练子集 13 scenes 批跑对比表与作图脚本： [v0.2.0 发布说明](../develop/release/v0.2.0.md)、`benchmarks/sfm_compare/plot_eth3d_release_triple.py`。
 
 ---
 
 ## 版本说明
 
 - **Unreleased**：当前开发状态，API 与数据格式可能变动，不建议用于生产环境。
-- **0.2.0**：见上文与 [release-v0.2.0.md](release-v0.2.0.md)。
+- **0.2.0**：见上文与 [v0.2.0 发布说明](../develop/release/v0.2.0.md)。
 - **0.1.0**：首个带 AppImage/CLI 打包与公开版本说明的标签版本。
