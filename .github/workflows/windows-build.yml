@@ -37,7 +37,7 @@ jobs:
           
           # CUDA 12.8 network installer
           $cuda_url = "https://developer.download.nvidia.com/compute/cuda/12.8.0/network_installers/cuda_12.8.0_windows_network.exe"
-          (New-Object System.Net.ServicePointManager).SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Invoke-WebRequest -Uri $cuda_url -OutFile $cuda_installer -UseBasicParsing
           
           Write-Host "Installing CUDA $cuda_version..."
