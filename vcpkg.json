@@ -9,9 +9,7 @@
     {
       "name": "ceres",
       "features": [
-        "lapack",
-        "schur",
-        "suitesparse"
+        "schur"
       ]
     },
     "boost-filesystem",
@@ -22,7 +20,6 @@
     "gflags",
     "glew",
     "glog",
-    "gtest",
     {
       "name": "gdal",
       "default-features": false,
