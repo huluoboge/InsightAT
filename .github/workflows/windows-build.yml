@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-2022
@@ -23,7 +27,7 @@ jobs:
 
     env:
       VCPKG_ROOT: C:/vcpkg
-      VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_DEFAULT_TRIPLET: x64-windows-release
       VCPKG_INSTALLED_DIR: C:/vcpkg/installed
       VCPKG_FEATURE_FLAGS: manifests,versions,binarycaching
       VCPKG_DEFAULT_BINARY_CACHE: C:/vcpkg/binary-cache
@@ -127,7 +131,7 @@ jobs:
             C:/vcpkg/installed
             C:/vcpkg/downloads
             C:/vcpkg/binary-cache
-          key: ${{ runner.os }}-vcpkg-manifest-${{ matrix.cuda }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: ${{ runner.os }}-vcpkg-manifest-${{ matrix.cuda }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/x64-windows-release.cmake') }}
           restore-keys: |
             ${{ runner.os }}-vcpkg-manifest-${{ matrix.cuda }}-
 
@@ -139,6 +143,7 @@ jobs:
           & "$env:VCPKG_ROOT/vcpkg.exe" install `
             --x-manifest-root="$env:GITHUB_WORKSPACE" `
             --x-install-root="$env:VCPKG_INSTALLED_DIR" `
+            --overlay-triplets="$env:GITHUB_WORKSPACE/triplets" `
             --triplet="$env:VCPKG_DEFAULT_TRIPLET" `
             --clean-after-build `
             --debug
@@ -162,6 +167,7 @@ jobs:
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
             "-DVCPKG_TARGET_TRIPLET=$env:VCPKG_DEFAULT_TRIPLET",
             "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR",
+            "-DVCPKG_OVERLAY_TRIPLETS=$env:GITHUB_WORKSPACE/triplets",
             "-DVCPKG_MANIFEST_MODE=ON",
             "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE",
             "-DCMAKE_BUILD_TYPE=Release",
