@@ -131,13 +131,15 @@ jobs:
             ${{ runner.os }}-vcpkg-manifest-${{ matrix.cuda }}-
 
       - name: Install vcpkg manifest dependencies
+        timeout-minutes: 90
         run: |
           $env:VCPKG_DISABLE_METRICS = "1"
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           & "$env:VCPKG_ROOT/vcpkg.exe" install `
             --x-manifest-root="$env:GITHUB_WORKSPACE" `
             --triplet="$env:VCPKG_DEFAULT_TRIPLET" `
-            --clean-after-build
+            --clean-after-build `
+            --debug
           if ($LASTEXITCODE -ne 0) {
             Write-Error "vcpkg install failed"
             exit 1
