@@ -39,10 +39,10 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '12.8.0'
-          # The hosted runner cache already contains CUDA 12.8. Prefer it to
-          # avoid hanging on the full network installer; the verification step
-          # below still fails clearly if nvcc is unavailable.
-          method: local
+          # The local-cache mode has repeatedly stalled on hosted runners.
+          # Network mode can use the GitHub cache while falling back to the
+          # installer, and the verification step below checks nvcc explicitly.
+          method: network
           sub-packages: '["nvcc", "visual_studio_integration"]'
           use-github-cache: true
           use-local-cache: true
