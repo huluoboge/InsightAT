@@ -6,12 +6,7 @@
   "license": "MIT",
   "supports": "windows & x64",
   "dependencies": [
-    {
-      "name": "ceres",
-      "features": [
-        "schur"
-      ]
-    },
+    "ceres",
     "egl",
     "eigen3",
     "glew",
