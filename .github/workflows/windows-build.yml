@@ -130,6 +130,7 @@ jobs:
       - name: Install vcpkg manifest dependencies
         run: |
           $env:VCPKG_DISABLE_METRICS = "1"
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           & "$env:VCPKG_ROOT/vcpkg.exe" install `
             --x-manifest-root="$env:GITHUB_WORKSPACE" `
             --triplet="$env:VCPKG_DEFAULT_TRIPLET" `
