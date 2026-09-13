@@ -13,6 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
+    timeout-minutes: 360
     
     strategy:
       matrix:
@@ -38,7 +39,10 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '12.8.0'
-          method: network
+          # The hosted runner cache already contains CUDA 12.8. Prefer it to
+          # avoid hanging on the full network installer; the verification step
+          # below still fails clearly if nvcc is unavailable.
+          method: local
           sub-packages: '["nvcc", "cudart", "cublas", "cusolver", "cusparse", "nvrtc", "visual_studio_integration"]'
           use-github-cache: true
           use-local-cache: true
