@@ -67,12 +67,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     fuse \
     libfuse2 \
-    nodejs \
-    npm \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir "cmake>=3.24" \
     && cmake --version \
     && dpkg-query -W -f='${Package} ${Version}\n' libceres-dev
+
+# Ubuntu 22.04's apt Node.js is 12.x, which cannot parse the nullish
+# coalescing syntax used by Electron 31's installer. Install a pinned Node 20
+# toolchain instead of relying on the base image's JavaScript runtime.
+ARG NODE_VERSION=20.19.4
+RUN wget -q -O "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    && wget -q -O /tmp/node-SHASUMS256.txt \
+      "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+    && grep " node-v${NODE_VERSION}-linux-x64.tar.xz$" /tmp/node-SHASUMS256.txt \
+      | sha256sum -c - \
+    && tar -xJf "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+      --strip-components=1 -C /usr/local \
+    && node --version \
+    && npm --version \
+    && rm -f "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" /tmp/node-SHASUMS256.txt
 
 # ── Build InsightAT ──────────────────────────────────────────────────────────
 COPY . .
