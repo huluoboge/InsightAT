@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     
     strategy:
       matrix:
@@ -28,33 +28,54 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. 安装 CUDA Toolkit 12.8
+      # 1. Use a runner-provided CUDA 12.x toolkit when available. Otherwise
+      # install CUDA 12.8 with the standalone silent installer. The runner has
+      # no NVIDIA GPU, but nvcc can still compile CUDA translation units.
       - name: Install CUDA Toolkit
         run: |
-          $cuda_installer = "$env:TEMP\cuda_installer.exe"
           $cuda_version = "${{ matrix.cuda }}"
-          Write-Host "Downloading CUDA $cuda_version installer..."
-          
-          # CUDA 12.8 network installer
-          $cuda_url = "https://developer.download.nvidia.com/compute/cuda/12.8.0/network_installers/cuda_12.8.0_windows_network.exe"
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          Invoke-WebRequest -Uri $cuda_url -OutFile $cuda_installer -UseBasicParsing
-          
-          Write-Host "Installing CUDA $cuda_version..."
-          & $cuda_installer -s CUDAToolkit_12.8=1 CUDAVisualStudioIntegration_12.8=1
-          
-          $cuda_path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-          if (-Not (Test-Path $cuda_path)) {
-            Write-Error "CUDA installation failed"
-            exit 1
+          $cuda_path = $env:CUDA_PATH
+          $candidate_paths = @(
+            $cuda_path,
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6",
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5"
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin\nvcc.exe")) }
+
+          if ($candidate_paths.Count -gt 0) {
+            $cuda_path = $candidate_paths[0]
+            Write-Host "Using runner CUDA toolkit: $cuda_path"
+          } else {
+            $cuda_installer = "$env:TEMP\cuda_12.8_windows_network.exe"
+            $cuda_url = "https://developer.download.nvidia.com/compute/cuda/12.8.0/network_installers/cuda_12.8.0_windows_network.exe"
+            Write-Host "Downloading CUDA $cuda_version installer..."
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $cuda_url -OutFile $cuda_installer -UseBasicParsing
+
+            Write-Host "Installing CUDA $cuda_version..."
+            $install = Start-Process -FilePath $cuda_installer -ArgumentList @("-s") -Wait -PassThru
+            if ($install.ExitCode -ne 0) {
+              Write-Error "CUDA installer failed with exit code $($install.ExitCode)"
+              exit 1
+            }
+
+            $candidate_paths = @(
+              "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
+              "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6",
+              "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5"
+            ) | Where-Object { Test-Path (Join-Path $_ "bin\nvcc.exe") }
+            if ($candidate_paths.Count -eq 0) {
+              Write-Error "CUDA installation completed but nvcc.exe was not found"
+              exit 1
+            }
+            $cuda_path = $candidate_paths[0]
           }
-          Write-Host "CUDA installed at: $cuda_path"
-          
-          # Add to PATH and env
-          echo "$cuda_path\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          echo "CUDA_PATH=$cuda_path" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "CUDA_PATH_V12_8=$cuda_path" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "CUDA_BIN_PATH=$cuda_path\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
+          & $nvcc_path --version
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $cuda_path "bin")
+          Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=$cuda_path"
+          Add-Content -Path $env:GITHUB_ENV -Value "CUDA_BIN_PATH=$(Join-Path $cuda_path 'bin')"
         shell: pwsh
 
       # 2. 安装 Visual Studio Build Tools（如果需要）
