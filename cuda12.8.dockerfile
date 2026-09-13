@@ -81,8 +81,8 @@ RUN wget -q -O "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" \
       "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
     && wget -q -O /tmp/node-SHASUMS256.txt \
       "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
-    && grep " node-v${NODE_VERSION}-linux-x64.tar.xz$" /tmp/node-SHASUMS256.txt \
-      | sha256sum -c - \
+    && (cd /tmp && grep " node-v${NODE_VERSION}-linux-x64.tar.xz$" node-SHASUMS256.txt \
+      | sha256sum -c -) \
     && tar -xJf "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" \
       --strip-components=1 -C /usr/local \
     && node --version \
