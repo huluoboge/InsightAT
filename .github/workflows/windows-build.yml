@@ -43,7 +43,7 @@ jobs:
           # avoid hanging on the full network installer; the verification step
           # below still fails clearly if nvcc is unavailable.
           method: local
-          sub-packages: '["nvcc", "cudart", "cublas", "cusolver", "cusparse", "nvrtc", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "visual_studio_integration"]'
           use-github-cache: true
           use-local-cache: true
           log-file-suffix: 'windows-${{ matrix.cuda }}.txt'
