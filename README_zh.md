@@ -12,8 +12,8 @@ InsightAT 是开源一站式运动恢复结构系统，主打简易易用、全�
 
 ### 本地编译（Linux）
 
-使用系统 Ceres（`libceres-dev`），无需自建 CUDA Ceres / cuDSS。
-脚本会**强制**使用 apt 的 Ceres，避免误用本机 `~/.local/ceres-cuda128`：
+若本机有 CUDA Ceres（`~/.local/ceres-cuda128`），脚本会搭配 **cuDSS 12** 使用；
+否则回退到 apt 的 `libceres-dev`：
 
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git

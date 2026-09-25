@@ -5,19 +5,22 @@ Default product is **CLI-only** (`isat_*`). Qt is optional (`packaging/legacy/`)
 
 ## Developer (local, friendly)
 
-Uses system Ceres (`apt install libceres-dev`) — **forces** apt Ceres so a leftover
-`~/.local/ceres-cuda128` does not get picked up. No cuDSS required for local builds.
+## Developer (local)
+
+If `~/.local/ceres-cuda128` exists, the script uses it with **cuDSS 12**
+(`libcudss/12/...` — not the top-level `cmake/cudss`, which picks `libcudss/13`
+and breaks against CUDA 12.8 / `cublas.so.12`). Otherwise it falls back to apt
+`libceres-dev`.
 
 ```bash
-# Linux
 ./packaging/linux/build.sh
 # binaries: ./build/isat_*
 
-# Optional (advanced): your own CUDA Ceres + cuDSS
-INSIGHTAT_USE_CUDA_CERES=1 ./packaging/linux/build.sh
+# Force apt Ceres instead:
+INSIGHTAT_USE_SYSTEM_CERES=1 ./packaging/linux/build.sh
 ```
 
-CI/Docker release images still build custom Ceres + cuDSS; local script does not change that.
+CI/Docker release images still build their own Ceres + cuDSS; this does not change that.
 
 Windows: open the repo with vcpkg toolchain + `vcpkg.json` (ordinary `ceres`), configure with `-DINSIGHTAT_BUILD_QT_UI=OFF`.
 
