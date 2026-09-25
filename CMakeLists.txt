@@ -46,14 +46,14 @@ endif()
 
 find_package(Threads REQUIRED)
 
-# Auto-enable SiftGPU when CUDA is not available (for CPU+EGL fallback)
+# Default: enable SiftGPU (+ CUDA backend when toolkit is present).
 find_package(CUDAToolkit QUIET)
 if(CUDAToolkit_FOUND)
-    option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend (optional)" OFF)
-    option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" OFF)
+    option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend" ON)
+    option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" ON)
 else()
-    # Force SiftGPU when CUDA is not available (CPU+EGL mode)
-    option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend (optional)" ON)
+    # No CUDA toolkit: CPU+EGL SiftGPU fallback
+    option(INSIGHTAT_ENABLE_SIFTGPU "Build and enable SiftGPU backend" ON)
     option(SIFTGPU_ENABLE_CUDA "Build SiftGPU with CUDA backend (third_party/SiftGPU)" OFF)
     message(STATUS "Top-level: CUDA not found, forcing CPU+EGL mode with SiftGPU")
 endif()

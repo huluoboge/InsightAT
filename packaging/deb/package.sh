@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Build a Debian package from an existing InsightAT build tree.
-# Intended to run inside the Ubuntu 22.04 build container.
+# Intended for Ubuntu 22.04 (glibc 2.35) + CUDA 12.8 release images.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
-BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build-ceres-12.8}"
-OUTPUT_DIR="${DEB_OUTPUT_DIR:-${REPO_ROOT}/build-deb-cuda12.8}"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build}"
+OUTPUT_DIR="${DEB_OUTPUT_DIR:-${REPO_ROOT}/build-deb}"
 UPSTREAM_VERSION="${VERSION:-$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")}"
 DEB_VERSION="${DEB_VERSION:-${UPSTREAM_VERSION}-1}"
-# Debian versions must begin with a digit (or an epoch). CI versions may use a
-# short commit SHA, so keep their ordering while making them dpkg-compatible.
 if [[ ! "${DEB_VERSION}" =~ ^[0-9] && ! "${DEB_VERSION}" =~ ^[0-9]+: ]]; then
   DEB_VERSION="0~${DEB_VERSION}"
 fi
@@ -49,7 +48,6 @@ mkdir -p "${BIN_DIR}" "${PRIVATE_LIB_DIR}" \
   "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/DEBIAN" \
   "${WORK_DIR}/debian" "${OUTPUT_DIR}"
 
-# CLI-only packaging: isat_* tools (+ optional CameraEstimator if present).
 shopt -s nullglob
 binaries=(
   "${BUILD_DIR}"/isat_*
@@ -63,7 +61,6 @@ for binary in "${binaries[@]}"; do
   name="$(basename "${binary}")"
   cp -a "${binary}" "${BIN_DIR}/${name}"
   ln -s "/usr/lib/insightat/bin/${name}" "${PKG_ROOT}/usr/bin/${name}"
-  # Remove build-machine absolute paths from the installed executable.
   patchelf --set-rpath '$ORIGIN/../lib:$ORIGIN' "${BIN_DIR}/${name}"
   packaged_binary_count=$((packaged_binary_count + 1))
 done
@@ -97,21 +94,6 @@ sed -e 's/^Icon=app$/Icon=insightat/' \
     > "${PKG_ROOT}/usr/share/applications/insightat.desktop"
 cp -a "${REPO_ROOT}/packaging/appimage/app.png" \
   "${PKG_ROOT}/usr/share/icons/hicolor/256x256/apps/insightat.png"
-
-cat > "${WORK_DIR}/debian/control" <<EOF
-Source: ${PACKAGE_NAME}
-Section: graphics
-Priority: optional
-Maintainer: InsightAT contributors <maintainers@insightat.org>
-Standards-Version: 4.6.0
-
-Package: ${PACKAGE_NAME}
-Version: ${DEB_VERSION}
-Architecture: ${ARCH}
-Depends: \${shlibs:Depends}
-Description: InsightAT incremental Structure from Motion toolkit
- GPU-accelerated feature extraction, matching, retrieval, and incremental SfM.
-EOF
 
 SUBSTVARS="${WORK_DIR}/debian/substvars"
 touch "${SUBSTVARS}"

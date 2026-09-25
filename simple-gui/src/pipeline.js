@@ -131,7 +131,7 @@ function commandCandidates(binDir, exeName) {
   if (process.env.ISAT_BIN_DIR) candidates.push(path.join(process.env.ISAT_BIN_DIR, exeName));
 
   const repoRoot = path.resolve(__dirname, '..', '..');
-  for (const dir of ['build-ceres-12.8', 'build-local', 'build']) {
+  for (const dir of ['build', 'build-release', 'build-ceres-12.8', 'build-local']) {
     candidates.push(path.join(repoRoot, dir, exeName));
   }
   candidates.push(exeName);
@@ -157,8 +157,10 @@ function sensorDbCandidates(binDir) {
     candidates.push(path.join(process.env.ISAT_BIN_DIR, 'config', 'camera_sensor_database.txt'));
   }
   const repoRoot = path.resolve(__dirname, '..', '..');
-  candidates.push(path.join(repoRoot, 'build-ceres-12.8', 'data', 'config', 'camera_sensor_database.txt'));
-  candidates.push(path.join(repoRoot, 'build-ceres-12.8', 'config', 'camera_sensor_database.txt'));
+  for (const dir of ['build', 'build-release', 'build-ceres-12.8', 'build-local']) {
+    candidates.push(path.join(repoRoot, dir, 'data', 'config', 'camera_sensor_database.txt'));
+    candidates.push(path.join(repoRoot, dir, 'config', 'camera_sensor_database.txt'));
+  }
   return candidates;
 }
 

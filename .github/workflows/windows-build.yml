@@ -188,8 +188,8 @@ jobs:
               "-DCMAKE_CUDA_COMPILER=$nvcc_path",
               "-DCUDAToolkit_ROOT=$cuda_path",
               "-DCMAKE_CUDA_ARCHITECTURES=60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual",
-              "-DSIFTGPU_ENABLE_CUDA=OFF",
-              "-DINSIGHTAT_ENABLE_SIFTGPU=OFF"
+              "-DSIFTGPU_ENABLE_CUDA=ON",
+              "-DINSIGHTAT_ENABLE_SIFTGPU=ON"
             )
           } else {
             Write-Host "Configuring the Windows GLSL/SiftGPU fallback without CUDA."
@@ -220,59 +220,12 @@ jobs:
       - name: Stage Windows runtime package
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $release_dir = Join-Path $env:GITHUB_WORKSPACE "build\Release"
-          $stage_dir = Join-Path $env:GITHUB_WORKSPACE "windows-package"
-          if (-not (Test-Path $release_dir)) {
-            Write-Error "Release output directory not found: $release_dir"
-            exit 1
-          }
-
-          # CLI-only package: isat_* tools (Qt GUI is optional / off by default).
-          $required = @(
-            "isat_project.exe",
-            "isat_sfm.exe",
-            "isat_extract.exe",
-            "isat_match.exe"
-          )
-          foreach ($name in $required) {
-            $path = Join-Path $release_dir $name
-            if (-not (Test-Path $path)) {
-              Write-Error "Required Windows executable was not built: $path"
-              exit 1
-            }
-          }
-
-          Remove-Item $stage_dir -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Path $stage_dir | Out-Null
-          Get-ChildItem -Path $release_dir -Filter "isat_*.exe" -File |
-            Copy-Item -Destination $stage_dir -Force
-          Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "build") -Recurse -Filter "*.dll" -File -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $stage_dir -Force -ErrorAction SilentlyContinue
-          if (Test-Path (Join-Path $env:GITHUB_WORKSPACE "data")) {
-            Copy-Item (Join-Path $env:GITHUB_WORKSPACE "data") (Join-Path $stage_dir "data") -Recurse -Force
-          }
-
-          $triplet_bin = Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET\bin"
-          if (Test-Path $triplet_bin) {
-            Copy-Item (Join-Path $triplet_bin "*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          }
-
-          @{
-            project = "InsightAT"
-            cuda = $env:CUDA_PATH
-            triplet = $env:VCPKG_DEFAULT_TRIPLET
-            commit = $env:GITHUB_SHA
-          } | ConvertTo-Json | Set-Content (Join-Path $stage_dir "build-info.json")
-
-          & (Join-Path $stage_dir "isat_project.exe") create -h
+          $env:INSIGHTAT_ZIP_NAME = "InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip"
+          & "$env:GITHUB_WORKSPACE\packaging\windows\package.ps1"
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "isat_project.exe create -h smoke test failed"
+            Write-Error "Windows packaging failed"
             exit 1
           }
-
-          $zip_path = Join-Path $env:GITHUB_WORKSPACE "InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip"
-          Compress-Archive -Path (Join-Path $stage_dir "*") -DestinationPath $zip_path -CompressionLevel Optimal -Force
 
       - name: Cleanup temporary files
         if: always()

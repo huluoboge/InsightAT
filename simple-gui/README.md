@@ -31,8 +31,8 @@ npm start
 If the CLI tools are not on `PATH`, set `ISAT_BIN_DIR` before starting:
 
 ```bash
-export ISAT_BIN_DIR=/path/to/InsightAT/build-ceres-12.8
+export ISAT_BIN_DIR=/path/to/InsightAT/build
 npm start
 ```
 
-During local development from this repository, the app also probes common build directories such as `build-ceres-12.8`.
+During local development from this repository, the app also probes common build directories such as `build` and `build-release`.

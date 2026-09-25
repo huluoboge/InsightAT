@@ -1,35 +1,32 @@
-#!/bin/bash
-# Generic InsightAT AppImage builder script.
-# This script reads configuration from environment variables and builds the AppImage.
+#!/usr/bin/env bash
+# Build InsightAT AppImage (CLI-only, CUDA 12.8 defaults).
 #
-# Required env:
-#   INSIGHTAT_BUILD_DIR  — CMake build directory containing compiled binaries
-#   CUDA_LIBS_DIR        — CUDA libraries directory (e.g., /usr/local/cuda-11.8/lib64)
+# Required env (or defaults below):
+#   INSIGHTAT_BUILD_DIR  — CMake build directory with isat_* binaries
+#   CUDA_LIBS_DIR        — CUDA lib64 directory
 #
-# Optional env:
-#   BUNDLE_PYTHON=1|0   — copy host python3 + stdlib into AppDir (default: 1). Set 0 to skip (smaller image).
-#   VERSION             — Version string for the AppImage (default: read from VERSION file at project root)
-#   APPIMAGE_OUT_DIR    — Output directory for the AppImage (default: build-appimage)
-#   BUNDLE_PYTHON_DIST  — Copy dist-packages (default: 0)
-#
-# Default product packaging is CLI-only (isat_*). Legacy Qt GUI binaries are
-# optional extras if present in the build tree.
+# Optional:
+#   VERSION, APPIMAGE_OUT_DIR, BUNDLE_PYTHON, BUNDLE_PYTHON_DIST
 
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-APPIMAGE_OUT_DIR="${APPIMAGE_OUT_DIR:-${REPO_ROOT}/build-appimage}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# CUDA 12.8 defaults for Ubuntu 22.04 packaging
+export INSIGHTAT_BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build}"
+export CUDA_LIBS_DIR="${CUDA_LIBS_DIR:-/usr/local/cuda-12.8/lib64}"
+INSIGHTAT_BASE_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo "0.1.0")"
+export VERSION="${VERSION:-${INSIGHTAT_BASE_VERSION}-cuda12.8}"
+export APPIMAGE_OUT_DIR="${APPIMAGE_OUT_DIR:-${REPO_ROOT}/build-appimage}"
+export BUNDLE_PYTHON="${BUNDLE_PYTHON:-1}"
+export BUNDLE_PYTHON_DIST="${BUNDLE_PYTHON_DIST:-0}"
+
 TOOLS_DIR="${APPIMAGE_OUT_DIR}/.tools"
 APPDIR="${APPIMAGE_OUT_DIR}/InsightAT.AppDir"
 APPNAME=InsightAT
-# Version: if VERSION env var is not set, read from VERSION file at project root.
-INSIGHTAT_BASE_VERSION=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "0.1.0")
-VERSION="${VERSION:-${INSIGHTAT_BASE_VERSION}}"
-DESKTOP_SRC="${REPO_ROOT}/packaging/appimage/insightat.desktop"
-ICON_SRC="${REPO_ROOT}/packaging/appimage/app.png"
-BUNDLE_PYTHON="${BUNDLE_PYTHON:-1}"
-# Set to 1 to also copy /usr/lib/python3/dist-packages (Debian/Ubuntu; may add ~100–300 MiB, needed for numpy/matplotlib in scripts)
-BUNDLE_PYTHON_DIST="${BUNDLE_PYTHON_DIST:-0}"
+DESKTOP_SRC="${SCRIPT_DIR}/insightat.desktop"
+ICON_SRC="${SCRIPT_DIR}/app.png"
 
 if [[ ! -f "$ICON_SRC" ]]; then
   echo "Missing $ICON_SRC"
@@ -39,22 +36,20 @@ if [[ ! -f "$DESKTOP_SRC" ]]; then
   echo "Missing $DESKTOP_SRC"
   exit 1
 fi
-
-if [[ -z "${INSIGHTAT_BUILD_DIR:-}" ]]; then
-  echo "ERROR: INSIGHTAT_BUILD_DIR environment variable is not set"
-  echo "Please source a configuration script or set this variable directly."
+if [[ ! -d "${INSIGHTAT_BUILD_DIR}" ]]; then
+  echo "ERROR: INSIGHTAT_BUILD_DIR does not exist: ${INSIGHTAT_BUILD_DIR}" >&2
   exit 1
 fi
-
-if [[ -z "${CUDA_LIBS_DIR:-}" ]]; then
-  echo "ERROR: CUDA_LIBS_DIR environment variable is not set"
-  echo "Please source a configuration script or set this variable directly."
+if [[ ! -d "${CUDA_LIBS_DIR}" ]]; then
+  echo "ERROR: CUDA_LIBS_DIR does not exist: ${CUDA_LIBS_DIR}" >&2
   exit 1
 fi
 
 echo "Building AppImage with:"
 echo "  INSIGHTAT_BUILD_DIR: $INSIGHTAT_BUILD_DIR"
 echo "  CUDA_LIBS_DIR: $CUDA_LIBS_DIR"
+echo "  VERSION: $VERSION"
+echo "  APPIMAGE_OUT_DIR: $APPIMAGE_OUT_DIR"
 
 rm -rf "$APPDIR"
 mkdir -p \
@@ -68,12 +63,12 @@ shopt -s nullglob
 isats=( "$INSIGHTAT_BUILD_DIR"/isat_* )
 shopt -u nullglob
 if [[ ${#isats[@]} -eq 0 ]]; then
-  echo "ERROR: no isat_* binaries in ${INSIGHTAT_BUILD_DIR} (build the project first)."
+  echo "ERROR: no isat_* binaries in ${INSIGHTAT_BUILD_DIR}" >&2
   exit 1
 fi
-# Ship all CLI tools; optional CameraEstimator / legacy Qt binaries if built.
+
 for f in "${isats[@]}"; do
-  [[ -f "$f" && -x "$f" ]] || { echo "ERROR: required binary missing or not executable: $f"; exit 1; }
+  [[ -f "$f" && -x "$f" ]] || { echo "ERROR: not executable: $f" >&2; exit 1; }
   cp -a "$f" "$APPDIR/usr/bin/"
 done
 for optional in CameraEstimator at_bundler_viewer InsightAT; do
@@ -84,29 +79,23 @@ for optional in CameraEstimator at_bundler_viewer InsightAT; do
   fi
 done
 
-# Helper scripts (run: ./AppImage isat_tools | isat_info; default with no args = isat_tools)
 for _helper in isat_tools isat_info; do
-  if [[ -f "${REPO_ROOT}/packaging/appimage/${_helper}" ]]; then
-    cp -a "${REPO_ROOT}/packaging/appimage/${_helper}" "$APPDIR/usr/bin/${_helper}"
+  if [[ -f "${SCRIPT_DIR}/${_helper}" ]]; then
+    cp -a "${SCRIPT_DIR}/${_helper}" "$APPDIR/usr/bin/${_helper}"
     chmod a+x "$APPDIR/usr/bin/${_helper}"
   else
-    echo "WARNING: packaging/appimage/${_helper} missing."
+    echo "WARNING: ${SCRIPT_DIR}/${_helper} missing."
   fi
 done
 
-# App data: full tree under usr/share/InsightAT (includes data/config, data/gdal, etc.)
 if [[ -d "${REPO_ROOT}/data" ]]; then
   cp -a "${REPO_ROOT}/data" "$APPDIR/usr/share/${APPNAME}/"
 fi
 if [[ -d "${REPO_ROOT}/scripts" ]]; then
   cp -a "${REPO_ROOT}/scripts" "$APPDIR/usr/share/${APPNAME}/"
 fi
-
-# isat_sfm / isat_camera_estimator resolve sensor DB as: <binary_dir>/data/config/...
-# Symlink usr/bin/data -> ../share/InsightAT/data so CWD is irrelevant.
 ln -sfn "../share/${APPNAME}/data" "$APPDIR/usr/bin/data"
 
-# Optional: bundle Python 3 (build host) for running usr/share/InsightAT/scripts/
 if [[ "$BUNDLE_PYTHON" == "1" ]]; then
   if PYBIN=$(command -v python3 2>/dev/null); then
     PYBIN=$(readlink -f "$PYBIN")
@@ -127,18 +116,15 @@ if [[ "$BUNDLE_PYTHON" == "1" ]]; then
       fi
     done
     if [[ "$BUNDLE_PYTHON_DIST" == "1" ]] && [[ -d /usr/lib/python3/dist-packages ]]; then
-      echo "BUNDLE_PYTHON: copying /usr/lib/python3/dist-packages (BUNDLE_PYTHON_DIST=1; large)"
+      echo "BUNDLE_PYTHON: copying dist-packages"
       mkdir -p "$APPDIR/usr/lib/python3"
       cp -a /usr/lib/python3/dist-packages "$APPDIR/usr/lib/python3/"
     fi
   else
-    echo "WARNING: python3 not found on build host; AppImage will not include Python. Set BUNDLE_PYTHON=0 to silence."
+    echo "WARNING: python3 not found; set BUNDLE_PYTHON=0 to silence."
   fi
-else
-  echo "BUNDLE_PYTHON=0: not bundling python3; use system python3 and paths under INSIGHTAT_SHARE for scripts if needed."
 fi
 
-# Bundle shared libs for all ELF in usr/bin
 file_is_elf() {
   file -b --mime-type "$1" 2>/dev/null | grep -q 'application/x-executable' || file -b "$1" 2>/dev/null | grep -qE '^ELF'
 }
@@ -155,14 +141,12 @@ for exe in "$APPDIR"/usr/bin/*; do
   done
 done
 
-# CUDA (optional)
 for pat in libcudart.so* libcublas.so* libcufft.so* libnvrtc.so*; do
   for f in "$CUDA_LIBS_DIR"/$pat; do
     [[ -e "$f" ]] && cp -n "$f" "$APPDIR/usr/lib/" || true
   done
 done
 
-# AppImage metadata
 cp -a "$ICON_SRC" "$APPDIR/app.png"
 for d in 256x256 128x128 64x64 48x48; do
   mkdir -p "$APPDIR/usr/share/icons/hicolor/${d}/apps"
@@ -171,7 +155,6 @@ done
 cp -a "$DESKTOP_SRC" "$APPDIR/usr/share/applications/insightat.desktop"
 cp -a "$DESKTOP_SRC" "$APPDIR/${APPNAME}.desktop"
 
-# AppRun (source outside AppDir for linuxdeploy --custom-apprun; then copy into AppDir)
 APPRUN_SRC="${APPIMAGE_OUT_DIR}/insightat_AppRun.in"
 cat > "$APPRUN_SRC" <<'EOF'
 #!/bin/bash
@@ -181,16 +164,13 @@ export PATH="${HERE}/usr/bin:${PATH:-}"
 export INSIGHTAT_PREFIX="${HERE}/usr"
 export INSIGHTAT_SHARE="${HERE}/usr/share/InsightAT"
 export INSIGHTAT_DATA_DIR="${INSIGHTAT_SHARE}"
-# Bundled data (config, PROJ/CSV, GDAL data files) — isat_* looks under usr/bin/data via symlink
 if [[ -d "${INSIGHTAT_SHARE}/data/gdal" ]]; then
   export GDAL_DATA="${INSIGHTAT_SHARE}/data/gdal"
 fi
-# Bundled CPython (if present)
 if [[ -x "${HERE}/usr/bin/python3" && -d "${HERE}/usr/lib" ]]; then
   export PYTHONHOME="${HERE}/usr"
   export PYTHONNOUSERSITE=1
 fi
-# No args: list bundled CLIs. With args: execute specified binary/script
 if [[ $# -eq 0 ]]; then
   exec "${HERE}/usr/bin/isat_tools"
 else
@@ -201,12 +181,11 @@ chmod +x "$APPRUN_SRC"
 cp -a "$APPRUN_SRC" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 
-# linuxdeploy (CLI-only: no Qt plugin)
 LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
 wget -N -q -P "$TOOLS_DIR" "$LINUXDEPLOY_URL" 2>/dev/null || true
 chmod +x "$TOOLS_DIR"/linuxdeploy-x86_64.AppImage 2>/dev/null || true
 if [[ ! -x "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" ]]; then
-  echo "Failed to get linuxdeploy; download manually to $TOOLS_DIR and re-run."
+  echo "Failed to get linuxdeploy; download manually to $TOOLS_DIR and re-run." >&2
   exit 1
 fi
 
@@ -225,16 +204,9 @@ fi
 OUT_IMG=$(ls -1t "${APPIMAGE_OUT_DIR}/"*.AppImage 2>/dev/null | head -1 || true)
 if [[ -n "$OUT_IMG" ]]; then
   echo "AppImage: $OUT_IMG"
-  echo "No-arg default:  $OUT_IMG  → lists CLI tools (isat_tools)"
-  echo "With arg:        $OUT_IMG isat_project ... → runs CLI tools"
-
-  # ── SHA256 checksum ────────────────────────────────────────────────────────
-  SHA256_FILE="${OUT_IMG}.sha256"
-  echo "Generating SHA256: $(sha256sum "$OUT_IMG" | cut -d' ' -f1)"
-  sha256sum "$OUT_IMG" > "$SHA256_FILE"
-  echo "SHA256 file: $SHA256_FILE"
+  sha256sum "$OUT_IMG" | tee "${OUT_IMG}.sha256"
 else
-  echo "Expected an *.AppImage under ${APPIMAGE_OUT_DIR}/"
+  echo "Expected an *.AppImage under ${APPIMAGE_OUT_DIR}/" >&2
   exit 1
 fi
 

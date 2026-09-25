@@ -3,7 +3,7 @@ build-*
 build_*
 build-appimage/
 
-# AppImage artifacts in repo root (use build-appimage/ via compile_appimage.sh)
+# AppImage artifacts in repo root
 /InsightAT.AppDir
 /*.AppImage
 .vscode/launch.json

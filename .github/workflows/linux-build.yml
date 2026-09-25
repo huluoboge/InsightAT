@@ -105,7 +105,7 @@ jobs:
         run: |
           docker build \
             --progress=plain \
-            --file Dockerfile.cuda12.8 \
+            --file packaging/Dockerfile \
             --build-arg CMAKE_CUDA_ARCHITECTURES="${{ steps.meta.outputs.cuda_architectures }}" \
             --build-arg INSIGHTAT_VERSION="${{ steps.meta.outputs.version }}" \
             --tag "${IMAGE_NAME}:${{ steps.meta.outputs.version }}" \
@@ -119,8 +119,8 @@ jobs:
           container_id="$(docker create "${IMAGE_NAME}:${{ steps.meta.outputs.version }}")"
           trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
 
-          docker cp "${container_id}:/workspace/insightat/build-appimage-cuda12.8/." "${OUTPUT_DIR}/appimage/"
-          docker cp "${container_id}:/workspace/insightat/build-deb-cuda12.8/." "${OUTPUT_DIR}/deb/"
+          docker cp "${container_id}:/workspace/insightat/build-appimage/." "${OUTPUT_DIR}/appimage/"
+          docker cp "${container_id}:/workspace/insightat/build-deb/." "${OUTPUT_DIR}/deb/"
 
           appimage="$(find "${OUTPUT_DIR}/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           deb="$(find "${OUTPUT_DIR}/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
