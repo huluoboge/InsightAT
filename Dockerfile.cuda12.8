@@ -33,9 +33,15 @@ WORKDIR /workspace/insightat
 # ── System dependencies ──────────────────────────────────────────────────────
 # NOTE: libceres-dev from apt is intentionally excluded — we build a custom
 # Ceres with CUDA+cuDSS support from huluoboge/ceres-solver hy branch.
-# Install the latest matching cudss meta + libcudss packages together.
-# Do NOT pin an old cudss-cuda-12 version: apt may pull newer libcudss0-* and
-# leave /usr/include/cudss.h pointing at an incomplete header set.
+# Install cuDSS 0.7.1.4 from NVIDIA's redistributable archive (not apt): the
+# CUDA apt repo's latest libcudss is 0.8.x, which breaks the hy-branch Ceres
+# API (cudaDataType_t → cudssDataType_t).
+ARG CUDSS_VERSION=0.7.1.4
+ARG CUDSS_ARCHIVE=libcudss-linux-x86_64-${CUDSS_VERSION}_cuda12-archive
+ARG CUDSS_URL=https://developer.download.nvidia.com/compute/cudss/redist/libcudss/linux-x86_64/${CUDSS_ARCHIVE}.tar.xz
+ENV CUDSS_ROOT=/opt/nvidia/cudss/${CUDSS_VERSION}
+ENV LD_LIBRARY_PATH=${CUDSS_ROOT}/lib:${CUDSS_ROOT}/lib64:${LD_LIBRARY_PATH}
+ENV CMAKE_PREFIX_PATH=${CUDSS_ROOT}:${CMAKE_PREFIX_PATH}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
@@ -63,22 +69,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libqt5opengl5-dev \
     p7zip-full \
     wget \
+    xz-utils \
     file \
     fuse \
     libfuse2 \
     dpkg-dev \
     patchelf \
-    cudss-cuda-12 \
-    libcudss0-cuda-12 \
-    libcudss0-dev-cuda-12 \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir "cmake>=3.24" \
     && cmake --version \
-    && (test -f /usr/include/cudss.h || test -f /usr/include/libcudss/12/cudss.h) \
-    && echo "cuDSS headers OK" \
-    && ls -la /usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss/ || true
+    && mkdir -p /opt/nvidia/cudss \
+    && wget -q "${CUDSS_URL}" -O /tmp/cudss.tar.xz \
+    && tar -xJf /tmp/cudss.tar.xz -C /opt/nvidia/cudss \
+    && mv "/opt/nvidia/cudss/${CUDSS_ARCHIVE}" "${CUDSS_ROOT}" \
+    && rm -f /tmp/cudss.tar.xz \
+    && test -f "${CUDSS_ROOT}/include/cudss.h" \
+    && (test -d "${CUDSS_ROOT}/lib/cmake/cudss" || test -d "${CUDSS_ROOT}/lib64/cmake/cudss") \
+    && echo "cuDSS ${CUDSS_VERSION} installed at ${CUDSS_ROOT}" \
+    && ls -la "${CUDSS_ROOT}"
 
-# ── Custom Ceres-Solver (CUDA 12 + cuDSS) ────────────────────────────────────
+# ── Custom Ceres-Solver (CUDA 12 + cuDSS 0.7) ────────────────────────────────
 # Fork:   https://github.com/huluoboge/ceres-solver (hy branch)
 # Script: build_cuda12.sh — configures cmake with CUDA 12.x flags + cuDSS.
 # We run the script, then install to /usr/local so InsightAT's find_package
@@ -86,6 +96,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --branch hy --depth 1 --recurse-submodules https://github.com/huluoboge/ceres-solver.git /tmp/ceres-solver \
     && cd /tmp/ceres-solver \
     && chmod +x build_cuda12.sh \
+    && CUDSS_CMAKE_DIR="$(find "${CUDSS_ROOT}" -type d -path '*/cmake/cudss' | head -1)" \
+    && test -n "${CUDSS_CMAKE_DIR}" \
+    && echo "Using cuDSS cmake dir: ${CUDSS_CMAKE_DIR}" \
+    && sed -i "s|CUDSS_CMAKE_DIR=\".*\"|CUDSS_CMAKE_DIR=\"${CUDSS_CMAKE_DIR}\"|" build_cuda12.sh \
     && ./build_cuda12.sh \
     && cd build_cuda128 \
     && make install \
@@ -99,11 +113,12 @@ RUN echo "CeresConfig: $(find /root -name CeresConfig.cmake 2>/dev/null)" \
 COPY . .
 
 ARG CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;89;90-virtual"
-RUN cmake -S . -B build-ceres-12.8 \
+RUN CUDSS_CMAKE_DIR="$(find "${CUDSS_ROOT}" -type d -path '*/cmake/cudss' | head -1)" \
+    && cmake -S . -B build-ceres-12.8 \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES}" \
     -DCeres_DIR="$HOME/.local/ceres-cuda128/lib/cmake/Ceres" \
-    -Dcudss_DIR="/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss" \
+    -Dcudss_DIR="${CUDSS_CMAKE_DIR}" \
     -DSIFTGPU_ENABLE_CUDA=OFF \
     && cmake --build build-ceres-12.8 -j"$(nproc)"
 
