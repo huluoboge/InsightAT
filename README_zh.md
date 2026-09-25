@@ -6,38 +6,58 @@ InsightAT 是开源一站式运动恢复结构系统，主打简易易用、全�
 
 **[English](README.md) | 简体中文**
 
-## 🚀 快速开始
+支持平台：**Ubuntu 22.04** 与 **Windows**，**CUDA 12.8**。默认构建为纯 CLI（`isat_*`）。
 
-### Docker 构建
+## 快速开始
+
+### 本地编译（Linux）
+
+使用系统 Ceres（`libceres-dev`），无需自建 CUDA Ceres / cuDSS：
+
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git
 cd InsightAT
-docker build -t insightat:cuda11.8 -f Dockerfile .
+./packaging/linux/build.sh
+# 产物：./build/isat_*
+```
+
+完整打包说明（AppImage、deb、Docker、Windows zip）见 [packaging/README.md](packaging/README.md)。
+
+### 发布镜像（Docker）
+
+Ubuntu 22.04 + CUDA 12.8，含 GPU BA（自建 Ceres + cuDSS）：
+
+```bash
+./packaging/docker-build.sh run
+# → ./build-appimage/*.AppImage
+# → ./build-deb/*.deb
 ```
 
 ### 使用说明
-重建主程序为 `isat_sfm`
-- `-i` 指定图片目录，支持自动扫描子文件夹，不同相机拍摄素材建议分目录存放
-- `-w` 指定项目工作目录
 
-重建完成后最终成果存放于工作目录下 `incremental_sfm`，可使用 `at_bundler_viewer` 可视化查看相机姿态与三维点云。
+重建主程序为 `isat_sfm`：
+
+- `-i` 图片目录（支持子目录；不同相机建议分目录）
+- `-w` 工作目录
+
+成果在 `working_dir/incremental_sfm`。
 
 ```bash
 isat_sfm -i /data/images -w /data/work
-at_bundler_viewer /data/work/incremental_sfm
 ```
 
-### Ubuntu 运行 AppImage
-Ubuntu 系统可直接使用打包好的 AppImage 程序，无需编译配置环境：
-```bash
-# 执行三维重建
-InsightAT-XXX.AppImage isat_sfm -i /data/images -w /data/work 
+### Ubuntu 运行 AppImage / deb
 
-# 可视化查看重建结果
-InsightAT-XXX.AppImage at_bundler_viewer /data/work/incremental_sfm
+```bash
+# 查看内置 CLI
+./InsightAT-*.AppImage
+
+# 执行重建
+./InsightAT-*.AppImage isat_sfm -i /data/images -w /data/work
 ```
 
 ## 开源协议
+
 MIT 许可证
 
 版权所有 (c) 2026 Yang Hu
