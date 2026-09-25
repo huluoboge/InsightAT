@@ -39,8 +39,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-filesystem-dev \
     libboost-program-options-dev \
     libboost-system-dev \
-    qtbase5-dev \
-    libqt5opengl5-dev \
     p7zip-full \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir "cmake>=3.24" \

@@ -33,8 +33,16 @@ endif ()
 # ==============================================================================
 # INSIGHTAT build options
 # ==============================================================================
-option(INSIGHTAT_BUILD_GUI_ONLY "Build only GUI-related targets and skip CUDA-dependent components" OFF)
+# Default: CLI-only (isat_* tools). Qt UI lives under src/ui + src/render and is
+# optional; product UI is expected to move to Node (simple-gui) over time.
+option(INSIGHTAT_BUILD_QT_UI "Build legacy Qt5 GUI (InsightAT + at_bundler_viewer + render)" OFF)
+option(INSIGHTAT_BUILD_GUI_ONLY "Build only Qt GUI targets and skip CUDA/algorithm components" OFF)
 option(INSIGHTAT_BUILD_RENDER_TESTS "Build render property tests and fetch RapidCheck" OFF)
+
+if(INSIGHTAT_BUILD_GUI_ONLY AND NOT INSIGHTAT_BUILD_QT_UI)
+    set(INSIGHTAT_BUILD_QT_UI ON CACHE BOOL "Build legacy Qt5 GUI" FORCE)
+    message(STATUS "Top-level: INSIGHTAT_BUILD_GUI_ONLY implies INSIGHTAT_BUILD_QT_UI=ON")
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -53,6 +61,7 @@ endif()
 if(INSIGHTAT_BUILD_GUI_ONLY)
     message(STATUS "Top-level: INSIGHTAT_BUILD_GUI_ONLY=ON, skipping algorithm/CUDA components")
 endif()
+message(STATUS "Top-level: INSIGHTAT_BUILD_QT_UI=${INSIGHTAT_BUILD_QT_UI}")
 message(STATUS "Top-level: INSIGHTAT_ENABLE_SIFTGPU=${INSIGHTAT_ENABLE_SIFTGPU}")
 message(STATUS "Top-level: SIFTGPU_ENABLE_CUDA=${SIFTGPU_ENABLE_CUDA}")
 
@@ -191,12 +200,13 @@ if(NOT TARGET glog::glog)
         INTERFACE_LINK_LIBRARIES "${GLOG_LIBRARIES}"
     )
 endif()
-# GLEW
+# GLEW / OpenGL — needed by algorithm GPU paths (SiftGPU, geo_ransac), not only Qt.
 # ==============================================================================
 if(NOT INSIGHTAT_BUILD_GUI_ONLY)
     find_package(OpenGL REQUIRED COMPONENTS OpenGL)
-    # GLU is optional on some platforms but required by the render module.
-    find_package(OpenGL COMPONENTS GLU)
+    if(INSIGHTAT_BUILD_QT_UI)
+        find_package(OpenGL COMPONENTS GLU)
+    endif()
     find_package(Glew REQUIRED)
 else()
     message(STATUS "GUI-only mode: skipping OpenGL/GLEW")

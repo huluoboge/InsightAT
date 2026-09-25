@@ -1,30 +1,36 @@
 
-include_directories(${EIGEN3_INCLUDE_DIR}) 
+include_directories(${EIGEN3_INCLUDE_DIR})
 add_subdirectory(database)
 add_subdirectory(util)
-add_subdirectory(ui)
-add_subdirectory(render)
+
+# Legacy Qt UI (optional). Default builds are CLI-only; Node (simple-gui) is the
+# intended product UI going forward.
+if(INSIGHTAT_BUILD_QT_UI)
+    add_subdirectory(ui)
+    add_subdirectory(render)
+else()
+    message(STATUS "src: INSIGHTAT_BUILD_QT_UI=OFF, skipping ui/render")
+endif()
+
 if(INSIGHTAT_BUILD_GUI_ONLY)
     message(STATUS "src: GUI-only mode, skipping algorithm targets")
 else()
     add_subdirectory(algorithm)
 endif()
-# ─────────────────────────────────────────────────────────────
-# 查找 Qt5 包
-# ─────────────────────────────────────────────────────────────
-find_package(Qt5Widgets QUIET)
-find_package(Qt5Core QUIET)
-find_package(Qt5Gui QUIET)
-find_package(Qt5OpenGL QUIET)
-
-if(NOT INSIGHTAT_BUILD_GUI_ONLY AND Qt5Widgets_FOUND AND Qt5Core_FOUND AND Qt5Gui_FOUND AND Qt5OpenGL_FOUND)
-  add_subdirectory(tools/at_bundler_viewer)
-endif()
 
 # ─────────────────────────────────────────────────────────────
-# 新的 InsightAT 可执行文件（使用新的 MainWindow）
+# Qt5 targets (only when INSIGHTAT_BUILD_QT_UI=ON)
 # ─────────────────────────────────────────────────────────────
-if(Qt5Widgets_FOUND AND Qt5Core_FOUND AND Qt5Gui_FOUND)
+if(INSIGHTAT_BUILD_QT_UI)
+    find_package(Qt5Widgets REQUIRED)
+    find_package(Qt5Core REQUIRED)
+    find_package(Qt5Gui REQUIRED)
+    find_package(Qt5OpenGL REQUIRED)
+
+    if(NOT INSIGHTAT_BUILD_GUI_ONLY)
+        add_subdirectory(tools/at_bundler_viewer)
+    endif()
+
     set(CMAKE_AUTOMOC ON)
     set(CMAKE_AUTORCC ON)
 
@@ -49,11 +55,7 @@ if(Qt5Widgets_FOUND AND Qt5Core_FOUND AND Qt5Gui_FOUND)
 
     set_property(TARGET InsightAT PROPERTY FOLDER InsightAT)
     message(STATUS "Building InsightAT (Qt MainWindow)")
-    
-    # ==============================================================================
-    # 复制数据文件到构建目录
-    # ==============================================================================
-    # 在构建时复制配置数据文件（坐标系数据库等）到 build 目录
+
     add_custom_command(TARGET InsightAT POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/data/config"
@@ -61,5 +63,5 @@ if(Qt5Widgets_FOUND AND Qt5Core_FOUND AND Qt5Gui_FOUND)
         COMMENT "Copying coordinate system databases to build directory"
     )
 else()
-    message(STATUS "Qt5 not found, skipping InsightAT")
+    message(STATUS "src: CLI-only build (isat_* tools); Qt UI disabled")
 endif()

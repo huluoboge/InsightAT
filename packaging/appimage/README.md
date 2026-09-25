@@ -1,6 +1,6 @@
 # AppImage (InsightAT)
 
-**v0.1 policy:** the main Qt shell **`InsightAT`** (project UI) is **not** in this image — it is not release-ready. The bundle still includes **`at_bundler_viewer`**, a separate **Qt + OpenGL** program for visualizing Bundler outputs. Everything else is command-line tools. With **no arguments**, the AppImage runs **`isat_tools`** so you see which programs are inside.
+**CLI-only packaging:** the default product image ships **`isat_*` command-line tools** only. Legacy Qt targets (`InsightAT`, `at_bundler_viewer`) are **optional** — they are bundled only if present in `INSIGHTAT_BUILD_DIR` (enable with `-DINSIGHTAT_BUILD_QT_UI=ON` at configure time). Product UI is expected to move to Node (`simple-gui`). With **no arguments**, the AppImage runs **`isat_tools`**.
 
 Build from the **repository root**:
 
@@ -14,11 +14,12 @@ Build from the **repository root**:
 
 Output: `build-appimage/InsightAT-x86_64.AppImage` (under `build-*`, gitignored).
 
-**Requires in the build directory:** all `isat_*` binaries and `at_bundler_viewer` (not `InsightAT`).
+**Requires in the build directory:** all `isat_*` binaries.
 
 **Bundled**
 
-- `isat_*`, `at_bundler_viewer`, helpers `isat_tools` (list CLIs) and `isat_info` (print `INSIGHTAT_*` paths)
+- `isat_*`, helpers `isat_tools` (list CLIs) and `isat_info` (print `INSIGHTAT_*` paths)
+- Optional: `CameraEstimator` / legacy Qt binaries if the build produced them
 - `data/` and `scripts/` under `usr/share/InsightAT/`; `INSIGHTAT_DATA_DIR` / `INSIGHTAT_SHARE` set in `AppRun`
 - `usr/bin/data` → `../share/InsightAT/data` so `isat_sfm` finds `data/config/...` next to the tools
 - Optional embedded Python: stdlib for running bundled `scripts/*.py` without system Python; add `BUNDLE_PYTHON_DIST=1` if you need third-party packages from the build host
@@ -29,7 +30,6 @@ Output: `build-appimage/InsightAT-x86_64.AppImage` (under `build-*`, gitignored)
 ./build-appimage/InsightAT-x86_64.AppImage                 # default: isat_tools (list CLIs)
 ./build-appimage/InsightAT-x86_64.AppImage isat_sfm -h
 ./build-appimage/InsightAT-x86_64.AppImage isat_info
-./build-appimage/InsightAT-x86_64.AppImage at_bundler_viewer <path>
 ```
 
 **List CLIs explicitly**
@@ -47,5 +47,3 @@ Output: `build-appimage/InsightAT-x86_64.AppImage` (under `build-*`, gitignored)
 ```
 
 For `numpy`-heavy scripts, rebuild with `BUNDLE_PYTHON_DIST=1 ./compile_appimage.sh` (larger image).
-
-**Qt / `at_bundler_viewer`:** if you see `Cannot mix incompatible Qt library (5.15.A) with this library (5.15.B)`, the AppImage was loading **Qt from the system** (plugins/platforms) and **Qt from the bundle** (libs) from two different patch releases. The script uses **`linuxdeploy-plugin-qt`** and **`QMAKE` must match the Qt that built `at_bundler_viewer`**. The default is to read `Qt5Core_QMAKE_EXECUTABLE` from `INSIGHTAT_BUILD_DIR/CMakeCache.txt`, or you can set `INSIGHTAT_QMAKE=/path/to/qmake` before running `./compile_appimage.sh`. Rebuild the AppImage after this change; no change is needed to your library install on the target machine.

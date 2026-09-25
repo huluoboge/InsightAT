@@ -42,10 +42,6 @@
       ]
     },
     {
-      "name": "qt5-base",
-      "default-features": false
-    },
-    {
       "name": "vcpkg-cmake",
       "host": true
     },

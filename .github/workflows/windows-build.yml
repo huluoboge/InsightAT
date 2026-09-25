@@ -175,6 +175,7 @@ jobs:
             "-DVCPKG_MANIFEST_MODE=ON",
             "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE",
             "-DCMAKE_BUILD_TYPE=Release",
+            "-DINSIGHTAT_BUILD_QT_UI=OFF",
             "-DINSIGHTAT_BUILD_RENDER_TESTS=OFF"
           )
           if ($cuda_enabled) {
@@ -227,13 +228,12 @@ jobs:
             exit 1
           }
 
+          # CLI-only package: isat_* tools (Qt GUI is optional / off by default).
           $required = @(
-            "InsightAT.exe",
             "isat_project.exe",
             "isat_sfm.exe",
             "isat_extract.exe",
-            "isat_match.exe",
-            "at_bundler_viewer.exe"
+            "isat_match.exe"
           )
           foreach ($name in $required) {
             $path = Join-Path $release_dir $name
@@ -245,7 +245,8 @@ jobs:
 
           Remove-Item $stage_dir -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $stage_dir | Out-Null
-          Copy-Item (Join-Path $release_dir "*.exe") $stage_dir -Force
+          Get-ChildItem -Path $release_dir -Filter "isat_*.exe" -File |
+            Copy-Item -Destination $stage_dir -Force
           Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "build") -Recurse -Filter "*.dll" -File -ErrorAction SilentlyContinue |
             Copy-Item -Destination $stage_dir -Force -ErrorAction SilentlyContinue
           if (Test-Path (Join-Path $env:GITHUB_WORKSPACE "data")) {
@@ -255,18 +256,6 @@ jobs:
           $triplet_bin = Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET\bin"
           if (Test-Path $triplet_bin) {
             Copy-Item (Join-Path $triplet_bin "*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
-          }
-
-          $windeployqt = Get-ChildItem -Path (Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET") -Filter windeployqt.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($null -ne $windeployqt) {
-            foreach ($gui in @("InsightAT.exe", "at_bundler_viewer.exe")) {
-              $gui_path = Join-Path $stage_dir $gui
-              if (Test-Path $gui_path) {
-                & $windeployqt.FullName --release --no-translations $gui_path
-              }
-            }
-          } else {
-            Write-Warning "windeployqt.exe was not found; Qt DLLs must be supplied by the vcpkg runtime set."
           }
 
           @{

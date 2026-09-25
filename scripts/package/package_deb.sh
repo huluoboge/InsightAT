@@ -49,12 +49,11 @@ mkdir -p "${BIN_DIR}" "${PRIVATE_LIB_DIR}" \
   "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/DEBIAN" \
   "${WORK_DIR}/debian" "${OUTPUT_DIR}"
 
+# CLI-only packaging: isat_* tools (+ optional CameraEstimator if present).
 shopt -s nullglob
 binaries=(
   "${BUILD_DIR}"/isat_*
-  "${BUILD_DIR}/InsightAT"
   "${BUILD_DIR}/CameraEstimator"
-  "${BUILD_DIR}/at_bundler_viewer"
 )
 shopt -u nullglob
 
@@ -69,7 +68,7 @@ for binary in "${binaries[@]}"; do
   packaged_binary_count=$((packaged_binary_count + 1))
 done
 if [[ ${packaged_binary_count} -eq 0 ]]; then
-  echo "ERROR: no executable InsightAT binaries found in ${BUILD_DIR}" >&2
+  echo "ERROR: no executable isat_* binaries found in ${BUILD_DIR}" >&2
   exit 1
 fi
 
@@ -94,9 +93,6 @@ fi
 ln -s /usr/share/insightat/data "${BIN_DIR}/data"
 
 sed -e 's/^Icon=app$/Icon=insightat/' \
-    -e 's/^TryExec=isat_tools$/TryExec=InsightAT/' \
-    -e 's/^Exec=isat_tools$/Exec=InsightAT/' \
-    -e 's/^Terminal=true$/Terminal=false/' \
     "${REPO_ROOT}/packaging/appimage/insightat.desktop" \
     > "${PKG_ROOT}/usr/share/applications/insightat.desktop"
 cp -a "${REPO_ROOT}/packaging/appimage/app.png" \
