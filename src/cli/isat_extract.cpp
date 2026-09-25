@@ -30,8 +30,8 @@
 #include <string>
 #include <vector>
 
-#include "../io/idc_writer.h"
-#include "../modules/extraction/sift_gpu_extractor.h"
+#include "algorithm/io/idc_writer.h"
+#include "algorithm/modules/extraction/sift_gpu_extractor.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"

@@ -51,7 +51,6 @@ mkdir -p "${BIN_DIR}" "${PRIVATE_LIB_DIR}" \
 shopt -s nullglob
 binaries=(
   "${BUILD_DIR}"/isat_*
-  "${BUILD_DIR}/CameraEstimator"
 )
 shopt -u nullglob
 

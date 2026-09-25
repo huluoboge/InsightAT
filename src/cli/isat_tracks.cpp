@@ -37,12 +37,12 @@
 
 #include "pair_json_utils.h"
 
-#include "../io/idc_reader.h"
-#include "../io/geopack_index.h"
-#include "../io/track_store_idc.h"
-#include "../modules/sfm/track_store.h"
-#include "../modules/sfm/view_graph.h"
-#include "../modules/sfm/view_graph_loader.h"
+#include "algorithm/io/idc_reader.h"
+#include "algorithm/io/geopack_index.h"
+#include "algorithm/io/track_store_idc.h"
+#include "algorithm/modules/sfm/track_store.h"
+#include "algorithm/modules/sfm/view_graph.h"
+#include "algorithm/modules/sfm/view_graph_loader.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 

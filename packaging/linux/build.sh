@@ -153,5 +153,4 @@ fi
 for b in "${bins[@]}"; do
   echo "  $(basename "$b")"
 done
-[[ -x "${BUILD_DIR}/CameraEstimator" ]] && echo "  CameraEstimator"
 echo "[InsightAT] Done (${#bins[@]} isat_* tools)."

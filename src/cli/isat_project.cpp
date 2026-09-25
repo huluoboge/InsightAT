@@ -33,7 +33,7 @@
 #include <sstream>
 #include <unordered_set>
 
-#include "../database/database_types.h"
+#include "database/database_types.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 

@@ -23,10 +23,10 @@
 #include <string>
 #include <vector>
 
-#include "../io/idc_reader.h"
-#include "../modules/matching/match_types.h"
-#include "../modules/retrieval/pca_whitening.h"
-#include "../modules/retrieval/vlad_encoding.h"
+#include "algorithm/io/idc_reader.h"
+#include "algorithm/modules/matching/match_types.h"
+#include "algorithm/modules/retrieval/pca_whitening.h"
+#include "algorithm/modules/retrieval/vlad_encoding.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 

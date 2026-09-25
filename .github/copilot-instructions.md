@@ -63,7 +63,7 @@ CEREAL_CLASS_VERSION(MyType, 1);
 
 ## CLI 工具链
 
-所有工具在 `src/algorithm/tools/`，构建产物在 `build/isat_*`。
+所有工具在 `src/cli/`，构建产物在 `build/isat_*`。
 
 | 工具 | 功能 | GPU | 输出 |
 |------|------|-----|------|

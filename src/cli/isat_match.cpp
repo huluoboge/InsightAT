@@ -31,10 +31,10 @@
 #include <string>
 #include <vector>
 
-#include "../io/idc_reader.h"
-#include "../io/idc_writer.h"
-#include "../modules/matching/match_types.h"
-#include "../modules/matching/sift_matcher.h"
+#include "algorithm/io/idc_reader.h"
+#include "algorithm/io/idc_writer.h"
+#include "algorithm/modules/matching/match_types.h"
+#include "algorithm/modules/matching/sift_matcher.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "pair_json_utils.h"

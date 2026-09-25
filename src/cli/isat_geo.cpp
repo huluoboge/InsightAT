@@ -61,22 +61,22 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 
-#include "../io/idc_reader.h"
-#include "../io/idc_writer.h"
-#include "../io/geopack_index.h"
+#include "algorithm/io/idc_reader.h"
+#include "algorithm/io/idc_writer.h"
+#include "algorithm/io/geopack_index.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"
 
-#include "../modules/camera/camera_types.h"
-#include "../modules/geometry/gpu_geo_ransac.h"
+#include "algorithm/modules/camera/camera_types.h"
+#include "algorithm/modules/geometry/gpu_geo_ransac.h"
 #ifdef INSIGHTAT_HAS_CUDA_GEO
-#include "../modules/geometry/cuda_geo_ransac.h"
+#include "algorithm/modules/geometry/cuda_geo_ransac.h"
 #endif
-#include "../modules/sfm/gpu_twoview_sfm.h"
-#include "../modules/sfm/two_view_reconstruction.h"
+#include "algorithm/modules/sfm/gpu_twoview_sfm.h"
+#include "algorithm/modules/sfm/two_view_reconstruction.h"
 #include "pair_json_utils.h"
-#include "tools/project_loader.h"
+#include "project_loader.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;

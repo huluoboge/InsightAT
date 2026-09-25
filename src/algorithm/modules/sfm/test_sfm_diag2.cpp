@@ -37,7 +37,7 @@
  */
 
 #include "../../io/track_store_idc.h"
-#include "../../tools/project_loader.h"
+#include "cli/project_loader.h"
 #include "track_store.h"
 #include "view_graph.h"
 #include "view_graph_loader.h"

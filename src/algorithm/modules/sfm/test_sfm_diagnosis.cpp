@@ -41,7 +41,7 @@
  */
 
 #include "../../io/track_store_idc.h"
-#include "../../tools/project_loader.h"
+#include "cli/project_loader.h"
 #include "incremental_triangulation.h"
 #include "resection_batch.h"
 #include "track_store.h"

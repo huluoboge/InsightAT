@@ -13,9 +13,10 @@ else()
 endif()
 
 if(INSIGHTAT_BUILD_GUI_ONLY)
-    message(STATUS "src: GUI-only mode, skipping algorithm targets")
+    message(STATUS "src: GUI-only mode, skipping algorithm/cli targets")
 else()
     add_subdirectory(algorithm)
+    add_subdirectory(cli)
 endif()
 
 # ─────────────────────────────────────────────────────────────

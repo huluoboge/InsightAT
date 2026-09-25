@@ -6,7 +6,7 @@
 #include "view_graph_loader.h"
 #include "../../io/geopack_index.h"
 #include "../../io/idc_reader.h"
-#include "../../tools/pair_json_utils.h"
+#include "cli/pair_json_utils.h"
 #include "track_store.h"
 #include <algorithm>
 #include <filesystem>

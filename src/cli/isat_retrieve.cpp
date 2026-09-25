@@ -25,10 +25,10 @@
 #include <string>
 #include <vector>
 
-#include "../modules/retrieval/pca_whitening.h"
-#include "../modules/retrieval/retrieval_types.h"
-#include "../modules/retrieval/spatial_retrieval.h"
-#include "../modules/retrieval/vlad_retrieval.h"
+#include "algorithm/modules/retrieval/pca_whitening.h"
+#include "algorithm/modules/retrieval/retrieval_types.h"
+#include "algorithm/modules/retrieval/spatial_retrieval.h"
+#include "algorithm/modules/retrieval/vlad_retrieval.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "stlplus3/filesystemSimplified/file_system.hpp"

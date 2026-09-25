@@ -31,12 +31,12 @@
 
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
-#include "tools/project_loader.h"
+#include "project_loader.h"
 
-#include "../io/track_store_idc.h"
-#include "../modules/camera/camera_utils.h"
-#include "../modules/sfm/incremental_sfm_pipeline.h"
-#include "../modules/sfm/track_store.h"
+#include "algorithm/io/track_store_idc.h"
+#include "algorithm/modules/camera/camera_utils.h"
+#include "algorithm/modules/sfm/incremental_sfm_pipeline.h"
+#include "algorithm/modules/sfm/track_store.h"
 
 using json = nlohmann::json;
 using namespace insight;

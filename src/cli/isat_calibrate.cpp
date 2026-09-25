@@ -42,8 +42,8 @@
 #include <glog/logging.h>
 #include <nlohmann/json.hpp>
 
-#include "../io/idc_reader.h"
-#include "../modules/sfm/two_view_reconstruction.h"
+#include "algorithm/io/idc_reader.h"
+#include "algorithm/modules/sfm/two_view_reconstruction.h"
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "pair_json_utils.h"

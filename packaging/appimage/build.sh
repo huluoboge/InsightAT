@@ -71,7 +71,7 @@ for f in "${isats[@]}"; do
   [[ -f "$f" && -x "$f" ]] || { echo "ERROR: not executable: $f" >&2; exit 1; }
   cp -a "$f" "$APPDIR/usr/bin/"
 done
-for optional in CameraEstimator at_bundler_viewer InsightAT; do
+for optional in at_bundler_viewer InsightAT; do
   f="${INSIGHTAT_BUILD_DIR}/${optional}"
   if [[ -f "$f" && -x "$f" ]]; then
     cp -a "$f" "$APPDIR/usr/bin/"

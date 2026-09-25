@@ -43,8 +43,8 @@
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"
-#include "../io/track_store_idc.h"
-#include "../modules/camera/camera_utils.h"
+#include "algorithm/io/track_store_idc.h"
+#include "algorithm/modules/camera/camera_utils.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;

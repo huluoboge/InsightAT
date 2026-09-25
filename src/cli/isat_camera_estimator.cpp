@@ -45,7 +45,7 @@
 #include "cmdLine/cmdLine.h"
 #include "database/camera_sensor_database.h"
 #include "database/database_types.h"
-#include "io/exif/exif_IO_EasyExif.hpp"
+#include "algorithm/io/exif/exif_IO_EasyExif.hpp"
 #include "task_queue/task_queue.hpp"
 
 namespace fs = std::filesystem;

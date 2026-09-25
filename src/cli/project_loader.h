@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include "../modules/camera/camera_types.h"
+#include "algorithm/modules/camera/camera_types.h"
 #include <fstream>
 #include <string>
 #include <vector>
