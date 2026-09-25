@@ -67,7 +67,7 @@ cmake "${SCRIPT_DIR}" \
     -DPopSift_BUILD_EXAMPLES=OFF \
     -Dcudss_DIR="${INSIGHTAT_CUDSS_DIR}" \
     -DCeres_DIR="${INSIGHTAT_CERES_DIR}" \
-    -DSIFTGPU_ENABLE_CUDA=OFF \
+    -DSIFTGPU_ENABLE_CUDA=ON \
     "$@"
 
 make -j"$(nproc)"

@@ -152,9 +152,10 @@ int SiftMatchCU::GetGuidedSiftMatch(int max_match, uint32_t match_buffer[][2],
   if (_initialized == 0) return 0;
   if (_num_sift[0] <= 0 || _num_sift[1] <= 0) return 0;
   if (_have_loc[0] == 0 || _have_loc[1] == 0) return 0;
+  // use_h/use_f keep historical behavior (both active). COLMAP texture-object port added these flags.
   ProgramCU::MultiplyDescriptorG(_texDes, _texDes + 1, _texLoc, _texLoc + 1,
                                  &_texDot, (mbm ? &_texCRT : NULL), H, hdistmax,
-                                 F, fdistmax);
+                                 F, fdistmax, 1, 1);
   return GetBestMatch(max_match, match_buffer, distmax, ratiomax, mbm);
 }
 
