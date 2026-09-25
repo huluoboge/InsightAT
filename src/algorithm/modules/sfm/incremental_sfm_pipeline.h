@@ -191,15 +191,20 @@ struct InitPairOptions {
 /// Options for the incremental resection loop (one new image per iteration).
 struct ResectionOptions {
   ResectionBackend backend = ResectionBackend::kPoseLib; ///< Absolute-pose backend.
-  int min_inliers = 9;     ///< Min PnP RANSAC inliers to accept resection (3× P3P min-sample).
-  int min_3d2d_count = 15; ///< Min 3D-2D correspondences to list a candidate.
-  /// Stability gate: min PnP inlier ratio (inliers / total 3D-2D correspondences).
-  /// Helps reject large-support false positives (e.g. 9 inliers out of 400+ correspondences).
-  double min_inlier_ratio = 0.02;
+  /// Hard gate: min PnP RANSAC inliers (rejects weak absolute poses that seed flip cascades).
+  int min_inliers = 30;
+  int min_3d2d_count = 30; ///< Min 3D-2D correspondences to list a candidate.
+  /// Hard gate: min PnP inlier ratio (inliers / total 3D-2D correspondences).
+  double min_inlier_ratio = 0.10;
   /// For large scenes, use a stricter inlier-ratio gate once enough cameras are registered.
-  double min_inlier_ratio_large_scene = 0.05;
+  double min_inlier_ratio_large_scene = 0.15;
   int large_scene_min_images = 100;
   int large_scene_min_registered = 20;
+  /// Soft preference: among trials that pass the hard gate, prefer these if any qualify.
+  int preferred_min_inliers = 50;
+  double preferred_min_inlier_ratio = 0.20;
+  /// Evaluate up to this many ranked candidates (dry-run) and accept the best, not the first OK.
+  int max_trials_before_accept = 8;
   /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 =
   /// off.
   double post_resection_reproj_thresh_px = 0.0;

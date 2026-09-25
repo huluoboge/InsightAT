@@ -15,7 +15,7 @@ struct SeedStrategyProfile {
   double init_max_forward_motion = 0.95;
   double init_min_angle_deg = 2.0;
   double init_min_median_angle_deg = 30.0;
-  int resection_min_inliers = 15;  ///< PnP RANSAC inliers threshold for incremental registration
+  int resection_min_inliers = 30;  ///< PnP RANSAC inliers threshold for incremental registration
 };
 
 struct SeedEvalMetrics {

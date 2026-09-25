@@ -322,12 +322,14 @@ set_property(TARGET isat_camera_estimator PROPERTY FOLDER InsightAT/CLI)
 
 # isat_focal_from_geo - Estimate focal from geo F matrices (no-EXIF path)
 add_executable(isat_focal_from_geo isat_focal_from_geo.cpp)
+find_package(OpenMP REQUIRED)
 target_link_libraries(isat_focal_from_geo
     PRIVATE
         insightat_tools_logging
         InsightATAlgorithm
         sfm_module
         glog::glog
+        OpenMP::OpenMP_CXX
 )
 target_include_directories(isat_focal_from_geo
     PRIVATE

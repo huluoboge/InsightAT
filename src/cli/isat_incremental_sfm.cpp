@@ -127,28 +127,28 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
                           int bundler_max_cameras = -1) {
   const int n_images = static_cast<int>(registered.size());
 
-  // Build list of registered image indices in order
+  // Only registered cameras (global image index order).
   std::vector<int> all_reg_indices;
   for (int i = 0; i < n_images; ++i)
     if (registered[static_cast<size_t>(i)])
       all_reg_indices.push_back(i);
 
-  // Uniformly subsample if requested
   std::vector<int> reg_indices;
   if (bundler_max_cameras > 0 && static_cast<int>(all_reg_indices.size()) > bundler_max_cameras) {
     reg_indices.reserve(static_cast<size_t>(bundler_max_cameras));
-    const double step = static_cast<double>(all_reg_indices.size() - 1) / (bundler_max_cameras - 1);
+    const double step =
+        static_cast<double>(all_reg_indices.size() - 1) / (bundler_max_cameras - 1);
     for (int k = 0; k < bundler_max_cameras; ++k) {
       const int idx = static_cast<int>(std::round(k * step));
       reg_indices.push_back(all_reg_indices[static_cast<size_t>(idx)]);
     }
-    LOG(INFO) << "write_bundler: subsampled " << all_reg_indices.size() << " registered cameras → "
-              << reg_indices.size() << " for Bundler output";
+    LOG(INFO) << "write_bundler: subsampled " << all_reg_indices.size()
+              << " registered cameras → " << reg_indices.size() << " for Bundler output";
   } else {
     reg_indices = all_reg_indices;
   }
 
-  // Map global image index → bundler camera index (only registered images)
+  // Map global image index → bundler camera index
   std::vector<int> global_to_bundler(static_cast<size_t>(n_images), -1);
   for (int bi = 0; bi < static_cast<int>(reg_indices.size()); ++bi)
     global_to_bundler[static_cast<size_t>(reg_indices[bi])] = bi;
@@ -537,7 +537,7 @@ int main(int argc, char* argv[]) {
   double init_max_forward_motion = 0.95;
   double init_min_angle_deg = 2.0;
   double init_min_median_angle_deg = 30.0;
-  int resection_min_inliers = 15;
+  int resection_min_inliers = 30;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));

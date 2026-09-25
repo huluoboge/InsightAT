@@ -42,7 +42,6 @@ struct RobustTriangulationOptions {
   double ransac_inlier_px = 16.0;
   int ransac_max_pair_samples = 500;
   int min_inlier_views = 2;
-  // double min_tri_angle_deg = 2.0;
   double min_tri_angle_deg = 0.5;
   double max_tri_angle_deg = 120.0;
   int gn_max_iterations = 10;

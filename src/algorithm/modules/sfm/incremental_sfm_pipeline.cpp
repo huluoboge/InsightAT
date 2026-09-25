@@ -4772,88 +4772,153 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
     new_track_ids_buf.reserve(2048);
     new_registered_image_indices.reserve(static_cast<size_t>(resection_candidates.size()));
     all_new_track_ids.reserve(4096);
-    // Try each candidate in score order; use the first that succeeds (degenerate configs, etc.).
-    for (const ResectionCandidate& cand : resection_candidates) {
-      // resection one image every time is very important, and then do triangulation
-      registered_images_buf.clear();
-      const int resection_minliers = opts.resection.min_inliers;
-      double resection_min_inlier_ratio = opts.resection.min_inlier_ratio;
-      const bool use_large_scene_ratio =
-          (n_images >= opts.resection.large_scene_min_images &&
-           num_registered >= opts.resection.large_scene_min_registered);
-      if (use_large_scene_ratio) {
-        resection_min_inlier_ratio =
-            std::max(resection_min_inlier_ratio, opts.resection.min_inlier_ratio_large_scene);
-      }
-      auto t_resect_cand0 = Clock::now();
-      const int n = run_batch_resection(*store_out, {cand.image_index}, *cameras,
-                                        image_to_camera_index, poses_R_out, poses_C_out,
-                                        registered_out, resection_minliers, &registered_images_buf,
-                                        resection_min_inlier_ratio,
-                                        opts.resection.post_resection_reproj_thresh_px);
-      add_ms(&ms_resection, t_resect_cand0, Clock::now());
-      VLOG(1) << "  [resection] img=" << cand.image_index << " 3d2d=" << cand.num_3d2d
-              << " cov=" << cand.coverage << " min_ratio=" << resection_min_inlier_ratio
-              << " → " << (n > 0 ? "OK" : "FAIL");
-      if (n <= 0)
+    // Try top-ranked candidates: dry-run PnP on several, then accept the best that
+    // passes the hard gate (not the first barely-OK). Prefer preferred_* thresholds.
+    struct ResectionTrial {
+      int image_index = -1;
+      int n_3d2d = 0;
+      int inliers = 0;
+      double rmse_px = 0.0;
+      double ratio = 0.0;
+      Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
+      Eigen::Vector3d t = Eigen::Vector3d::Zero();
+      bool preferred = false;
+      double score = -1.0;
+    };
+    const int resection_minliers = opts.resection.min_inliers;
+    double resection_min_inlier_ratio = opts.resection.min_inlier_ratio;
+    const bool use_large_scene_ratio =
+        (n_images >= opts.resection.large_scene_min_images &&
+         num_registered >= opts.resection.large_scene_min_registered);
+    if (use_large_scene_ratio) {
+      resection_min_inlier_ratio =
+          std::max(resection_min_inlier_ratio, opts.resection.min_inlier_ratio_large_scene);
+    }
+    const int max_trials = std::max(
+        1, std::min(opts.resection.max_trials_before_accept,
+                    static_cast<int>(resection_candidates.size())));
+    std::vector<ResectionTrial> trials;
+    trials.reserve(static_cast<size_t>(max_trials));
+    for (int ti = 0; ti < max_trials; ++ti) {
+      const ResectionCandidate& cand = resection_candidates[static_cast<size_t>(ti)];
+      const int im = cand.image_index;
+      if (im < 0 || static_cast<size_t>(im) >= image_to_camera_index.size())
         continue;
-      num_registered += n;
-      for (int idx : registered_images_buf) {
-        new_registered_image_indices.emplace_back(idx);
+      if (static_cast<size_t>(im) < registered_out->size() &&
+          (*registered_out)[static_cast<size_t>(im)])
+        continue;
+      const camera::Intrinsics& K =
+          (*cameras)[static_cast<size_t>(image_to_camera_index[static_cast<size_t>(im)])];
+      ResectionTrial tr;
+      tr.image_index = im;
+      tr.n_3d2d = cand.num_3d2d > 0 ? cand.num_3d2d : store_out->image_tri_count(im);
+      auto t_resect_cand0 = Clock::now();
+      const bool ok = resection_single_image(
+          K, *store_out, im, &tr.R, &tr.t, resection_minliers, /*ransac_thresh_px=*/4.0,
+          &tr.inliers, &tr.rmse_px, resection_min_inlier_ratio, /*commit_outliers=*/false);
+      add_ms(&ms_resection, t_resect_cand0, Clock::now());
+      if (!ok) {
+        LOG(INFO) << "  resection image " << im << ": FAILED (trial, 3D-2D=" << tr.n_3d2d
+                  << ", inliers=" << tr.inliers << ", rmse=" << tr.rmse_px
+                  << ", need " << resection_minliers << ", ratio>=" << resection_min_inlier_ratio
+                  << ")";
+        continue;
       }
-      VLOG(1)
-          << "[PERF] resection: "
-          << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_resect0).count()
-          << "ms  added=" << new_registered_image_indices.size();
-      if (VLOG_IS_ON(1)) {
-        const PipelineReprojStats st_re =
-            compute_pipeline_reproj_stats(*store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                          *cameras, image_to_camera_index);
-        agent_log_pipeline_reproj_step("after_resection", sfm_iter, num_registered, st_re);
-      }
-      if (new_registered_image_indices.empty()) {
-        break;
-      }
-      auto t_tri0 = Clock::now();
-      new_track_ids_buf.clear();
-      double triangle_error_thresh_px = opts.triangulation.commit_reproj_px;
-      int n_new_tri = run_batch_triangulation(
-          store_out, new_registered_image_indices, *poses_R_out, *poses_C_out, *registered_out,
-          *cameras, image_to_camera_index, opts.triangulation.min_angle_deg, &new_track_ids_buf,
-          triangle_error_thresh_px);
-      add_ms(&ms_triangulation, t_tri0, Clock::now());
-      all_new_track_ids.insert(all_new_track_ids.end(), new_track_ids_buf.begin(),
-                               new_track_ids_buf.end());
-      VLOG(1)
-          << "[PERF] triangulation: "
-          << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0).count()
-          << "ms  new_tri=" << n_new_tri;
+      tr.ratio =
+          tr.n_3d2d > 0 ? static_cast<double>(tr.inliers) / static_cast<double>(tr.n_3d2d) : 0.0;
+      tr.preferred = (tr.inliers >= opts.resection.preferred_min_inliers &&
+                      tr.ratio >= opts.resection.preferred_min_inlier_ratio);
+      // Higher ratio/inliers and lower RMSE wins.
+      tr.score = tr.ratio * std::log1p(static_cast<double>(tr.inliers)) /
+                 (1.0 + tr.rmse_px / 4.0);
+      LOG(INFO) << "  resection image " << im << ": TRIAL-OK (3D-2D=" << tr.n_3d2d
+                << ", inliers=" << tr.inliers << ", ratio=" << tr.ratio << ", rmse=" << tr.rmse_px
+                << ", score=" << tr.score << (tr.preferred ? ", preferred" : "") << ")";
+      trials.push_back(std::move(tr));
+    }
 
-      if (VLOG_IS_ON(1)) {
-        const PipelineReprojStats st_tri =
-            compute_pipeline_reproj_stats(*store_out, *poses_R_out, *poses_C_out, *registered_out,
-                                          *cameras, image_to_camera_index);
-        agent_log_pipeline_reproj_step("after_triangulation", sfm_iter, num_registered, st_tri);
+    int best_idx = -1;
+    {
+      int best_pref = -1;
+      double best_pref_score = -1.0;
+      int best_any = -1;
+      double best_any_score = -1.0;
+      for (int i = 0; i < static_cast<int>(trials.size()); ++i) {
+        const auto& tr = trials[static_cast<size_t>(i)];
+        if (tr.preferred && tr.score > best_pref_score) {
+          best_pref_score = tr.score;
+          best_pref = i;
+        }
+        if (tr.score > best_any_score) {
+          best_any_score = tr.score;
+          best_any = i;
+        }
       }
-      LOG(INFO) << "  After resection+triangulation: registered=" << num_registered
-                << ", new_tri=" << n_new_tri << ", total_tri=" << count_tri_tracks();
-      // In local BA mode, process exactly one image per outer SfM iteration so that
-      // each newly registered image immediately gets a local BA pass before the next
-      // candidate is attempted.  Global BA mode can batch multiple images per iteration,
-      // except during the conservative early phase (early_phase_max_cameras > 0) where we
-      // also limit to one image per iteration to give intrinsics time to converge.
-      if (use_local_ba)
-        break;
-      if (opts.global_ba.early_phase_max_cameras > 0 &&
-          num_registered < opts.global_ba.early_phase_max_cameras)
-        break;
+      best_idx = (best_pref >= 0) ? best_pref : best_any;
+    }
+
+    if (best_idx >= 0) {
+      const ResectionTrial& best = trials[static_cast<size_t>(best_idx)];
+      registered_images_buf.clear();
+      auto t_resect_commit0 = Clock::now();
+      // Commit winner: re-run with outlier writeback + pose registration.
+      const int n = run_batch_resection(
+          *store_out, {best.image_index}, *cameras, image_to_camera_index, poses_R_out, poses_C_out,
+          registered_out, resection_minliers, &registered_images_buf, resection_min_inlier_ratio,
+          opts.resection.post_resection_reproj_thresh_px);
+      add_ms(&ms_resection, t_resect_commit0, Clock::now());
+      LOG(INFO) << "  [resection] picked im=" << best.image_index << " among " << trials.size()
+                << "/" << max_trials << " trials (inliers=" << best.inliers
+                << ", ratio=" << best.ratio << ", rmse=" << best.rmse_px
+                << ", preferred=" << (best.preferred ? 1 : 0) << ")";
+      if (n > 0) {
+        num_registered += n;
+        for (int idx : registered_images_buf)
+          new_registered_image_indices.emplace_back(idx);
+        VLOG(1) << "[PERF] resection: "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_resect0)
+                       .count()
+                << "ms  added=" << new_registered_image_indices.size();
+        if (VLOG_IS_ON(1)) {
+          const PipelineReprojStats st_re = compute_pipeline_reproj_stats(
+              *store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+              image_to_camera_index);
+          agent_log_pipeline_reproj_step("after_resection", sfm_iter, num_registered, st_re);
+        }
+        if (!new_registered_image_indices.empty()) {
+          auto t_tri0 = Clock::now();
+          new_track_ids_buf.clear();
+          double triangle_error_thresh_px = opts.triangulation.commit_reproj_px;
+          int n_new_tri = run_batch_triangulation(
+              store_out, new_registered_image_indices, *poses_R_out, *poses_C_out, *registered_out,
+              *cameras, image_to_camera_index, opts.triangulation.min_angle_deg, &new_track_ids_buf,
+              triangle_error_thresh_px);
+          add_ms(&ms_triangulation, t_tri0, Clock::now());
+          all_new_track_ids.insert(all_new_track_ids.end(), new_track_ids_buf.begin(),
+                                   new_track_ids_buf.end());
+          VLOG(1) << "[PERF] triangulation: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_tri0)
+                         .count()
+                  << "ms  new_tri=" << n_new_tri;
+
+          if (VLOG_IS_ON(1)) {
+            const PipelineReprojStats st_tri = compute_pipeline_reproj_stats(
+                *store_out, *poses_R_out, *poses_C_out, *registered_out, *cameras,
+                image_to_camera_index);
+            agent_log_pipeline_reproj_step("after_triangulation", sfm_iter, num_registered, st_tri);
+          }
+          LOG(INFO) << "  After resection+triangulation: registered=" << num_registered
+                    << ", new_tri=" << n_new_tri << ", total_tri=" << count_tri_tracks();
+        }
+      }
     }
 
     if (new_registered_image_indices.empty()) {
       // All candidates were found but every one failed PnP-RANSAC.
       // Apply the same BA + kFullScan rescue as the "no candidates" path so that
       // freshly registered cameras improve 3D coverage and unlock these images.
-      LOG(INFO) << "  [resection_fail] All " << resection_candidates.size()
+      LOG(INFO) << "  [resection_fail] All " << max_trials << " trial(s) / "
+                << resection_candidates.size()
                 << " candidate(s) failed PnP-RANSAC (iter=" << sfm_iter << ")";
       if (no_candidate_consecutive >= kMaxNoCandidateRetries) {
         LOG(INFO) << "  No progress after " << no_candidate_consecutive
