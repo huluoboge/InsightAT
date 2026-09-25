@@ -24,7 +24,7 @@ if(CUDAToolkit_FOUND)
 endif()
 
 find_package(Eigen3 REQUIRED)
-find_package(Ceres QUIET)
+# find_package(Ceres QUIET)
 if(CUDAToolkit_FOUND)
     find_package(CUDA QUIET)
 endif()
