@@ -14,8 +14,8 @@ Supported platforms: **Ubuntu 22.04** and **Windows**, **CUDA 12.8**. Default bu
 
 ### Local build (Linux)
 
-Uses your local CUDA Ceres if present (`~/.local/ceres-cuda128` + **cuDSS 12**),
-otherwise apt `libceres-dev`:
+Uses your local CUDA Ceres if present (`~/.local/ceres-cuda128`), otherwise apt
+`libceres-dev`. cuDSS is auto-selected for the CUDA major (12 → `libcudss/12`):
 
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git

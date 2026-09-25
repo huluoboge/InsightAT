@@ -136,6 +136,46 @@ message(STATUS "Eigen3 version is ${EIGEN3_VERSION},dir is ${EIGEN3_INCLUDE_DIRS
 
 include_directories(${EIGEN3_INCLUDE_DIRS}) 
 if(NOT INSIGHTAT_BUILD_GUI_ONLY)
+    # NVIDIA ships cuDSS under libcudss/<CUDA_major>/. The unversioned package
+    # at .../cmake/cudss often resolves to the newest tree (e.g. 13), which then
+    # requires cublas.so.13 and breaks a CUDA 12.x toolkit. Prefer a tree that
+    # matches CUDAToolkit_VERSION_MAJOR unless the user already set a matching dir.
+    if(CUDAToolkit_FOUND AND DEFINED CUDAToolkit_VERSION_MAJOR)
+        set(_insightat_cudss_maj "${CUDAToolkit_VERSION_MAJOR}")
+        set(_insightat_cudss_need_auto TRUE)
+        if(DEFINED cudss_DIR AND NOT cudss_DIR STREQUAL "")
+            string(FIND "${cudss_DIR}" "libcudss/${_insightat_cudss_maj}" _insightat_cudss_hit)
+            if(_insightat_cudss_hit GREATER_EQUAL 0)
+                set(_insightat_cudss_need_auto FALSE)
+            endif()
+        endif()
+        if(_insightat_cudss_need_auto)
+            set(_insightat_cudss_candidates
+                "/usr/lib/x86_64-linux-gnu/libcudss/${_insightat_cudss_maj}/cmake/cudss"
+                "/usr/lib64/libcudss/${_insightat_cudss_maj}/cmake/cudss"
+                "/usr/local/libcudss/${_insightat_cudss_maj}/cmake/cudss"
+            )
+            if(DEFINED ENV{CUDSS_ROOT} AND NOT "$ENV{CUDSS_ROOT}" STREQUAL "")
+                list(APPEND _insightat_cudss_candidates
+                    "$ENV{CUDSS_ROOT}/lib/cmake/cudss"
+                    "$ENV{CUDSS_ROOT}/lib64/cmake/cudss"
+                )
+            endif()
+            foreach(_cand IN LISTS _insightat_cudss_candidates)
+                if(EXISTS "${_cand}/cudss-config.cmake")
+                    set(cudss_DIR "${_cand}" CACHE PATH "cuDSS CMake dir for CUDA ${_insightat_cudss_maj}" FORCE)
+                    message(STATUS "Auto-selected cuDSS for CUDA ${_insightat_cudss_maj}: ${cudss_DIR}")
+                    break()
+                endif()
+            endforeach()
+        endif()
+        unset(_insightat_cudss_maj)
+        unset(_insightat_cudss_need_auto)
+        unset(_insightat_cudss_hit)
+        unset(_insightat_cudss_candidates)
+        unset(_cand)
+    endif()
+
     # Ceres (required: for bundle adjustment in incremental SfM)
     find_package(Ceres REQUIRED)
     message(STATUS "Ceres: ${Ceres_VERSION}, BA module enabled")

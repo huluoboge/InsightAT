@@ -7,20 +7,20 @@ Default product is **CLI-only** (`isat_*`). Qt is optional (`packaging/legacy/`)
 
 ## Developer (local)
 
-If `~/.local/ceres-cuda128` exists, the script uses it with **cuDSS 12**
-(`libcudss/12/...` — not the top-level `cmake/cudss`, which picks `libcudss/13`
-and breaks against CUDA 12.8 / `cublas.so.12`). Otherwise it falls back to apt
-`libceres-dev`.
+If `~/.local/ceres-cuda128` exists, use it; otherwise apt `libceres-dev`.
+
+**cuDSS:** CMake (and the build script) pick `libcudss/<CUDA_major>/` from the
+detected toolkit (CUDA 12 → cuDSS 12). Do not rely on the unversioned
+`.../cmake/cudss` package — it often points at the newest tree (e.g. 13).
 
 ```bash
 ./packaging/linux/build.sh
 # binaries: ./build/isat_*
 
-# Force apt Ceres instead:
-INSIGHTAT_USE_SYSTEM_CERES=1 ./packaging/linux/build.sh
+INSIGHTAT_USE_SYSTEM_CERES=1 ./packaging/linux/build.sh   # force apt Ceres
 ```
 
-CI/Docker release images still build their own Ceres + cuDSS; this does not change that.
+CI/Docker release images still build their own Ceres + cuDSS.
 
 Windows: open the repo with vcpkg toolchain + `vcpkg.json` (ordinary `ceres`), configure with `-DINSIGHTAT_BUILD_QT_UI=OFF`.
 
