@@ -12,9 +12,6 @@ InsightAT 是开源一站式运动恢复结构系统，主打简易易用、全�
 
 ### 本地编译（Linux）
 
-若本机有 CUDA Ceres（`~/.local/ceres-cuda128`）则用之，否则用 apt 的 `libceres-dev`。
-cuDSS 会按 CUDA 主版本自动选择（12 → `libcudss/12`）：
-
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git
 cd InsightAT
@@ -61,4 +58,16 @@ isat_sfm -i /data/images -w /data/work
 
 MIT 许可证
 
-版权所有 (c) 2026 Yang Hu
+版权所有 (c) 2026 胡洋
+
+## 引用
+
+```bibtex
+@software{yang2026insightat,
+  author = {Hu, Yang},
+  title = {InsightAT: All-in-one Automated 3D Reconstruction System},
+  year = {2026},
+  doi = {10.5281/zenodo.20042104},
+  url = {https://github.com/huluoboge/InsightAT}
+}
+```

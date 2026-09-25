@@ -14,9 +14,6 @@ Supported platforms: **Ubuntu 22.04** and **Windows**, **CUDA 12.8**. Default bu
 
 ### Local build (Linux)
 
-Uses your local CUDA Ceres if present (`~/.local/ceres-cuda128`), otherwise apt
-`libceres-dev`. cuDSS is auto-selected for the CUDA major (12 → `libcudss/12`):
-
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git
 cd InsightAT
@@ -69,7 +66,7 @@ Copyright (c) 2026 Yang Hu
 
 ```bibtex
 @software{yang2026insightat,
-  author = {Yang, Hu},
+  author = {Hu, Yang},
   title = {InsightAT: All-in-one Automated 3D Reconstruction System},
   year = {2026},
   doi = {10.5281/zenodo.20042104},
