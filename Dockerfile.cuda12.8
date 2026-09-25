@@ -33,8 +33,9 @@ WORKDIR /workspace/insightat
 # ── System dependencies ──────────────────────────────────────────────────────
 # NOTE: libceres-dev from apt is intentionally excluded — we build a custom
 # Ceres with CUDA+cuDSS support from huluoboge/ceres-solver hy branch.
-# cuDSS is installed from NVIDIA's CUDA apt repository in the base image.
-ARG CUDSS_CUDA12_VERSION=0.7.1.4-1
+# Install the latest matching cudss meta + libcudss packages together.
+# Do NOT pin an old cudss-cuda-12 version: apt may pull newer libcudss0-* and
+# leave /usr/include/cudss.h pointing at an incomplete header set.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
@@ -67,10 +68,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfuse2 \
     dpkg-dev \
     patchelf \
-    "cudss-cuda-12=${CUDSS_CUDA12_VERSION}" \
+    cudss-cuda-12 \
+    libcudss0-cuda-12 \
+    libcudss0-dev-cuda-12 \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir "cmake>=3.24" \
-    && cmake --version
+    && cmake --version \
+    && (test -f /usr/include/cudss.h || test -f /usr/include/libcudss/12/cudss.h) \
+    && echo "cuDSS headers OK" \
+    && ls -la /usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss/ || true
 
 # ── Custom Ceres-Solver (CUDA 12 + cuDSS) ────────────────────────────────────
 # Fork:   https://github.com/huluoboge/ceres-solver (hy branch)
