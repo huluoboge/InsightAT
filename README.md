@@ -14,7 +14,8 @@ Supported platforms: **Ubuntu 22.04** and **Windows**, **CUDA 12.8**. Default bu
 
 ### Local build (Linux)
 
-Uses system Ceres (`libceres-dev`) — no custom CUDA Ceres / cuDSS required:
+Uses system Ceres (`libceres-dev`) — no custom CUDA Ceres / cuDSS required.
+The script **forces** apt Ceres so a local `~/.local/ceres-cuda128` install is ignored:
 
 ```bash
 git clone https://github.com/huluoboge/InsightAT.git

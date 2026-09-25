@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local Linux build (Ubuntu 22.04 + CUDA 12.8 recommended).
 #
-# Default: friendly clone path — uses system/vcpkg Ceres via find_package(Ceres).
+# Default: friendly clone path — uses system Ceres (apt libceres-dev).
 # Does NOT require custom CUDA Ceres or cuDSS.
 #
 # Optional GPU BA (custom Ceres hy + cuDSS):
@@ -16,6 +16,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build}"
 NVCC="${INSIGHTAT_NVCC:-/usr/local/cuda-12.8/bin/nvcc}"
 CUDA_ROOT="${CUDAToolkit_ROOT:-/usr/local/cuda-12.8}"
+
+# Avoid a stale shell Ceres_DIR (often points at ~/.local/ceres-cuda128).
+unset Ceres_DIR 2>/dev/null || true
+unset cudss_DIR 2>/dev/null || true
 
 cmake_args=(
   -S "${REPO_ROOT}"
@@ -45,7 +49,6 @@ else
 fi
 
 if [[ "${INSIGHTAT_USE_CUDA_CERES:-0}" == "1" ]]; then
-  unset Ceres_DIR 2>/dev/null || true
   INSIGHTAT_CERES_DIR="${INSIGHTAT_CERES_DIR:-$HOME/.local/ceres-cuda128/lib/cmake/Ceres}"
   INSIGHTAT_CUDSS_DIR="${INSIGHTAT_CUDSS_DIR:-/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss}"
   if [[ ! -f "${INSIGHTAT_CERES_DIR}/CeresConfig.cmake" && ! -f "${INSIGHTAT_CERES_DIR}/ceres-config.cmake" ]]; then
@@ -63,12 +66,48 @@ if [[ "${INSIGHTAT_USE_CUDA_CERES:-0}" == "1" ]]; then
   )
   echo "[InsightAT] Using custom CUDA Ceres + cuDSS"
 else
-  echo "[InsightAT] Using system/find_package Ceres (no cuDSS required)"
+  # Prefer apt/system Ceres so ~/.local/ceres-cuda128 is not picked up accidentally.
+  SYSTEM_CERES_DIR=""
+  for cand in \
+    /usr/lib/x86_64-linux-gnu/cmake/Ceres \
+    /usr/lib/cmake/Ceres \
+    /usr/local/lib/cmake/Ceres
+  do
+    if [[ -f "${cand}/CeresConfig.cmake" || -f "${cand}/ceres-config.cmake" ]]; then
+      SYSTEM_CERES_DIR="${cand}"
+      break
+    fi
+  done
+  if [[ -z "${SYSTEM_CERES_DIR}" ]]; then
+    echo "ERROR: system Ceres not found. Install: sudo apt install libceres-dev" >&2
+    echo "       Or set INSIGHTAT_USE_CUDA_CERES=1 for a custom CUDA Ceres build." >&2
+    exit 1
+  fi
+  cmake_args+=(-DCeres_DIR="${SYSTEM_CERES_DIR}")
+  # Clear any cached cudss from a previous CUDA-Ceres configure in this build dir.
+  cmake_args+=(-Ucudss_DIR)
+  echo "[InsightAT] Using system Ceres: ${SYSTEM_CERES_DIR}"
 fi
 
 echo "[InsightAT] Configuring in ${BUILD_DIR}"
+echo "[InsightAT] Note: Qt GUI (InsightAT / at_bundler_viewer) is OFF by default (CLI-only)."
 cmake "${cmake_args[@]}" "$@"
 
 echo "[InsightAT] Building"
 cmake --build "${BUILD_DIR}" -j"$(nproc)"
-echo "[InsightAT] Done. Binaries in ${BUILD_DIR}/isat_*"
+
+echo "[InsightAT] CLI binaries:"
+shopt -s nullglob
+bins=( "${BUILD_DIR}"/isat_* )
+shopt -u nullglob
+if [[ ${#bins[@]} -eq 0 ]]; then
+  echo "  (none found — build may have failed)" >&2
+  exit 1
+fi
+for b in "${bins[@]}"; do
+  echo "  $(basename "$b")"
+done
+if [[ -x "${BUILD_DIR}/CameraEstimator" ]]; then
+  echo "  CameraEstimator"
+fi
+echo "[InsightAT] Done (${#bins[@]} isat_* tools). Qt UI: packaging/legacy/qt-gui.sh"
