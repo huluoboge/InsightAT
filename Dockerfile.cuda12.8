@@ -1,21 +1,21 @@
 # ─── InsightAT CUDA 12.8 + cuDSS Docker Build ─────────────────────────────────
 #
 # Builds InsightAT with CUDA-accelerated Ceres Solver (huluoboge/ceres-solver hy
-# branch, with cuDSS sparse Cholesky support) and packages the result as an
-# AppImage — all inside the container.
+# branch, with cuDSS sparse Cholesky support) and packages AppImage + .deb —
+# all inside the container.
 #
 # Base: nvidia/cuda:12.8.0-devel-ubuntu22.04
-#   - Ubuntu 22.04 (glibc 2.35) → best AppImage compatibility before glibc
-#     becomes too new for older distros.
+#   - Ubuntu 22.04 (glibc 2.35) → AppImage/deb run on 22.04 and 24.04+.
 #   - CUDA 12.8 toolkit + cuDSS (NVIDIA CUDA apt repo)
 #
 # Usage:
 #   docker build -t insightat:cuda12.8 -f Dockerfile.cuda12.8 .
 #   docker run --rm --gpus all -it insightat:cuda12.8
 #
-# Extract AppImage:
+# Extract packages:
 #   docker create --name insightat-tmp insightat:cuda12.8
 #   docker cp insightat-tmp:/workspace/insightat/build-appimage-cuda12.8 ./
+#   docker cp insightat-tmp:/workspace/insightat/build-deb-cuda12.8 ./
 #   docker rm insightat-tmp
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,6 +65,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     fuse \
     libfuse2 \
+    dpkg-dev \
+    patchelf \
     "cudss-cuda-12=${CUDSS_CUDA12_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir "cmake>=3.24" \
@@ -112,5 +114,13 @@ ENV INSIGHTAT_BUILD_DIR=/workspace/insightat/build-ceres-12.8 \
 
 # Use ./ prefix so BASH_SOURCE resolves the directory correctly
 RUN cd /workspace/insightat && bash ./compile_appimage-12.8.sh
+
+# ── Package Debian (.deb) — same Ubuntu 22.04 / CUDA 12.8 tree ───────────────
+ENV DEB_OUTPUT_DIR=/workspace/insightat/build-deb-cuda12.8
+RUN cd /workspace/insightat \
+    && INSIGHTAT_BUILD_DIR="${INSIGHTAT_BUILD_DIR}" \
+       VERSION="${VERSION}" \
+       DEB_OUTPUT_DIR="${DEB_OUTPUT_DIR}" \
+       bash ./scripts/package/package_deb.sh
 
 CMD ["/bin/bash"]

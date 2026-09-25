@@ -1,10 +1,11 @@
-# Linux CI — validates the CUDA 12.8 Docker / AppImage build path.
+# Linux CI + release packaging (Ubuntu 22.04 + CUDA 12.8).
 #
-# Development flow:
-#   feature branch → open PR against main → this job + Windows CI run
-#   → fix until green → merge.
+# One build produces AppImage + .deb (glibc 2.35 → runs on 22.04 and 24.04).
 #
-# Release packaging (upload to GitHub Release) stays in release-appimage.yml.
+# Triggers:
+#   pull_request / push to main  → build + upload workflow artifacts
+#   release (published)          → also upload assets to the GitHub Release
+#   workflow_dispatch            → manual build; optional tag to upload
 
 name: Linux Build
 
@@ -13,29 +14,35 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
+      tag:
+        description: "Existing release tag to upload assets to; leave empty for artifacts only"
+        required: false
+        default: ""
       cuda_architectures:
         description: "CMake CUDA architectures passed to Docker build"
         required: false
         default: "60;61;70;75;80;86;89;90-virtual"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: linux-build-${{ github.ref }}
+  group: linux-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Linux CUDA 12.8 AppImage
+    name: Build Linux CUDA 12.8 (AppImage + deb)
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     env:
-      IMAGE_NAME: insightat-ci-cuda12.8
-      OUTPUT_DIR: linux-ci-assets
+      IMAGE_NAME: insightat-linux-cuda12.8
+      OUTPUT_DIR: linux-packages
       DEFAULT_CUDA_ARCHITECTURES: "60;61;70;75;80;86;89;90-virtual"
 
     steps:
@@ -55,17 +62,43 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="ci-${GITHUB_SHA::12}-cuda12.8"
+
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+            upload_assets="true"
+            version="${tag#v}-cuda12.8"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+            if [[ -n "$tag" ]]; then
+              upload_assets="true"
+              version="${tag#v}-cuda12.8"
+            else
+              tag="${GITHUB_REF_NAME:-manual}"
+              upload_assets="false"
+              version="ci-${GITHUB_SHA::12}-cuda12.8"
+            fi
+          else
+            tag=""
+            upload_assets="false"
+            version="ci-${GITHUB_SHA::12}-cuda12.8"
+          fi
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             cuda_architectures="${{ inputs.cuda_architectures }}"
           else
             cuda_architectures="${DEFAULT_CUDA_ARCHITECTURES}"
           fi
+
           {
+            echo "tag=${tag}"
             echo "version=${version}"
+            echo "upload_assets=${upload_assets}"
             echo "cuda_architectures=${cuda_architectures}"
           } >> "$GITHUB_OUTPUT"
+
+          echo "Tag: ${tag:-"(none)"}"
           echo "Build version: ${version}"
+          echo "Upload release assets: ${upload_assets}"
           echo "CUDA architectures: ${cuda_architectures}"
 
       - name: Build Docker image
@@ -78,23 +111,46 @@ jobs:
             --tag "${IMAGE_NAME}:${{ steps.meta.outputs.version }}" \
             .
 
-      - name: Extract AppImage artifacts
+      - name: Extract AppImage and deb packages
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${OUTPUT_DIR}"
+          mkdir -p "${OUTPUT_DIR}/appimage" "${OUTPUT_DIR}/deb"
           container_id="$(docker create "${IMAGE_NAME}:${{ steps.meta.outputs.version }}")"
           trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
-          docker cp "${container_id}:/workspace/insightat/build-appimage-cuda12.8/." "${OUTPUT_DIR}/"
-          find "${OUTPUT_DIR}" -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.sha256' \) -print
-          test -n "$(find "${OUTPUT_DIR}" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+
+          docker cp "${container_id}:/workspace/insightat/build-appimage-cuda12.8/." "${OUTPUT_DIR}/appimage/"
+          docker cp "${container_id}:/workspace/insightat/build-deb-cuda12.8/." "${OUTPUT_DIR}/deb/"
+
+          appimage="$(find "${OUTPUT_DIR}/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          deb="$(find "${OUTPUT_DIR}/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "${appimage}"
+          test -n "${deb}"
+
+          (cd "${OUTPUT_DIR}/appimage" && sha256sum "$(basename "${appimage}")" | tee "$(basename "${appimage}").sha256")
+          (cd "${OUTPUT_DIR}/deb" && sha256sum "$(basename "${deb}")" | tee "$(basename "${deb}").sha256")
+          find "${OUTPUT_DIR}" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.sha256' \) -print
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: InsightAT-linux-cuda12.8-${{ github.sha }}
           path: |
-            ${{ env.OUTPUT_DIR }}/*.AppImage
-            ${{ env.OUTPUT_DIR }}/*.sha256
+            ${{ env.OUTPUT_DIR }}/appimage/*.AppImage
+            ${{ env.OUTPUT_DIR }}/appimage/*.sha256
+            ${{ env.OUTPUT_DIR }}/deb/*.deb
+            ${{ env.OUTPUT_DIR }}/deb/*.sha256
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload assets to GitHub Release
+        if: steps.meta.outputs.upload_assets == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.meta.outputs.tag }}" \
+            "${OUTPUT_DIR}"/appimage/*.AppImage \
+            "${OUTPUT_DIR}"/appimage/*.sha256 \
+            "${OUTPUT_DIR}"/deb/*.deb \
+            "${OUTPUT_DIR}"/deb/*.sha256 \
+            --clobber
