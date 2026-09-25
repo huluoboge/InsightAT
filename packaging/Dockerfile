@@ -23,7 +23,7 @@ ARG CUDSS_ARCHIVE=libcudss-linux-x86_64-${CUDSS_VERSION}_cuda12-archive
 ARG CUDSS_URL=https://developer.download.nvidia.com/compute/cudss/redist/libcudss/linux-x86_64/${CUDSS_ARCHIVE}.tar.xz
 ENV CUDSS_ROOT=/opt/nvidia/cudss/${CUDSS_VERSION}
 ENV LD_LIBRARY_PATH=${CUDSS_ROOT}/lib:${CUDSS_ROOT}/lib64:${LD_LIBRARY_PATH}
-ENV CMAKE_PREFIX_PATH=${CUDSS_ROOT}:${CMAKE_PREFIX_PATH}
+ENV CMAKE_PREFIX_PATH=${CUDSS_ROOT}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \

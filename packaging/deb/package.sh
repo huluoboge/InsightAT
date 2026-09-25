@@ -95,6 +95,22 @@ sed -e 's/^Icon=app$/Icon=insightat/' \
 cp -a "${REPO_ROOT}/packaging/appimage/app.png" \
   "${PKG_ROOT}/usr/share/icons/hicolor/256x256/apps/insightat.png"
 
+# dpkg-shlibdeps requires debian/control in the working directory.
+cat > "${WORK_DIR}/debian/control" <<EOF
+Source: ${PACKAGE_NAME}
+Section: graphics
+Priority: optional
+Maintainer: InsightAT contributors <maintainers@insightat.org>
+Standards-Version: 4.6.0
+
+Package: ${PACKAGE_NAME}
+Version: ${DEB_VERSION}
+Architecture: ${ARCH}
+Depends: \${shlibs:Depends}
+Description: InsightAT incremental Structure from Motion toolkit
+ GPU-accelerated feature extraction, matching, retrieval, and incremental SfM.
+EOF
+
 SUBSTVARS="${WORK_DIR}/debian/substvars"
 touch "${SUBSTVARS}"
 shlib_args=()
