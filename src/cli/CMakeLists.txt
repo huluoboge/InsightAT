@@ -320,6 +320,22 @@ target_include_directories(isat_camera_estimator
 
 set_property(TARGET isat_camera_estimator PROPERTY FOLDER InsightAT/CLI)
 
+# isat_focal_from_geo - Estimate focal from geo F matrices (no-EXIF path)
+add_executable(isat_focal_from_geo isat_focal_from_geo.cpp)
+target_link_libraries(isat_focal_from_geo
+    PRIVATE
+        insightat_tools_logging
+        InsightATAlgorithm
+        sfm_module
+        glog::glog
+)
+target_include_directories(isat_focal_from_geo
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/third_party
+)
+set_property(TARGET isat_focal_from_geo PROPERTY FOLDER InsightAT/CLI)
+
 # isat_sfm - End-to-end SfM pipeline driver (invokes sibling tools as subprocesses)
 add_executable(isat_sfm isat_sfm.cpp)
 

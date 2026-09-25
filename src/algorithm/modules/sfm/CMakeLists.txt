@@ -54,6 +54,8 @@ endif()
 add_library(sfm_module STATIC
     two_view_reconstruction.cpp
     two_view_reconstruction.h
+    focal_from_view_graph.cpp
+    focal_from_view_graph.h
     gpu_twoview_sfm.cpp
     gpu_twoview_sfm.h
     track_store.cpp
@@ -73,6 +75,17 @@ add_library(sfm_module STATIC
 if(CUDAToolkit_FOUND)
     target_sources(sfm_module PRIVATE gpu_twoview_sfm_cuda.cu)
 endif()
+
+# ── Unit test: focal_from_view_graph (GLOMAP-style) ───────────────────────
+add_executable(test_focal_from_view_graph test_focal_from_view_graph.cpp)
+target_link_libraries(test_focal_from_view_graph
+    PRIVATE
+        sfm_module
+        Eigen3::Eigen
+        ceres
+        glog::glog
+)
+set_property(TARGET test_focal_from_view_graph PROPERTY FOLDER InsightAT/Tests)
 
 # ── Unit test: analytic BA ─────────────────────────────────────────────────
 add_executable(test_ba_analytic bundle_adjustment_analytic_test.cpp)
