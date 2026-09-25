@@ -30,13 +30,20 @@
 // 在 GUI-only 模式且 GLEW 不可用时，使用 Qt OpenGL 替代
 #if !defined(RENDER_NO_GLEW)
 #if defined(WIN32) || defined(WIN64) || defined(_WIN32) || defined(_WIN64)
-#include "gl/glew.h"
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #ifndef APIENTRY
 #define APIENTRY __stdcall
 #endif
 #ifndef CALLBACK
 #define CALLBACK __stdcall
 #endif
+#include "gl/glew.h"
 #include <GL/glu.h>
 #else
 #include "GL/glew.h"

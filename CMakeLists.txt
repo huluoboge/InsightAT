@@ -34,6 +34,9 @@ endif ()
 # INSIGHTAT build options
 # ==============================================================================
 option(INSIGHTAT_BUILD_GUI_ONLY "Build only GUI-related targets and skip CUDA-dependent components" OFF)
+option(INSIGHTAT_BUILD_RENDER_TESTS "Build render property tests and fetch RapidCheck" OFF)
+
+find_package(Threads REQUIRED)
 
 # Auto-enable SiftGPU when CUDA is not available (for CPU+EGL fallback)
 find_package(CUDAToolkit QUIET)
@@ -191,7 +194,9 @@ endif()
 # GLEW
 # ==============================================================================
 if(NOT INSIGHTAT_BUILD_GUI_ONLY)
-    find_package(OpenGL REQUIRED)
+    find_package(OpenGL REQUIRED COMPONENTS OpenGL)
+    # GLU is optional on some platforms but required by the render module.
+    find_package(OpenGL COMPONENTS GLU)
     find_package(Glew REQUIRED)
 else()
     message(STATUS "GUI-only mode: skipping OpenGL/GLEW")

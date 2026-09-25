@@ -11,6 +11,16 @@
 #endif
 
 #if INSIGHTAT_ENABLE_SIFTGPU
+// On Windows, GL/gl.h requires WINGDIAPI/APIENTRY from windows.h.
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include <GL/gl.h>
 #endif
 #include <cstdio>

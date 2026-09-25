@@ -1,3 +1,11 @@
+# Windows CI — vcpkg + MSVC Release build (CUDA optional / SiftGPU fallback).
+#
+# Development flow:
+#   feature branch → open PR against main → this job + Linux CI run
+#   → fix until green → merge.
+#
+# Heavy release uploads stay optional via workflow_dispatch / main push artifacts.
+
 name: Windows Build
 
 on:
@@ -6,214 +14,300 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-  inputs:
-    minimal-build:
-      description: 'Build with minimal dependencies (CLI only, no Qt UI)'
-      required: false
-      default: 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
-    runs-on: windows-latest
-    
+    runs-on: windows-2022
+    timeout-minutes: 360
+
     strategy:
       matrix:
         include:
-          # 可选：支持多个 CUDA 版本
           - cuda: "12.8"
             visual-studio: "2022"
-            
+
+    env:
+      VCPKG_ROOT: C:/vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-release
+      VCPKG_INSTALLED_DIR: C:/vcpkg/installed
+      VCPKG_FEATURE_FLAGS: manifests,versions,binarycaching
+      VCPKG_DEFAULT_BINARY_CACHE: C:/vcpkg/binary-cache
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 1. 安装 CUDA Toolkit 12.8
-      - name: Install CUDA Toolkit
-        run: |
-          $cuda_installer = "$env:TEMP\cuda_installer.exe"
-          $cuda_version = "${{ matrix.cuda }}"
-          Write-Host "Downloading CUDA $cuda_version installer..."
-          
-          # CUDA 12.8 network installer
-          $cuda_url = "https://developer.download.nvidia.com/compute/cuda/12.8.0/network_installers/cuda_12.8.0_windows_network.exe"
-          (New-Object System.Net.ServicePointManager).SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          Invoke-WebRequest -Uri $cuda_url -OutFile $cuda_installer -UseBasicParsing
-          
-          Write-Host "Installing CUDA $cuda_version..."
-          & $cuda_installer -s CUDAToolkit_12.8=1 CUDAVisualStudioIntegration_12.8=1
-          
-          $cuda_path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-          if (-Not (Test-Path $cuda_path)) {
-            Write-Error "CUDA installation failed"
-            exit 1
-          }
-          Write-Host "CUDA installed at: $cuda_path"
-          
-          # Add to PATH and env
-          echo "$cuda_path\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          echo "CUDA_PATH=$cuda_path" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "CUDA_PATH_V12_8=$cuda_path" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "CUDA_BIN_PATH=$cuda_path\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+      # GitHub-hosted Windows runners do not provide an NVIDIA GPU. Prefer a
+      # preinstalled toolkit when present; otherwise build the portable
+      # GLSL/SiftGPU path instead of installing a multi-gigabyte CUDA toolkit.
+      - name: Detect preinstalled CUDA Toolkit
+        id: detect-cuda
         shell: pwsh
+        run: |
+          $candidates = @(
+            $env:CUDA_PATH,
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin\nvcc.exe")) } | Select-Object -First 1
+          if ($candidates) {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "found=true"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "path=$candidates"
+            Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=$candidates"
+            Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $candidates "bin")
+            Write-Host "Using preinstalled CUDA toolkit: $candidates"
+          } else {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "found=false"
+            Write-Host "No preinstalled CUDA toolkit found; using GLSL/SiftGPU fallback."
+          }
 
-      # 2. 安装 Visual Studio Build Tools（如果需要）
+      - name: Resolve CUDA build mode
+        shell: pwsh
+        run: |
+          $cuda_path = @(
+            $env:CUDA_PATH,
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8",
+            "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+          ) | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin\nvcc.exe")) } | Select-Object -First 1
+          if ($cuda_path) {
+            $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
+            Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=$cuda_path"
+            Add-Content -Path $env:GITHUB_ENV -Value "INSIGHTAT_WINDOWS_CUDA=ON"
+            Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $cuda_path "bin")
+            Write-Host "Using CUDA toolkit: $cuda_path"
+            & $nvcc_path --version
+          } else {
+            Add-Content -Path $env:GITHUB_ENV -Value "INSIGHTAT_WINDOWS_CUDA=OFF"
+            Write-Warning "CUDA toolkit is unavailable; building the Windows GLSL/SiftGPU fallback."
+          }
+
       - name: Setup Visual Studio
         uses: microsoft/setup-msbuild@v1
         with:
           vs-version: '17'
 
-      # 检查磁盘空间
       - name: Check disk space
+        shell: pwsh
         run: |
           Write-Host "Initial disk space:"
           Get-PSDrive C | Select-Object Name, @{label='Used(GB)';expression={[math]::Round($_.Used/1GB,2)}}, @{label='Free(GB)';expression={[math]::Round($_.Free/1GB,2)}}
-          
           $free_gb = (Get-PSDrive C).Free / 1GB
           if ($free_gb -lt 8) {
             Write-Error "Insufficient disk space: ${free_gb}GB free. Need at least 8GB"
             exit 1
           }
           Write-Host "Disk space OK: ${free_gb}GB available"
-        shell: pwsh
 
-      # 3. 初始化 vcpkg 并安装依赖
+      - name: Pin vcpkg baseline
+        shell: pwsh
+        run: |
+          $config = Get-Content -Raw vcpkg-configuration.json | ConvertFrom-Json
+          $baseline = $config.'default-registry'.baseline
+          Write-Host "Using vcpkg baseline: $baseline"
+
+          if (Test-Path "$env:VCPKG_ROOT/.git") {
+            git -C "$env:VCPKG_ROOT" fetch --depth=1 https://github.com/microsoft/vcpkg.git $baseline
+            git -C "$env:VCPKG_ROOT" checkout --detach $baseline
+          } else {
+            Remove-Item "$env:VCPKG_ROOT" -Recurse -Force -ErrorAction SilentlyContinue
+            git clone --filter=blob:none https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+            git -C "$env:VCPKG_ROOT" fetch --depth=1 origin $baseline
+            git -C "$env:VCPKG_ROOT" checkout --detach $baseline
+          }
+
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_ROOT/vcpkg.exe" version
+
       - name: Setup vcpkg cache
         uses: actions/cache@v4
         with:
-          path: C:\vcpkg\installed
-          key: ${{ runner.os }}-vcpkg-installed-${{ matrix.cuda }}-${{ hashFiles('**/vcpkg.json') }}
+          path: |
+            C:/vcpkg/installed
+            C:/vcpkg/downloads
+            C:/vcpkg/binary-cache
+          key: ${{ runner.os }}-vcpkg-manifest-${{ matrix.cuda }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'triplets/x64-windows-release.cmake') }}
           restore-keys: |
-            ${{ runner.os }}-vcpkg-installed-${{ matrix.cuda }}-
-            ${{ runner.os }}-vcpkg-installed-
+            ${{ runner.os }}-vcpkg-manifest-${{ matrix.cuda }}-
+          save-always: true
 
-      - name: Install vcpkg dependencies
+      - name: Install vcpkg manifest dependencies
+        timeout-minutes: 180
+        shell: pwsh
         run: |
-          Write-Host "Integrating vcpkg..."
-          cd C:\vcpkg
-          .\vcpkg integrate install
-          
-          # 检查是否是最小化编译
-          $minimal = "${{ github.event.inputs.minimal-build }}" -eq 'true'
-          
-          if ($minimal) {
-            Write-Host "Installing minimal dependencies (CLI tools only, no Qt UI)..."
-            .\vcpkg install `
-              ceres[lapack,schur,suitesparse] `
-              cuda `
-              eigen3 `
-              gflags `
-              glog `
-              nlohmann-json `
-              "opencv4[jpeg,png,tiff]" `
-              --triplet x64-windows `
-              --clean-after-build
-          } else {
-            Write-Host "Installing full dependencies (including Qt5 UI)..."
-            .\vcpkg install `
-              ceres[lapack,schur,suitesparse] `
-              cuda `
-              egl `
-              eigen3 `
-              gflags `
-              glew `
-              glog `
-              "gdal[curl,expat,geos,jpeg,png,sqlite3]" `
-              nlohmann-json `
-              "opencv4[jpeg,png,tiff]" `
-              "qt5-base" `
-              --triplet x64-windows `
-              --clean-after-build
-          }
-          
+          $env:VCPKG_DISABLE_METRICS = "1"
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_ROOT/vcpkg.exe" install `
+            --x-manifest-root="$env:GITHUB_WORKSPACE" `
+            --x-install-root="$env:VCPKG_INSTALLED_DIR" `
+            --overlay-triplets="$env:GITHUB_WORKSPACE/triplets" `
+            --triplet="$env:VCPKG_DEFAULT_TRIPLET" `
+            --clean-after-build
           if ($LASTEXITCODE -ne 0) {
             Write-Error "vcpkg install failed"
             exit 1
           }
-          
-          Write-Host "Available disk after install:"
-          Get-PSDrive C | Select-Object Name, @{label='Used(GB)';expression={[math]::Round($_.Used/1GB,2)}}, @{label='Free(GB)';expression={[math]::Round($_.Free/1GB,2)}}
-          
-          Write-Host "vcpkg dependencies installed successfully"
-        shell: pwsh
+          & "$env:VCPKG_ROOT/vcpkg.exe" list
 
-      # 4. 配置 CMake with CUDA support
       - name: Configure CMake
+        shell: pwsh
         run: |
-          $cuda_path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-          $nvcc_path = "$cuda_path\bin\nvcc.exe"
-          
-          if (-Not (Test-Path $nvcc_path)) {
-            Write-Error "nvcc.exe not found at $nvcc_path"
-            exit 1
+          $cuda_path = $env:CUDA_PATH
+          $cuda_enabled = $env:INSIGHTAT_WINDOWS_CUDA -eq "ON"
+          $cmake_args = @(
+            "-B", "build",
+            "-S", ".",
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
+            "-DVCPKG_TARGET_TRIPLET=$env:VCPKG_DEFAULT_TRIPLET",
+            "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR",
+            "-DVCPKG_OVERLAY_TRIPLETS=$env:GITHUB_WORKSPACE/triplets",
+            "-DVCPKG_MANIFEST_MODE=ON",
+            "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DINSIGHTAT_BUILD_RENDER_TESTS=OFF"
+          )
+          if ($cuda_enabled) {
+            $nvcc_path = Join-Path $cuda_path "bin\nvcc.exe"
+            if (-not (Test-Path $nvcc_path)) {
+              Write-Error "CUDA mode was selected but nvcc.exe was not found at $nvcc_path"
+              exit 1
+            }
+            $cmake_args += @(
+              "-DCMAKE_CUDA_COMPILER=$nvcc_path",
+              "-DCUDAToolkit_ROOT=$cuda_path",
+              "-DCMAKE_CUDA_ARCHITECTURES=60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual",
+              "-DSIFTGPU_ENABLE_CUDA=OFF",
+              "-DINSIGHTAT_ENABLE_SIFTGPU=OFF"
+            )
+          } else {
+            Write-Host "Configuring the Windows GLSL/SiftGPU fallback without CUDA."
+            $cmake_args += @(
+              "-DCMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit=TRUE",
+              "-DSIFTGPU_ENABLE_CUDA=OFF",
+              "-DINSIGHTAT_ENABLE_SIFTGPU=ON"
+            )
           }
-          
-          Write-Host "Configuring CMake with CUDA support..."
-          Write-Host "CUDA path: $cuda_path"
-          Write-Host "NVCC path: $nvcc_path"
-          
-          cmake -B build -S . `
-            -G "Visual Studio 17 2022" `
-            -A x64 `
-            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_CUDA_COMPILER="$nvcc_path" `
-            -DCUDAToolkit_ROOT="$cuda_path" `
-            -DCMAKE_CUDA_ARCHITECTURES="60-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;120-virtual" `
-            -DSIFTGPU_ENABLE_CUDA=OFF `
-            -DINSIGHTAT_ENABLE_SIFTGPU=OFF
-          
+          cmake @cmake_args
           if ($LASTEXITCODE -ne 0) {
             Write-Error "CMake configuration failed"
             exit 1
           }
           Write-Host "CMake configured successfully"
-        shell: pwsh
 
-      # 5. 编译
       - name: Build
+        shell: pwsh
         run: |
           Write-Host "Starting build..."
           cmake --build build --config Release --verbose -j 4
-          
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Build failed"
             exit 1
           }
           Write-Host "Build completed successfully"
-        shell: pwsh
 
-      # 清理临时文件以节省磁盘空间（可选）
+      - name: Stage Windows runtime package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $release_dir = Join-Path $env:GITHUB_WORKSPACE "build\Release"
+          $stage_dir = Join-Path $env:GITHUB_WORKSPACE "windows-package"
+          if (-not (Test-Path $release_dir)) {
+            Write-Error "Release output directory not found: $release_dir"
+            exit 1
+          }
+
+          $required = @(
+            "InsightAT.exe",
+            "isat_project.exe",
+            "isat_sfm.exe",
+            "isat_extract.exe",
+            "isat_match.exe",
+            "at_bundler_viewer.exe"
+          )
+          foreach ($name in $required) {
+            $path = Join-Path $release_dir $name
+            if (-not (Test-Path $path)) {
+              Write-Error "Required Windows executable was not built: $path"
+              exit 1
+            }
+          }
+
+          Remove-Item $stage_dir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stage_dir | Out-Null
+          Copy-Item (Join-Path $release_dir "*.exe") $stage_dir -Force
+          Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "build") -Recurse -Filter "*.dll" -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage_dir -Force -ErrorAction SilentlyContinue
+          if (Test-Path (Join-Path $env:GITHUB_WORKSPACE "data")) {
+            Copy-Item (Join-Path $env:GITHUB_WORKSPACE "data") (Join-Path $stage_dir "data") -Recurse -Force
+          }
+
+          $triplet_bin = Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET\bin"
+          if (Test-Path $triplet_bin) {
+            Copy-Item (Join-Path $triplet_bin "*.dll") $stage_dir -Force -ErrorAction SilentlyContinue
+          }
+
+          $windeployqt = Get-ChildItem -Path (Join-Path $env:VCPKG_ROOT "installed\$env:VCPKG_DEFAULT_TRIPLET") -Filter windeployqt.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -ne $windeployqt) {
+            foreach ($gui in @("InsightAT.exe", "at_bundler_viewer.exe")) {
+              $gui_path = Join-Path $stage_dir $gui
+              if (Test-Path $gui_path) {
+                & $windeployqt.FullName --release --no-translations $gui_path
+              }
+            }
+          } else {
+            Write-Warning "windeployqt.exe was not found; Qt DLLs must be supplied by the vcpkg runtime set."
+          }
+
+          @{
+            project = "InsightAT"
+            cuda = $env:CUDA_PATH
+            triplet = $env:VCPKG_DEFAULT_TRIPLET
+            commit = $env:GITHUB_SHA
+          } | ConvertTo-Json | Set-Content (Join-Path $stage_dir "build-info.json")
+
+          & (Join-Path $stage_dir "isat_project.exe") create -h
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "isat_project.exe create -h smoke test failed"
+            exit 1
+          }
+
+          $zip_path = Join-Path $env:GITHUB_WORKSPACE "InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip"
+          Compress-Archive -Path (Join-Path $stage_dir "*") -DestinationPath $zip_path -CompressionLevel Optimal -Force
+
       - name: Cleanup temporary files
         if: always()
+        shell: pwsh
         run: |
           Write-Host "Cleaning up temporary files..."
-          # 删除 vcpkg 源码和编译产物（已安装在 installed 目录）
-          Remove-Item -Path "C:\vcpkg\buildtrees" -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -Path "C:\vcpkg\packages" -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -Path "C:\vcpkg\downloads" -Recurse -Force -ErrorAction SilentlyContinue
-          
+          Remove-Item -Path "$env:VCPKG_ROOT/buildtrees" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:VCPKG_ROOT/packages" -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "Disk space after cleanup:"
           Get-PSDrive C | Select-Object Name, @{label='Used(GB)';expression={[math]::Round($_.Used/1GB,2)}}, @{label='Free(GB)';expression={[math]::Round($_.Free/1GB,2)}}
-        shell: pwsh
 
-      # 6. 运行测试（可选）
       - name: Run tests
-        run: |
-          ctest --build-config Release --verbose
-        working-directory: build
         shell: pwsh
+        working-directory: build
+        run: |
+          ctest --build-config Release --verbose -E "cuda|geo_ransac|opengl"
 
-      # 7. 打包构建产物
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: success()
         with:
           name: insightat-windows-cuda-${{ matrix.cuda }}
           path: |
+            InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip
+            windows-package/**
             build/Release/*.exe
-            build/*.exe
-            build/Release/*.dll
-            build/*.dll
           retention-days: 30

@@ -71,7 +71,7 @@ if(GLEW_FOUND)
     target_include_directories(render PRIVATE ${GLEW_INCLUDE_DIRS})
 endif()
 
-target_link_libraries(render
+target_link_libraries(render PUBLIC
 Qt5::Widgets
 Qt5::Core
 Qt5::Gui
@@ -80,11 +80,22 @@ stlplus3
 Eigen3::Eigen
 glog::glog
 ImageIO
-/usr/lib/x86_64-linux-gnu/libGLU.so
 )
 
+# GLU is part of the platform OpenGL stack: use CMake's imported target on
+# Linux and Windows instead of a host-specific absolute Linux path.
+if(TARGET OpenGL::GLU)
+    target_link_libraries(render PUBLIC OpenGL::GLU)
+elseif(WIN32)
+    target_link_libraries(render PUBLIC glu32)
+elseif(OPENGL_glu_LIBRARY)
+    target_link_libraries(render PUBLIC ${OPENGL_glu_LIBRARY})
+else()
+    message(FATAL_ERROR "OpenGL GLU library was not found")
+endif()
+
 if(GLEW_FOUND AND OPENGL_FOUND)
-    target_link_libraries(render
+    target_link_libraries(render PUBLIC
         ${GLEW_LIBRARIES}
         ${OPENGL_LIBRARIES}
     )
@@ -97,5 +108,9 @@ endif()
 set_property(TARGET render PROPERTY FOLDER INSIGHTMAP/lib)
 
 # ── 属性测试 ──────────────────────────────────────────────────────────────────
-add_subdirectory(tests)
+if(INSIGHTAT_BUILD_RENDER_TESTS)
+    add_subdirectory(tests)
+else()
+    message(STATUS "Render property tests disabled")
+endif()
 

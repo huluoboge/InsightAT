@@ -14,7 +14,6 @@
         "suitesparse"
       ]
     },
-    "cuda",
     "egl",
     "eigen3",
     "gflags",

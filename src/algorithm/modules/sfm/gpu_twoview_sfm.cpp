@@ -23,6 +23,16 @@
 
 #include "gpu_twoview_sfm.h"
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/glew.h>
