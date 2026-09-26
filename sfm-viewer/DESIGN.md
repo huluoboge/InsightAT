@@ -3,7 +3,7 @@
 ## 目标
 
 - 独立桌面程序：打开 COLMAP sparse（`cameras/images/points3D` 的 `.txt` 或 `.bin`），渲染 **3D tracks（点云）+ 相机视锥**。
-- 可被 Simple GUI 一键打开；不依赖 Qt / `at_bundler_viewer`。
+- 可被 SfM GUI 一键打开；不依赖 Qt / `at_bundler_viewer`。
 - 与产品方向一致：Node / Electron + WebGL（Three.js）。
 
 ## 架构
@@ -16,11 +16,11 @@ sfm-viewer/                 # 独立 Electron 小应用
   src/lib/colmap_loader.js  # Node 侧解析 txt/bin
   src/lib/scene_math.js     # 姿态 / 视锥几何
 
-simple-gui/                 # 工作流壳
+sfm-gui/                    # 工作流壳
   viewReconstruction → 优先 spawn sfm-viewer，否则 fallback at_bundler_viewer
 
-scripts/package/build_simple_gui.sh
-  打包 Electron + simple-gui + sfm-viewer + isat_* → AppImage / DEB
+scripts/package/build_sfm_gui.sh
+  打包 Electron + sfm-gui + sfm-viewer + isat_* → AppImage / DEB
 ```
 
 ## 数据流
@@ -40,7 +40,7 @@ scripts/package/build_simple_gui.sh
 # 开发
 cd sfm-viewer && npm install && npm start -- /path/to/sparse/0
 
-# Simple GUI 内
+# SfM GUI 内
 # IPC project:viewReconstruction → electron sfm-viewer <path>
 ```
 

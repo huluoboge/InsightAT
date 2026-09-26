@@ -1,7 +1,7 @@
-build
-build-*
-build_*
-build-appimage/
+# CMake / local build trees at repo root only (do not match scripts like build_*.sh)
+/build/
+/build-*/
+/build_*/
 
 # AppImage artifacts in repo root
 /InsightAT.AppDir

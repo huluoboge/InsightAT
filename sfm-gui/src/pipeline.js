@@ -167,7 +167,7 @@ function resolveCliBinDir() {
     candidates.push(path.resolve(exeDir, '..', '..', 'build'));
   }
 
-  // Dev: simple-gui/src → repo root
+  // Dev: sfm-gui/src → repo root
   const repoRoot = path.resolve(__dirname, '..', '..');
   for (const dir of ['build', 'build-release', 'build-ceres-12.8', 'build-local']) {
     candidates.push(path.join(repoRoot, dir));
@@ -206,7 +206,7 @@ function findSfmViewerApp() {
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, 'sfm-viewer'));
   }
-  // simple-gui/src → repo/sfm-viewer
+  // sfm-gui/src → repo/sfm-viewer
   candidates.push(path.resolve(__dirname, '..', '..', 'sfm-viewer'));
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(path.join(dir, 'src', 'main.js'))) {
@@ -397,7 +397,7 @@ async function prepareImagesAll(state, options = {}, onLog) {
   if (!next.groups || next.groups.length === 0) {
     throw new Error('Add at least one image folder before reconstruction.');
   }
-  const taskName = `Simple_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
+  const taskName = `SfM_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
   const createTask = await runCommand(
     next,
     'isat_project',

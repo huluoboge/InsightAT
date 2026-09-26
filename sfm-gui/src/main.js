@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -15,13 +15,15 @@ function createWindow() {
     height: 760,
     minWidth: 920,
     minHeight: 620,
-    title: 'InsightAT Simple',
+    title: 'InsightAT SfM',
     backgroundColor: '#f5f7fb',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js')
     }
   });
 
+  mainWindow.setMenuBarVisibility(false);
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
@@ -53,7 +55,7 @@ ipcMain.handle('project:create', async (_event, options) => {
 
 ipcMain.handle('project:open', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Open an InsightAT Simple work directory',
+    title: 'Open an InsightAT SfM work directory',
     properties: ['openDirectory']
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -143,7 +145,10 @@ ipcMain.handle('project:getCliInfo', async () => {
   return { path: resolved, found: Boolean(resolved) };
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

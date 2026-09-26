@@ -13,7 +13,7 @@ if ! command -v cmake >/dev/null 2>&1; then
 fi
 
 echo "[InsightAT] Configuring legacy Qt GUI-only build in ${BUILD_DIR}"
-echo "[InsightAT] Prefer simple-gui (Node) for product UI."
+echo "[InsightAT] Prefer sfm-gui (Node) for product UI."
 cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
   -DINSIGHTAT_BUILD_QT_UI=ON \
   -DINSIGHTAT_BUILD_GUI_ONLY=ON \

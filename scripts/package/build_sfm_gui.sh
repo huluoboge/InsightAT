@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Package InsightAT Simple GUI (+ embedded sfm-viewer) for Linux.
+# Package InsightAT SfM GUI (+ embedded sfm-viewer) for Linux.
 # Optional: set ISAT_BIN_DIR to a directory containing isat_* binaries to bundle them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SIMPLE_GUI="$ROOT/simple-gui"
+SFM_GUI="$ROOT/sfm-gui"
 SFM_VIEWER="$ROOT/sfm-viewer"
 STAGING_BIN="$ROOT/staging/bin"
 MODE="${1:-dir}"
 
-echo "[build_simple_gui] repo=$ROOT"
+echo "[build_sfm_gui] repo=$ROOT"
 
 mkdir -p "$STAGING_BIN"
 # Ensure staging/bin exists so electron-builder extraResources does not fail when empty.
@@ -23,7 +23,7 @@ if [[ -z "$BIN_SRC" && -d "$ROOT/build" ]]; then
   BIN_SRC="$ROOT/build"
 fi
 if [[ -n "$BIN_SRC" && -d "$BIN_SRC" ]]; then
-  echo "[build_simple_gui] staging CLI from $BIN_SRC"
+  echo "[build_sfm_gui] staging CLI from $BIN_SRC"
   shopt -s nullglob
   for f in "$BIN_SRC"/isat_*; do
     cp -a "$f" "$STAGING_BIN/"
@@ -37,22 +37,22 @@ if [[ -n "$BIN_SRC" && -d "$BIN_SRC" ]]; then
   rm -f "$STAGING_BIN/README.txt"
 fi
 
-echo "[build_simple_gui] npm install (sfm-viewer)"
+echo "[build_sfm_gui] npm install (sfm-viewer)"
 (cd "$SFM_VIEWER" && npm install)
 
-echo "[build_simple_gui] npm install (simple-gui)"
-(cd "$SIMPLE_GUI" && npm install)
+echo "[build_sfm_gui] npm install (sfm-gui)"
+(cd "$SFM_GUI" && npm install)
 
-echo "[build_simple_gui] syntax check"
+echo "[build_sfm_gui] syntax check"
 (cd "$SFM_VIEWER" && npm run check)
-(cd "$SIMPLE_GUI" && npm run check)
+(cd "$SFM_GUI" && npm run check)
 
 case "$MODE" in
   dir)
-    (cd "$SIMPLE_GUI" && npm run pack)
+    (cd "$SFM_GUI" && npm run pack)
     ;;
   appimage)
-    (cd "$SIMPLE_GUI" && npm run pack:appimage)
+    (cd "$SFM_GUI" && npm run pack:appimage)
     ;;
   *)
     echo "Usage: $0 [dir|appimage]" >&2
@@ -60,5 +60,5 @@ case "$MODE" in
     ;;
 esac
 
-echo "[build_simple_gui] done → $ROOT/dist/simple-gui"
-ls -la "$ROOT/dist/simple-gui" || true
+echo "[build_sfm_gui] done → $ROOT/dist/sfm-gui"
+ls -la "$ROOT/dist/sfm-gui" || true

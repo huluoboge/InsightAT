@@ -1,4 +1,4 @@
-# InsightAT Simple GUI
+# InsightAT SfM GUI
 
 Electron shell for the InsightAT CLI pipeline, plus a WebGL reconstruction viewer.
 
@@ -23,7 +23,7 @@ Left sidebar shows the resolved **CLI tools** path.
 # from repo root — compile CLI first so build/isat_* exists
 cmake --build build   # or your usual build
 
-cd simple-gui
+cd sfm-gui
 npm install
 npm start
 ```
@@ -31,6 +31,6 @@ npm start
 ## Package (bundles CLI when build/ exists)
 
 ```bash
-./scripts/package/build_simple_gui.sh
-# → dist/simple-gui/linux-unpacked/insightat-simple-gui --no-sandbox
+./scripts/package/build_sfm_gui.sh
+# → dist/sfm-gui/linux-unpacked/insightat-sfm-gui --no-sandbox
 ```

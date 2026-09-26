@@ -1,8 +1,8 @@
 {
-  "name": "insightat-simple-gui",
+  "name": "insightat-sfm-gui",
   "version": "0.1.0",
   "private": true,
-  "description": "Beginner-friendly InsightAT SfM desktop shell driven by CLI tools.",
+  "description": "InsightAT SfM desktop shell driven by CLI tools.",
   "main": "src/main.js",
   "scripts": {
     "start": "electron --no-sandbox .",
@@ -16,10 +16,10 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.insightat.simplegui",
-    "productName": "InsightAT Simple",
+    "appId": "com.insightat.sfmgui",
+    "productName": "InsightAT SfM",
     "directories": {
-      "output": "../dist/simple-gui"
+      "output": "../dist/sfm-gui"
     },
     "files": [
       "src/**/*",
@@ -49,7 +49,7 @@
         "dir"
       ],
       "category": "Science",
-      "synopsis": "InsightAT Simple GUI for SfM workflows"
+      "synopsis": "InsightAT SfM GUI for reconstruction workflows"
     }
   },
   "allowScripts": {

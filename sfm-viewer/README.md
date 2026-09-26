@@ -7,7 +7,7 @@ Independent Electron + Three.js viewer for COLMAP sparse reconstructions (`camer
 - Colored track point cloud + camera frustums
 - Min-observation filter, point/frustum size controls
 - Pick a track → observation list → image with crosshair
-- Launched from Simple GUI **View Reconstruction**
+- Launched from SfM GUI **View Reconstruction**
 
 ## Develop
 
@@ -19,4 +19,4 @@ npm start -- /path/to/sparse/0
 
 ## Integration
 
-Simple GUI resolves this app via `findSfmViewerApp()` (dev: repo `sfm-viewer/`; packaged: `resources/sfm-viewer`).
+SfM GUI resolves this app via `findSfmViewerApp()` (dev: repo `sfm-viewer/`; packaged: `resources/sfm-viewer`).
