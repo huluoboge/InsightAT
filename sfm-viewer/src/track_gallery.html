@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:; connect-src 'self' file:" />
+  <title>Track Observations</title>
+  <link rel="stylesheet" href="track_gallery.css" />
+</head>
+<body>
+  <header class="bar">
+    <div class="title">
+      <h1>Track gallery</h1>
+      <p id="meta" class="muted">No track selected — pick a point in the 3D view</p>
+    </div>
+    <div class="controls">
+      <label>
+        View
+        <select id="viewMode">
+          <option value="patch" selected>Patch (local zoom)</option>
+          <option value="full">Full image</option>
+        </select>
+      </label>
+      <label>
+        Per page
+        <select id="pageSize">
+          <option value="9" selected>9</option>
+          <option value="12">12</option>
+        </select>
+      </label>
+      <label>
+        Patch radius
+        <input id="patchRadius" type="range" min="32" max="256" step="16" value="96" />
+        <output id="patchRadiusVal">96</output>px
+      </label>
+      <button id="prevBtn" type="button">Prev</button>
+      <span id="pageLabel">0 / 0</span>
+      <button id="nextBtn" type="button">Next</button>
+    </div>
+  </header>
+  <main id="grid" class="grid cols-3"></main>
+  <script src="track_gallery.js"></script>
+</body>
+</html>

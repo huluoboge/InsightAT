@@ -1,0 +1,17 @@
+{
+  "name": "insightat-sfm-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WebGL SfM reconstruction viewer for COLMAP sparse models (tracks + cameras).",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron --no-sandbox .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/lib/colmap_loader.js && node --check src/lib/scene_math.js"
+  },
+  "dependencies": {
+    "three": "^0.168.0"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}

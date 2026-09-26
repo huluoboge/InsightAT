@@ -94,7 +94,7 @@ function defaultState(workDir, overrides = {}) {
     name: overrides.name || path.basename(resolvedWorkDir),
     workDir: resolvedWorkDir,
     projectPath: projectPath(resolvedWorkDir),
-    binDir: overrides.binDir || '',
+    binDir: overrides.binDir || resolveCliBinDir() || '',
     ext: normalizeExts(overrides.ext),
     maxSample: Number.isInteger(overrides.maxSample) ? overrides.maxSample : 5,
     folders: [],
@@ -115,6 +115,9 @@ function loadState(workDir) {
   state.ext = normalizeExts(state.ext);
   state.folders = Array.isArray(state.folders) ? state.folders : [];
   state.groups = Array.isArray(state.groups) ? state.groups : [];
+  if (!state.binDir || !hasCliBinary(state.binDir)) {
+    state.binDir = resolveCliBinDir() || state.binDir || '';
+  }
   return state;
 }
 
@@ -125,8 +128,68 @@ function saveState(state) {
   return next;
 }
 
+function packagedBinDir() {
+  if (process.resourcesPath) {
+    const candidate = path.join(process.resourcesPath, 'bin');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
+function hasCliBinary(dir, exeName = 'isat_project') {
+  if (!dir) return false;
+  try {
+    return fs.existsSync(path.join(dir, exeName));
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Auto-locate InsightAT CLI tools. Prefer bundled/packaged locations, then
+ * repo build dirs. Users should not need to type a path.
+ */
+function resolveCliBinDir() {
+  const candidates = [];
+
+  const resourceBin = packagedBinDir();
+  if (resourceBin) candidates.push(resourceBin);
+
+  if (process.env.ISAT_BIN_DIR) candidates.push(process.env.ISAT_BIN_DIR);
+
+  // Next to the packaged GUI binary: .../linux-unpacked/bin or .../linux-unpacked/
+  if (process.execPath) {
+    const exeDir = path.dirname(process.execPath);
+    candidates.push(path.join(exeDir, 'bin'));
+    candidates.push(exeDir);
+    // Common layout: GUI under dist/, CLI under repo build/
+    candidates.push(path.resolve(exeDir, '..', '..', '..', 'build'));
+    candidates.push(path.resolve(exeDir, '..', '..', 'build'));
+  }
+
+  // Dev: simple-gui/src → repo root
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  for (const dir of ['build', 'build-release', 'build-ceres-12.8', 'build-local']) {
+    candidates.push(path.join(repoRoot, dir));
+  }
+
+  for (const dir of candidates) {
+    if (hasCliBinary(dir)) return path.resolve(dir);
+  }
+  return '';
+}
+
+function ensureBinDir(state) {
+  if (state && state.binDir && hasCliBinary(state.binDir)) return state;
+  const resolved = resolveCliBinDir();
+  if (!resolved) return state;
+  return { ...state, binDir: resolved };
+}
+
 function commandCandidates(binDir, exeName) {
   const candidates = [];
+  const autoBin = resolveCliBinDir();
+  if (autoBin) candidates.push(path.join(autoBin, exeName));
   if (binDir) candidates.push(path.join(binDir, exeName));
   if (process.env.ISAT_BIN_DIR) candidates.push(path.join(process.env.ISAT_BIN_DIR, exeName));
 
@@ -136,6 +199,21 @@ function commandCandidates(binDir, exeName) {
   }
   candidates.push(exeName);
   return candidates;
+}
+
+function findSfmViewerApp() {
+  const candidates = [];
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'sfm-viewer'));
+  }
+  // simple-gui/src → repo/sfm-viewer
+  candidates.push(path.resolve(__dirname, '..', '..', 'sfm-viewer'));
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(path.join(dir, 'src', 'main.js'))) {
+      return dir;
+    }
+  }
+  return '';
 }
 
 function findTool(binDir, exeName) {
@@ -235,7 +313,9 @@ function lastEventData(result, type) {
 }
 
 async function createProject(options, onLog) {
-  const state = defaultState(options.workDir, options);
+  const opts = { ...options };
+  if (!opts.binDir) opts.binDir = resolveCliBinDir();
+  const state = defaultState(options.workDir, opts);
   fs.mkdirSync(state.workDir, { recursive: true });
   await runCommand(state, 'isat_project', ['create', '-p', state.projectPath, '-n', state.name], onLog);
   return saveState(state);
@@ -246,8 +326,8 @@ async function openProject(workDir) {
 }
 
 async function addFolder(state, folderPath, options = {}, onLog) {
-  const next = { ...state };
-  if (Object.prototype.hasOwnProperty.call(options, 'binDir')) next.binDir = options.binDir || '';
+  let next = ensureBinDir({ ...state });
+  if (options.binDir) next.binDir = options.binDir;
   if (Object.prototype.hasOwnProperty.call(options, 'ext')) next.ext = normalizeExts(options.ext);
   if (Object.prototype.hasOwnProperty.call(options, 'maxSample')) {
     const maxSample = Number.parseInt(options.maxSample, 10);
@@ -312,8 +392,8 @@ function uniqueGroupName(state, baseName) {
 }
 
 async function prepareImagesAll(state, options = {}, onLog) {
-  const next = { ...state };
-  if (Object.prototype.hasOwnProperty.call(options, 'binDir')) next.binDir = options.binDir || '';
+  let next = ensureBinDir({ ...state });
+  if (options.binDir) next.binDir = options.binDir;
   if (!next.groups || next.groups.length === 0) {
     throw new Error('Add at least one image folder before reconstruction.');
   }
@@ -384,8 +464,14 @@ function loadSummary(state) {
     }
   }
   const viewPath = reconstructionViewPath(state.workDir);
+  const resolvedBin = (state.binDir && hasCliBinary(state.binDir))
+    ? state.binDir
+    : resolveCliBinDir();
   return {
     ...state,
+    binDir: resolvedBin || state.binDir || '',
+    cliBinDir: resolvedBin || '',
+    cliFound: Boolean(resolvedBin),
     imageCount,
     groupCount: Array.isArray(state.groups) ? state.groups.length : 0,
     hasImagesAll: fs.existsSync(state.imagesAllPath),
@@ -405,6 +491,9 @@ module.exports = {
   loadState,
   saveState,
   findTool,
+  findSfmViewerApp,
+  packagedBinDir,
+  resolveCliBinDir,
   createProject,
   openProject,
   addFolder,

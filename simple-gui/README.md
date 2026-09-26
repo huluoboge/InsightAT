@@ -1,38 +1,36 @@
 # InsightAT Simple GUI
 
-This is a small Electron shell for the existing InsightAT CLI pipeline. It keeps the user workflow simple:
+Electron shell for the InsightAT CLI pipeline, plus a WebGL reconstruction viewer.
+
+## Workflow
 
 1. Create or open a work directory.
 2. Add one or more image folders.
-3. Let the CLI create groups and estimate camera intrinsics.
-4. Run SfM reconstruction.
+3. Run SfM reconstruction.
+4. **View Reconstruction** opens `sfm-viewer` for COLMAP results.
 
-The GUI stores its state in:
+CLI tools are **auto-detected** (no path to type):
 
-```text
-<work-dir>/insightat-simple-project.json
-```
+1. Packaged `resources/bin` (when you build the GUI with CLI staged)
+2. Repo `build/` / `build-release/` / …
+3. Optional override: `ISAT_BIN_DIR`
 
-The real project remains the CLI project:
+Left sidebar shows the resolved **CLI tools** path.
 
-```text
-<work-dir>/project.iat
-```
-
-## Run
-
-From this directory:
+## Develop
 
 ```bash
+# from repo root — compile CLI first so build/isat_* exists
+cmake --build build   # or your usual build
+
+cd simple-gui
 npm install
 npm start
 ```
 
-If the CLI tools are not on `PATH`, set `ISAT_BIN_DIR` before starting:
+## Package (bundles CLI when build/ exists)
 
 ```bash
-export ISAT_BIN_DIR=/path/to/InsightAT/build
-npm start
+./scripts/package/build_simple_gui.sh
+# → dist/simple-gui/linux-unpacked/insightat-simple-gui --no-sandbox
 ```
-
-During local development from this repository, the app also probes common build directories such as `build` and `build-release`.

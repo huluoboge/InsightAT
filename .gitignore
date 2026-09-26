@@ -11,6 +11,8 @@ build-appimage/
 .kiro
 __pycache__/
 node_modules/
+dist/
+staging/
 cudss-local*
 InsightMap
 tilesgm

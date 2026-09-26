@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:; connect-src 'self' file:" />
+  <title>InsightAT SfM Viewer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="viewport">
+      <canvas id="c"></canvas>
+      <div id="hint">MeshLab trackball: LMB rotate · Scroll ×0.9/×1.1 · RMB pan · Double-click to center</div>
+    </div>
+    <aside id="sidebar">
+      <header>
+        <h1>SfM Viewer</h1>
+        <p id="pathLabel" class="muted">No model loaded</p>
+      </header>
+      <div class="row">
+        <button id="openBtn" type="button">Open sparse…</button>
+        <button id="resetBtn" type="button">Reset view</button>
+      </div>
+      <div class="row">
+        <button id="imagesBtn" type="button">Set images…</button>
+        <button id="imagesClearBtn" type="button">Clear images</button>
+      </div>
+      <p id="imagesLabel" class="muted">Images: (auto)</p>
+      <dl id="stats">
+        <div><dt>Points</dt><dd id="statPoints">—</dd></div>
+        <div><dt>Cameras</dt><dd id="statCameras">—</dd></div>
+        <div><dt>Format</dt><dd id="statFormat">—</dd></div>
+        <div><dt>Filtered</dt><dd id="statFiltered">—</dd></div>
+      </dl>
+
+      <div class="mode-group">
+        <span class="mode-label">Pick mode</span>
+        <div class="row mode-row">
+          <button id="pickNoneBtn" type="button" class="mode-btn active" data-mode="none">Navigate</button>
+          <button id="pickPointBtn" type="button" class="mode-btn" data-mode="point">Pick point</button>
+          <button id="pickCameraBtn" type="button" class="mode-btn" data-mode="camera">Pick camera</button>
+        </div>
+      </div>
+
+      <label class="ctrl">
+        <span>Min observations</span>
+        <input id="minObs" type="range" min="2" max="20" value="2" />
+        <output id="minObsVal">2</output>
+      </label>
+      <label class="ctrl">
+        <span>Point size</span>
+        <input id="pointSize" type="range" min="1" max="12" step="0.5" value="3" />
+      </label>
+      <label class="ctrl">
+        <span>Frustum scale</span>
+        <input id="frustumScale" type="range" min="0.02" max="1.5" step="0.02" value="0.2" />
+      </label>
+      <label class="check"><input id="showPoints" type="checkbox" checked /> Points</label>
+      <label class="check"><input id="showCameras" type="checkbox" checked /> Cameras</label>
+      <label class="check"><input id="showAxes" type="checkbox" checked /> Camera axes (X right / Y down / Z fwd)</label>
+      <label class="check"><input id="showTrackball" type="checkbox" checked /> Trackball gizmo</label>
+      <label class="check"><input id="trackGallery" type="checkbox" /> Track gallery window</label>
+      <section id="pickPanel" hidden>
+        <h2 id="pickTitle">Selection</h2>
+        <p id="pickInfo" class="muted"></p>
+        <ul id="obsList"></ul>
+      </section>
+      <section id="imagePanel" hidden>
+        <h2>Observation</h2>
+        <div id="imageWrap">
+          <img id="obsImage" alt="observation" />
+          <canvas id="crosshair"></canvas>
+        </div>
+      </section>
+      <p id="error" class="error" hidden></p>
+    </aside>
+  </div>
+  <script type="module" src="renderer.js"></script>
+  <script>
+    window.addEventListener('error', (e) => {
+      const el = document.getElementById('error');
+      if (el) {
+        el.hidden = false;
+        el.textContent = 'Script error: ' + (e.message || e.error || e);
+      }
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      const el = document.getElementById('error');
+      if (el) {
+        el.hidden = false;
+        el.textContent = 'Load error: ' + (e.reason && e.reason.message ? e.reason.message : e.reason);
+      }
+    });
+  </script>
+</body>
+</html>

@@ -2,6 +2,7 @@
 
 const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const pipeline = require('./pipeline');
 
@@ -84,26 +85,62 @@ ipcMain.handle('project:revealWorkDir', async () => {
   return true;
 });
 
+function launchDetached(command, args, cwd) {
+  const child = spawn(command, args, {
+    cwd,
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }
+  });
+  child.unref();
+  child.on('error', (err) => {
+    sendLog(`Failed to launch viewer: ${err.message}\n`);
+  });
+  return child;
+}
+
 ipcMain.handle('project:viewReconstruction', async () => {
   const state = requireState();
   const viewPath = pipeline.reconstructionViewPath(state.workDir);
   if (!viewPath) {
     throw new Error('No reconstruction result found. Run reconstruction first.');
   }
+
+  const sfmViewerApp = pipeline.findSfmViewerApp();
+  const colmapOk =
+    fs.existsSync(path.join(viewPath, 'cameras.txt')) ||
+    fs.existsSync(path.join(viewPath, 'cameras.bin'));
+
+  if (sfmViewerApp && colmapOk) {
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawn(process.execPath, [sfmViewerApp, viewPath], {
+      cwd: state.workDir,
+      detached: true,
+      stdio: 'ignore',
+      env
+    });
+    child.unref();
+    child.on('error', (err) => {
+      sendLog(`Failed to launch sfm-viewer: ${err.message}\n`);
+    });
+    sendLog(`Launched sfm-viewer: ${sfmViewerApp} ${viewPath}\n`);
+    return true;
+  }
+
   const viewerExe = pipeline.findTool(state.binDir, 'at_bundler_viewer');
-  spawn(viewerExe, [viewPath], {
-    cwd: state.workDir,
-    detached: true,
-    stdio: 'ignore'
-  }).on('error', (err) => {
-    sendLog(`Failed to launch viewer: ${err.message}\n`);
-  });
+  launchDetached(viewerExe, [viewPath], state.workDir);
   sendLog(`Launched: ${viewerExe} ${viewPath}\n`);
   return true;
 });
 
 ipcMain.handle('project:getState', async () => {
   return currentState ? pipeline.loadSummary(currentState) : null;
+});
+
+ipcMain.handle('project:getCliInfo', async () => {
+  const resolved = pipeline.resolveCliBinDir();
+  return { path: resolved, found: Boolean(resolved) };
 });
 
 app.whenReady().then(createWindow);

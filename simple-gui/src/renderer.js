@@ -4,7 +4,6 @@ const $ = (id) => document.getElementById(id);
 
 const ui = {
   projectName: $('projectName'),
-  binDir: $('binDir'),
   createBtn: $('createBtn'),
   openBtn: $('openBtn'),
   addFolderBtn: $('addFolderBtn'),
@@ -18,6 +17,7 @@ const ui = {
   workDir: $('workDir'),
   groupCount: $('groupCount'),
   imageCount: $('imageCount'),
+  cliBinDir: $('cliBinDir'),
   folderCount: $('folderCount'),
   groupList: $('groupList'),
   runState: $('runState')
@@ -61,6 +61,15 @@ function applyState(nextState) {
   ui.imageCount.textContent = String(imageCount);
   ui.folderCount.textContent = `${hasProject ? state.folders.length : 0} folders`;
 
+  const cliPath = (state && (state.cliBinDir || state.binDir)) || '';
+  if (cliPath) {
+    ui.cliBinDir.textContent = shortPath(cliPath);
+    ui.cliBinDir.title = cliPath;
+  } else if (state && state.cliFound === false) {
+    ui.cliBinDir.textContent = 'Not found (build CLI first)';
+    ui.cliBinDir.title = '';
+  }
+
   ui.addFolderBtn.disabled = busy || !hasProject;
   ui.runBtn.disabled = busy || !hasProject || groupCount === 0;
   ui.revealBtn.disabled = busy || !hasProject;
@@ -75,7 +84,6 @@ function applyState(nextState) {
     : (groupCount > 0 ? 'Ready to reconstruct' : 'Waiting for image folders');
   if (hasProject) {
     ui.projectName.value = state.name || ui.projectName.value;
-    ui.binDir.value = state.binDir || ui.binDir.value;
   }
 
   renderGroups(hasProject ? state.groups : []);
@@ -139,8 +147,7 @@ async function runAction(label, action) {
 
 ui.createBtn.addEventListener('click', () => {
   runAction('Create project', () => window.insightAT.createProject({
-    name: ui.projectName.value.trim() || 'InsightAT_Project',
-    binDir: ui.binDir.value.trim()
+    name: ui.projectName.value.trim() || 'InsightAT_Project'
   }));
 });
 
@@ -149,15 +156,11 @@ ui.openBtn.addEventListener('click', () => {
 });
 
 ui.addFolderBtn.addEventListener('click', () => {
-  runAction('Add folder', () => window.insightAT.addFolder({
-    binDir: ui.binDir.value.trim()
-  }));
+  runAction('Add folder', () => window.insightAT.addFolder({}));
 });
 
 ui.runBtn.addEventListener('click', () => {
-  runAction('Run reconstruction', () => window.insightAT.runReconstruction({
-    binDir: ui.binDir.value.trim()
-  }));
+  runAction('Run reconstruction', () => window.insightAT.runReconstruction({}));
 });
 
 ui.viewBtn.addEventListener('click', () => {
@@ -173,4 +176,14 @@ ui.clearLogBtn.addEventListener('click', () => {
 });
 
 window.insightAT.onLog(appendLog);
-window.insightAT.getState().then(applyState);
+window.insightAT.getState().then((s) => {
+  if (s) applyState(s);
+  else {
+    window.insightAT.getCliInfo().then((info) => {
+      ui.cliBinDir.textContent = info.path ? shortPath(info.path) : 'Not found (build CLI first)';
+      ui.cliBinDir.title = info.path || '';
+    }).catch(() => {
+      ui.cliBinDir.textContent = 'Not found';
+    });
+  }
+});

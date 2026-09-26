@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('insightAT', {
   revealWorkDir: () => ipcRenderer.invoke('project:revealWorkDir'),
   viewReconstruction: () => ipcRenderer.invoke('project:viewReconstruction'),
   getState: () => ipcRenderer.invoke('project:getState'),
+  getCliInfo: () => ipcRenderer.invoke('project:getCliInfo'),
   onLog: (callback) => {
     const listener = (_event, text) => callback(text);
     ipcRenderer.on('pipeline:log', listener);

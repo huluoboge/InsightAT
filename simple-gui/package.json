@@ -6,9 +6,53 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron --no-sandbox .",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/pipeline.js && node --check src/renderer.js"
+    "postinstall": "node scripts/ensure-electron.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/pipeline.js && node --check src/renderer.js",
+    "pack": "electron-builder --linux dir",
+    "pack:appimage": "electron-builder --linux AppImage"
   },
   "devDependencies": {
-    "electron": "^31.0.0"
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.insightat.simplegui",
+    "productName": "InsightAT Simple",
+    "directories": {
+      "output": "../dist/simple-gui"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../sfm-viewer",
+        "to": "sfm-viewer",
+        "filter": [
+          "**/*",
+          "!node_modules/electron/**",
+          "!node_modules/electron-builder/**",
+          "!.git/**"
+        ]
+      },
+      {
+        "from": "../staging/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "linux": {
+      "target": [
+        "dir"
+      ],
+      "category": "Science",
+      "synopsis": "InsightAT Simple GUI for SfM workflows"
+    }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
   }
 }
