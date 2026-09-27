@@ -65,7 +65,7 @@ Copyright (c) 2026 Yang Hu
 ## Citation
 
 ```bibtex
-@software{yang2026insightat,
+@software{hu2026insightat,
   author = {Hu, Yang},
   title = {InsightAT: All-in-one Automated 3D Reconstruction System},
   year = {2026},
