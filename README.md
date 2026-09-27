@@ -2,11 +2,11 @@
 
 [![DOI](https://zenodo.org/badge/1169840859.svg)](https://doi.org/10.5281/zenodo.20042104)
 
-**InsightAT: All-in-one Automated 3D Reconstruction System**
+**InsightAT: Simple Automated Aerial Triangulation**
 
-InsightAT is an open-source all-in-one Structure-from-Motion system, built for user-friendly and fully automated 3D reconstruction.
+InsightAT (**A**erial **T**riangulation) is open-source, fully automated aerial triangulation — SfM that just works. Point it at a photo folder and get sparse reconstruction with minimal knobs.
 
-**English | [简体中文](README_zh.md)**
+**Project page:** [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/) · **English | [简体中文](README_zh.md)**
 
 Supported platforms: **Ubuntu 22.04** and **Windows**, **CUDA 12.8**. Default build is **CLI-only** (`isat_*`).
 
@@ -65,9 +65,9 @@ Copyright (c) 2026 Yang Hu
 ## Citation
 
 ```bibtex
-@software{yang2026insightat,
+@software{hu2026insightat,
   author = {Hu, Yang},
-  title = {InsightAT: All-in-one Automated 3D Reconstruction System},
+  title = {InsightAT: Simple Automated Aerial Triangulation},
   year = {2026},
   doi = {10.5281/zenodo.20042104},
   url = {https://github.com/huluoboge/InsightAT}

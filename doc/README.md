@@ -2,6 +2,8 @@
 
 **Language policy:** `doc/dev-notes/` and `doc/experiment/` are maintained in **Chinese (中文)**. All other content under `doc/` (including `user/`, `develop/`, and `develop/design/`) is maintained in **English**.
 
+**Project homepage:** source lives in [`homepage/`](homepage/) (`index.html`, logos); published at [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/).
+
 The `doc/` tree is split by audience and maturity. **End users** should start with [`user/`](user/README.md), not by browsing every subtree below this page.
 
 ---

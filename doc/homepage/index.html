@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="InsightAT: simple, fully automated aerial triangulation (SfM) — from a photo folder to sparse models with minimal knobs." />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <title>InsightAT — Simple Automated Aerial Triangulation</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      color: #1a1a1a;
+      background: #fff;
+    }
+
+    nav {
+      background: #111;
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 52px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    nav .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #fff;
+      text-decoration: none;
+      letter-spacing: 0.02em;
+    }
+    nav .brand img { height: 28px; width: auto; display: block; }
+    nav .brand span { color: #60a5fa; }
+    nav ul {
+      list-style: none;
+      display: flex;
+      gap: 1.5rem;
+    }
+    nav ul a {
+      color: #ccc;
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: color 0.15s;
+    }
+    nav ul a:hover { color: #fff; }
+    .nav-toggle {
+      display: none;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .nav-toggle span {
+      display: block;
+      width: 22px;
+      height: 2px;
+      background: #fff;
+      border-radius: 2px;
+      transition: transform 0.2s, opacity 0.2s;
+    }
+    nav.open .nav-toggle span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+    nav.open .nav-toggle span:nth-child(2) { opacity: 0; }
+    nav.open .nav-toggle span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+
+    section { padding: 3.5rem 0; }
+    section + section { border-top: 1px solid #e5e7eb; }
+
+    h1 { font-size: 2.4rem; font-weight: 800; line-height: 1.15; }
+    h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; }
+    h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
+    p  { margin-bottom: 0.8rem; color: #374151; }
+
+    #hero {
+      padding: 4rem 0 3rem;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    #hero .subtitle {
+      font-size: 1.15rem;
+      color: #6b7280;
+      margin: 0.6rem 0 1.8rem;
+      font-weight: 400;
+    }
+    .metrics {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin: 1.8rem 0;
+    }
+    .metric-card {
+      background: #f3f4f6;
+      border-radius: 10px;
+      padding: 1rem 1.4rem;
+      flex: 1;
+      min-width: 150px;
+    }
+    .metric-card .value {
+      font-size: 1.55rem;
+      font-weight: 800;
+      color: #111;
+      line-height: 1.15;
+    }
+    .metric-card .label {
+      font-size: 0.8rem;
+      color: #6b7280;
+      margin-top: 0.25rem;
+    }
+    .hero-buttons {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 1.8rem;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.6rem 1.2rem;
+      border-radius: 7px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary   { background: #111; color: #fff; }
+    .btn-secondary { background: #e5e7eb; color: #111; }
+    .btn-outline   { border: 1.5px solid #d1d5db; color: #374151; background: #fff; }
+
+    .pipeline {
+      display: flex;
+      gap: 0;
+      margin: 1.5rem 0;
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+    .pipeline-step {
+      flex: 1;
+      min-width: 120px;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      padding: 1.2rem 1rem;
+      position: relative;
+    }
+    .pipeline-step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -14px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 1.2rem;
+      color: #9ca3af;
+      z-index: 1;
+    }
+    .pipeline-step:first-child  { border-radius: 8px 0 0 8px; }
+    .pipeline-step:last-child   { border-radius: 0 8px 8px 0; }
+    .step-tag {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #60a5fa;
+      margin-bottom: 0.3rem;
+    }
+    .step-title { font-size: 0.95rem; font-weight: 700; }
+    .step-desc  { font-size: 0.8rem; color: #6b7280; margin-top: 0.3rem; }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .feature-card {
+      border: 1.5px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 1.2rem;
+      background: #fff;
+    }
+    .feature-card h3 { margin-bottom: 0.4rem; }
+    .feature-card p { margin-bottom: 0; font-size: 0.92rem; }
+
+    .table-wrap { overflow-x: auto; margin: 1rem 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th {
+      background: #f3f4f6;
+      font-weight: 600;
+      text-align: left;
+      padding: 0.6rem 0.9rem;
+      border-bottom: 2px solid #e5e7eb;
+    }
+    td {
+      padding: 0.55rem 0.9rem;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    tr:last-child td { border-bottom: none; }
+
+    pre {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 8px;
+      padding: 1.2rem 1.4rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      margin: 1rem 0;
+    }
+    code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+    p code, li code, td code {
+      background: #f3f4f6;
+      border-radius: 4px;
+      padding: 0.1em 0.35em;
+      font-size: 0.88em;
+    }
+    pre code { background: transparent; padding: 0; }
+
+    .download-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .download-card {
+      border: 1.5px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 1.2rem;
+      text-decoration: none;
+      color: inherit;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .download-card:hover {
+      border-color: #60a5fa;
+      box-shadow: 0 2px 8px rgba(96,165,250,0.15);
+    }
+    .download-card .platform { font-weight: 700; font-size: 1rem; }
+    .download-card .detail   { font-size: 0.8rem; color: #6b7280; }
+
+    #citation pre {
+      font-size: 0.82rem;
+      background: #f8fafc;
+      color: #374151;
+      border: 1px solid #e5e7eb;
+    }
+
+    footer {
+      background: #f9fafb;
+      border-top: 1px solid #e5e7eb;
+      padding: 2rem 0;
+      text-align: center;
+      font-size: 0.85rem;
+      color: #9ca3af;
+    }
+    footer a { color: #6b7280; text-decoration: none; }
+    footer a:hover { color: #111; }
+
+    @media (max-width: 640px) {
+      .nav-toggle { display: flex; }
+      nav ul {
+        display: none;
+        position: absolute;
+        top: 52px;
+        left: 0;
+        right: 0;
+        background: #111;
+        flex-direction: column;
+        gap: 0;
+        padding: 0.5rem 0;
+      }
+      nav.open ul { display: flex; }
+      nav ul li a {
+        display: block;
+        padding: 0.7rem 2rem;
+        font-size: 1rem;
+      }
+    }
+
+    @media (max-width: 700px) {
+      h1 { font-size: 1.8rem; }
+      .pipeline { flex-direction: column; }
+      .pipeline-step { border-radius: 0; }
+      .pipeline-step:first-child  { border-radius: 8px 8px 0 0; }
+      .pipeline-step:last-child   { border-radius: 0 0 8px 8px; }
+      .pipeline-step:not(:last-child)::after {
+        content: "↓";
+        right: auto;
+        left: 50%;
+        top: auto;
+        bottom: -14px;
+        transform: translateX(-50%);
+      }
+    }
+  </style>
+</head>
+<body>
+
+<nav id="main-nav">
+  <a class="brand" href="#">
+    <img src="logo-128.png" alt="" />
+    Insight<span>AT</span>
+  </a>
+  <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+    <span></span><span></span><span></span>
+  </button>
+  <ul id="nav-menu">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#pipeline">Pipeline</a></li>
+    <li><a href="#quickstart">Quick Start</a></li>
+    <li><a href="#download">Download</a></li>
+    <li><a href="https://github.com/huluoboge/InsightAT" target="_blank" rel="noopener">GitHub</a></li>
+    <li><a href="https://doi.org/10.5281/zenodo.20042104" target="_blank" rel="noopener">DOI</a></li>
+    <li><a href="https://github.com/huluoboge/InsightAT/blob/main/README_zh.md" target="_blank" rel="noopener">中文</a></li>
+  </ul>
+</nav>
+
+<div class="container">
+<section id="hero">
+  <h1>InsightAT</h1>
+  <p class="subtitle">Simple Automated Aerial Triangulation</p>
+
+  <p style="max-width:680px; color:#374151;">
+    Fully automated <strong>aerial triangulation</strong> (AT = SfM) —
+    drop in a photo folder, get sparse models, COLMAP export, and a desktop viewer.
+    Built to be <strong>hands-off and foolproof</strong>.
+  </p>
+
+  <div class="metrics">
+    <div class="metric-card">
+      <div class="value">MIT</div>
+      <div class="label">open-source license<br>Copyright 2026 Yang Hu</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">CLI + GUI</div>
+      <div class="label"><code>isat_*</code> tools<br>+ Electron SfM GUI / Viewer</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">CUDA 12.8</div>
+      <div class="label">Ubuntu 22.04 &amp; Windows<br>GPU-accelerated pipeline</div>
+    </div>
+  </div>
+
+  <div class="hero-buttons">
+    <a href="#download" class="btn btn-primary">Download</a>
+    <a href="#quickstart" class="btn btn-secondary">Quick Start</a>
+    <a href="https://github.com/huluoboge/InsightAT" target="_blank" rel="noopener" class="btn btn-outline">GitHub</a>
+    <a href="https://doi.org/10.5281/zenodo.20042104" target="_blank" rel="noopener" class="btn btn-outline">Cite / DOI</a>
+  </div>
+</section>
+
+<section id="overview">
+  <h2>Overview</h2>
+  <p>
+    InsightAT (<strong>A</strong>erial <strong>T</strong>riangulation) treats AT as
+    image-based SfM: an open-source toolkit for <strong>fully automated, foolproof</strong>
+    sparse reconstruction. One entry point (<code>isat_sfm</code>), or the Electron
+    <strong>SfM GUI</strong> for setup, progress, and the embedded <strong>SfM Viewer</strong>.
+  </p>
+  <p>
+    Outputs include incremental SfM tracks/poses, Bundler snapshots, and
+    undistorted images with COLMAP sparse models (binary by default) for dense
+    or 3DGS workflows.
+  </p>
+</section>
+
+<section id="features">
+  <h2>Features</h2>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3>One-command SfM</h3>
+      <p><code>isat_sfm -i images -w work</code> runs create → extract → match → tracks → seed eval → incremental SfM → optional undistort.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Desktop GUI &amp; Viewer</h3>
+      <p>SfM GUI tails run logs and progress; View Reconstruction opens the COLMAP viewer (tracks + cameras).</p>
+    </div>
+    <div class="feature-card">
+      <h3>COLMAP handoff</h3>
+      <p>Export PINHOLE sparse models as <code>.bin</code> (default) or <code>.txt</code>, with undistorted images for downstream MVS / 3DGS.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Production packaging</h3>
+      <p>AppImage / deb for CLI; separate Electron packages for GUI and standalone Viewer.</p>
+    </div>
+  </div>
+</section>
+
+<section id="pipeline">
+  <h2>Pipeline</h2>
+  <p>Typical <code>isat_sfm</code> flow (GUI rebuild mirrors the same stages):</p>
+  <div class="pipeline">
+    <div class="pipeline-step">
+      <div class="step-tag">1</div>
+      <div class="step-title">Extract</div>
+      <div class="step-desc">Features (CUDA / GLSL)</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-tag">2</div>
+      <div class="step-title">Match</div>
+      <div class="step-desc">Pairs + geometry</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-tag">3</div>
+      <div class="step-title">Tracks</div>
+      <div class="step-desc">Multi-view tracks</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-tag">4</div>
+      <div class="step-title">Seed / SfM</div>
+      <div class="step-desc">Incremental mapping</div>
+    </div>
+    <div class="pipeline-step">
+      <div class="step-tag">5</div>
+      <div class="step-title">Undistort</div>
+      <div class="step-desc">Images + COLMAP</div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <h2>Quick Start</h2>
+
+  <h3>Requirements</h3>
+  <ul style="margin: 0.5rem 0 1rem 1.2rem; color: #374151; font-size:0.95rem;">
+    <li>Ubuntu 22.04 or Windows</li>
+    <li>CUDA 12.8 for GPU-accelerated extract / match (GLSL fallback available)</li>
+    <li>Image folder (subfolders OK; different cameras better in separate folders)</li>
+  </ul>
+
+  <h3>Build (Linux)</h3>
+  <pre><code>git clone https://github.com/huluoboge/InsightAT.git
+cd InsightAT
+./packaging/linux/build.sh
+# binaries: ./build/isat_*</code></pre>
+
+  <h3>Run SfM</h3>
+  <pre><code>isat_sfm -i /data/images -w /data/work
+
+# optional: undistorted images + COLMAP sparse (.bin by default)
+isat_sfm -i /data/images -w /data/work --undistort</code></pre>
+
+  <h3>Key arguments</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>-i</code></td><td>Input image directory</td></tr>
+        <tr><td><code>-w</code></td><td>Work directory for intermediates and results</td></tr>
+        <tr><td><code>--undistort</code></td><td>Export undistorted images + COLMAP sparse</td></tr>
+        <tr><td><code>--binary</code> / <code>--text</code></td><td>COLMAP format (binary is default with undistort)</td></tr>
+        <tr><td><code>--steps</code></td><td>Subset of pipeline steps to run</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="font-size:0.9rem; color:#6b7280;">
+    Full packaging (AppImage, deb, Docker, Windows): see
+    <a href="https://github.com/huluoboge/InsightAT/blob/main/packaging/README.md" target="_blank" rel="noopener">packaging/README.md</a>.
+  </p>
+</section>
+
+<section id="download">
+  <h2>Download</h2>
+  <p>
+    Grab the latest artifacts from GitHub Releases (CLI AppImage/deb, Windows zip,
+    and Electron GUI / Viewer packages when published).
+  </p>
+
+  <div class="download-grid">
+    <a class="download-card" href="https://github.com/huluoboge/InsightAT/releases" target="_blank" rel="noopener">
+      <div class="platform">All releases</div>
+      <div class="detail">CLI · GUI · Viewer</div>
+      <div style="margin-top:0.5rem; font-size:0.85rem; color:#60a5fa; font-weight:600;">GitHub Releases →</div>
+    </a>
+    <a class="download-card" href="https://github.com/huluoboge/InsightAT" target="_blank" rel="noopener">
+      <div class="platform">Source</div>
+      <div class="detail">Clone and build with packaging/linux/build.sh</div>
+      <div style="margin-top:0.5rem; font-size:0.85rem; color:#60a5fa; font-weight:600;">Repository →</div>
+    </a>
+    <a class="download-card" href="https://doi.org/10.5281/zenodo.20042104" target="_blank" rel="noopener">
+      <div class="platform">Zenodo DOI</div>
+      <div class="detail">10.5281/zenodo.20042104</div>
+      <div style="margin-top:0.5rem; font-size:0.85rem; color:#60a5fa; font-weight:600;">Cite this software →</div>
+    </a>
+  </div>
+</section>
+
+<section id="citation">
+  <h2>Citation</h2>
+  <p>If you use InsightAT in research or production work, please cite:</p>
+  <pre><code>@software{hu2026insightat,
+  author = {Hu, Yang},
+  title = {InsightAT: Simple Automated Aerial Triangulation},
+  year = {2026},
+  doi = {10.5281/zenodo.20042104},
+  url = {https://github.com/huluoboge/InsightAT}
+}</code></pre>
+  <p style="margin-top:0.8rem;">
+    <a href="https://zenodo.org/badge/latestdoi/1169840859" target="_blank" rel="noopener">
+      <img src="https://zenodo.org/badge/1169840859.svg" alt="DOI" />
+    </a>
+  </p>
+</section>
+</div>
+
+<footer>
+  <div class="container">
+    <p>
+      Copyright (c) 2026 Yang Hu · MIT &nbsp;·&nbsp;
+      <a href="https://github.com/huluoboge/InsightAT" target="_blank" rel="noopener">GitHub</a> &nbsp;·&nbsp;
+      <a href="https://huluoboge.github.io/">huluoboge.github.io</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+  const toggle = document.getElementById('nav-toggle');
+  const nav = document.getElementById('main-nav');
+  const menu = document.getElementById('nav-menu');
+  toggle.addEventListener('click', () => {
+    const open = nav.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', open);
+  });
+  menu.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => {
+      nav.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+    });
+  });
+</script>
+</body>
+</html>

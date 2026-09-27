@@ -2,9 +2,9 @@
 
 [![DOI](https://zenodo.org/badge/1169840859.svg)](https://doi.org/10.5281/zenodo.20042104)
 
-InsightAT 是开源一站式运动恢复结构系统，主打简易易用、全自动三维重建。
+InsightAT（**A**erial **T**riangulation，空三）是开源、全自动、傻瓜化的空中三角测量工具——把影像文件夹交给它，就能完成 SfM 稀疏重建，少调参、易上手。
 
-**[English](README.md) | 简体中文**
+**项目主页：** [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/) · **[English](README.md) | 简体中文**
 
 支持平台：**Ubuntu 22.04** 与 **Windows**，**CUDA 12.8**。默认构建为纯 CLI（`isat_*`）。
 
@@ -63,9 +63,9 @@ MIT 许可证
 ## 引用
 
 ```bibtex
-@software{yang2026insightat,
+@software{hu2026insightat,
   author = {Hu, Yang},
-  title = {InsightAT: All-in-one Automated 3D Reconstruction System},
+  title = {InsightAT: Simple Automated Aerial Triangulation},
   year = {2026},
   doi = {10.5281/zenodo.20042104},
   url = {https://github.com/huluoboge/InsightAT}
