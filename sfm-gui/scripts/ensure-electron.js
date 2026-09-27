@@ -10,7 +10,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const electronRoot = path.dirname(require.resolve('electron/package.json'));
-const distElectron = path.join(electronRoot, 'dist', 'electron');
+const electronBin = process.platform === 'win32' ? 'electron.exe' : 'electron';
+const distElectron = path.join(electronRoot, 'dist', electronBin);
 const pathTxt = path.join(electronRoot, 'path.txt');
 
 if (fs.existsSync(distElectron) && fs.existsSync(pathTxt)) {
@@ -18,39 +19,61 @@ if (fs.existsSync(distElectron) && fs.existsSync(pathTxt)) {
 }
 
 console.log('[ensure-electron] binary missing, running electron install.js …');
-let r = spawnSync(process.execPath, [path.join(electronRoot, 'install.js')], {
+const install = spawnSync(process.execPath, [path.join(electronRoot, 'install.js')], {
   stdio: 'inherit',
-  env: { ...process.env, force_no_cache: 'true' }
+  env: {
+    ...process.env,
+    // Force a fresh download when dist/ is incomplete.
+    electron_config_cache: process.env.electron_config_cache || '',
+    npm_config_electron_mirror: process.env.npm_config_electron_mirror || ''
+  }
 });
 
 if (fs.existsSync(distElectron)) {
-  fs.writeFileSync(pathTxt, 'electron');
+  fs.writeFileSync(pathTxt, electronBin);
   process.exit(0);
 }
 
-const home = process.env.HOME || process.env.USERPROFILE || '';
-const cacheZip = path.join(
-  home,
-  '.cache/electron/c94f2fc32e1fb05767f75322ea533eeb9828155f017ec184140930a3ec825e81/electron-v31.7.7-linux-x64.zip'
-);
-const altZip = path.join(home, '.cache/electron/electron-v31.7.7-linux-x64.zip');
-const zip = fs.existsSync(cacheZip) ? cacheZip : (fs.existsSync(altZip) ? altZip : '');
-
-if (!zip) {
-  console.error('[ensure-electron] Failed to install Electron. Try:');
-  console.error('  rm -rf node_modules/electron && npm install electron --foreground-scripts');
-  process.exit(1);
+if (install.status !== 0) {
+  console.error('[ensure-electron] install.js exited with', install.status);
 }
 
-console.log('[ensure-electron] unzipping from cache', zip);
-const dist = path.join(electronRoot, 'dist');
-fs.rmSync(dist, { recursive: true, force: true });
-fs.mkdirSync(dist, { recursive: true });
-r = spawnSync('unzip', ['-qo', zip, '-d', dist], { stdio: 'inherit' });
-if (r.status !== 0 || !fs.existsSync(distElectron)) {
-  console.error('[ensure-electron] unzip failed');
-  process.exit(1);
+// Cache fallback (Linux CI / local linux only).
+if (process.platform === 'linux') {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const cacheRoot = path.join(home, '.cache', 'electron');
+  let zip = '';
+  try {
+    if (fs.existsSync(cacheRoot)) {
+      const walk = (dir) => {
+        for (const name of fs.readdirSync(dir)) {
+          const p = path.join(dir, name);
+          const st = fs.statSync(p);
+          if (st.isDirectory()) walk(p);
+          else if (/electron-v31\.7\.7-linux-x64\.zip$/.test(name)) zip = p;
+        }
+      };
+      walk(cacheRoot);
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
+  if (zip) {
+    console.log('[ensure-electron] unzipping from cache', zip);
+    const dist = path.join(electronRoot, 'dist');
+    fs.rmSync(dist, { recursive: true, force: true });
+    fs.mkdirSync(dist, { recursive: true });
+    const unzip = spawnSync('unzip', ['-qo', zip, '-d', dist], { stdio: 'inherit' });
+    if (unzip.status === 0 && fs.existsSync(distElectron)) {
+      fs.writeFileSync(pathTxt, electronBin);
+      fs.chmodSync(distElectron, 0o755);
+      console.log('[ensure-electron] ready');
+      process.exit(0);
+    }
+  }
 }
-fs.writeFileSync(pathTxt, 'electron');
-fs.chmodSync(distElectron, 0o755);
-console.log('[ensure-electron] ready');
+
+console.error('[ensure-electron] Failed to install Electron. Try:');
+console.error('  rm -rf node_modules/electron && npm install electron --foreground-scripts');
+process.exit(1);

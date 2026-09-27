@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "description": "InsightAT SfM desktop shell driven by CLI tools.",
+  "homepage": "https://github.com/huluoboge/InsightAT",
+  "author": "InsightAT Contributors <insightat@users.noreply.github.com>",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "src/main.js",
   "scripts": {
     "start": "electron --no-sandbox .",
     "postinstall": "node scripts/ensure-electron.js",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/pipeline.js && node --check src/renderer.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/pipeline.js && node --check src/renderer.js && node --check src/log_tailer.js",
     "pack": "electron-builder --linux dir",
     "pack:appimage": "electron-builder --linux AppImage",
     "pack:deb": "electron-builder --linux deb",
@@ -20,6 +23,7 @@
   "build": {
     "appId": "com.insightat.sfmgui",
     "productName": "InsightAT SfM",
+    "executableName": "insightat-sfm-gui",
     "icon": "assets/icons",
     "directories": {
       "output": "../dist/sfm-gui"
@@ -56,6 +60,7 @@
       ],
       "icon": "assets/icons",
       "category": "Science",
+      "maintainer": "InsightAT Contributors <insightat@users.noreply.github.com>",
       "synopsis": "InsightAT SfM GUI for reconstruction workflows"
     },
     "win": {

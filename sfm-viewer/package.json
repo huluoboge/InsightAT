@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "WebGL SfM reconstruction viewer for COLMAP sparse models (tracks + cameras).",
+  "homepage": "https://github.com/huluoboge/InsightAT",
+  "author": "InsightAT Contributors <insightat@users.noreply.github.com>",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "src/main.js",
   "scripts": {
     "start": "electron --no-sandbox .",
@@ -22,6 +25,7 @@
   "build": {
     "appId": "com.insightat.sfmviewer",
     "productName": "InsightAT SfM Viewer",
+    "executableName": "insightat-sfm-viewer",
     "directories": {
       "output": "../dist/sfm-viewer"
     },
@@ -36,6 +40,7 @@
         "deb"
       ],
       "category": "Science",
+      "maintainer": "InsightAT Contributors <insightat@users.noreply.github.com>",
       "synopsis": "COLMAP sparse reconstruction viewer"
     },
     "win": {
