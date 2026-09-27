@@ -37,6 +37,8 @@
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 
+#include <opencv2/imgcodecs.hpp>
+
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 using namespace insight::database;
@@ -516,27 +518,80 @@ static int runAddImages(int argc, char* argv[]) {
   return 0;
 }
 
+static bool resolveGroupImageSize(const ImageGroup& group, uint32_t* width_out, uint32_t* height_out,
+                                  std::string* source_out) {
+  if (!width_out || !height_out)
+    return false;
+
+  if (group.group_camera.has_value() && group.group_camera->width > 0 &&
+      group.group_camera->height > 0) {
+    *width_out = group.group_camera->width;
+    *height_out = group.group_camera->height;
+    if (source_out)
+      *source_out = "group_camera";
+    return true;
+  }
+
+  for (const auto& image : group.images) {
+    if (image.camera.has_value() && image.camera->width > 0 && image.camera->height > 0) {
+      *width_out = image.camera->width;
+      *height_out = image.camera->height;
+      if (source_out)
+        *source_out = "image_camera";
+      return true;
+    }
+  }
+
+  for (const auto& image : group.images) {
+    if (image.filename.empty())
+      continue;
+    const cv::Mat probe = cv::imread(image.filename, cv::IMREAD_UNCHANGED);
+    if (!probe.empty() && probe.cols > 0 && probe.rows > 0) {
+      *width_out = static_cast<uint32_t>(probe.cols);
+      *height_out = static_cast<uint32_t>(probe.rows);
+      if (source_out)
+        *source_out = "image_file";
+      return true;
+    }
+  }
+
+  return false;
+}
+
 static int runSetCamera(int argc, char* argv[]) {
-  CmdLine cmd("Set group camera (resolution + intrinsics) for GroupLevel mode.");
+  CmdLine cmd(
+      "Set group-level camera intrinsics in pixels (Brown model). "
+      "Image width/height are read from the group (not user-set in the product path).");
   std::string project_file;
-  std::string from_k_file; // --from-k: load fx/fy/cx/cy from isat_calibrate K.json
+  std::string from_k_file; // --from-k: load fx/fy/cx/cy[/k*] from isat_calibrate K.json
   uint32_t group_id = static_cast<uint32_t>(-1);
-  uint32_t width = 0, height = 0;
+  uint32_t width_override = 0, height_override = 0; // optional debug override only
   double fx = 0.0, fy = 0.0, cx = 0.0, cy = 0.0;
+  double k1 = 0.0, k2 = 0.0, k3 = 0.0, p1 = 0.0, p2 = 0.0;
   double aspect_ratio = 1.0;
   std::string camera_name;
+  std::string brown_convention = "context-capture";
 
   cmd.add(make_option('p', project_file, "project").doc("Project file (.iat)"));
   cmd.add(make_option('g', group_id, "group-id").doc("Target group ID"));
   cmd.add(make_option(0, from_k_file, "from-k")
-              .doc("Load fx/fy/cx/cy from isat_calibrate K.json (replaces "
-                   "--fx/--fy/--cx/--cy/--width/--height)"));
-  cmd.add(make_option(0, width, "width").doc("Image width (pixels)"));
-  cmd.add(make_option(0, height, "height").doc("Image height (pixels)"));
-  cmd.add(make_option(0, fx, "fx").doc("Focal length fx (pixels)"));
+              .doc("Load fx/fy/cx/cy and optional k1..p2 from K.json"));
+  cmd.add(make_option(0, width_override, "width")
+              .doc("Debug override: image width (pixels). Prefer auto from group images."));
+  cmd.add(make_option(0, height_override, "height")
+              .doc("Debug override: image height (pixels). Prefer auto from group images."));
+  cmd.add(make_option(0, fx, "fx").doc("Focal length fx (pixels) [required unless --from-k]"));
   cmd.add(make_option(0, fy, "fy").doc("Focal length fy (pixels). If 0, uses fx."));
-  cmd.add(make_option(0, cx, "cx").doc("Principal point cx (pixels)"));
-  cmd.add(make_option(0, cy, "cy").doc("Principal point cy (pixels)"));
+  cmd.add(make_option(0, cx, "cx").doc("Principal point cx (pixels). Default: width/2."));
+  cmd.add(make_option(0, cy, "cy").doc("Principal point cy (pixels). Default: height/2."));
+  cmd.add(make_option(0, k1, "k1").doc("Brown radial k1 (default 0)"));
+  cmd.add(make_option(0, k2, "k2").doc("Brown radial k2 (default 0)"));
+  cmd.add(make_option(0, k3, "k3").doc("Brown radial k3 (default 0)"));
+  cmd.add(make_option(0, p1, "p1").doc("Brown tangential p1 (default 0)"));
+  cmd.add(make_option(0, p2, "p2").doc("Brown tangential p2 (default 0)"));
+  cmd.add(make_option(0, brown_convention, "brown-convention")
+              .doc("Brown tangential convention: context-capture (default, library storage) or "
+                   "opencv (p1/p2 swapped vs OpenCV/COLMAP on ingest)"));
   cmd.add(make_option(0, aspect_ratio, "aspect").doc("Aspect ratio fy/fx (optional, default 1.0)"));
   cmd.add(make_option(0, camera_name, "camera-name").doc("Camera name (optional)"));
   std::string log_level;
@@ -559,6 +614,21 @@ static int runSetCamera(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 2;
   }
+  if (brown_convention != "context-capture" && brown_convention != "opencv") {
+    std::cerr << "Error: --brown-convention must be context-capture or opencv\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 2;
+  }
+
+  const bool cx_set = cmd.used("cx");
+  const bool cy_set = cmd.used("cy");
+  const bool k1_set = cmd.used("k1");
+  const bool k2_set = cmd.used("k2");
+  const bool k3_set = cmd.used("k3");
+  const bool p1_set = cmd.used("p1");
+  const bool p2_set = cmd.used("p2");
+  bool from_k_has_cx = false;
+  bool from_k_has_cy = false;
 
   // ── Load intrinsics from K.json if --from-k is given ──────────────────
   if (!from_k_file.empty()) {
@@ -572,12 +642,32 @@ static int runSetCamera(int argc, char* argv[]) {
       kfs >> kj;
       fx = kj.value("fx", 0.0);
       fy = kj.value("fy", 0.0);
-      cx = kj.value("cx", 0.0);
-      cy = kj.value("cy", 0.0);
-      if (kj.contains("width") && width == 0)
-        width = kj["width"];
-      if (kj.contains("height") && height == 0)
-        height = kj["height"];
+      if (!cx_set && kj.contains("cx")) {
+        cx = kj.at("cx").get<double>();
+        from_k_has_cx = true;
+      }
+      if (!cy_set && kj.contains("cy")) {
+        cy = kj.at("cy").get<double>();
+        from_k_has_cy = true;
+      }      if (!k1_set && kj.contains("k1"))
+        k1 = kj.at("k1").get<double>();
+      if (!k2_set && kj.contains("k2"))
+        k2 = kj.at("k2").get<double>();
+      if (!k3_set && kj.contains("k3"))
+        k3 = kj.at("k3").get<double>();
+      if (!p1_set && kj.contains("p1"))
+        p1 = kj.at("p1").get<double>();
+      if (!p2_set && kj.contains("p2"))
+        p2 = kj.at("p2").get<double>();
+      if (kj.contains("width") && width_override == 0)
+        width_override = kj["width"];
+      if (kj.contains("height") && height_override == 0)
+        height_override = kj["height"];
+      if (kj.contains("brown_convention")) {
+        const std::string c = kj["brown_convention"].get<std::string>();
+        if (c == "opencv" || c == "context-capture")
+          brown_convention = c;
+      }
     } catch (const std::exception& e) {
       std::cerr << "Error: failed to parse --from-k JSON: " << e.what() << "\n";
       return 2;
@@ -588,8 +678,8 @@ static int runSetCamera(int argc, char* argv[]) {
     }
   }
 
-  if (width == 0 || height == 0 || fx <= 0.0) {
-    std::cerr << "Error: --width, --height, --fx are required (or use --from-k)\n\n";
+  if (fx <= 0.0) {
+    std::cerr << "Error: --fx is required (or use --from-k)\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 2;
   }
@@ -609,15 +699,58 @@ static int runSetCamera(int argc, char* argv[]) {
     return 1;
   }
 
-  // Preserve existing CameraModel metadata (make/model/sensor_width etc.)
-  // when only updating intrinsics via --from-k.
+  uint32_t width = 0, height = 0;
+  std::string size_source;
+  if (!resolveGroupImageSize(*group, &width, &height, &size_source)) {
+    if (width_override > 0 && height_override > 0) {
+      width = width_override;
+      height = height_override;
+      size_source = "cli_override";
+    } else {
+      printEvent({{"type", "project.set_camera"},
+                  {"ok", false},
+                  {"error",
+                   "could not read image width/height from group; add images or pass "
+                   "debug --width/--height"}});
+      return 1;
+    }
+  } else if (width_override > 0 || height_override > 0) {
+    LOG(WARNING) << "Ignoring --width/--height override; using auto-detected " << width << "x"
+                 << height << " from " << size_source;
+  }
+
+  // Principal point defaults to image center when not provided.
+  if (!cx_set && !from_k_has_cx)
+    cx = 0.5 * static_cast<double>(width);
+  if (!cy_set && !from_k_has_cy)
+    cy = 0.5 * static_cast<double>(height);
+
+  // OpenCV Brown tangential coeffs are swapped vs Context Capture / library storage.
+  double store_p1 = p1;
+  double store_p2 = p2;
+  if (brown_convention == "opencv") {
+    store_p1 = p2;
+    store_p2 = p1;
+  }
+
+  // Preserve existing CameraModel metadata (make/model/sensor_width etc.).
   CameraModel cam = group->group_camera.value_or(CameraModel{});
   cam.width = width;
   cam.height = height;
   cam.focal_length = fx;
-  cam.aspect_ratio = (fy > 0.0) ? (fy / fx) : aspect_ratio;
+  if (fy > 0.0) {
+    cam.aspect_ratio = fy / fx;
+  } else {
+    cam.aspect_ratio = aspect_ratio;
+    fy = fx * cam.aspect_ratio;
+  }
   cam.principal_point_x = cx;
   cam.principal_point_y = cy;
+  cam.k1 = k1;
+  cam.k2 = k2;
+  cam.k3 = k3;
+  cam.p1 = store_p1;
+  cam.p2 = store_p2;
   if (!camera_name.empty())
     cam.camera_name = camera_name;
 
@@ -637,11 +770,21 @@ static int runSetCamera(int argc, char* argv[]) {
                {{"group_id", group_id},
                 {"width", width},
                 {"height", height},
+                {"size_source", size_source},
                 {"fx", fx},
-                {"fy", fx * cam.aspect_ratio},
+                {"fy", fy},
                 {"cx", cx},
                 {"cy", cy},
-                {"from_k", !from_k_file.empty()}}}});
+                {"k1", k1},
+                {"k2", k2},
+                {"k3", k3},
+                {"p1_input", p1},
+                {"p2_input", p2},
+                {"p1_stored", store_p1},
+                {"p2_stored", store_p2},
+                {"brown_convention", brown_convention},
+                {"from_k", !from_k_file.empty()},
+                {"intrinsics_source", "manual"}}}});
   return 0;
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package InsightAT SfM GUI (+ embedded sfm-viewer) for Linux.
+# Package InsightAT SfM GUI (+ embedded sfm-viewer sources) for Linux / Windows.
 # Optional: set ISAT_BIN_DIR to a directory containing isat_* binaries to bundle them.
 set -euo pipefail
 
@@ -9,11 +9,9 @@ SFM_VIEWER="$ROOT/sfm-viewer"
 STAGING_BIN="$ROOT/staging/bin"
 MODE="${1:-dir}"
 
-echo "[build_sfm_gui] repo=$ROOT"
+echo "[build_sfm_gui] repo=$ROOT mode=$MODE"
 
 mkdir -p "$STAGING_BIN"
-# Ensure staging/bin exists so electron-builder extraResources does not fail when empty.
-# Place a marker if no CLI tools are present.
 if [[ -z "$(ls -A "$STAGING_BIN" 2>/dev/null || true)" ]]; then
   echo "CLI tools not staged. Set ISAT_BIN_DIR to bundle isat_* binaries." > "$STAGING_BIN/README.txt"
 fi
@@ -28,7 +26,6 @@ if [[ -n "$BIN_SRC" && -d "$BIN_SRC" ]]; then
   for f in "$BIN_SRC"/isat_*; do
     cp -a "$f" "$STAGING_BIN/"
   done
-  # Optional shared libs sitting next to binaries
   for f in "$BIN_SRC"/*.so "$BIN_SRC"/*.so.*; do
     [[ -e "$f" ]] || continue
     cp -a "$f" "$STAGING_BIN/" || true
@@ -54,8 +51,17 @@ case "$MODE" in
   appimage)
     (cd "$SFM_GUI" && npm run pack:appimage)
     ;;
+  deb)
+    (cd "$SFM_GUI" && npm run pack:deb)
+    ;;
+  win|windows)
+    (cd "$SFM_GUI" && npm run pack:win)
+    ;;
+  linux-all)
+    (cd "$SFM_GUI" && npx electron-builder --linux dir AppImage deb)
+    ;;
   *)
-    echo "Usage: $0 [dir|appimage]" >&2
+    echo "Usage: $0 [dir|appimage|deb|win|linux-all]" >&2
     exit 2
     ;;
 esac

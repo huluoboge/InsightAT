@@ -1,12 +1,73 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const STATE_FILE = 'insightat-simple-project.json';
 const PROJECT_FILE = 'project.iat';
 const DEFAULT_EXT = '.jpg,.jpeg,.tif,.tiff,.png';
+const SETTINGS_FILE = 'settings.json';
+
+/** Electron userData dir; set from main via setUserDataDir(). */
+let userDataDir = '';
+
+function setUserDataDir(dir) {
+  userDataDir = dir ? path.resolve(dir) : '';
+}
+
+function settingsPath() {
+  const base = userDataDir
+    || path.join(os.homedir(), '.config', 'InsightAT', 'sfm-gui');
+  return path.join(base, SETTINGS_FILE);
+}
+
+function defaultSettings() {
+  return {
+    binDir: '',
+    sfmViewerPath: ''
+  };
+}
+
+function loadUserSettings() {
+  const file = settingsPath();
+  try {
+    if (!fs.existsSync(file)) return defaultSettings();
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return {
+      binDir: typeof raw.binDir === 'string' ? raw.binDir.trim() : '',
+      sfmViewerPath: typeof raw.sfmViewerPath === 'string' ? raw.sfmViewerPath.trim() : ''
+    };
+  } catch (_) {
+    return defaultSettings();
+  }
+}
+
+function saveUserSettings(partial = {}) {
+  const next = {
+    ...loadUserSettings(),
+    ...partial
+  };
+  if (typeof next.binDir === 'string') next.binDir = next.binDir.trim();
+  else next.binDir = '';
+  if (typeof next.sfmViewerPath === 'string') next.sfmViewerPath = next.sfmViewerPath.trim();
+  else next.sfmViewerPath = '';
+
+  if (next.binDir && !hasCliBinary(next.binDir)) {
+    throw new Error(`CLI tools not found in: ${next.binDir} (need isat_project)`);
+  }
+  if (next.sfmViewerPath && !isSfmViewerLaunchable(next.sfmViewerPath)) {
+    throw new Error(
+      `sfm-viewer path invalid: ${next.sfmViewerPath} (need app folder or executable)`
+    );
+  }
+
+  const file = settingsPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
+  return next;
+}
 
 function normalizeExts(raw) {
   return String(raw || DEFAULT_EXT)
@@ -99,6 +160,8 @@ function defaultState(workDir, overrides = {}) {
     maxSample: Number.isInteger(overrides.maxSample) ? overrides.maxSample : 5,
     folders: [],
     groups: [],
+    cameraMode: 'auto',
+    manualCamera: null,
     latestTaskId: null,
     imagesAllPath: path.join(resolvedWorkDir, 'images_all.json'),
     createdAt: new Date().toISOString(),
@@ -117,6 +180,19 @@ function loadState(workDir) {
   state.groups = Array.isArray(state.groups) ? state.groups : [];
   if (!state.binDir || !hasCliBinary(state.binDir)) {
     state.binDir = resolveCliBinDir() || state.binDir || '';
+  }
+  if (state.cameraMode !== 'manual' && state.cameraMode !== 'auto') {
+    const anyManual = state.groups.some((g) => g.intrinsicsSource === 'manual');
+    state.cameraMode = anyManual ? 'manual' : 'auto';
+  }
+  if (state.cameraMode === 'manual') {
+    state.groups = state.groups.map((g) => ({ ...g, intrinsicsSource: 'manual' }));
+  } else {
+    state.groups = state.groups.map((g) => ({
+      ...g,
+      intrinsicsSource: 'auto',
+      fixIntrinsics: false
+    }));
   }
   return state;
 }
@@ -139,18 +215,52 @@ function packagedBinDir() {
 function hasCliBinary(dir, exeName = 'isat_project') {
   if (!dir) return false;
   try {
-    return fs.existsSync(path.join(dir, exeName));
+    const base = path.resolve(dir);
+    if (fs.existsSync(path.join(base, exeName))) return true;
+    if (process.platform === 'win32' && fs.existsSync(path.join(base, `${exeName}.exe`))) {
+      return true;
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+function isSfmViewerAppDir(dir) {
+  if (!dir) return false;
+  try {
+    const base = path.resolve(dir);
+    return (
+      fs.existsSync(path.join(base, 'package.json')) &&
+      fs.existsSync(path.join(base, 'src', 'main.js'))
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function isSfmViewerLaunchable(candidate) {
+  if (!candidate) return false;
+  try {
+    const resolved = path.resolve(candidate);
+    if (!fs.existsSync(resolved)) return false;
+    const st = fs.statSync(resolved);
+    if (st.isFile()) return true;
+    return isSfmViewerAppDir(resolved);
   } catch (_) {
     return false;
   }
 }
 
 /**
- * Auto-locate InsightAT CLI tools. Prefer bundled/packaged locations, then
- * repo build dirs. Users should not need to type a path.
+ * Auto-locate InsightAT CLI tools. Prefer user settings, then bundled
+ * locations, then repo build dirs.
  */
 function resolveCliBinDir() {
   const candidates = [];
+
+  const settings = loadUserSettings();
+  if (settings.binDir) candidates.push(settings.binDir);
 
   const resourceBin = packagedBinDir();
   if (resourceBin) candidates.push(resourceBin);
@@ -203,15 +313,19 @@ function commandCandidates(binDir, exeName) {
 
 function findSfmViewerApp() {
   const candidates = [];
+  const settings = loadUserSettings();
+  if (settings.sfmViewerPath) candidates.push(settings.sfmViewerPath);
+
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, 'sfm-viewer'));
   }
   // sfm-gui/src → repo/sfm-viewer
   candidates.push(path.resolve(__dirname, '..', '..', 'sfm-viewer'));
+
   for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(path.join(dir, 'src', 'main.js'))) {
-      return dir;
-    }
+    if (!dir) continue;
+    const resolved = path.resolve(dir);
+    if (isSfmViewerLaunchable(resolved)) return resolved;
   }
   return '';
 }
@@ -261,14 +375,341 @@ function parseEvents(text) {
   return events;
 }
 
+/** Set when Stop is pressed; cleared by resetAbort() at the start of a job. */
+let abortRequested = false;
+/** Currently tracked CLI child (direct spawn of isat_*). */
+let activeChild = null;
+
+function resetAbort() {
+  abortRequested = false;
+}
+
+function cancelledError(message = 'Stopped by user') {
+  const err = new Error(message);
+  err.cancelled = true;
+  return err;
+}
+
+function assertNotAborted() {
+  if (abortRequested) throw cancelledError();
+}
+
+/**
+ * Kill a process and its descendants.
+ * Windows: taskkill /T /F
+ * Unix: SIGTERM then SIGKILL on the process group (spawned detached → new PGID).
+ */
+function killProcessTree(pid, hard = false) {
+  if (!pid || pid <= 0) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+      windowsHide: true,
+      stdio: 'ignore'
+    });
+    return;
+  }
+  const signal = hard ? 'SIGKILL' : 'SIGTERM';
+  try {
+    process.kill(-pid, signal);
+  } catch (_) {
+    try {
+      process.kill(pid, signal);
+    } catch (__) {
+      /* already gone */
+    }
+  }
+  if (hard) {
+    for (const childPid of listDescendantPids(pid)) {
+      try {
+        process.kill(childPid, 'SIGKILL');
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  }
+}
+
+function listDescendantPids(rootPid) {
+  const out = [];
+  try {
+    const result = spawnSync('ps', ['-o', 'pid=,ppid=', '-ax'], {
+      encoding: 'utf8',
+      timeout: 3000
+    });
+    if (result.status !== 0 || !result.stdout) return out;
+    const children = new Map();
+    for (const line of result.stdout.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 2) continue;
+      const pid = Number(parts[0]);
+      const ppid = Number(parts[1]);
+      if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
+      if (!children.has(ppid)) children.set(ppid, []);
+      children.get(ppid).push(pid);
+    }
+    const stack = [rootPid];
+    const seen = new Set();
+    while (stack.length) {
+      const cur = stack.pop();
+      for (const c of children.get(cur) || []) {
+        if (seen.has(c)) continue;
+        seen.add(c);
+        out.push(c);
+        stack.push(c);
+      }
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return out;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Request stop of the active CLI tree. Safe to call when idle.
+ * @returns {{ stopped: boolean, hadProcess: boolean }}
+ */
+async function stopActive(onLog) {
+  abortRequested = true;
+  const child = activeChild;
+  if (!child || !child.pid) {
+    if (onLog) onLog('# Stop requested\n');
+    return { stopped: true, hadProcess: false };
+  }
+  const pid = child.pid;
+  if (onLog) onLog(`# Stopping process tree (pid ${pid})…\n`);
+  killProcessTree(pid, false);
+  const deadline = Date.now() + 2500;
+  while (activeChild === child && Date.now() < deadline) {
+    await sleep(100);
+  }
+  if (activeChild === child) {
+    if (onLog) onLog('# Force-killing remaining processes…\n');
+    killProcessTree(pid, true);
+    await sleep(200);
+  }
+  if (activeChild === child) {
+    activeChild = null;
+  }
+  if (onLog) onLog('# Stopped\n');
+  return { stopped: true, hadProcess: true };
+}
+
+function isBusy() {
+  return Boolean(activeChild) || abortRequested;
+}
+
+const PIPELINE_STATUS_FILE = 'insightat-pipeline-status.json';
+
+/** User-facing stages and dependency graph. */
+const PIPELINE_STAGES = [
+  {
+    id: 'features',
+    label: 'Features',
+    dependsOn: [],
+    cliSteps: ['extract'],
+    dirs: ['feat', 'feat_retrieval'],
+    files: []
+  },
+  {
+    id: 'matching',
+    label: 'Matching',
+    dependsOn: ['features'],
+    cliSteps: ['match'],
+    dirs: ['match', 'geo', 'retrieval_match_work'],
+    files: ['pairs_retrieve.json', 'pairs_matched.json', 'camera_estimate_meta.json']
+  },
+  {
+    id: 'sfm',
+    label: 'SfM',
+    dependsOn: ['matching'],
+    cliSteps: ['tracks', 'seed_eval', 'incremental_sfm', 'undistort'],
+    dirs: ['incremental_sfm', 'seed_eval_all'],
+    files: ['tracks.isat_tracks']
+  }
+];
+
+const STAGE_BY_ID = Object.fromEntries(PIPELINE_STAGES.map((s) => [s.id, s]));
+
+function pipelineStatusPath(workDir) {
+  return path.join(workDir, PIPELINE_STATUS_FILE);
+}
+
+function defaultPipelineStatus() {
+  const stages = {};
+  for (const stage of PIPELINE_STAGES) {
+    stages[stage.id] = { status: 'pending', updatedAt: null };
+  }
+  return { version: 1, stages };
+}
+
+function inferStageDone(workDir, stageId) {
+  if (stageId === 'features') {
+    return fs.existsSync(path.join(workDir, 'feat'));
+  }
+  if (stageId === 'matching') {
+    return (
+      fs.existsSync(path.join(workDir, 'geo', 'pairs.json')) ||
+      fs.existsSync(path.join(workDir, 'match'))
+    );
+  }
+  if (stageId === 'sfm') {
+    return Boolean(reconstructionViewPath(workDir)) ||
+      fs.existsSync(path.join(workDir, 'incremental_sfm'));
+  }
+  return false;
+}
+
+function loadPipelineStatus(workDir) {
+  let stored = null;
+  try {
+    const file = pipelineStatusPath(workDir);
+    if (fs.existsSync(file)) {
+      stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (_) {
+    stored = null;
+  }
+
+  const merged = defaultPipelineStatus();
+  for (const stage of PIPELINE_STAGES) {
+    const fromFile = stored && stored.stages && stored.stages[stage.id];
+    let status = fromFile && fromFile.status ? fromFile.status : 'pending';
+    if (status === 'running') status = 'pending';
+    if (inferStageDone(workDir, stage.id)) {
+      status = 'done';
+    } else if (status === 'done') {
+      status = 'pending';
+    }
+    merged.stages[stage.id] = {
+      status,
+      updatedAt: (fromFile && fromFile.updatedAt) || null
+    };
+  }
+
+  for (const stage of PIPELINE_STAGES) {
+    for (const dep of stage.dependsOn) {
+      if (merged.stages[dep].status !== 'done' && merged.stages[stage.id].status === 'done') {
+        merged.stages[stage.id] = { status: 'pending', updatedAt: null };
+      }
+    }
+  }
+
+  return merged;
+}
+
+function savePipelineStatus(workDir, status) {
+  fs.mkdirSync(workDir, { recursive: true });
+  fs.writeFileSync(pipelineStatusPath(workDir), `${JSON.stringify(status, null, 2)}\n`);
+  return status;
+}
+
+function setStageStatus(workDir, stageId, status) {
+  const next = loadPipelineStatus(workDir);
+  next.stages[stageId] = {
+    status,
+    updatedAt: new Date().toISOString()
+  };
+  return savePipelineStatus(workDir, next);
+}
+
+function cleanStageArtifacts(workDir, stageId, onLog) {
+  const stage = STAGE_BY_ID[stageId];
+  if (!stage) return;
+  for (const name of stage.dirs) {
+    const target = path.join(workDir, name);
+    if (!fs.existsSync(target)) continue;
+    fs.rmSync(target, { recursive: true, force: true });
+    if (onLog) onLog(`# Removed ${name}/\n`);
+  }
+  for (const name of stage.files) {
+    const target = path.join(workDir, name);
+    if (!fs.existsSync(target)) continue;
+    fs.unlinkSync(target);
+    if (onLog) onLog(`# Removed ${name}\n`);
+  }
+}
+
+function cleanFromStage(workDir, fromStageId, onLog) {
+  const start = PIPELINE_STAGES.findIndex((s) => s.id === fromStageId);
+  if (start < 0) return;
+  for (let i = start; i < PIPELINE_STAGES.length; i++) {
+    cleanStageArtifacts(workDir, PIPELINE_STAGES[i].id, onLog);
+  }
+}
+
+function getPipelinePlan(stateOrWorkDir) {
+  const workDir = typeof stateOrWorkDir === 'string'
+    ? stateOrWorkDir
+    : stateOrWorkDir.workDir;
+  const status = loadPipelineStatus(workDir);
+  const stages = PIPELINE_STAGES.map((stage) => ({
+    id: stage.id,
+    label: stage.label,
+    dependsOn: stage.dependsOn.slice(),
+    status: status.stages[stage.id].status
+  }));
+
+  let resumeFrom = null;
+  for (const stage of stages) {
+    if (stage.status !== 'done') {
+      resumeFrom = stage.id;
+      break;
+    }
+  }
+
+  const allDone = resumeFrom === null;
+  const anyStarted = stages.some((s) => s.status === 'done' || s.status === 'failed');
+  const needsChoice = anyStarted;
+  let defaultMode = 'force';
+  if (!anyStarted) defaultMode = 'force';
+  else if (!allDone) defaultMode = 'continue';
+  else defaultMode = 'force';
+
+  return {
+    stages,
+    resumeFrom: resumeFrom || 'features',
+    allDone,
+    anyStarted,
+    needsChoice,
+    defaultMode
+  };
+}
+
+function cliStepsFrom(stageId) {
+  const start = PIPELINE_STAGES.findIndex((s) => s.id === stageId);
+  if (start < 0) return PIPELINE_STAGES.flatMap((s) => s.cliSteps);
+  const steps = [];
+  for (let i = start; i < PIPELINE_STAGES.length; i++) {
+    steps.push(...PIPELINE_STAGES[i].cliSteps);
+  }
+  return steps.filter((s, i, arr) => arr.indexOf(s) === i);
+}
+
 function runCommand(state, exeName, args, onLog) {
   return new Promise((resolve, reject) => {
+    try {
+      assertNotAborted();
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
     const command = findTool(state.binDir, exeName);
+    // Unix: new process group so we can kill(-pid) the whole CLI tree.
+    // Windows: taskkill /T walks the tree; detached not required.
     const child = spawn(command, args, {
       cwd: state.workDir,
-      env: buildEnv(state, command)
+      env: buildEnv(state, command),
+      detached: process.platform !== 'win32',
+      windowsHide: true
     });
+    activeChild = child;
     let output = '';
+    let settled = false;
 
     const send = (chunk) => {
       const text = chunk.toString();
@@ -276,19 +717,34 @@ function runCommand(state, exeName, args, onLog) {
       if (onLog) onLog(text);
     };
 
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      if (activeChild === child) activeChild = null;
+      fn();
+    };
+
     child.stdout.on('data', send);
     child.stderr.on('data', send);
-    child.on('error', (err) => reject(new Error(`Failed to start ${exeName}: ${err.message}`)));
-    child.on('close', (code) => {
-      const events = parseEvents(output);
-      if (code !== 0) {
-        const err = new Error(`${exeName} exited with code ${code}`);
-        err.output = output;
-        err.events = events;
-        reject(err);
-        return;
-      }
-      resolve({ command, args, output, events });
+    child.on('error', (err) => {
+      finish(() => reject(new Error(`Failed to start ${exeName}: ${err.message}`)));
+    });
+    child.on('close', (code, signal) => {
+      finish(() => {
+        const events = parseEvents(output);
+        if (abortRequested || signal === 'SIGTERM' || signal === 'SIGKILL') {
+          reject(cancelledError());
+          return;
+        }
+        if (code !== 0) {
+          const err = new Error(`${exeName} exited with code ${code}`);
+          err.output = output;
+          err.events = events;
+          reject(err);
+          return;
+        }
+        resolve({ command, args, output, events });
+      });
     });
   });
 }
@@ -313,19 +769,25 @@ function lastEventData(result, type) {
 }
 
 async function createProject(options, onLog) {
+  resetAbort();
   const opts = { ...options };
   if (!opts.binDir) opts.binDir = resolveCliBinDir();
   const state = defaultState(options.workDir, opts);
   fs.mkdirSync(state.workDir, { recursive: true });
   await runCommand(state, 'isat_project', ['create', '-p', state.projectPath, '-n', state.name], onLog);
-  return saveState(state);
+  const saved = saveState(state);
+  touchRecentProject(saved);
+  return saved;
 }
 
 async function openProject(workDir) {
-  return loadState(workDir);
+  const state = loadState(workDir);
+  touchRecentProject(state);
+  return state;
 }
 
 async function addFolder(state, folderPath, options = {}, onLog) {
+  resetAbort();
   let next = ensureBinDir({ ...state });
   if (options.binDir) next.binDir = options.binDir;
   if (Object.prototype.hasOwnProperty.call(options, 'ext')) next.ext = normalizeExts(options.ext);
@@ -347,6 +809,7 @@ async function addFolder(state, folderPath, options = {}, onLog) {
     throw new Error(`No images found under ${folder}`);
   }
 
+  const addedGroupIds = [];
   for (const group of groups) {
     const addGroup = await runCommand(
       next,
@@ -370,8 +833,13 @@ async function addFolder(state, folderPath, options = {}, onLog) {
     next.groups.push({
       groupId,
       name: data.group_name || group.name,
-      folder: group.path
+      folder: group.path,
+      intrinsicsSource: next.cameraMode === 'manual' ? 'manual' : 'auto',
+      fixIntrinsics: false,
+      width: 0,
+      height: 0
     });
+    addedGroupIds.push(groupId);
   }
 
   const cameraArgs = ['-p', next.projectPath, '-a', '--max-sample', String(next.maxSample), '--auto-split'];
@@ -380,6 +848,18 @@ async function addFolder(state, folderPath, options = {}, onLog) {
   await runCommand(next, 'isat_camera_estimator', cameraArgs, onLog);
 
   if (!next.folders.includes(folder)) next.folders.push(folder);
+
+  // Project is Manual: give each new group its own seeded camera (not shared).
+  if (next.cameraMode === 'manual') {
+    const newIds = new Set(addedGroupIds);
+    for (const g of next.groups || []) {
+      if (!newIds.has(g.groupId)) continue;
+      next = await applyCameraToOneGroup(next, g.groupId, defaultCameraForGroup(g), onLog);
+    }
+  } else {
+    next.cameraMode = 'auto';
+  }
+
   return saveState(next);
 }
 
@@ -420,9 +900,363 @@ async function prepareImagesAll(state, options = {}, onLog) {
 }
 
 async function runReconstruction(state, options = {}, onLog) {
+  resetAbort();
+  const plan = getPipelinePlan(state);
+  let mode = options.mode;
+
+  if (plan.needsChoice && mode !== 'continue' && mode !== 'force') {
+    const err = new Error('Choose Continue or Rebuild to start reconstruction.');
+    err.needsChoice = true;
+    err.plan = plan;
+    throw err;
+  }
+  if (!mode) mode = plan.defaultMode;
+
+  const fromStage = mode === 'force' ? 'features' : plan.resumeFrom;
+  if (mode === 'force') {
+    if (onLog) onLog('# Rebuild: cleaning pipeline outputs from Features\n');
+    cleanFromStage(state.workDir, 'features', onLog);
+    const imagesAll = path.join(state.workDir, 'images_all.json');
+    if (fs.existsSync(imagesAll)) {
+      fs.unlinkSync(imagesAll);
+      if (onLog) onLog('# Removed images_all.json\n');
+    }
+  } else if (fromStage) {
+    if (onLog) onLog(`# Continue from ${fromStage}\n`);
+    cleanFromStage(state.workDir, fromStage, onLog);
+  }
+
+  {
+    const st = loadPipelineStatus(state.workDir);
+    const startIdx = PIPELINE_STAGES.findIndex((s) => s.id === fromStage);
+    for (let i = Math.max(0, startIdx); i < PIPELINE_STAGES.length; i++) {
+      st.stages[PIPELINE_STAGES[i].id] = { status: 'pending', updatedAt: null };
+    }
+    savePipelineStatus(state.workDir, st);
+  }
+
   const next = await prepareImagesAll(state, options, onLog);
-  await runCommand(next, 'isat_sfm', ['--existing-task', '-w', next.workDir, '-v', '--undistort'], onLog);
+  assertNotAborted();
+
+  const steps = cliStepsFrom(fromStage);
+  const args = [
+    '--existing-task',
+    '-w', next.workDir,
+    '-v',
+    '--undistort',
+    '--steps', steps.join(',')
+  ];
+
+  const backend = detectComputeBackend();
+  if (backend.mode === 'glsl') {
+    args.push('--extract-backend', 'glsl', '--match-backend', 'glsl');
+    if (onLog) onLog('# Compute backend: GLSL (CUDA not detected)\n');
+  } else if (onLog) {
+    onLog('# Compute backend: CUDA\n');
+  }
+
+  const manualFix =
+    next.cameraMode === 'manual' &&
+    (next.groups || []).some((g) => g.fixIntrinsics);
+  if (manualFix) {
+    args.push('--fix-intrinsics');
+    if (onLog) onLog('# Fixing intrinsics for manually set cameras\n');
+  }
+
+  if (onLog) onLog(`# Pipeline steps: ${steps.join(' → ')}\n`);
+
+  const startIdx = PIPELINE_STAGES.findIndex((s) => s.id === fromStage);
+  for (let i = Math.max(0, startIdx); i < PIPELINE_STAGES.length; i++) {
+    setStageStatus(next.workDir, PIPELINE_STAGES[i].id, 'running');
+  }
+
+  try {
+    await runCommand(next, 'isat_sfm', args, onLog);
+    for (let i = Math.max(0, startIdx); i < PIPELINE_STAGES.length; i++) {
+      const id = PIPELINE_STAGES[i].id;
+      setStageStatus(next.workDir, id, inferStageDone(next.workDir, id) ? 'done' : 'failed');
+    }
+  } catch (err) {
+    for (let i = Math.max(0, startIdx); i < PIPELINE_STAGES.length; i++) {
+      const id = PIPELINE_STAGES[i].id;
+      setStageStatus(next.workDir, id, inferStageDone(next.workDir, id) ? 'done' : 'failed');
+    }
+    throw err;
+  }
+
+  const summary = loadSummary(saveState(next));
+  touchRecentProject(summary);
+  return summary;
+}
+
+function detectComputeBackend() {
+  try {
+    const result = spawnSync('nvidia-smi', ['-L'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    if (result.status === 0 && String(result.stdout || '').trim()) {
+      return { mode: 'cuda', label: 'CUDA' };
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return { mode: 'glsl', label: 'Compatible (GLSL)' };
+}
+
+function buildSetCameraArgs(projectPath, groupId, camera) {
+  const fx = Number(camera.fx);
+  if (!(fx > 0)) throw new Error('fx must be a positive pixel focal length');
+
+  const convention = camera.brownConvention === 'opencv' ? 'opencv' : 'context-capture';
+  const args = [
+    'set-camera',
+    '-p', projectPath,
+    '-g', String(groupId),
+    '--fx', String(fx),
+    '--brown-convention', convention
+  ];
+
+  const maybe = (key, flag) => {
+    if (camera[key] === undefined || camera[key] === null || camera[key] === '') return;
+    const n = Number(camera[key]);
+    if (Number.isFinite(n)) args.push(flag, String(n));
+  };
+  maybe('fy', '--fy');
+  maybe('cx', '--cx');
+  maybe('cy', '--cy');
+  maybe('k1', '--k1');
+  maybe('k2', '--k2');
+  maybe('k3', '--k3');
+  maybe('p1', '--p1');
+  maybe('p2', '--p2');
+  return { args, fx, convention };
+}
+
+function defaultCameraForGroup(group) {
+  const w = Number(group.width) > 0 ? Number(group.width) : 4000;
+  const h = Number(group.height) > 0 ? Number(group.height) : Math.round(w * 0.75);
+  const fx = Number(group.fx) > 0 ? Number(group.fx) : Math.round(w * 0.9);
+  const fy = Number(group.fy) > 0 ? Number(group.fy) : fx;
+  return {
+    fx,
+    fy,
+    cx: group.cx !== undefined && group.cx !== null && group.cx !== '' ? Number(group.cx) : w / 2,
+    cy: group.cy !== undefined && group.cy !== null && group.cy !== '' ? Number(group.cy) : h / 2,
+    k1: Number(group.k1) || 0,
+    k2: Number(group.k2) || 0,
+    k3: Number(group.k3) || 0,
+    p1: Number(group.p1) || 0,
+    p2: Number(group.p2) || 0,
+    brownConvention: group.brownConvention === 'opencv' ? 'opencv' : 'context-capture',
+    fixIntrinsics: Boolean(group.fixIntrinsics)
+  };
+}
+
+async function applyCameraToOneGroup(state, groupId, camera, onLog) {
+  let next = ensureBinDir({ ...state });
+  const gid = Number(groupId);
+  if (!Number.isInteger(gid)) throw new Error('Invalid group id');
+  const group = (next.groups || []).find((g) => g.groupId === gid);
+  if (!group) throw new Error(`Group ${gid} not found in project state`);
+
+  const { args, fx, convention } = buildSetCameraArgs(next.projectPath, gid, camera);
+  const result = await runCommand(next, 'isat_project', args, onLog);
+  const data = lastEventData(result, 'project.set_camera');
+  const snap = {
+    fx: data.fx || fx,
+    fy: data.fy || fx,
+    cx: data.cx,
+    cy: data.cy,
+    k1: Number(camera.k1) || 0,
+    k2: Number(camera.k2) || 0,
+    k3: Number(camera.k3) || 0,
+    p1: Number(camera.p1) || 0,
+    p2: Number(camera.p2) || 0,
+    brownConvention: convention,
+    fixIntrinsics: Boolean(camera.fixIntrinsics)
+  };
+
+  next.groups = (next.groups || []).map((g) => {
+    if (g.groupId !== gid) return g;
+    return {
+      ...g,
+      intrinsicsSource: 'manual',
+      fixIntrinsics: snap.fixIntrinsics,
+      width: data.width || g.width || 0,
+      height: data.height || g.height || 0,
+      ...snap
+    };
+  });
+  next.cameraMode = 'manual';
+  return next;
+}
+
+/** Set camera for one group. Project mode becomes Manual. */
+async function setGroupCamera(state, groupId, camera, onLog) {
+  resetAbort();
+  const next = await applyCameraToOneGroup(state, groupId, camera, onLog);
   return loadSummary(saveState(next));
+}
+
+/**
+ * Switch project to Manual and seed every group with a usable default camera
+ * (existing values kept when present).
+ */
+async function enterProjectCameraManual(state, onLog) {
+  resetAbort();
+  let next = ensureBinDir({ ...state });
+  const groups = next.groups || [];
+  if (groups.length === 0) throw new Error('Add image folders before setting a camera.');
+
+  for (const group of groups) {
+    assertNotAborted();
+    next = await applyCameraToOneGroup(next, group.groupId, defaultCameraForGroup(group), onLog);
+  }
+  next.cameraMode = 'manual';
+  next.manualCamera = null;
+  return loadSummary(saveState(next));
+}
+
+/** Re-estimate all groups and switch project to Auto. */
+async function setProjectCameraAuto(state, onLog) {
+  resetAbort();
+  let next = ensureBinDir({ ...state });
+  if (!next.groups || next.groups.length === 0) {
+    throw new Error('Add image folders before setting a camera.');
+  }
+
+  const cameraArgs = [
+    '-p', next.projectPath,
+    '-a',
+    '--max-sample', String(next.maxSample || 5),
+    '--auto-split'
+  ];
+  const sensorDb = findSensorDb(next.binDir);
+  if (sensorDb) cameraArgs.push('-d', sensorDb);
+  await runCommand(next, 'isat_camera_estimator', cameraArgs, onLog);
+
+  next.cameraMode = 'auto';
+  next.manualCamera = null;
+  next.groups = (next.groups || []).map((g) => ({
+    ...g,
+    intrinsicsSource: 'auto',
+    fixIntrinsics: false,
+    fx: undefined,
+    fy: undefined,
+    cx: undefined,
+    cy: undefined,
+    k1: undefined,
+    k2: undefined,
+    k3: undefined,
+    p1: undefined,
+    p2: undefined,
+    brownConvention: undefined
+  }));
+
+  return loadSummary(saveState(next));
+}
+
+function profilePath() {
+  const base = userDataDir
+    || path.join(os.homedir(), '.config', 'InsightAT', 'sfm-gui');
+  return path.join(base, 'profile.json');
+}
+
+function defaultProfile() {
+  return {
+    version: 1,
+    compute: { prefer: 'auto' },
+    cameraPresets: [],
+    recentProjects: []
+  };
+}
+
+function loadProfile() {
+  try {
+    const file = profilePath();
+    if (!fs.existsSync(file)) return defaultProfile();
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return {
+      ...defaultProfile(),
+      ...raw,
+      cameraPresets: Array.isArray(raw.cameraPresets) ? raw.cameraPresets : [],
+      recentProjects: Array.isArray(raw.recentProjects) ? raw.recentProjects : []
+    };
+  } catch (_) {
+    return defaultProfile();
+  }
+}
+
+function saveProfile(partial = {}) {
+  const next = {
+    ...loadProfile(),
+    ...partial
+  };
+  if (!Array.isArray(next.cameraPresets)) next.cameraPresets = [];
+  if (!Array.isArray(next.recentProjects)) next.recentProjects = [];
+  const file = profilePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
+  return next;
+}
+
+function touchRecentProject(state) {
+  if (!state || !state.workDir) return loadProfile();
+  const profile = loadProfile();
+  const entry = {
+    workDir: state.workDir,
+    name: state.name || path.basename(state.workDir),
+    openedAt: new Date().toISOString()
+  };
+  const rest = profile.recentProjects.filter((p) => p.workDir !== entry.workDir);
+  profile.recentProjects = [entry, ...rest].slice(0, 12);
+  return saveProfile(profile);
+}
+
+function saveCameraPreset(preset) {
+  const name = String(preset.name || '').trim();
+  if (!name) throw new Error('Preset name required');
+  const fx = Number(preset.fx);
+  if (!(fx > 0)) throw new Error('Preset fx must be positive');
+  const item = {
+    id: preset.id || `preset_${Date.now()}`,
+    name,
+    fx,
+    fy: preset.fy !== undefined && preset.fy !== '' ? Number(preset.fy) : undefined,
+    cx: preset.cx !== undefined && preset.cx !== '' ? Number(preset.cx) : undefined,
+    cy: preset.cy !== undefined && preset.cy !== '' ? Number(preset.cy) : undefined,
+    k1: Number(preset.k1) || 0,
+    k2: Number(preset.k2) || 0,
+    k3: Number(preset.k3) || 0,
+    p1: Number(preset.p1) || 0,
+    p2: Number(preset.p2) || 0,
+    brownConvention: preset.brownConvention === 'opencv' ? 'opencv' : 'context-capture'
+  };
+  const profile = loadProfile();
+  const others = profile.cameraPresets.filter((p) => p.name !== name && p.id !== item.id);
+  profile.cameraPresets = [item, ...others].slice(0, 32);
+  return saveProfile(profile);
+}
+
+function deleteCameraPreset(id) {
+  const profile = loadProfile();
+  profile.cameraPresets = profile.cameraPresets.filter((p) => p.id !== id);
+  return saveProfile(profile);
+}
+
+function getSettingsInfo() {
+  const settings = loadUserSettings();
+  const backend = detectComputeBackend();
+  return {
+    ...settings,
+    settingsPath: settingsPath(),
+    resolvedBinDir: resolveCliBinDir(),
+    resolvedViewer: findSfmViewerApp(),
+    computeBackend: backend.label,
+    computeMode: backend.mode
+  };
 }
 
 function reconstructionViewPath(workDir) {
@@ -464,19 +1298,32 @@ function loadSummary(state) {
     }
   }
   const viewPath = reconstructionViewPath(state.workDir);
-  const resolvedBin = (state.binDir && hasCliBinary(state.binDir))
-    ? state.binDir
-    : resolveCliBinDir();
+  const settings = loadUserSettings();
+  // Prefer global settings binDir, then project binDir, then auto-detect.
+  let resolvedBin = '';
+  if (settings.binDir && hasCliBinary(settings.binDir)) {
+    resolvedBin = path.resolve(settings.binDir);
+  } else if (state.binDir && hasCliBinary(state.binDir)) {
+    resolvedBin = state.binDir;
+  } else {
+    resolvedBin = resolveCliBinDir();
+  }
+  const backend = detectComputeBackend();
   return {
     ...state,
     binDir: resolvedBin || state.binDir || '',
     cliBinDir: resolvedBin || '',
     cliFound: Boolean(resolvedBin),
+    sfmViewerPath: findSfmViewerApp() || '',
+    computeBackend: backend.label,
     imageCount,
     groupCount: Array.isArray(state.groups) ? state.groups.length : 0,
     hasImagesAll: fs.existsSync(state.imagesAllPath),
     hasResult: fs.existsSync(path.join(state.workDir, 'incremental_sfm')),
-    reconstructionViewPath: viewPath
+    reconstructionViewPath: viewPath,
+    hasManualIntrinsics: state.cameraMode === 'manual',
+    cameraMode: state.cameraMode === 'manual' ? 'manual' : 'auto',
+    pipelinePlan: getPipelinePlan(state.workDir)
   };
 }
 
@@ -490,15 +1337,36 @@ module.exports = {
   defaultState,
   loadState,
   saveState,
+  setUserDataDir,
+  loadUserSettings,
+  saveUserSettings,
+  getSettingsInfo,
   findTool,
   findSfmViewerApp,
+  isSfmViewerAppDir,
+  isSfmViewerLaunchable,
   packagedBinDir,
   resolveCliBinDir,
+  detectComputeBackend,
   createProject,
   openProject,
   addFolder,
   prepareImagesAll,
   runReconstruction,
+  getPipelinePlan,
+  loadPipelineStatus,
+  PIPELINE_STAGES,
+  stopActive,
+  resetAbort,
+  isBusy,
+  setProjectCameraAuto,
+  enterProjectCameraManual,
+  setGroupCamera,
+  loadProfile,
+  saveProfile,
+  touchRecentProject,
+  saveCameraPreset,
+  deleteCameraPreset,
   loadSummary,
   reconstructionViewPath
 };

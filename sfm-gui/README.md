@@ -15,7 +15,8 @@ CLI tools are **auto-detected** (no path to type):
 2. Repo `build/` / `build-release/` / …
 3. Optional override: `ISAT_BIN_DIR`
 
-Left sidebar shows the resolved **CLI tools** path.
+Left sidebar shows the resolved **CLI tools** and **SfM Viewer** paths, compute backend, and recent projects.
+Use **Settings** to override tool paths. Use **Set camera** on a group for pixel Brown intrinsics (width/height read-only from images).
 
 ## Develop
 
@@ -31,6 +32,9 @@ npm start
 ## Package (bundles CLI when build/ exists)
 
 ```bash
-./scripts/package/build_sfm_gui.sh
-# → dist/sfm-gui/linux-unpacked/insightat-sfm-gui --no-sandbox
+./scripts/package/build_sfm_gui.sh linux-all
+# → dist/sfm-gui/*.AppImage, *.deb, linux-unpacked/
+./scripts/package/build_sfm_gui.sh win
 ```
+
+CI: `.github/workflows/electron-gui.yml` (parallel with CUDA CLI packaging).

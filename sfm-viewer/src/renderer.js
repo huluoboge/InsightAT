@@ -16,7 +16,7 @@ const showPointsInput = document.getElementById('showPoints');
 const showCamerasInput = document.getElementById('showCameras');
 const showAxesInput = document.getElementById('showAxes');
 const showTrackballInput = document.getElementById('showTrackball');
-const trackGalleryInput = document.getElementById('trackGallery');
+const trackGalleryBtn = document.getElementById('trackGalleryBtn');
 const imagesLabel = document.getElementById('imagesLabel');
 const pickPanel = document.getElementById('pickPanel');
 const pickTitle = document.getElementById('pickTitle');
@@ -638,7 +638,6 @@ function buildGalleryPayload(trackId, xyz, obs) {
 }
 
 async function publishTrackToGallery(trackId, xyz, obs) {
-  if (!trackGalleryInput.checked) return;
   const payload = buildGalleryPayload(trackId, xyz, obs);
   await window.sfmViewer.publishTrackGallery(payload);
 }
@@ -766,20 +765,16 @@ showAxesInput.addEventListener('change', () => {
 showTrackballInput.addEventListener('change', () => {
   if (trackballGizmo) trackballGizmo.visible = showTrackballInput.checked && Boolean(sceneData);
 });
-trackGalleryInput.addEventListener('change', async () => {
-  if (trackGalleryInput.checked) {
-    await window.sfmViewer.openTrackGallery();
-    if (pickIndex >= 0 && sceneData) {
-      const pos = sceneData.points.positions;
-      const obs = sceneData.points.observations[pickIndex] || [];
-      await publishTrackToGallery(
-        pickIndex,
-        [pos[pickIndex * 3], pos[pickIndex * 3 + 1], pos[pickIndex * 3 + 2]],
-        obs
-      );
-    }
-  } else {
-    await window.sfmViewer.closeTrackGallery();
+trackGalleryBtn.addEventListener('click', async () => {
+  await window.sfmViewer.openTrackGallery();
+  if (pickIndex >= 0 && sceneData) {
+    const pos = sceneData.points.positions;
+    const obs = sceneData.points.observations[pickIndex] || [];
+    await publishTrackToGallery(
+      pickIndex,
+      [pos[pickIndex * 3], pos[pickIndex * 3 + 1], pos[pickIndex * 3 + 2]],
+      obs
+    );
   }
 });
 document.getElementById('resetBtn').addEventListener('click', resetView);

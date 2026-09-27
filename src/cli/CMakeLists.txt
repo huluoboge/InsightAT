@@ -232,6 +232,7 @@ target_link_libraries(isat_project
         insightat_tools_logging
         InsightATDatabase
         glog::glog
+        ${OpenCV_LIBS}
 )
 
 target_include_directories(isat_project

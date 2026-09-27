@@ -81,6 +81,38 @@ ipcMain.handle('project:runReconstruction', async (_event, options) => {
   return pipeline.loadSummary(currentState);
 });
 
+ipcMain.handle('project:getPipelinePlan', async () => {
+  const state = requireState();
+  return pipeline.getPipelinePlan(state);
+});
+
+ipcMain.handle('pipeline:stop', async () => {
+  return pipeline.stopActive(sendLog);
+});
+
+ipcMain.handle('project:setGroupCamera', async (_event, payload) => {
+  currentState = requireState();
+  currentState = await pipeline.setGroupCamera(
+    currentState,
+    payload.groupId,
+    payload.camera || {},
+    sendLog
+  );
+  return pipeline.loadSummary(currentState);
+});
+
+ipcMain.handle('project:enterCameraManual', async () => {
+  currentState = requireState();
+  currentState = await pipeline.enterProjectCameraManual(currentState, sendLog);
+  return pipeline.loadSummary(currentState);
+});
+
+ipcMain.handle('project:setProjectCameraAuto', async () => {
+  currentState = requireState();
+  currentState = await pipeline.setProjectCameraAuto(currentState, sendLog);
+  return pipeline.loadSummary(currentState);
+});
+
 ipcMain.handle('project:revealWorkDir', async () => {
   const state = requireState();
   await shell.openPath(state.workDir);
@@ -116,16 +148,39 @@ ipcMain.handle('project:viewReconstruction', async () => {
   if (sfmViewerApp && colmapOk) {
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
-    const child = spawn(process.execPath, [sfmViewerApp, viewPath], {
+    // App dir → relaunch this Electron with that app; executable → run it directly.
+    const isAppDir = pipeline.isSfmViewerAppDir(sfmViewerApp);
+    const command = isAppDir ? process.execPath : sfmViewerApp;
+    const args = isAppDir
+      ? ['--no-sandbox', sfmViewerApp, viewPath]
+      : ['--no-sandbox', viewPath];
+    const child = spawn(command, args, {
       cwd: state.workDir,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
       env
     });
-    child.unref();
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
     child.on('error', (err) => {
       sendLog(`Failed to launch sfm-viewer: ${err.message}\n`);
     });
+    child.once('exit', (code, signal) => {
+      if (code || signal) {
+        const detail = stderr.trim().split('\n').slice(-3).join(' | ') || `${signal || `code ${code}`}`;
+        sendLog(`sfm-viewer exited early: ${detail}\n`);
+      }
+    });
+    setTimeout(() => {
+      try {
+        child.stderr.destroy();
+      } catch (_) {
+        /* ignore */
+      }
+      child.unref();
+    }, 1500);
     sendLog(`Launched sfm-viewer: ${sfmViewerApp} ${viewPath}\n`);
     return true;
   }
@@ -142,16 +197,81 @@ ipcMain.handle('project:getState', async () => {
 
 ipcMain.handle('project:getCliInfo', async () => {
   const resolved = pipeline.resolveCliBinDir();
-  return { path: resolved, found: Boolean(resolved) };
+  const backend = pipeline.detectComputeBackend();
+  return {
+    path: resolved,
+    found: Boolean(resolved),
+    viewer: pipeline.findSfmViewerApp() || '',
+    computeBackend: backend.label,
+    computeMode: backend.mode
+  };
+});
+
+ipcMain.handle('settings:get', async () => pipeline.getSettingsInfo());
+
+ipcMain.handle('settings:set', async (_event, partial) => {
+  const saved = pipeline.saveUserSettings(partial || {});
+  if (currentState) {
+    const resolved = pipeline.resolveCliBinDir();
+    if (resolved) {
+      currentState = pipeline.saveState({ ...currentState, binDir: resolved });
+    }
+  }
+  return {
+    settings: pipeline.getSettingsInfo(),
+    state: currentState ? pipeline.loadSummary(currentState) : null
+  };
+});
+
+ipcMain.handle('settings:pickBinDir', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose CLI tools directory (contains isat_project)',
+    properties: ['openDirectory']
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('settings:pickViewer', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose sfm-viewer app folder',
+    properties: ['openDirectory']
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('profile:get', async () => pipeline.loadProfile());
+
+ipcMain.handle('profile:saveCameraPreset', async (_event, preset) => {
+  return pipeline.saveCameraPreset(preset || {});
+});
+
+ipcMain.handle('profile:deleteCameraPreset', async (_event, id) => {
+  return pipeline.deleteCameraPreset(id);
+});
+
+ipcMain.handle('profile:openRecent', async (_event, workDir) => {
+  if (!workDir || !fs.existsSync(workDir)) {
+    throw new Error(`Project directory not found: ${workDir || ''}`);
+  }
+  currentState = await pipeline.openProject(workDir);
+  return pipeline.loadSummary(currentState);
 });
 
 app.whenReady().then(() => {
+  pipeline.setUserDataDir(app.getPath('userData'));
   Menu.setApplicationMenu(null);
   createWindow();
 });
 
 app.on('window-all-closed', () => {
+  pipeline.stopActive().catch(() => {});
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  pipeline.stopActive().catch(() => {});
 });
 
 app.on('activate', () => {

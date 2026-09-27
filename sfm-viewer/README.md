@@ -17,6 +17,11 @@ npm install
 npm start -- /path/to/sparse/0
 ```
 
-## Integration
+## Package
 
-SfM GUI resolves this app via `findSfmViewerApp()` (dev: repo `sfm-viewer/`; packaged: `resources/sfm-viewer`).
+```bash
+./scripts/package/build_sfm_viewer.sh linux-all   # dir + AppImage + deb
+./scripts/package/build_sfm_viewer.sh win          # Windows zip
+```
+
+CI workflow: `.github/workflows/electron-gui.yml`.

@@ -162,6 +162,11 @@ button.mode-btn.active {
   align-items: center;
 }
 
+#trackGalleryBtn {
+  width: 100%;
+  justify-content: center;
+}
+
 #pickPanel h2,
 #imagePanel h2 {
   margin: 8px 0 6px;

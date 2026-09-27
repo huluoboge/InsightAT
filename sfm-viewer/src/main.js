@@ -70,6 +70,8 @@ function createWindow() {
 
 function createGalleryWindow() {
   if (galleryWindow && !galleryWindow.isDestroyed()) {
+    if (galleryWindow.isMinimized()) galleryWindow.restore();
+    galleryWindow.show();
     galleryWindow.focus();
     return galleryWindow;
   }
