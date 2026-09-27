@@ -21,6 +21,12 @@ const ui = {
   settingsBtn: $('settingsBtn'),
   clearLogBtn: $('clearLogBtn'),
   logOutput: $('logOutput'),
+  logDetailOutput: $('logDetailOutput'),
+  logTabConsole: $('logTabConsole'),
+  logTabDetail: $('logTabDetail'),
+  progressWrap: $('progressWrap'),
+  progressFill: $('progressFill'),
+  progressLabel: $('progressLabel'),
   projectTitle: $('projectTitle'),
   projectSubtitle: $('projectSubtitle'),
   workDir: $('workDir'),
@@ -77,19 +83,70 @@ let state = null;
 let cameraUiMode = 'auto';
 let cameraTargetGroupId = null;
 let profileCache = null;
+let activeLogTab = 'console';
 
 function appendLog(text) {
+  if (!ui.logOutput) return;
   ui.logOutput.textContent += text;
-  ui.logOutput.scrollTop = ui.logOutput.scrollHeight;
+  if (activeLogTab === 'console') {
+    ui.logOutput.scrollTop = ui.logOutput.scrollHeight;
+  }
+}
+
+function appendDetailLog(text) {
+  if (!ui.logDetailOutput) return;
+  ui.logDetailOutput.textContent += text;
+  if (activeLogTab === 'detail') {
+    ui.logDetailOutput.scrollTop = ui.logDetailOutput.scrollHeight;
+  }
+}
+
+function setLogTab(tab) {
+  activeLogTab = tab === 'detail' ? 'detail' : 'console';
+  if (ui.logTabConsole) ui.logTabConsole.classList.toggle('active', activeLogTab === 'console');
+  if (ui.logTabDetail) ui.logTabDetail.classList.toggle('active', activeLogTab === 'detail');
+  if (ui.logOutput) ui.logOutput.hidden = activeLogTab !== 'console';
+  if (ui.logDetailOutput) ui.logDetailOutput.hidden = activeLogTab !== 'detail';
+}
+
+function clearLogs() {
+  if (ui.logOutput) ui.logOutput.textContent = '';
+  if (ui.logDetailOutput) ui.logDetailOutput.textContent = '';
+}
+
+function resetProgress() {
+  if (ui.progressWrap) ui.progressWrap.hidden = false;
+  if (ui.progressFill) ui.progressFill.style.width = '0%';
+  if (ui.progressLabel) ui.progressLabel.textContent = '0%';
+}
+
+function applyProgress(data) {
+  if (!data || !ui.progressWrap) return;
+  ui.progressWrap.hidden = false;
+  const overall = Math.max(0, Math.min(1, Number(data.overall != null ? data.overall : data.fraction) || 0));
+  if (ui.progressFill) ui.progressFill.style.width = `${(overall * 100).toFixed(1)}%`;
+  const parts = [];
+  if (data.step) parts.push(String(data.step));
+  if (data.message) parts.push(String(data.message));
+  if (data.current != null && data.total != null) {
+    parts.push(`${data.current}/${data.total}${data.unit ? ' ' + data.unit : ''}`);
+  }
+  parts.push(`${(overall * 100).toFixed(0)}%`);
+  if (ui.progressLabel) ui.progressLabel.textContent = parts.join(' · ');
+  if (data.done && ui.runState) ui.runState.textContent = 'Reconstruction complete';
 }
 
 function setBusy(nextBusy, label) {
   busy = nextBusy;
   document.body.classList.toggle('busy', busy);
-  for (const button of [ui.createBtn, ui.openBtn, ui.addFolderBtn, ui.runBtn, ui.viewBtn, ui.revealBtn, ui.cameraBtn]) {
+  for (const button of [ui.createBtn, ui.openBtn, ui.addFolderBtn, ui.runBtn, ui.viewBtn, ui.revealBtn, ui.cameraBtn, ui.settingsBtn]) {
     if (button) button.disabled = busy;
   }
+  if (ui.projectName) ui.projectName.disabled = busy;
   if (ui.stopBtn) ui.stopBtn.disabled = !busy;
+  ui.recentList.querySelectorAll('.recent-item').forEach((btn) => {
+    btn.disabled = busy;
+  });
   applyState(state);
   if (label) ui.runState.textContent = label;
 }
@@ -273,6 +330,7 @@ function renderRecent(profile) {
     btn.querySelector('.recent-name').textContent = item.name || 'Project';
     btn.querySelector('.recent-path').textContent = shortPath(item.workDir);
     btn.title = item.workDir;
+    btn.disabled = busy;
     btn.addEventListener('click', () => {
       runAction('Open recent project', () => window.insightAT.openRecent(item.workDir));
     });
@@ -310,6 +368,7 @@ function updateSteps(groupCount) {
 }
 
 async function runAction(label, action) {
+  if (busy) return;
   let statusAfter = '';
   try {
     setBusy(true, label);
@@ -319,6 +378,15 @@ async function runAction(label, action) {
     appendLog(`# Done: ${label}\n`);
     refreshProfile();
   } catch (err) {
+    if (err && err.summary) applyState(err.summary);
+    else {
+      try {
+        const s = await window.insightAT.getState();
+        if (s) applyState(s);
+      } catch (_) {
+        /* ignore */
+      }
+    }
     if (isCancelledError(err)) {
       appendLog(`\n# Stopped: ${label}\n`);
       statusAfter = 'Stopped';
@@ -668,8 +736,15 @@ ui.revealBtn.addEventListener('click', () => {
 });
 
 ui.clearLogBtn.addEventListener('click', () => {
-  ui.logOutput.textContent = '';
+  clearLogs();
 });
+
+if (ui.logTabConsole) {
+  ui.logTabConsole.addEventListener('click', () => setLogTab('console'));
+}
+if (ui.logTabDetail) {
+  ui.logTabDetail.addEventListener('click', () => setLogTab('detail'));
+}
 
 ui.settingsBtn.addEventListener('click', () => openSettings());
 ui.settingsCloseBtn.addEventListener('click', () => closeSettings());
@@ -825,6 +900,25 @@ ui.camGroupSelect.addEventListener('change', async () => {
 });
 
 window.insightAT.onLog(appendLog);
+window.insightAT.onLogDetail(appendDetailLog);
+window.insightAT.onProgress(applyProgress);
+window.insightAT.onLogReset((info) => {
+  clearLogs();
+  resetProgress();
+  if (info && info.runId) {
+    appendLog(`# Current log run: ${info.runId}\n`);
+  }
+});
+window.insightAT.onPipelinePlan((plan) => {
+  if (state) state.pipelinePlan = plan;
+  renderStageStatus(plan);
+  if (busy && plan) {
+    const running = (plan.stages || []).filter((s) => s.status === 'running').map((s) => s.label);
+    if (running.length && ui.runState) {
+      ui.runState.textContent = `Running: ${running.join(', ')}`;
+    }
+  }
+});
 window.insightAT.getState().then((s) => {
   if (s) applyState(s);
   else refreshPathsFromCli();

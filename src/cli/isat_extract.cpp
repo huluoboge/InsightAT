@@ -20,12 +20,14 @@
  *   isat_extract -i image_list.txt -o feat_dir/ --output-retrieval retrieval_dir/
  */
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <glog/logging.h>
 #include <iostream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 #include <string>
@@ -41,10 +43,30 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 static constexpr const char* kEventPrefix = "ISAT_EVENT ";
+static std::mutex g_event_mu;
 
 static void printEvent(const json& j) {
+  std::lock_guard<std::mutex> lock(g_event_mu);
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
+}
+
+static void emitProgress(int current, int total, const char* message) {
+  if (total <= 0)
+    return;
+  // Throttle: every ~1% or every item when small, always emit first/last.
+  const int stride = std::max(1, total / 100);
+  if (current != 1 && current != total && (current % stride) != 0)
+    return;
+  const double fraction = static_cast<double>(current) / static_cast<double>(total);
+  printEvent({{"type", "progress"},
+              {"ok", true},
+              {"data",
+               {{"fraction", fraction},
+                {"current", current},
+                {"total", total},
+                {"unit", "images"},
+                {"message", message}}}});
 }
 
 struct ImageTask {
@@ -563,7 +585,7 @@ int main(int argc, char* argv[]) {
         "WriteIDC", io_threads, IO_QUEUE_SIZE,
         [&output_dir, &output_retrieval_dir, &image_tasks, use_uint8, enable_nms, normalization,
          nms_radius, nms_keep_orientation, &sift_params, &sift_params_retrieval, process_matching,
-         process_retrieval, use_pop_sift, store_colors](int index) {
+         process_retrieval, use_pop_sift, store_colors, total_images](int index) {
           auto& task = image_tasks[index];
 
           // Use image_index for output filename: {image_index}.isat_feat
@@ -666,8 +688,8 @@ int main(int argc, char* argv[]) {
             }
           }
 
-          // Progress reporting
-          // std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
+          // Progress reporting (ISAT_EVENT)
+          emitProgress(index + 1, total_images, "Extracting features");
 
           // Clear memory
           task = ImageTask(); // release all memory

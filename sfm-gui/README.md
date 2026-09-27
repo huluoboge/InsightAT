@@ -15,7 +15,7 @@ CLI tools are **auto-detected** (no path to type):
 2. Repo `build/` / `build-release/` / …
 3. Optional override: `ISAT_BIN_DIR`
 
-Left sidebar shows the resolved **CLI tools** and **SfM Viewer** paths, compute backend, and recent projects.
+Left sidebar shows the InsightAT logo, resolved **CLI tools** and **SfM Viewer** paths, compute backend, and recent projects.
 Use **Settings** to override tool paths. Use **Set camera** on a group for pixel Brown intrinsics (width/height read-only from images).
 
 ## Develop
@@ -27,6 +27,12 @@ cmake --build build   # or your usual build
 cd sfm-gui
 npm install
 npm start
+```
+
+Logo / icons (camera + mountain) are under `assets/`. Regenerate from the design source:
+
+```bash
+python3 sfm-gui/scripts/generate-icons.py
 ```
 
 ## Package (bundles CLI when build/ exists)

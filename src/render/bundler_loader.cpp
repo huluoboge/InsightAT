@@ -40,10 +40,11 @@ bool load_reconstruction_directory(const std::string& dir, BundlerScene* scene,
   const bool has_colmap_bin =
       fs::exists(root / "cameras.bin") && fs::exists(root / "images.bin") &&
       fs::exists(root / "points3D.bin");
-  if (has_colmap_text)
-    return load_colmap_text_directory(dir, scene, error_message, std::move(progress));
+  // Prefer binary when both exist (txt may be a stale incremental_sfm leftover).
   if (has_colmap_bin)
     return load_colmap_binary_directory(dir, scene, error_message, std::move(progress));
+  if (has_colmap_text)
+    return load_colmap_text_directory(dir, scene, error_message, std::move(progress));
   return load_bundler_directory(dir, scene, error_message, std::move(progress));
 }
 

@@ -38,17 +38,18 @@ const MODEL_NAMES = [
 
 function detectFormat(dir) {
   const root = path.resolve(dir);
-  const hasTxt =
-    fs.existsSync(path.join(root, 'cameras.txt')) &&
-    fs.existsSync(path.join(root, 'images.txt')) &&
-    fs.existsSync(path.join(root, 'points3D.txt'));
-  if (hasTxt) return { root, format: 'text' };
-
+  // Prefer binary when both exist (txt may be a stale incremental_sfm leftover).
   const hasBin =
     fs.existsSync(path.join(root, 'cameras.bin')) &&
     fs.existsSync(path.join(root, 'images.bin')) &&
     fs.existsSync(path.join(root, 'points3D.bin'));
   if (hasBin) return { root, format: 'binary' };
+
+  const hasTxt =
+    fs.existsSync(path.join(root, 'cameras.txt')) &&
+    fs.existsSync(path.join(root, 'images.txt')) &&
+    fs.existsSync(path.join(root, 'points3D.txt'));
+  if (hasTxt) return { root, format: 'text' };
 
   return null;
 }

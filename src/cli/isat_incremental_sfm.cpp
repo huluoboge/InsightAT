@@ -11,7 +11,8 @@
  *   -p / --project   Path to project JSON (images[] + cameras[], camera_index per image)
  *   -m / --pairs     Path to pairs JSON (for view graph)
  *   -g / --geo       Directory of .isat_geo files (index-based: im0_im1.isat_geo)
- *   -o / --output    Output directory; writes poses.json, bundle.out, list.txt
+ *   -o / --output    Output directory; writes poses.json, bundler/{bundle.out,list.txt},
+ *                    colmap/sparse/0/, and tracks.isat_tracks
  *   -f / --features  Override .isat_feat dir for point RGB (default: auto-detect work/feat)
  *
  *   --ba-threads N   Ceres solver thread count for bundle adjustment (0 = hardware default).
@@ -128,7 +129,19 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
                           const std::vector<camera::Intrinsics>& cameras,
                           const std::vector<int>& image_to_camera_index, const TrackStore& store,
                           int bundler_max_cameras = -1,
-                          const std::string& features_dir = "") {
+                          const std::string& features_dir = "",
+                          bool nest_under_bundler_subdir = true) {
+  std::string write_dir = out_dir;
+  if (nest_under_bundler_subdir) {
+    write_dir = out_dir + "/bundler";
+    try {
+      std::filesystem::create_directories(write_dir);
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "write_bundler: cannot create " << write_dir << ": " << e.what();
+      return false;
+    }
+  }
+
   const int n_images = static_cast<int>(registered.size());
 
   // Only registered cameras (global image index order).
@@ -207,7 +220,7 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
   }
 
   // Write list.txt
-  const std::string list_path = out_dir + "/list.txt";
+  const std::string list_path = write_dir + "/list.txt";
   {
     std::ofstream lf(list_path);
     if (!lf.is_open()) {
@@ -224,7 +237,7 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
   LOG(INFO) << "Wrote " << list_path;
 
   // Write bundle.out
-  const std::string bundle_path = out_dir + "/bundle.out";
+  const std::string bundle_path = write_dir + "/bundle.out";
   std::ofstream bf(bundle_path);
   if (!bf.is_open()) {
     LOG(ERROR) << "Cannot write " << bundle_path;
@@ -794,7 +807,7 @@ int main(int argc, char* argv[]) {
       const std::string iter_dir = ss.str();
       std::filesystem::create_directories(iter_dir);
       write_bundler(iter_dir, snap_image_paths, R, C, reg, snap_cameras, snap_img2cam, store,
-                    snap_max_cams, snap_features_dir);
+                    snap_max_cams, snap_features_dir, /*nest_under_bundler_subdir=*/false);
       LOG(INFO) << "[debug] iter=" << sfm_iter << " n_reg=" << num_registered << " snapshot → "
                 << iter_dir;
     };

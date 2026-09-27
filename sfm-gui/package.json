@@ -20,11 +20,13 @@
   "build": {
     "appId": "com.insightat.sfmgui",
     "productName": "InsightAT SfM",
+    "icon": "assets/icons",
     "directories": {
       "output": "../dist/sfm-gui"
     },
     "files": [
       "src/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -52,13 +54,15 @@
         "AppImage",
         "deb"
       ],
+      "icon": "assets/icons",
       "category": "Science",
       "synopsis": "InsightAT SfM GUI for reconstruction workflows"
     },
     "win": {
       "target": [
         "zip"
-      ]
+      ],
+      "icon": "assets/icon.png"
     }
   },
   "allowScripts": {

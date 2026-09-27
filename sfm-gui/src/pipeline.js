@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const { createLogTailer, readCurrentLogDir } = require('./log_tailer');
 
 const STATE_FILE = 'insightat-simple-project.json';
 const PROJECT_FILE = 'project.iat';
@@ -379,6 +380,16 @@ function parseEvents(text) {
 let abortRequested = false;
 /** Currently tracked CLI child (direct spawn of isat_*). */
 let activeChild = null;
+/** Nested/async UI jobs that must block project switches (reconstruction, etc.). */
+let activeJobs = 0;
+
+function beginJob() {
+  activeJobs += 1;
+}
+
+function endJob() {
+  activeJobs = Math.max(0, activeJobs - 1);
+}
 
 function resetAbort() {
   abortRequested = false;
@@ -474,6 +485,7 @@ function sleep(ms) {
  */
 async function stopActive(onLog) {
   abortRequested = true;
+  stopLogTailer();
   const child = activeChild;
   if (!child || !child.pid) {
     if (onLog) onLog('# Stop requested\n');
@@ -499,7 +511,46 @@ async function stopActive(onLog) {
 }
 
 function isBusy() {
-  return Boolean(activeChild) || abortRequested;
+  return activeJobs > 0 || Boolean(activeChild);
+}
+
+function hasActiveChild() {
+  return Boolean(activeChild && activeChild.pid);
+}
+
+let activeLogTailer = null;
+
+function stopLogTailer() {
+  if (activeLogTailer) {
+    activeLogTailer.stop();
+    activeLogTailer = null;
+  }
+}
+
+/**
+ * Tail work/logs/run_* for console/detail/progress. Returns a stop function.
+ * Follows logs/current.json and switches when a new run_* appears.
+ */
+function startLogTailer(workDir, { onConsole, onDetail, onProgress, onRunSwitch, waitForNewRun } = {}) {
+  stopLogTailer();
+  const existing = readCurrentLogDir(workDir);
+  const tailer = createLogTailer({
+    onConsole,
+    onDetail,
+    onProgress,
+    onRunSwitch
+  });
+  activeLogTailer = tailer;
+  tailer.start(workDir, {
+    baselineRunId: (existing && existing.runId) || '',
+    waitForNewRun: waitForNewRun != null ? waitForNewRun : Boolean(existing && existing.runId)
+  });
+  return () => {
+    if (activeLogTailer === tailer) {
+      tailer.stop();
+      activeLogTailer = null;
+    }
+  };
 }
 
 const PIPELINE_STATUS_FILE = 'insightat-pipeline-status.json';
@@ -520,15 +571,15 @@ const PIPELINE_STAGES = [
     dependsOn: ['features'],
     cliSteps: ['match'],
     dirs: ['match', 'geo', 'retrieval_match_work'],
-    files: ['pairs_retrieve.json', 'pairs_matched.json', 'camera_estimate_meta.json']
+    files: ['camera_estimate_meta.json']
   },
   {
     id: 'sfm',
     label: 'SfM',
     dependsOn: ['matching'],
     cliSteps: ['tracks', 'seed_eval', 'incremental_sfm', 'undistort'],
-    dirs: ['incremental_sfm', 'seed_eval_all'],
-    files: ['tracks.isat_tracks']
+    dirs: ['incremental_sfm', 'seed_eval_all', 'tracks'],
+    files: []
   }
 ];
 
@@ -546,23 +597,40 @@ function defaultPipelineStatus() {
   return { version: 1, stages };
 }
 
-function inferStageDone(workDir, stageId) {
+/** True only when stage outputs look finished (not merely that a dir exists). */
+function inferStageComplete(workDir, stageId) {
   if (stageId === 'features') {
-    return fs.existsSync(path.join(workDir, 'feat'));
+    const featDir = path.join(workDir, 'feat');
+    if (!fs.existsSync(featDir)) return false;
+    try {
+      return fs.readdirSync(featDir).some((name) => name.endsWith('.isat_feat'));
+    } catch (_) {
+      return false;
+    }
   }
   if (stageId === 'matching') {
-    return (
-      fs.existsSync(path.join(workDir, 'geo', 'pairs.json')) ||
-      fs.existsSync(path.join(workDir, 'match'))
-    );
+    return fs.existsSync(path.join(workDir, 'geo', 'pairs.json'));
   }
   if (stageId === 'sfm') {
-    return Boolean(reconstructionViewPath(workDir)) ||
-      fs.existsSync(path.join(workDir, 'incremental_sfm'));
+    return (
+      fs.existsSync(path.join(workDir, 'incremental_sfm', 'poses.json')) ||
+      Boolean(reconstructionViewPath(workDir))
+    );
   }
   return false;
 }
 
+/** @deprecated use inferStageComplete */
+function inferStageDone(workDir, stageId) {
+  return inferStageComplete(workDir, stageId);
+}
+
+/**
+ * Status file is authoritative.
+ * - Honor pending / failed / running as written.
+ * - Demote done → pending only when completion artifacts are missing.
+ * - Bootstrap from disk only when a stage has never been recorded.
+ */
 function loadPipelineStatus(workDir) {
   let stored = null;
   try {
@@ -575,15 +643,24 @@ function loadPipelineStatus(workDir) {
   }
 
   const merged = defaultPipelineStatus();
+  const honorRunning = isBusy();
   for (const stage of PIPELINE_STAGES) {
     const fromFile = stored && stored.stages && stored.stages[stage.id];
-    let status = fromFile && fromFile.status ? fromFile.status : 'pending';
-    if (status === 'running') status = 'pending';
-    if (inferStageDone(workDir, stage.id)) {
-      status = 'done';
-    } else if (status === 'done') {
-      status = 'pending';
+    const recorded = fromFile && fromFile.status ? fromFile.status : null;
+    let status;
+
+    if (recorded === 'running') {
+      status = honorRunning ? 'running' : 'pending';
+    } else if (recorded === 'pending' || recorded === 'failed' || recorded === 'done') {
+      status = recorded;
+      if (status === 'done' && !inferStageComplete(workDir, stage.id)) {
+        status = 'pending';
+      }
+    } else {
+      // No marker yet (legacy workdir): bootstrap once from artifacts.
+      status = inferStageComplete(workDir, stage.id) ? 'done' : 'pending';
     }
+
     merged.stages[stage.id] = {
       status,
       updatedAt: (fromFile && fromFile.updatedAt) || null
@@ -608,7 +685,21 @@ function savePipelineStatus(workDir, status) {
 }
 
 function setStageStatus(workDir, stageId, status) {
-  const next = loadPipelineStatus(workDir);
+  // Read raw file — avoid loadPipelineStatus() flipping running→done via artifact inference.
+  let next = defaultPipelineStatus();
+  try {
+    const file = pipelineStatusPath(workDir);
+    if (fs.existsSync(file)) {
+      const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (stored && stored.stages) {
+        for (const stage of PIPELINE_STAGES) {
+          if (stored.stages[stage.id]) next.stages[stage.id] = stored.stages[stage.id];
+        }
+      }
+    }
+  } catch (_) {
+    /* keep defaults */
+  }
   next.stages[stageId] = {
     status,
     updatedAt: new Date().toISOString()
@@ -689,7 +780,7 @@ function cliStepsFrom(stageId) {
   return steps.filter((s, i, arr) => arr.indexOf(s) === i);
 }
 
-function runCommand(state, exeName, args, onLog) {
+function runCommand(state, exeName, args, onLog, options = {}) {
   return new Promise((resolve, reject) => {
     try {
       assertNotAborted();
@@ -699,6 +790,7 @@ function runCommand(state, exeName, args, onLog) {
     }
 
     const command = findTool(state.binDir, exeName);
+    const mirrorPipe = options.mirrorPipe !== false;
     // Unix: new process group so we can kill(-pid) the whole CLI tree.
     // Windows: taskkill /T walks the tree; detached not required.
     const child = spawn(command, args, {
@@ -714,7 +806,7 @@ function runCommand(state, exeName, args, onLog) {
     const send = (chunk) => {
       const text = chunk.toString();
       output += text;
-      if (onLog) onLog(text);
+      if (mirrorPipe && onLog) onLog(text);
     };
 
     const finish = (fn) => {
@@ -901,6 +993,15 @@ async function prepareImagesAll(state, options = {}, onLog) {
 
 async function runReconstruction(state, options = {}, onLog) {
   resetAbort();
+  beginJob();
+  try {
+    return await runReconstructionInner(state, options, onLog);
+  } finally {
+    endJob();
+  }
+}
+
+async function runReconstructionInner(state, options = {}, onLog) {
   const plan = getPipelinePlan(state);
   let mode = options.mode;
 
@@ -944,6 +1045,7 @@ async function runReconstruction(state, options = {}, onLog) {
     '-w', next.workDir,
     '-v',
     '--undistort',
+    '--binary',
     '--steps', steps.join(',')
   ];
 
@@ -964,24 +1066,86 @@ async function runReconstruction(state, options = {}, onLog) {
   }
 
   if (onLog) onLog(`# Pipeline steps: ${steps.join(' → ')}\n`);
+  if (onLog) onLog('# Tailing work/logs/run_* (follows logs/current.json)\n');
 
   const startIdx = PIPELINE_STAGES.findIndex((s) => s.id === fromStage);
   for (let i = Math.max(0, startIdx); i < PIPELINE_STAGES.length; i++) {
     setStageStatus(next.workDir, PIPELINE_STAGES[i].id, 'running');
   }
+  if (typeof options.onPlan === 'function') {
+    options.onPlan(getPipelinePlan(next.workDir));
+  }
+  if (typeof options.onLogReset === 'function') {
+    options.onLogReset({ reason: 'run-start' });
+  }
+  if (typeof options.onProgress === 'function') {
+    options.onProgress({
+      overall: 0,
+      fraction: 0,
+      message: 'Starting reconstruction',
+      done: false
+    });
+  }
+
+  const stopTail = startLogTailer(next.workDir, {
+    onConsole: (text) => {
+      if (typeof options.onConsole === 'function') options.onConsole(text);
+      else if (onLog) onLog(text);
+    },
+    onDetail: (text) => {
+      if (typeof options.onDetail === 'function') options.onDetail(text);
+    },
+    onProgress: typeof options.onProgress === 'function' ? options.onProgress : undefined,
+    onRunSwitch: (info) => {
+      if (typeof options.onConsole === 'function') {
+        options.onConsole(`# Switched to log ${info.runId || path.basename(info.dir || '')}\n`);
+      } else if (onLog) {
+        onLog(`# Switched to log ${info.runId || path.basename(info.dir || '')}\n`);
+      }
+      if (typeof options.onRunDir === 'function') {
+        options.onRunDir(info);
+      }
+    },
+    waitForNewRun: true
+  });
 
   try {
-    await runCommand(next, 'isat_sfm', args, onLog);
+    await runCommand(next, 'isat_sfm', args, onLog, { mirrorPipe: false });
     for (let i = Math.max(0, startIdx); i < PIPELINE_STAGES.length; i++) {
-      const id = PIPELINE_STAGES[i].id;
-      setStageStatus(next.workDir, id, inferStageDone(next.workDir, id) ? 'done' : 'failed');
+      setStageStatus(next.workDir, PIPELINE_STAGES[i].id, 'done');
     }
   } catch (err) {
+    const cancelled = Boolean(err && err.cancelled);
     for (let i = Math.max(0, startIdx); i < PIPELINE_STAGES.length; i++) {
       const id = PIPELINE_STAGES[i].id;
-      setStageStatus(next.workDir, id, inferStageDone(next.workDir, id) ? 'done' : 'failed');
+      // Status markers are authoritative after this write. Only mark done when this run
+      // actually produced completion artifacts (Rebuild already cleaned old ones).
+      if (inferStageComplete(next.workDir, id)) {
+        setStageStatus(next.workDir, id, 'done');
+      } else {
+        setStageStatus(next.workDir, id, cancelled ? 'pending' : 'failed');
+      }
     }
+    if (typeof options.onPlan === 'function') {
+      options.onPlan(getPipelinePlan(next.workDir));
+    }
+    // Still return a summary so the UI can refresh chips after Stop.
+    err.summary = loadSummary(saveState(next));
     throw err;
+  } finally {
+    stopTail();
+  }
+
+  if (typeof options.onProgress === 'function') {
+    options.onProgress({
+      overall: 1,
+      fraction: 1,
+      message: 'Pipeline complete',
+      done: true
+    });
+  }
+  if (typeof options.onPlan === 'function') {
+    options.onPlan(getPipelinePlan(next.workDir));
   }
 
   const summary = loadSummary(saveState(next));
@@ -1263,25 +1427,24 @@ function reconstructionViewPath(workDir) {
   const sfmDir = path.join(workDir, 'incremental_sfm');
   if (!fs.existsSync(sfmDir)) return null;
 
-  // Prefer COLMAP text format (more accurate camera models)
+  // Prefer COLMAP binary (faster load); fall back to text.
   const colmapDir = path.join(sfmDir, 'colmap', 'sparse', '0');
+  if (fs.existsSync(path.join(colmapDir, 'cameras.bin')) &&
+      fs.existsSync(path.join(colmapDir, 'images.bin')) &&
+      fs.existsSync(path.join(colmapDir, 'points3D.bin'))) {
+    return colmapDir;
+  }
   if (fs.existsSync(path.join(colmapDir, 'cameras.txt')) &&
       fs.existsSync(path.join(colmapDir, 'images.txt')) &&
       fs.existsSync(path.join(colmapDir, 'points3D.txt'))) {
     return colmapDir;
   }
 
-  // Check COLMAP binary format
-  if (fs.existsSync(path.join(colmapDir, 'cameras.bin')) &&
-      fs.existsSync(path.join(colmapDir, 'images.bin')) &&
-      fs.existsSync(path.join(colmapDir, 'points3D.bin'))) {
-    return colmapDir;
-  }
-
-  // Fall back to Bundler format
-  if (fs.existsSync(path.join(sfmDir, 'bundle.out')) &&
-      fs.existsSync(path.join(sfmDir, 'list.txt'))) {
-    return sfmDir;
+  // Bundler: incremental_sfm/bundler/
+  const bundlerDir = path.join(sfmDir, 'bundler');
+  if (fs.existsSync(path.join(bundlerDir, 'bundle.out')) &&
+      fs.existsSync(path.join(bundlerDir, 'list.txt'))) {
+    return bundlerDir;
   }
 
   return null;
@@ -1359,6 +1522,10 @@ module.exports = {
   stopActive,
   resetAbort,
   isBusy,
+  hasActiveChild,
+  startLogTailer,
+  stopLogTailer,
+  readCurrentLogDir,
   setProjectCameraAuto,
   enterProjectCameraManual,
   setGroupCamera,

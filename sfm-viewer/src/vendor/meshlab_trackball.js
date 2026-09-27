@@ -65,7 +65,11 @@ export class MeshLabTrackballControls {
   _mouseToSphere(clientX, clientY) {
     const rect = this.domElement.getBoundingClientRect();
     const w = rect.width;
-    const h = rect.height;
+    const h = Math.max(rect.height, 1);
+    if (Math.abs(this.object.aspect - w / h) > 1e-4) {
+      this.object.aspect = w / h;
+      this.object.updateProjectionMatrix();
+    }
     const x = clientX - rect.left;
     // Match C++: invert y to GL bottom-left
     const yGl = h - 1 - (clientY - rect.top);
@@ -143,7 +147,8 @@ export class MeshLabTrackballControls {
     const dist = eye.length();
     const fov = (this.object.fov * Math.PI) / 180;
     const worldH = 2 * dist * Math.tan(fov / 2);
-    const worldW = worldH * this.object.aspect;
+    // Use CSS box aspect (same space as pointer coords), not a possibly-stale camera.aspect.
+    const worldW = worldH * (w / h);
 
     // Grab-pan: content follows the mouse (same as MeshLab moving the model).
     // Mouse right → scene right → move camera+target left.

@@ -26,6 +26,8 @@ const imagePanel = document.getElementById('imagePanel');
 const obsImage = document.getElementById('obsImage');
 const crosshair = document.getElementById('crosshair');
 const hintEl = document.getElementById('hint');
+const loadingEl = document.getElementById('loading');
+const openBtn = document.getElementById('openBtn');
 
 /** @type {'none'|'point'|'camera'} */
 let pickMode = 'none';
@@ -283,13 +285,35 @@ function buildFrustumParts(cam, scale) {
 }
 
 function resize() {
-  const parent = canvas.parentElement;
-  const w = parent.clientWidth;
-  const h = parent.clientHeight;
+  const viewport = canvas.parentElement || canvas;
+  // Prefer layout box after reflow (same space used for picking NDC).
+  const rect = viewport.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width));
+  const h = Math.max(1, Math.round(rect.height));
+  const pr = Math.min(window.devicePixelRatio || 1, 2);
+  if (
+    renderer.getPixelRatio() === pr &&
+    canvas.width === Math.floor(w * pr) &&
+    canvas.height === Math.floor(h * pr) &&
+    Math.abs(camera.aspect - w / h) < 1e-6
+  ) {
+    return;
+  }
+  renderer.setPixelRatio(pr);
+  // CSS keeps #c at 100% of #viewport; do not fight it with inline px styles.
   renderer.setSize(w, h, false);
-  camera.aspect = w / Math.max(h, 1);
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  controls.handleResize();
+  if (typeof controls.handleResize === 'function') controls.handleResize();
+}
+
+let resizeRaf = 0;
+function scheduleResize() {
+  if (resizeRaf) cancelAnimationFrame(resizeRaf);
+  resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = 0;
+    resize();
+  });
 }
 
 function disposeObject(obj) {
@@ -444,67 +468,102 @@ function setPickMode(mode) {
   if (mode === 'none') clearHighlight();
 }
 
-async function loadDirectory(dir) {
-  showError(null);
-  const result = await window.sfmViewer.load(dir);
-  if (!result.ok) {
-    showError(result.error);
-    return;
-  }
-  sceneData = filterOutlierPoints(result.scene);
-  filteredOutCount = sceneData.filteredOut || 0;
-  sceneRadius = sceneData.sceneRadius || 1;
-  cameraById = new Map(sceneData.cameras.map((c) => [c.id, c]));
-
-  pathLabel.textContent = sceneData.root;
-  statPoints.textContent = String(sceneData.summary.pointCount);
-  statCameras.textContent = String(sceneData.summary.cameraCount);
-  statFormat.textContent = sceneData.format;
-  statFiltered.textContent =
-    filteredOutCount > 0 ? `−${filteredOutCount} outliers` : 'none';
-
-  // Default frustum slider around a sane absolute scale.
-  frustumScaleInput.value = '0.2';
-
-  clearSceneMeshes();
-  rebuildPoints();
-  rebuildFrustums();
-  ensureTrackballGizmo();
-  resetView();
+function setLoading(on) {
+  loadingEl.hidden = !on;
+  if (openBtn) openBtn.disabled = on;
 }
 
-function screenPickThreshold() {
-  return Math.max(0.01 * sceneRadius, 0.05);
+async function loadDirectory(dir) {
+  showError(null);
+  pathLabel.textContent = 'Loading…';
+  setLoading(true);
+  try {
+    const result = await window.sfmViewer.load(dir);
+    if (!result.ok) {
+      showError(result.error);
+      pathLabel.textContent = 'No model loaded';
+      return;
+    }
+    sceneData = filterOutlierPoints(result.scene);
+    filteredOutCount = sceneData.filteredOut || 0;
+    sceneRadius = sceneData.sceneRadius || 1;
+    cameraById = new Map(sceneData.cameras.map((c) => [c.id, c]));
+
+    pathLabel.textContent = sceneData.root;
+    statPoints.textContent = String(sceneData.summary.pointCount);
+    statCameras.textContent = String(sceneData.summary.cameraCount);
+    statFormat.textContent = sceneData.format;
+    statFiltered.textContent =
+      filteredOutCount > 0 ? `−${filteredOutCount} outliers` : 'none';
+
+    // Default frustum slider around a sane absolute scale.
+    frustumScaleInput.value = '0.2';
+
+    clearSceneMeshes();
+    rebuildPoints();
+    rebuildFrustums();
+    ensureTrackballGizmo();
+    scheduleResize();
+    resetView();
+  } catch (err) {
+    showError(err && err.message ? err.message : String(err));
+    pathLabel.textContent = 'No model loaded';
+  } finally {
+    setLoading(false);
+  }
+}
+
+/** World-space Points.threshold that covers ~`pixelRadius` screen pixels at the orbit target. */
+function pickWorldThreshold(pixelRadius, canvasHeight) {
+  const fov = (camera.fov * Math.PI) / 180;
+  const dist = Math.max(camera.position.distanceTo(controls.target), camera.near);
+  const worldPerPixel = (2 * dist * Math.tan(fov / 2)) / Math.max(canvasHeight, 1);
+  return Math.max(worldPerPixel * pixelRadius, 1e-8);
 }
 
 /** @returns {{ index: number, point: THREE.Vector3, pixelDist: number } | null} */
-function findNearestVisiblePoint(clientX, clientY, maxPixel = 16) {
+function findNearestVisiblePoint(clientX, clientY, maxPixel = null) {
   if (!pointsMesh || !visibleIndices.length || !sceneData) return null;
+  // Keep aspect in sync in case a layout change slipped past observers.
   const rect = canvas.getBoundingClientRect();
+  const w = Math.max(rect.width, 1);
+  const h = Math.max(rect.height, 1);
+  if (Math.abs(camera.aspect - w / h) > 1e-4) {
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  // Match on-screen point size (sizeAttenuation:false) plus a small click slop.
+  const pointPx = Number(pointSizeInput.value) || 3;
+  const pixelLimit = maxPixel == null ? Math.max(pointPx * 0.5 + 4, 8) : maxPixel;
   const mouse = new THREE.Vector2(
-    ((clientX - rect.left) / rect.width) * 2 - 1,
-    -((clientY - rect.top) / rect.height) * 2 + 1
+    ((clientX - rect.left) / w) * 2 - 1,
+    -((clientY - rect.top) / h) * 2 + 1
   );
   const raycaster = new THREE.Raycaster();
-  raycaster.params.Points.threshold = screenPickThreshold();
+  // Threshold must shrink when zoomed in; fixed world radius makes pick wildly wrong.
+  raycaster.params.Points.threshold = pickWorldThreshold(pixelLimit, h);
   raycaster.setFromCamera(mouse, camera);
   const hits = raycaster.intersectObject(pointsMesh);
   if (!hits.length) return null;
 
-  let best = hits[0];
+  let best = null;
   let bestPix = Infinity;
   const proj = new THREE.Vector3();
-  for (const hit of hits.slice(0, 12)) {
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
+  // Rank by screen distance (not ray depth) — critical when many points share the ray tube.
+  for (const hit of hits) {
     proj.copy(hit.point).project(camera);
-    const sx = (proj.x * 0.5 + 0.5) * rect.width;
-    const sy = (-proj.y * 0.5 + 0.5) * rect.height;
-    const d = Math.hypot(sx - (clientX - rect.left), sy - (clientY - rect.top));
+    if (proj.z < -1 || proj.z > 1) continue;
+    const sx = (proj.x * 0.5 + 0.5) * w;
+    const sy = (-proj.y * 0.5 + 0.5) * h;
+    const d = Math.hypot(sx - localX, sy - localY);
     if (d < bestPix) {
       bestPix = d;
       best = hit;
     }
   }
-  if (bestPix > maxPixel) return null;
+  if (!best || bestPix > pixelLimit) return null;
   const index = visibleIndices[best.index];
   const pos = sceneData.points.positions;
   return {
@@ -522,7 +581,7 @@ function setOrbitCenterToPoint(point) {
 }
 
 function pickTrack(clientX, clientY) {
-  const hit = findNearestVisiblePoint(clientX, clientY, 16);
+  const hit = findNearestVisiblePoint(clientX, clientY);
   if (!hit) {
     clearHighlight();
     return;
@@ -533,15 +592,23 @@ function pickTrack(clientX, clientY) {
 function pickCamera(clientX, clientY) {
   if (!sceneData || !sceneData.cameras.length) return;
   const rect = canvas.getBoundingClientRect();
+  const w = Math.max(rect.width, 1);
+  const h = Math.max(rect.height, 1);
+  if (Math.abs(camera.aspect - w / h) > 1e-4) {
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
   let best = null;
   let bestPix = Infinity;
   const proj = new THREE.Vector3();
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
   for (const cam of sceneData.cameras) {
     proj.set(cam.center[0], cam.center[1], cam.center[2]).project(camera);
     if (proj.z < -1 || proj.z > 1) continue;
-    const sx = (proj.x * 0.5 + 0.5) * rect.width;
-    const sy = (-proj.y * 0.5 + 0.5) * rect.height;
-    const d = Math.hypot(sx - (clientX - rect.left), sy - (clientY - rect.top));
+    const sx = (proj.x * 0.5 + 0.5) * w;
+    const sy = (-proj.y * 0.5 + 0.5) * h;
+    const d = Math.hypot(sx - localX, sy - localY);
     if (d < bestPix) {
       bestPix = d;
       best = cam;
@@ -742,7 +809,13 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-window.addEventListener('resize', resize);
+window.addEventListener('resize', scheduleResize);
+if (typeof ResizeObserver !== 'undefined') {
+  const viewportEl = document.getElementById('viewport');
+  if (viewportEl) {
+    new ResizeObserver(() => scheduleResize()).observe(viewportEl);
+  }
+}
 minObsInput.addEventListener('input', () => {
   minObsVal.textContent = minObsInput.value;
   rebuildPoints();
@@ -778,7 +851,7 @@ trackGalleryBtn.addEventListener('click', async () => {
   }
 });
 document.getElementById('resetBtn').addEventListener('click', resetView);
-document.getElementById('openBtn').addEventListener('click', async () => {
+openBtn.addEventListener('click', async () => {
   const dir = await window.sfmViewer.openDirectory();
   if (dir) await loadDirectory(dir);
 });
@@ -819,7 +892,7 @@ canvas.addEventListener('dblclick', (e) => {
   setOrbitCenterToPoint(hit.point);
 });
 
-resize();
+scheduleResize();
 setPickMode('none');
 animate();
 

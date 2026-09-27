@@ -10,7 +10,7 @@
     <main class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">AT</div>
+          <img class="brand-logo" src="../assets/logo-128.png" alt="InsightAT" width="52" height="52">
           <div>
             <h1>InsightAT SfM</h1>
             <p>CLI driven SfM workflow</p>
@@ -151,10 +151,21 @@
 
           <div class="log-pane">
             <div class="section-head">
-              <h3>CLI Log</h3>
-              <button id="clearLogBtn" class="ghost" type="button">Clear</button>
+              <h3>Logs</h3>
+              <div class="log-head-actions">
+                <div class="log-tabs" role="tablist">
+                  <button id="logTabConsole" class="log-tab active" type="button" data-log-tab="console">Console</button>
+                  <button id="logTabDetail" class="log-tab" type="button" data-log-tab="detail">Detail</button>
+                </div>
+                <button id="clearLogBtn" class="ghost" type="button">Clear</button>
+              </div>
             </div>
-            <pre id="logOutput"></pre>
+            <div id="progressWrap" class="progress-wrap" hidden>
+              <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+              <div id="progressLabel" class="progress-label quiet"></div>
+            </div>
+            <pre id="logOutput" class="log-output" data-stream="console"></pre>
+            <pre id="logDetailOutput" class="log-output" data-stream="detail" hidden></pre>
           </div>
         </section>
       </section>

@@ -15,12 +15,12 @@ This document governs all InsightAT CLIs (`isat_*`) for **stdout**, **stderr**, 
   - non-zero — failure (no “success” payload on stdout when failing)
 
 - **stderr**
-  - Logs, hints, warnings, errors, progress (e.g. `PROGRESS: …`)
-  - `glog` goes to stderr by default — aligned with this policy
+  - Logs, hints, warnings, errors (`glog`)
+  - Human-readable text only — **not** the primary progress channel
 
 - **stdout**
-  - **Machine-readable output only**
-  - No user hints, no debug spew, no progress bars
+  - **Machine-readable output only** (`ISAT_EVENT` lines)
+  - No user hints, no debug spew, no text progress bars
 
 ---
 
@@ -93,9 +93,9 @@ Implementation: `error` / `warn` / `info` map to glog `minloglevel`; `debug` als
 
 ## 5. Data Container Format (IDC) Considerations
 
-When modifying the InsightAT Data Container (IDC) readers/writers ([IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L30-L68)/[IDCWriter](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_writer.h#L77-L97)), special care must be taken to preserve all original blob descriptor fields:
+When modifying the InsightAT Data Container (IDC) readers/writers ([IDCReader](../../../src/algorithm/io/idc_reader.h)/[IDCWriter](../../../src/algorithm/io/idc_writer.h)), special care must be taken to preserve all original blob descriptor fields:
 
-- **Always preserve original blob fields** - When optimizing [IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L30-L68) for performance (e.g., O(1) lookups), ensure the [get_blob_descriptor](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L53-L53) method returns all original fields from the JSON descriptor, especially critical ones like `dtype`.
+- **Always preserve original blob fields** - When optimizing [IDCReader](../../../src/algorithm/io/idc_reader.h) for performance (e.g., O(1) lookups), ensure the [`get_blob_descriptor`](../../../src/algorithm/io/idc_reader.h) method returns all original fields from the JSON descriptor, especially critical ones like `dtype`.
 - **Critical fields** - The `dtype`, `shape`, `offset`, and `size` fields are essential for downstream components to properly interpret binary data.
 - **Backward compatibility** - Changes should maintain compatibility with existing data files.
 
@@ -103,18 +103,67 @@ See [13_idc_format_spec.md](13_idc_format_spec.md) for the complete specificatio
 
 ---
 
-## 6. Progress (optional)
+## 6. Progress (`ISAT_EVENT`)
 
-If a tool reports progress:
+Progress is reported on **stdout** as `ISAT_EVENT` lines (not stderr `PROGRESS:`).
 
-- Write to **stderr**
-- Suggested form:
+### 6.1 `type=progress`
 
 ```
-PROGRESS: 0.35
+ISAT_EVENT {"type":"progress","ok":true,"data":{
+  "step":"extract",
+  "step_index":2,
+  "step_count":6,
+  "fraction":0.42,
+  "overall":0.28,
+  "current":42,
+  "total":100,
+  "unit":"images",
+  "message":"Extracting SIFT"
+}}
 ```
 
-Value in `[0, 1]`.
+| Field | Meaning |
+|-------|---------|
+| `step` | Stable id: `create`, `extract`, `match`, `tracks`, `seed_eval`, `incremental_sfm`, `undistort` |
+| `step_index` / `step_count` | 1-based index within the active step list for this run |
+| `fraction` | Progress **within the current step**, in `[0, 1]` |
+| `overall` | Pipeline progress in `[0, 1]`; **driver fills this** when forwarding |
+| `current` / `total` / `unit` | Optional fine-grained counters |
+| `message` | Short English label for UI |
+
+**Overall formula (driver):** `overall = (step_index - 1 + fraction) / step_count`.
+
+Child tools may emit a minimal progress event (only `fraction` / `current` / `total` / `unit` / `message`); `isat_sfm` enriches with `step`, indices, and `overall` before appending to `events.ndjson`.
+
+### 6.2 Step / pipeline boundaries
+
+```
+ISAT_EVENT {"type":"step.start","ok":true,"data":{"step":"match","step_index":3,"step_count":6}}
+ISAT_EVENT {"type":"step.end","ok":true,"data":{"step":"match","elapsed_s":12.4}}
+ISAT_EVENT {"type":"pipeline.start","ok":true,"data":{"run_id":"...","steps":["extract","match"],"log_dir":"..."}}
+ISAT_EVENT {"type":"pipeline.end","ok":true,"data":{"run_id":"...","elapsed_s":123.4}}
+```
+
+### 6.3 Pipeline log directory (`isat_sfm`)
+
+Each run writes:
+
+```
+<work>/logs/
+  current.json                 # {"run_id","dir"}
+  run_YYYYMMDD_HHMMSS/
+    meta.json
+    console.log                # human summary (UI default)
+    detail.log                 # full glog / child stderr
+    events.ndjson              # ISAT_EVENT only (progress source of truth)
+```
+
+UI and scripts should **tail** these files rather than relying on a pipe.
+
+### 6.4 Legacy
+
+`PROGRESS: 0.35` on stderr is **legacy**. Do not use it in new code.
 
 ---
 

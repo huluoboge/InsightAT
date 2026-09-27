@@ -28,5 +28,25 @@ contextBridge.exposeInMainWorld('insightAT', {
     const listener = (_event, text) => callback(text);
     ipcRenderer.on('pipeline:log', listener);
     return () => ipcRenderer.removeListener('pipeline:log', listener);
+  },
+  onLogDetail: (callback) => {
+    const listener = (_event, text) => callback(text);
+    ipcRenderer.on('pipeline:logDetail', listener);
+    return () => ipcRenderer.removeListener('pipeline:logDetail', listener);
+  },
+  onProgress: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('pipeline:progress', listener);
+    return () => ipcRenderer.removeListener('pipeline:progress', listener);
+  },
+  onLogReset: (callback) => {
+    const listener = (_event, info) => callback(info);
+    ipcRenderer.on('pipeline:logReset', listener);
+    return () => ipcRenderer.removeListener('pipeline:logReset', listener);
+  },
+  onPipelinePlan: (callback) => {
+    const listener = (_event, plan) => callback(plan);
+    ipcRenderer.on('pipeline:plan', listener);
+    return () => ipcRenderer.removeListener('pipeline:plan', listener);
   }
 });

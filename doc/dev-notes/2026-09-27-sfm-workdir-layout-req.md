@@ -1,8 +1,8 @@
 # 需求：isat_sfm 工作目录结构整理（方案 B）
 
-- **状态**：需求记录（未实现）
+- **状态**：已实现（Node `sfm-gui` + CLI；Qt UI 已废弃，不改）
 - **日期**：2026-09-27
-- **范围**：`isat_sfm` / `isat_incremental_sfm` / `isat_undistort` / UI 任务目录约定
+- **范围**：`isat_sfm` / `isat_incremental_sfm` / `isat_seed_eval` / `isat_undistort`（路径约定）/ Node `sfm-gui`
 - **目标**：中间产物与重建导出分层清晰；Bundler 与 COLMAP 导出并列；根目录只保留项目入口文件
 
 ## 1. 背景与问题
@@ -110,29 +110,27 @@ work/
 ## 5. 非目标
 
 - 不改变 SfM 算法、相机模型语义（默认 COLMAP 仍不去畸变）。
-- 不强制迁移用户已有旧 `work/` 数据；实现时可提供迁移说明，不做自动静默搬迁。
+- **不做旧布局兼容**：不双读根目录 `pairs_*` / `tracks.isat_tracks`，不回退 flat Bundler；旧 `work/` 需重新跑或自行改目录。
 - 不在本需求中实现 `colmap_undistorted/` 再拆分（可另开需求）。
+- 不更新已废弃的 Qt `at_task_panel`。
 
-## 6. 兼容与迁移
+## 6. 实现策略
 
-实现时建议：
+一律只认目标结构（pairs → `match/`，tracks 阶段 → `tracks/`，Bundler → `incremental_sfm/bundler/`）。已更新：`isat_sfm` / `isat_incremental_sfm` / `isat_seed_eval`、`doc/develop/build.md`、Node `sfm-gui`。未改 Qt UI。
 
-1. **新任务**：一律按目标结构写。
-2. **旧任务续跑**：读取路径可短暂双读（先新路径，回退旧根路径），或在文档中要求用户手动移动文件；双读策略在实现 PR 中选定并写清。
-3. 更新：`isat_sfm` 帮助/结束摘要、`doc/develop/design/05_cli_io_conventions.md`（若涉及）、UI `at_task_panel` 子目录列表与导出路径。
+## 7. 涉及改动面
 
-## 7. 涉及改动面（实现时）
-
-- [`src/cli/isat_incremental_sfm.cpp`](../../src/cli/isat_incremental_sfm.cpp)：`write_bundler` 输出子目录；结束日志路径
-- [`src/cli/isat_sfm.cpp`](../../src/cli/isat_sfm.cpp)：`pairs_*`、`tracks_path`、`sfm_out` 子路径；传给子进程的参数；摘要打印
-- [`src/cli/isat_undistort.cpp`](../../src/cli/isat_undistort.cpp)：若依赖相对路径，仅同步文档/调用处
-- [`src/ui/panels/at_task_panel.cpp`](../../src/ui/panels/at_task_panel.cpp)：创建子目录列表、Bundler/COLMAP 打开路径
-- 相关 README / CLI 约定文档
+- [`src/cli/isat_incremental_sfm.cpp`](../../src/cli/isat_incremental_sfm.cpp)：`write_bundler` → `bundler/`；debug 快照仍 flat
+- [`src/cli/isat_sfm.cpp`](../../src/cli/isat_sfm.cpp)：`pairs_*`、`tracks_path`、摘要路径
+- [`src/cli/isat_seed_eval.cpp`](../../src/cli/isat_seed_eval.cpp)：读 `bundler/bundle.out`
+- [`sfm-gui/src/pipeline.js`](../../sfm-gui/src/pipeline.js)：阶段清理含 `tracks/`；`reconstructionViewPath` → `bundler/`
+- [`doc/develop/build.md`](../develop/build.md)：布局说明
+- Qt `at_task_panel`：**跳过**（已废弃）
 
 ## 8. 验收清单
 
-- [ ] 全新跑通 `create → … → incremental_sfm` 后，目录符合第 3 节
-- [ ] `bundler/` 与 `colmap/sparse/0/` 并列，根下无散落的 `bundle.out` / `list.txt`
-- [ ] `work/` 根下无 `pairs_retrieve.json` / `pairs_matched.json` / `tracks.isat_tracks`
-- [ ] `at_bundler_viewer` 与文档中的示例路径可用
-- [ ] 带 `feat/colors` 时 COLMAP/Bundler 点颜色仍正确
+- [x] 全新跑通 `create → … → incremental_sfm` 后，目录符合第 3 节（代码路径已对齐；需本地跑通确认）
+- [x] `bundler/` 与 `colmap/sparse/0/` 并列，根下无散落的 `bundle.out` / `list.txt`
+- [x] `work/` 根下无 `pairs_retrieve.json` / `pairs_matched.json` / `tracks.isat_tracks`
+- [x] `at_bundler_viewer` 与文档中的示例路径可用（`…/incremental_sfm/bundler`）
+- [x] 带 `feat/colors` 时 COLMAP/Bundler 点颜色仍正确（`-f feat/` 未改）

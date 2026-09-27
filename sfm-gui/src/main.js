@@ -9,7 +9,13 @@ const pipeline = require('./pipeline');
 let mainWindow = null;
 let currentState = null;
 
+function appIconPath() {
+  const candidate = path.join(__dirname, '..', 'assets', 'icon.png');
+  return fs.existsSync(candidate) ? candidate : undefined;
+}
+
 function createWindow() {
+  const icon = appIconPath();
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
@@ -18,6 +24,7 @@ function createWindow() {
     title: 'InsightAT SfM',
     backgroundColor: '#f5f7fb',
     autoHideMenuBar: true,
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js')
     }
@@ -25,11 +32,42 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
+
+  mainWindow.on('close', (event) => {
+    if (allowQuit) return;
+    if (!pipeline.isBusy() && !pipeline.hasActiveChild()) return;
+    event.preventDefault();
+    void promptBusyQuit('close');
+  });
 }
 
 function sendLog(text) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('pipeline:log', text);
+  }
+}
+
+function sendDetailLog(text) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('pipeline:logDetail', text);
+  }
+}
+
+function sendProgress(data) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('pipeline:progress', data);
+  }
+}
+
+function sendLogReset(info) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('pipeline:logReset', info || {});
+  }
+}
+
+function sendPipelinePlan(plan) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('pipeline:plan', plan);
   }
 }
 
@@ -40,7 +78,14 @@ function requireState() {
   return currentState;
 }
 
+function assertUiIdle() {
+  if (pipeline.isBusy()) {
+    throw new Error('A job is running. Stop it before switching projects or starting another action.');
+  }
+}
+
 ipcMain.handle('project:create', async (_event, options) => {
+  assertUiIdle();
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Choose an empty work directory or create one',
     properties: ['openDirectory', 'createDirectory']
@@ -54,6 +99,7 @@ ipcMain.handle('project:create', async (_event, options) => {
 });
 
 ipcMain.handle('project:open', async () => {
+  assertUiIdle();
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open an InsightAT SfM work directory',
     properties: ['openDirectory']
@@ -76,9 +122,34 @@ ipcMain.handle('project:addFolder', async (_event, options) => {
 
 ipcMain.handle('project:runReconstruction', async (_event, options) => {
   currentState = requireState();
-  const summary = await pipeline.runReconstruction(currentState, options || {}, sendLog);
-  currentState = summary;
-  return pipeline.loadSummary(currentState);
+  try {
+    const summary = await pipeline.runReconstruction(
+      currentState,
+      {
+        ...(options || {}),
+        onConsole: sendLog,
+        onDetail: sendDetailLog,
+        onProgress: sendProgress,
+        onLogReset: sendLogReset,
+        onPlan: sendPipelinePlan
+      },
+      sendLog
+    );
+    currentState = summary;
+    return pipeline.loadSummary(currentState);
+  } catch (err) {
+    // Stop / failure still writes status markers — refresh so UI Continue is correct.
+    if (err && err.summary) {
+      currentState = err.summary;
+    } else if (currentState) {
+      try {
+        currentState = pipeline.loadSummary(currentState);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    throw err;
+  }
 });
 
 ipcMain.handle('project:getPipelinePlan', async () => {
@@ -252,6 +323,7 @@ ipcMain.handle('profile:deleteCameraPreset', async (_event, id) => {
 });
 
 ipcMain.handle('profile:openRecent', async (_event, workDir) => {
+  assertUiIdle();
   if (!workDir || !fs.existsSync(workDir)) {
     throw new Error(`Project directory not found: ${workDir || ''}`);
   }
@@ -265,13 +337,69 @@ app.whenReady().then(() => {
   createWindow();
 });
 
-app.on('window-all-closed', () => {
-  pipeline.stopActive().catch(() => {});
-  if (process.platform !== 'darwin') app.quit();
+/** When true, close/quit proceeds without the busy dialog. */
+let allowQuit = false;
+/** Avoid stacking multiple busy-quit dialogs. */
+let busyQuitPromptOpen = false;
+
+/**
+ * Native modal while a job is running:
+ * - Keep Running → stay open, job continues
+ * - Stop and Quit → kill process tree, then quit
+ */
+async function promptBusyQuit(reason) {
+  if (allowQuit || busyQuitPromptOpen) return;
+  if (!pipeline.isBusy() && !pipeline.hasActiveChild()) {
+    allowQuit = true;
+    if (reason === 'close' && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.close();
+    } else {
+      app.quit();
+    }
+    return;
+  }
+
+  busyQuitPromptOpen = true;
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  let response = 0;
+  try {
+    const result = await dialog.showMessageBox(parent, {
+      type: 'warning',
+      buttons: ['Keep Running', 'Stop and Quit'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'Job in progress',
+      message: 'A job is still running.',
+      detail:
+        'Closing now would leave CLI processes behind or interrupt reconstruction.\n\n' +
+        'Choose Keep Running to wait, or Stop and Quit to end the job and close.'
+    });
+    response = result.response;
+  } finally {
+    busyQuitPromptOpen = false;
+  }
+
+  if (response !== 1) return;
+
+  try {
+    await pipeline.stopActive(sendLog);
+  } catch (_) {
+    /* still quit */
+  }
+  allowQuit = true;
+  app.exit(0);
+}
+
+app.on('before-quit', (event) => {
+  if (allowQuit) return;
+  if (!pipeline.isBusy() && !pipeline.hasActiveChild()) return;
+  event.preventDefault();
+  void promptBusyQuit('quit');
 });
 
-app.on('before-quit', () => {
-  pipeline.stopActive().catch(() => {});
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('activate', () => {

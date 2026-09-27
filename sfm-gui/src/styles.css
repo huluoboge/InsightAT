@@ -114,15 +114,15 @@ button.icon-button {
   align-items: center;
 }
 
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 7px;
-  background: var(--primary);
-  color: #ffffff;
-  font-weight: 800;
+.brand-logo {
+  display: block;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  object-fit: contain;
+  flex-shrink: 0;
+  background: #f5f7fb;
+  box-shadow: 0 0 0 1px var(--line);
 }
 
 .brand h1,
@@ -487,10 +487,63 @@ input:focus {
 
 .log-pane {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
-#logOutput {
+.log-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.log-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.log-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+}
+
+.log-tab.active {
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--panel-strong);
+}
+
+.progress-wrap {
+  padding: 10px 16px 0;
+}
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e6ebf2;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+
+.progress-label {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.log-output,
+#logOutput,
+#logDetailOutput {
   min-height: 278px;
   max-height: 420px;
   margin: 0;
@@ -506,6 +559,21 @@ input:focus {
 
 body.busy .content {
   cursor: progress;
+}
+
+/* While a job runs, lock the whole UI except Stop (and the log stays readable). */
+body.busy button:not(#stopBtn):not(.log-tab),
+body.busy input,
+body.busy select,
+body.busy textarea,
+body.busy .recent-item {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+body.busy #stopBtn {
+  pointer-events: auto;
+  opacity: 1;
 }
 
 .settings-btn {

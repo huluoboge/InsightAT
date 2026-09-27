@@ -7,16 +7,16 @@
  *   Stage 1 [multi-thread I/O]    Read images from disk
  *   Stage 2 [multi-thread CPU]    Undistort via cv::remap using pre-generated maps
  *   Stage 3 [multi-thread I/O]    Write as <out>/colmap/sparse/0/images/%08d.jpg
- *   [post]  Write COLMAP sparse/0/ cameras.txt / images.txt / points3D.txt
+ *   [post]  Write COLMAP sparse/0/ cameras/images/points3D (.bin by default; --text for .txt)
  *
  * Usage:
  *   isat_undistort -p project.json -j poses.json -o out_dir
  *   isat_undistort -p project.json -t tracks.isat_tracks -o out_dir   (poses from IDC)
- *   isat_undistort -p project.json -j poses.json -o out_dir --jpg-quality 95 -j 4
+ *   isat_undistort -p project.json -j poses.json -o out_dir --text    (COLMAP text)
  *
  * Output:
  *   out_dir/colmap/images/%08d.jpg  — undistorted images
- *   out_dir/colmap/sparse/0/       — COLMAP text files (PINHOLE cameras, %08d names)
+ *   out_dir/colmap/sparse/0/       — COLMAP binary sparse (PINHOLE; use --text for .txt)
  */
 
 #include <chrono>
@@ -671,7 +671,6 @@ int main(int argc, char* argv[]) {
   int io_threads = 4;
   int jpg_quality = 95;
   int queue_size = 10;
-  int use_binary = 0;
 
   CmdLine cmd("Undistort registered images for 3DGS / COLMAP output (Stage pipeline)");
   cmd.add(make_option('p', project_path, "project").doc("project.json (isat_project extract)"));
@@ -686,7 +685,10 @@ int main(int argc, char* argv[]) {
               .doc("CPU I/O / undistort worker threads (default: 4)"));
   cmd.add(make_option(0, jpg_quality, "jpg-quality").doc("JPEG quality 1-100 (default: 95)"));
   cmd.add(make_option(0, queue_size, "queue-size").doc("Bounded queue size per stage (default: 10)"));
-  cmd.add(make_switch(0, "binary").doc("Write COLMAP binary format (.bin) instead of text (.txt)"));
+  cmd.add(make_switch(0, "binary")
+              .doc("Write COLMAP binary (.bin). Default; kept for compatibility."));
+  cmd.add(make_switch(0, "text")
+              .doc("Write COLMAP text (.txt) instead of binary."));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
@@ -891,16 +893,25 @@ int main(int argc, char* argv[]) {
 
   if (wrote == 0) { LOG(ERROR) << "No images were successfully undistorted"; return 1; }
 
-  // ── 8. Write COLMAP sparse files ──────────────────────────────────────────
-  if (cmd.used("binary")) {
-    if (!write_colmap_binary(sparse_dir.string(), tasks, poses.cameras, poses,
-                             track_store ? track_store.get() : nullptr, features_dir)) {
-      LOG(ERROR) << "Failed to write COLMAP binary files"; return 1;
+  // ── 8. Write COLMAP sparse files (binary default; --text for .txt) ─────────
+  auto remove_sparse_files = [&](std::initializer_list<const char*> names) {
+    for (const char* name : names) {
+      std::error_code ec;
+      fs::remove(sparse_dir / name, ec);
     }
-  } else {
+  };
+  const bool write_text = cmd.used("text");
+  if (write_text) {
+    remove_sparse_files({"cameras.bin", "images.bin", "points3D.bin"});
     if (!write_colmap_sparse(sparse_dir.string(), tasks, poses.cameras, poses,
                              track_store ? track_store.get() : nullptr, features_dir)) {
       LOG(ERROR) << "Failed to write COLMAP text files"; return 1;
+    }
+  } else {
+    remove_sparse_files({"cameras.txt", "images.txt", "points3D.txt"});
+    if (!write_colmap_binary(sparse_dir.string(), tasks, poses.cameras, poses,
+                             track_store ? track_store.get() : nullptr, features_dir)) {
+      LOG(ERROR) << "Failed to write COLMAP binary files"; return 1;
     }
   }
 
