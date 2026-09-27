@@ -537,7 +537,7 @@ bool is_resection_stable(int inlier_count, int total_correspondences, double rms
 bool resection_single_image(TrackStore& store, int image_index, double fx, double fy, double cx,
                             double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers, double ransac_thresh_px, int* inliers_out,
-                            double* rmse_px_out, double min_inlier_ratio) {
+                            double* rmse_px_out, double min_inlier_ratio, bool commit_outliers) {
   if (!R_out || !t_out)
     return false;
 
@@ -588,7 +588,8 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
                                    R_out, t_out, inliers_out, rmse_px_out, &inlier_full,
                                    min_inlier_ratio))
       return false;
-    mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
+    if (commit_outliers)
+      mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
     return true;
   }
 
@@ -669,7 +670,7 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
   }
   if (inliers_out)
     *inliers_out = n_inliers;
-  {
+  if (commit_outliers) {
     std::vector<char> mask_char(static_cast<size_t>(num_pts));
     for (int i = 0; i < num_pts; ++i)
       mask_char[static_cast<size_t>(i)] = inlier_mask[static_cast<size_t>(i)] ? 1 : 0;
@@ -683,11 +684,11 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
 bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out, int min_inliers,
                             double ransac_thresh_px, int* inliers_out, double* rmse_px_out,
-                            double min_inlier_ratio) {
+                            double min_inlier_ratio, bool commit_outliers) {
   if (!K.has_distortion()) {
     return resection_single_image(store, image_index, K.fx, K.fy, K.cx, K.cy, R_out, t_out,
                                   min_inliers, ransac_thresh_px, inliers_out, rmse_px_out,
-                                  min_inlier_ratio);
+                                  min_inlier_ratio, commit_outliers);
   }
 
   std::vector<int> obs_ids_all;
@@ -742,7 +743,8 @@ bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int 
                                    ransac_thresh_px, R_out, t_out, inliers_out, rmse_px_out,
                                    &inlier_full, min_inlier_ratio))
       return false;
-    mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
+    if (commit_outliers)
+      mark_pnp_outliers_deleted(store, pnp_obs_ids, inlier_full);
     return true;
   }
 
@@ -798,7 +800,7 @@ bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int 
     return false;
   if (inliers_out)
     *inliers_out = n_inliers;
-  {
+  if (commit_outliers) {
     std::vector<char> mask_char(static_cast<size_t>(num_pts));
     for (int i = 0; i < num_pts; ++i)
       mask_char[static_cast<size_t>(i)] = inlier_mask[static_cast<size_t>(i)] ? 1 : 0;

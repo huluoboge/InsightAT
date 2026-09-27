@@ -59,6 +59,8 @@ public:
   bool load_from_dir(const std::string& geo_dir);
   bool is_valid() const { return valid_; }
   const GeoPackPairEntry* find(uint32_t image1_index, uint32_t image2_index) const;
+  const std::unordered_map<uint64_t, GeoPackPairEntry>& entries() const { return entries_; }
+  size_t size() const { return entries_.size(); }
 
   static constexpr const char* kJsonIndexFileName = "geopack_index.json";
   static constexpr const char* kBinaryIndexFileName = "geopack_index.isat_gpkx";

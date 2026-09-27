@@ -7,7 +7,8 @@
  *   2. extract           – dual feature extraction (matching + retrieval)
  *   3. match             – 默认：检索穷举 → 全分辨率 match → geo；图像数 <
  * --auto-exhaustive-max-images 时自动改全穷举；若有 matching_extract_meta.json 中的 low_peak
- * 图，则与 检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举
+ * 图，则与 检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举；
+ * geo 后按焦距估计情况（--focal-from-geo=auto|always|never）可选跑 isat_focal_from_geo
  *   4. tracks            – build tracks from matches + geometry
  *   5. seed_eval         – 四策略 seed 评估（balanced/wide_baseline/support_first/conservative）
  *   6. incremental_sfm   – incremental SfM (resection + BA)
@@ -150,7 +151,7 @@ static bool load_seed_eval_best_profile(const fs::path& best_seed_path,
     profile->init_min_angle_deg = best_strategy.value("init_min_angle_deg", 2.0);
     profile->init_min_median_angle_deg =
         best_strategy.value("init_min_median_angle_deg", 30.0);
-    profile->resection_min_inliers = best_strategy.value("resection_min_inliers", 15);
+    profile->resection_min_inliers = best_strategy.value("resection_min_inliers", 30);
     return !profile->name.empty();
   } catch (const std::exception& e) {
     if (error_message)
@@ -301,6 +302,92 @@ static std::set<std::string> parse_steps(const std::string& steps_str) {
     result.insert(token);
   }
   return result;
+}
+
+/// Classic camera_estimator fallback: f35=35 → fx = 35 * diag / 43.2666.
+static bool looks_like_f35_fallback(double fx, double width, double height) {
+  if (!(fx > 0.0) || !(width > 0.0) || !(height > 0.0))
+    return false;
+  const double diag = std::sqrt(width * width + height * height);
+  const double expected = 35.0 * diag / 43.266615305567875;
+  if (!(expected > 0.0))
+    return false;
+  return std::abs(fx - expected) / expected < 0.02;
+}
+
+/// Persist camera_estimator ISAT_EVENT sources for later pipeline decisions.
+static void write_camera_estimate_meta(const fs::path& meta_path,
+                                       const std::vector<json>& events) {
+  json root;
+  root["type"] = "camera_estimate_meta";
+  root["groups"] = json::array();
+  bool any_fallback = false;
+  for (const auto& ev : events) {
+    if (!ev.contains("type") || ev["type"] != "camera_estimator.estimate")
+      continue;
+    if (!ev.value("ok", false) || !ev.contains("data"))
+      continue;
+    const auto& d = ev["data"];
+    json g;
+    g["group_id"] = d.value("group_id", -1);
+    g["group_name"] = d.value("group_name", "");
+    g["source"] = d.value("source", "");
+    g["fx"] = d.value("fx", 0.0);
+    g["fy"] = d.value("fy", 0.0);
+    g["width"] = d.value("width", 0);
+    g["height"] = d.value("height", 0);
+    g["make"] = d.value("make", "");
+    g["model"] = d.value("model", "");
+    if (g["source"] == "fallback")
+      any_fallback = true;
+    root["groups"].push_back(std::move(g));
+  }
+  root["any_fallback"] = any_fallback;
+  root["needs_focal_from_geo"] = any_fallback;
+  std::ofstream ofs(meta_path);
+  ofs << root.dump(2) << "\n";
+}
+
+/// Decide whether to run isat_focal_from_geo after geometry.
+/// mode: auto | always | never
+static bool should_run_focal_from_geo(const std::string& mode, const fs::path& meta_path,
+                                      const fs::path& images_all_path) {
+  if (mode == "never")
+    return false;
+  if (mode == "always")
+    return true;
+  // auto
+  if (fs::exists(meta_path)) {
+    try {
+      std::ifstream ifs(meta_path);
+      json meta;
+      ifs >> meta;
+      if (meta.contains("needs_focal_from_geo"))
+        return meta["needs_focal_from_geo"].get<bool>();
+      if (meta.value("any_fallback", false))
+        return true;
+    } catch (...) {
+    }
+  }
+  // Resume without meta: detect classic f35=35 fallback in images_all cameras.
+  try {
+    std::ifstream ifs(images_all_path);
+    if (!ifs)
+      return false;
+    json j;
+    ifs >> j;
+    if (!j.contains("cameras") || !j["cameras"].is_array())
+      return false;
+    for (const auto& cam : j["cameras"]) {
+      const double fx = cam.value("fx", 0.0);
+      const double w = cam.value("width", 0.0);
+      const double h = cam.value("height", 0.0);
+      if (looks_like_f35_fallback(fx, w, h))
+        return true;
+    }
+  } catch (...) {
+  }
+  return false;
 }
 
 /// images_all.json → 图像数量（与 isat_retrieval_match 一致）。
@@ -570,6 +657,10 @@ int main(int argc, char* argv[]) {
   int ba_threads = 0;
   /// isat_seed_eval short-window evaluation cap.
   int seed_eval_max_images = 6;
+  /// After geo: refine fx from F when camera prior is unreliable.
+  /// auto (default) = only if camera_estimator used fallback (or images look like f35=35);
+  /// always / never override.
+  std::string focal_from_geo = "auto";
 
   CmdLine cmd("InsightAT SfM Pipeline – end-to-end incremental SfM");
   cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required unless --existing-task)"));
@@ -640,6 +731,10 @@ int main(int argc, char* argv[]) {
       make_option(0, geo_thresh_f, "geo-thresh-f")
       .doc("Geometry -t/--thresh: F inlier threshold in pixels (default: 16.0). "
                "Larger tolerates calibration / distortion / noise; too large admits bad pairs."));
+  cmd.add(make_option(0, focal_from_geo, "focal-from-geo")
+              .doc("After geo, estimate fx from F matrices via isat_focal_from_geo and update "
+                   "images_all.json. auto (default): only when camera_estimator source is "
+                   "fallback (or images look like classic f35=35 fallback); always; never."));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO); also forwarded to all sub-tools"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only); also forwarded to all sub-tools"));
@@ -706,6 +801,12 @@ int main(int argc, char* argv[]) {
   }
   if (!(geo_thresh_f > 0.0)) {
     std::cerr << "Error: --geo-thresh-f must be > 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (focal_from_geo != "auto" && focal_from_geo != "always" && focal_from_geo != "never") {
+    std::cerr << "Error: --focal-from-geo must be auto|always|never (got '" << focal_from_geo
+              << "')\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -987,7 +1088,10 @@ int main(int argc, char* argv[]) {
         cam_cmd.push_back("-d");
         cam_cmd.push_back(sensor_db);
       }
-      run_or_die("camera-estimate", cam_cmd);
+      const auto cam_events = run_capture_or_die("camera-estimate", cam_cmd);
+      const fs::path cam_meta = work_path / "camera_estimate_meta.json";
+      write_camera_estimate_meta(cam_meta, cam_events);
+      LOG(INFO) << "Wrote camera estimate meta: " << cam_meta.string();
     }
 
     run_or_die("create-at-task",
@@ -1285,6 +1389,69 @@ int main(int argc, char* argv[]) {
                   "--estimate-h",
                   "--twoview",
                   "--vis"});
+    }
+
+    // After geometry: refine focal when camera prior is unreliable (fallback / f35=35).
+    {
+      const fs::path cam_meta = work_path / "camera_estimate_meta.json";
+      const bool do_focal =
+          should_run_focal_from_geo(focal_from_geo, cam_meta, images_all);
+      if (do_focal) {
+        LOG(INFO) << "Focal prior unreliable (--focal-from-geo=" << focal_from_geo
+                  << "); estimating fx from geo F matrices";
+        const fs::path focal_bin = fs::path(g_bin_dir) / "isat_focal_from_geo";
+        if (!fs::exists(focal_bin)) {
+          LOG(ERROR) << "isat_focal_from_geo not found at " << focal_bin.string();
+          return 1;
+        }
+        std::vector<std::string> focal_cmd = {tool_path("isat_focal_from_geo"),
+                                              "-p",
+                                              images_all.string(),
+                                              "-g",
+                                              geo_dir.string(),
+                                              "-o",
+                                              images_all.string(),
+                                              "-j",
+                                              std::to_string(io_threads)};
+        std::vector<json> focal_events;
+        auto t0 = std::chrono::steady_clock::now();
+        const int focal_rc = run_capture(focal_cmd, focal_events);
+        const double focal_secs =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (focal_rc != 0) {
+          if (focal_from_geo == "always") {
+            LOG(ERROR) << "Step [focal-from-geo] failed (exit code " << focal_rc << ")";
+            return 1;
+          }
+          LOG(WARNING) << "focal-from-geo failed (exit " << focal_rc << " in " << focal_secs
+                       << "s); keeping camera prior and continuing";
+        } else {
+          LOG(INFO) << "Step [focal-from-geo] completed in " << focal_secs << "s";
+          g_step_timings.push_back({"focal-from-geo", focal_secs});
+          // Stamp meta so resumed runs know prior was refined.
+          try {
+            json stamp;
+            if (fs::exists(cam_meta)) {
+              std::ifstream ifs(cam_meta);
+              ifs >> stamp;
+            }
+            stamp["focal_from_geo_ran"] = true;
+            stamp["needs_focal_from_geo"] = false;
+            for (const auto& ev : focal_events) {
+              if (ev.value("type", "") == "focal_from_geo.estimate") {
+                stamp["focal_from_geo"] = ev;
+                break;
+              }
+            }
+            std::ofstream ofs(cam_meta);
+            ofs << stamp.dump(2) << "\n";
+          } catch (...) {
+          }
+        }
+      } else {
+        LOG(INFO) << "Skipping focal-from-geo (--focal-from-geo=" << focal_from_geo
+                  << "; camera prior trusted)";
+      }
     }
   }
 
