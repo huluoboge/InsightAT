@@ -73,6 +73,7 @@ The [IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_re
 ### 5.1 Feature Extraction Blobs
 - **`keypoints`** - `dtype: "float32"`, `shape: [N, 4]` (x, y, scale, orientation)
 - **`descriptors`** - `dtype: "uint8"` or `dtype: "float32"`, `shape: [N, D]` (N features, D dimensions)
+- **`colors`** (optional) - `dtype: "uint8"`, `shape: [N, 3]` — per-keypoint **RGB** sampled at extract time from the color image. Absent on grayscale inputs or when `--no-store-colors` is used. Metadata may include `has_colors: true` when present. Readers must treat this blob as optional for backward compatibility.
 
 ### 5.2 Matching Blobs
 - **`matches`** - `dtype: "uint32"`, `shape: [M, 2]` (index pairs)

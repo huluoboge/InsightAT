@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -86,16 +87,28 @@ private:
                       std::vector<float>& descriptors);
 };
 
-/** 对关键点与描述子做网格分布（可在 CPU 线程中调用）。 */
+/** 对关键点与描述子做网格分布（可在 CPU 线程中调用）。
+ *  若 colors 非空且 size == keypoints.size()*3，则与 keypoints 同步过滤。 */
 void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<float>& descriptors, int image_width, int image_height,
                                 int grid_size = 32, int max_per_cell = 2,
-                                bool keep_orientation = true);
+                                bool keep_orientation = true,
+                                std::vector<uint8_t>* colors = nullptr);
 
 void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<unsigned char>& descriptors, int image_width,
                                 int image_height, int grid_size = 32, int max_per_cell = 2,
-                                bool keep_orientation = true);
+                                bool keep_orientation = true,
+                                std::vector<uint8_t>* colors = nullptr);
+
+/**
+ * Sample per-keypoint RGB (uint8) from a BGR/BGRA image at keypoint locations.
+ * Returns empty if image is not 3/4-channel or keypoints empty.
+ * Coordinates are clamped to image bounds; bilinear interpolation.
+ */
+std::vector<uint8_t>
+sample_keypoint_colors_bgr_to_rgb(const cv::Mat& image,
+                                  const std::vector<SiftGPU::SiftKeypoint>& keypoints);
 
 void l2_normalize_descriptors(std::vector<float>& descriptors, int dim = 128);
 void l1_root_normalize_descriptors(std::vector<float>& descriptors, int dim = 128);

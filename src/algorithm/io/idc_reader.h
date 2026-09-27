@@ -35,6 +35,10 @@ public:
 
   const nlohmann::json& get_metadata() const { return metadata_; }
   nlohmann::json get_blob_descriptor(const std::string& blob_name) const;
+  /// True if a blob with this name exists in the container (optional blobs e.g. colors).
+  bool has_blob(const std::string& blob_name) const {
+    return blob_index_.find(blob_name) != blob_index_.end();
+  }
   std::vector<uint8_t> read_blob_raw(const std::string& blob_name);
   template <typename T> std::vector<T> read_blob(const std::string& blob_name);
   size_t get_payload_offset() const { return payload_offset_; }

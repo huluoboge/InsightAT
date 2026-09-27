@@ -538,9 +538,83 @@ int SiftGPUExtractor::extract_popsift(const cv::Mat& image, std::vector<SiftGPU:
 // Helper Functions - Exposed for CPU Multi-threading
 // ============================================================================
 
+namespace {
+
+void gather_colors_by_indices(const std::vector<uint8_t>& colors_in,
+                              const std::vector<size_t>& kept_indices,
+                              std::vector<uint8_t>* colors_out) {
+  if (!colors_out)
+    return;
+  colors_out->clear();
+  if (colors_in.empty() || (colors_in.size() % 3) != 0)
+    return;
+  colors_out->reserve(kept_indices.size() * 3);
+  for (size_t idx : kept_indices) {
+    const size_t base = idx * 3;
+    if (base + 2 >= colors_in.size())
+      continue;
+    colors_out->push_back(colors_in[base + 0]);
+    colors_out->push_back(colors_in[base + 1]);
+    colors_out->push_back(colors_in[base + 2]);
+  }
+}
+
+} // namespace
+
+std::vector<uint8_t>
+sample_keypoint_colors_bgr_to_rgb(const cv::Mat& image,
+                                  const std::vector<SiftGPU::SiftKeypoint>& keypoints) {
+  std::vector<uint8_t> colors;
+  if (keypoints.empty() || image.empty())
+    return colors;
+  if (image.channels() != 3 && image.channels() != 4)
+    return colors;
+
+  const int w = image.cols;
+  const int h = image.rows;
+  if (w < 1 || h < 1)
+    return colors;
+
+  colors.resize(keypoints.size() * 3);
+
+  for (size_t i = 0; i < keypoints.size(); ++i) {
+    float x = keypoints[i].x;
+    float y = keypoints[i].y;
+    x = std::clamp(x, 0.0f, static_cast<float>(w - 1));
+    y = std::clamp(y, 0.0f, static_cast<float>(h - 1));
+
+    const int x0 = static_cast<int>(x);
+    const int y0 = static_cast<int>(y);
+    const int x1 = std::min(x0 + 1, w - 1);
+    const int y1 = std::min(y0 + 1, h - 1);
+    const float dx = x - static_cast<float>(x0);
+    const float dy = y - static_cast<float>(y0);
+
+    auto sample_bgr = [&](int yy, int xx) -> cv::Vec3f {
+      const uchar* p = image.ptr(yy, xx);
+      return cv::Vec3f(static_cast<float>(p[0]), static_cast<float>(p[1]),
+                       static_cast<float>(p[2]));
+    };
+    const cv::Vec3f bgr00 = sample_bgr(y0, x0);
+    const cv::Vec3f bgr10 = sample_bgr(y0, x1);
+    const cv::Vec3f bgr01 = sample_bgr(y1, x0);
+    const cv::Vec3f bgr11 = sample_bgr(y1, x1);
+
+    const cv::Vec3f bgr = bgr00 * ((1.0f - dx) * (1.0f - dy)) + bgr10 * (dx * (1.0f - dy)) +
+                          bgr01 * ((1.0f - dx) * dy) + bgr11 * (dx * dy);
+
+    // Store as RGB
+    colors[i * 3 + 0] = static_cast<uint8_t>(std::clamp(bgr[2] + 0.5f, 0.0f, 255.0f));
+    colors[i * 3 + 1] = static_cast<uint8_t>(std::clamp(bgr[1] + 0.5f, 0.0f, 255.0f));
+    colors[i * 3 + 2] = static_cast<uint8_t>(std::clamp(bgr[0] + 0.5f, 0.0f, 255.0f));
+  }
+  return colors;
+}
+
 void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<float>& descriptors, int image_width, int image_height,
-                                int grid_size, int max_per_cell, bool keep_orientation) {
+                                int grid_size, int max_per_cell, bool keep_orientation,
+                                std::vector<uint8_t>* colors) {
 
   if (keypoints.empty())
     return;
@@ -567,6 +641,12 @@ void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
     desc_filtered.insert(desc_filtered.end(), src, src + 128);
   }
 
+  if (colors && colors->size() == keypoints.size() * 3) {
+    std::vector<uint8_t> colors_filtered;
+    gather_colors_by_indices(*colors, kept_indices, &colors_filtered);
+    *colors = std::move(colors_filtered);
+  }
+
   keypoints = std::move(kpts_filtered);
   descriptors = std::move(desc_filtered);
 }
@@ -574,7 +654,7 @@ void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
 void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<unsigned char>& descriptors, int image_width,
                                 int image_height, int grid_size, int max_per_cell,
-                                bool keep_orientation) {
+                                bool keep_orientation, std::vector<uint8_t>* colors) {
 
   if (keypoints.empty())
     return;
@@ -599,6 +679,12 @@ void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
     kpts_filtered.push_back(keypoints[idx]);
     const unsigned char* src = descriptors.data() + idx * 128;
     desc_filtered.insert(desc_filtered.end(), src, src + 128);
+  }
+
+  if (colors && colors->size() == keypoints.size() * 3) {
+    std::vector<uint8_t> colors_filtered;
+    gather_colors_by_indices(*colors, kept_indices, &colors_filtered);
+    *colors = std::move(colors_filtered);
   }
 
   keypoints = std::move(kpts_filtered);

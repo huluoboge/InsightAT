@@ -20,6 +20,7 @@
  */
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +44,7 @@
 #include "cli_logging.h"
 #include "cmdLine/cmdLine.h"
 #include "task_queue/task_queue.hpp"
+#include "algorithm/export/point_color_utils.h"
 #include "algorithm/io/track_store_idc.h"
 #include "algorithm/modules/camera/camera_utils.h"
 
@@ -274,7 +276,8 @@ static bool write_colmap_sparse(
     const std::vector<UndistortTask>& tasks,
     const std::vector<CameraIntrinsics>& cameras,
     const PoseBundle& poses,
-    const insight::sfm::TrackStore* store) {
+    const insight::sfm::TrackStore* store,
+    const std::string& features_dir = "") {
 
   // Determine unique cameras actually used
   std::map<int, int> cam_idx_to_colmap_id;
@@ -303,10 +306,13 @@ static bool write_colmap_sparse(
   struct ColmapPoint3D {
     float x, y, z;
     int point3d_id;
+    uint8_t r = 128, g = 128, b = 128;
     std::vector<std::pair<int, int>> track; // (colmap_image_id, point2d_idx)
   };
   std::vector<ColmapPoint3D> colmap_points;
   int next_pt_id = 1;
+
+  insight::export_util::FeatureColorCache color_cache(features_dir);
 
   if (store) {
     // Pre-build per-camera Intrinsics for undistortion
@@ -329,6 +335,11 @@ static bool write_colmap_sparse(
       ColmapPoint3D pt;
       pt.x = px; pt.y = py; pt.z = pz;
       pt.point3d_id = next_pt_id;
+      if (auto rgb = insight::export_util::average_track_rgb(obs_buf, color_cache)) {
+        pt.r = (*rgb)[0];
+        pt.g = (*rgb)[1];
+        pt.b = (*rgb)[2];
+      }
 
       for (const auto& o : obs_buf) {
         const int img_idx = static_cast<int>(o.image_index);
@@ -427,7 +438,8 @@ static bool write_colmap_sparse(
     f << std::fixed << std::setprecision(6);
     for (const auto& pt : colmap_points) {
       f << pt.point3d_id << " " << pt.x << " " << pt.y << " " << pt.z
-        << " 128 128 128 0.0";
+        << " " << static_cast<int>(pt.r) << " " << static_cast<int>(pt.g) << " "
+        << static_cast<int>(pt.b) << " 0.0";
       for (const auto& [img_id, pt2d_idx] : pt.track)
         f << " " << img_id << " " << pt2d_idx;
       f << "\n";
@@ -446,7 +458,8 @@ static bool write_colmap_binary(
     const std::vector<UndistortTask>& tasks,
     const std::vector<CameraIntrinsics>& cameras,
     const PoseBundle& poses,
-    const insight::sfm::TrackStore* store) {
+    const insight::sfm::TrackStore* store,
+    const std::string& features_dir = "") {
 
   // Same camera + pose index maps as write_colmap_sparse
   std::map<int, int> cam_idx_to_colmap_id;
@@ -471,10 +484,13 @@ static bool write_colmap_binary(
     uint64_t id;
     double x, y, z;
     double error;
+    uint8_t r = 128, g = 128, b = 128;
     std::vector<std::pair<uint32_t, uint32_t>> track;  // (image_id: uint32_t, point2D_idx: uint32_t)
   };
   std::vector<Pt3D> points3d;
   uint64_t next_pt_id = 1;
+
+  insight::export_util::FeatureColorCache color_cache(features_dir);
 
   if (store) {
     std::vector<insight::camera::Intrinsics> cam_intr(cameras.size());
@@ -497,6 +513,11 @@ static bool write_colmap_binary(
       pt.x = static_cast<double>(px);
       pt.y = static_cast<double>(py);
       pt.z = static_cast<double>(pz);
+      if (auto rgb = insight::export_util::average_track_rgb(obs_buf, color_cache)) {
+        pt.r = (*rgb)[0];
+        pt.g = (*rgb)[1];
+        pt.b = (*rgb)[2];
+      }
 
       double sum_err = 0.0;
       int n_err = 0;
@@ -622,7 +643,7 @@ static bool write_colmap_binary(
     f.write(reinterpret_cast<const char*>(&n_pts), sizeof(uint64_t));
     for (const auto& pt : points3d) {
       const double xyz[3] = {pt.x, pt.y, pt.z};
-      const uint8_t rgb[3] = {128, 128, 128};
+      const uint8_t rgb[3] = {pt.r, pt.g, pt.b};
       const uint64_t track_len = static_cast<uint64_t>(pt.track.size());
       f.write(reinterpret_cast<const char*>(&pt.id), sizeof(uint64_t));
       f.write(reinterpret_cast<const char*>(xyz), 3 * sizeof(double));
@@ -646,7 +667,7 @@ static bool write_colmap_binary(
 // ─────────────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
-  std::string project_path, poses_path, tracks_path, output_dir, log_level;
+  std::string project_path, poses_path, tracks_path, output_dir, features_dir, log_level;
   int io_threads = 4;
   int jpg_quality = 95;
   int queue_size = 10;
@@ -658,6 +679,8 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('t', tracks_path, "tracks")
               .doc("tracks.isat_tracks (SfM output) — for points3D.txt with undistorted 2D obs"));
   cmd.add(make_option('o', output_dir,   "output").doc("Output directory"));
+  cmd.add(make_option('f', features_dir, "features")
+              .doc("Directory of .isat_feat (optional colors for points3D RGB)"));
   cmd.add(make_option(0, io_threads, "threads")
               .doc("CPU I/O / undistort worker threads (default: 4)"));
   cmd.add(make_option(0, jpg_quality, "jpg-quality").doc("JPEG quality 1-100 (default: 95)"));
@@ -858,12 +881,12 @@ int main(int argc, char* argv[]) {
   // ── 8. Write COLMAP sparse files ──────────────────────────────────────────
   if (cmd.used("binary")) {
     if (!write_colmap_binary(sparse_dir.string(), tasks, poses.cameras, poses,
-                             track_store ? track_store.get() : nullptr)) {
+                             track_store ? track_store.get() : nullptr, features_dir)) {
       LOG(ERROR) << "Failed to write COLMAP binary files"; return 1;
     }
   } else {
     if (!write_colmap_sparse(sparse_dir.string(), tasks, poses.cameras, poses,
-                             track_store ? track_store.get() : nullptr)) {
+                             track_store ? track_store.get() : nullptr, features_dir)) {
       LOG(ERROR) << "Failed to write COLMAP text files"; return 1;
     }
   }

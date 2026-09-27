@@ -189,6 +189,16 @@ FeatureData loadFeaturesIDC(const std::string& idc_path) {
     }
   }
 
+  // Optional per-keypoint RGB (uint8 [N,3])
+  if (reader.has_blob("colors")) {
+    features.colors = reader.read_blob<uint8_t>("colors");
+    if (features.colors.size() != num_features * 3) {
+      LOG(WARNING) << "Ignoring colors blob with unexpected size " << features.colors.size()
+                   << " (expected " << (num_features * 3) << ") in " << idc_path;
+      features.colors.clear();
+    }
+  }
+
   VLOG(1) << "Loaded " << num_features << " features (" << dtype << ") from " << idc_path;
 
   return features;
