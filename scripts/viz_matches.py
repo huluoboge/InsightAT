@@ -98,7 +98,7 @@ def load_image_list(images_json: str) -> dict:
 def load_keypoints_for_image(idx: int, feat_dir: str, max_kp: int = 3000) -> list:
     """
     Load keypoints for a single image, capped at max_kp.
-    Returns list of [x, y, s] (orientation dropped — not needed for rendering).
+    Returns list of [x, y, s] or [x, y, s, r, g, b] when optional colors blob exists.
     Coordinates rounded to 1 decimal to reduce JSON size.
     """
     feat_path = Path(feat_dir) / f"{idx}.isat_feat"
@@ -107,6 +107,7 @@ def load_keypoints_for_image(idx: int, feat_dir: str, max_kp: int = 3000) -> lis
     try:
         _, fb = read_idc(str(feat_path))
         kp = fb["keypoints"]  # shape (N, 4): x, y, s, o
+        colors = fb.get("colors")  # optional shape (N, 3) uint8 RGB
         if len(kp) > max_kp:
             # Use ceil(N/max_kp) so kp[::step] covers the FULL spatial range.
             # floor-based step + [:max_kp] truncation would drop the last slice
@@ -115,9 +116,24 @@ def load_keypoints_for_image(idx: int, feat_dir: str, max_kp: int = 3000) -> lis
             import math
             step = max(1, math.ceil(len(kp) / max_kp))
             kp = kp[::step]  # len(kp[::step]) = ceil(N/step) <= max_kp, no truncation needed
-        # Keep only [x, y, s]; round to save JSON space
-        return [[round(float(r[0]), 1), round(float(r[1]), 1), round(float(r[2]), 1)]
-                for r in kp]
+            if colors is not None and len(colors) > 0:
+                colors = colors[::step]
+        # Keep only [x, y, s]; round to save JSON space; append RGB when present
+        out = []
+        has_colors = (
+            colors is not None
+            and hasattr(colors, "ndim")
+            and colors.ndim == 2
+            and colors.shape[0] == len(kp)
+            and colors.shape[1] == 3
+        )
+        for i, r in enumerate(kp):
+            row = [round(float(r[0]), 1), round(float(r[1]), 1), round(float(r[2]), 1)]
+            if has_colors:
+                c = colors[i]
+                row.extend([int(c[0]), int(c[1]), int(c[2])])
+            out.append(row)
+        return out
     except Exception:
         return []
 
@@ -270,8 +286,11 @@ def render_png(pair: dict, out_path: str, no_feat: bool = False, max_kp: int = 1
                     kpts = kpts[np.random.choice(len(kpts), max_kp, replace=False)]
                 for row in kpts:
                     x, y, s = row[0], row[1], row[2]
+                    ec = color
+                    if len(row) >= 6:
+                        ec = (row[3] / 255.0, row[4] / 255.0, row[5] / 255.0)
                     ax.add_patch(mpatches.Circle((x+ox, y), radius=max(s, 1.5),
-                                                  lw=0.4, edgecolor=color, facecolor="none", alpha=0.5))
+                                                  lw=0.4, edgecolor=ec, facecolor="none", alpha=0.5))
             draw_kp(kp1, "cyan");  draw_kp(kp2, "yellow", w1)
 
         elif panel == "all_matches":
@@ -517,9 +536,11 @@ function draw(){
   if(mode==='kp'){
     const kp1=KP[p.idx1]||[], kp2=KP[p.idx2]||[];
     const drawKp=(kps,sx,sy,ox,col)=>{
-      ctx.strokeStyle=col; ctx.lineWidth=0.8;
+      ctx.lineWidth=0.8;
       for(let j=0;j<kps.length;j++){
-        const [x,y,s]=kps[j];
+        const k=kps[j];
+        const x=k[0], y=k[1], s=k[2];
+        ctx.strokeStyle=(k.length>=6)?`rgba(${k[3]},${k[4]},${k[5]},.7)`:col;
         ctx.beginPath(); ctx.arc(x*sx+ox,y*sy,Math.max(s*sx,1.5),0,Math.PI*2); ctx.stroke();
       }
     };

@@ -1531,7 +1531,9 @@ int main(int argc, char* argv[]) {
                                         "-g",
                                         geo_dir.string(),
                                         "-o",
-                                        sfm_out.string()};
+                                        sfm_out.string(),
+                                        "-f",
+                                        feat_dir.string()};
     if (use_seed_profile) {
       sfm_cmd.push_back("--init-min-inliers");
       sfm_cmd.push_back(std::to_string(seed_profile.init_min_inliers));
@@ -1582,7 +1584,8 @@ int main(int argc, char* argv[]) {
                                          "-p", images_all.string(),
                                          "-t", tracks_idc.string(),
                                          "-j", poses_json.string(),
-                                         "-o", sfm_out.string()};
+                                         "-o", sfm_out.string(),
+                                         "-f", feat_dir.string()};
       if (cmd.used("binary"))
         ud_cmd.push_back("--binary");
       run_or_die("undistort", ud_cmd);

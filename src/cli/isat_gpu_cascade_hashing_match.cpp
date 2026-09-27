@@ -231,6 +231,12 @@ static FeatureData load_features_idc(const std::string& idc_path) {
     std::copy(desc_raw.begin(), desc_raw.end(), features.descriptors_float.begin());
   }
 
+  if (reader.has_blob("colors")) {
+    features.colors = reader.read_blob<uint8_t>("colors");
+    if (features.colors.size() != num_features * 3)
+      features.colors.clear();
+  }
+
   return features;
 }
 

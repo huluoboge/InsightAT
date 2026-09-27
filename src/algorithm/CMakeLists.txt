@@ -50,6 +50,8 @@ set(ALGORITHM_SOURCES
     # Export
     export/ColmapExporter.h
     export/ColmapExporter.cpp
+    export/point_color_utils.h
+    export/point_color_utils.cpp
     
     # I/O
     io/idc_writer.h
