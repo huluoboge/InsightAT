@@ -9,11 +9,22 @@
 namespace insight {
 namespace export_util {
 
+namespace fs = std::filesystem;
+
 namespace {
 
 std::string feat_path_for(const std::string& features_dir, uint32_t image_index) {
-  return (std::filesystem::path(features_dir) / (std::to_string(image_index) + ".isat_feat"))
-      .string();
+  return (fs::path(features_dir) / (std::to_string(image_index) + ".isat_feat")).string();
+}
+
+fs::path parent_dir_of_hint(const std::string& hint) {
+  if (hint.empty())
+    return {};
+  fs::path p(hint);
+  std::error_code ec;
+  if (fs::is_directory(p, ec))
+    return p;
+  return p.parent_path();
 }
 
 } // namespace
@@ -35,7 +46,7 @@ const std::vector<uint8_t>* FeatureColorCache::get(uint32_t image_index) {
 }
 
 std::vector<uint8_t> load_feature_colors(const std::string& feat_path) {
-  if (!std::filesystem::exists(feat_path))
+  if (!fs::exists(feat_path))
     return {};
 
   io::IDCReader reader(feat_path);
@@ -91,6 +102,65 @@ average_track_rgb(const std::vector<sfm::Observation>& observations, FeatureColo
 
   return std::array<uint8_t, 3>{clamp_u8(sum_r / count), clamp_u8(sum_g / count),
                                 clamp_u8(sum_b / count)};
+}
+
+bool is_features_dir(const std::string& dir) {
+  if (dir.empty())
+    return false;
+  std::error_code ec;
+  if (!fs::is_directory(dir, ec))
+    return false;
+  for (const auto& entry : fs::directory_iterator(dir, ec)) {
+    if (ec)
+      break;
+    if (entry.path().extension() == ".isat_feat")
+      return true;
+  }
+  return false;
+}
+
+bool features_dir_has_colors(const std::string& features_dir, int max_probe) {
+  if (!is_features_dir(features_dir) || max_probe <= 0)
+    return false;
+
+  int probed = 0;
+  std::error_code ec;
+  for (const auto& entry : fs::directory_iterator(features_dir, ec)) {
+    if (ec)
+      break;
+    if (entry.path().extension() != ".isat_feat")
+      continue;
+    if (!load_feature_colors(entry.path().string()).empty())
+      return true;
+    if (++probed >= max_probe)
+      break;
+  }
+  return false;
+}
+
+std::string resolve_features_dir(const std::string& explicit_dir,
+                                 const std::vector<std::string>& hint_paths) {
+  if (!explicit_dir.empty()) {
+    if (is_features_dir(explicit_dir))
+      return explicit_dir;
+    LOG(WARNING) << "features dir does not contain .isat_feat: " << explicit_dir;
+    return explicit_dir; // keep caller choice; cache will just yield empty colors
+  }
+
+  static const char* kCandidates[] = {"feat", "features", "features_matching"};
+  for (const auto& hint : hint_paths) {
+    const fs::path parent = parent_dir_of_hint(hint);
+    if (parent.empty())
+      continue;
+    for (const char* name : kCandidates) {
+      const fs::path cand = parent / name;
+      if (is_features_dir(cand.string())) {
+        LOG(INFO) << "Auto-detected feature directory for point colors: " << cand.string();
+        return cand.string();
+      }
+    }
+  }
+  return {};
 }
 
 } // namespace export_util

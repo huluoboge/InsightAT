@@ -680,7 +680,8 @@ int main(int argc, char* argv[]) {
               .doc("tracks.isat_tracks (SfM output) — for points3D.txt with undistorted 2D obs"));
   cmd.add(make_option('o', output_dir,   "output").doc("Output directory"));
   cmd.add(make_option('f', features_dir, "features")
-              .doc("Directory of .isat_feat (optional colors for points3D RGB)"));
+              .doc("Override .isat_feat directory for points3D RGB (default: auto-detect "
+                   "work/feat next to tracks/project)"));
   cmd.add(make_option(0, io_threads, "threads")
               .doc("CPU I/O / undistort worker threads (default: 4)"));
   cmd.add(make_option(0, jpg_quality, "jpg-quality").doc("JPEG quality 1-100 (default: 95)"));
@@ -707,6 +708,18 @@ int main(int argc, char* argv[]) {
 
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
   LOG(INFO) << "isat_undistort: threads=" << io_threads << " jpg_quality=" << jpg_quality;
+
+  features_dir = insight::export_util::resolve_features_dir(
+      features_dir, {tracks_path, project_path, output_dir, poses_path});
+  if (features_dir.empty()) {
+    LOG(INFO) << "No feature directory found; points3D will use gray RGB";
+  } else if (insight::export_util::features_dir_has_colors(features_dir)) {
+    LOG(INFO) << "Feature colors available in " << features_dir << " — will write real RGB";
+  } else {
+    LOG(INFO) << "Feature directory " << features_dir
+              << " has no colors blob; points3D will use gray RGB";
+  }
+
   const auto t_start = std::chrono::steady_clock::now();
 
   // ── 1. Load project info (image paths + image→camera mapping) ──────────────

@@ -12,7 +12,7 @@
  *   -m / --pairs     Path to pairs JSON (for view graph)
  *   -g / --geo       Directory of .isat_geo files (index-based: im0_im1.isat_geo)
  *   -o / --output    Output directory; writes poses.json, bundle.out, list.txt
- *   -f / --features  Optional .isat_feat dir for per-point RGB in COLMAP/Bundler
+ *   -f / --features  Override .isat_feat dir for point RGB (default: auto-detect work/feat)
  *
  *   --ba-threads N   Ceres solver thread count for bundle adjustment (0 = hardware default).
  */
@@ -569,7 +569,8 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option('g', geo_dir, "geo").doc("Directory of .isat_geo files"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory"));
   cmd.add(make_option('f', features_dir, "features")
-              .doc("Directory of .isat_feat (optional colors for COLMAP/Bundler RGB)"));
+              .doc("Override .isat_feat directory for point RGB (default: auto-detect "
+                   "work/feat next to tracks/geo)"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_option(0, debug_dir, "debug-dir")
               .doc("Directory for per-iteration Bundler snapshots (debug pose drift)"));
@@ -654,6 +655,20 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
+
+  // Point colors: use --features if given, else auto-detect work/feat next to tracks/geo/output.
+  features_dir = insight::export_util::resolve_features_dir(
+      features_dir, {tracks_path, geo_dir, output_dir, project_path});
+  if (features_dir.empty()) {
+    LOG(INFO) << "No feature directory found; COLMAP/Bundler points will use gray RGB";
+  } else if (insight::export_util::features_dir_has_colors(features_dir)) {
+    LOG(INFO) << "Feature colors available in " << features_dir
+              << " — will write real RGB to COLMAP/Bundler";
+  } else {
+    LOG(INFO) << "Feature directory " << features_dir
+              << " has no colors blob; COLMAP/Bundler points will use gray RGB "
+                 "(re-run isat_extract without --no-store-colors)";
+  }
 
   ProjectData project;
   {

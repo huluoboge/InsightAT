@@ -34,6 +34,7 @@ public:
   const std::vector<uint8_t>* get(uint32_t image_index);
 
   bool enabled() const { return !features_dir_.empty(); }
+  const std::string& features_dir() const { return features_dir_; }
 
 private:
   std::string features_dir_;
@@ -52,6 +53,25 @@ std::vector<uint8_t> load_feature_colors(const std::string& feat_path);
  */
 std::optional<std::array<uint8_t, 3>>
 average_track_rgb(const std::vector<sfm::Observation>& observations, FeatureColorCache& cache);
+
+/**
+ * Resolve .isat_feat directory for export coloring.
+ * If explicit_dir is non-empty, return it as-is.
+ * Otherwise search conventional siblings of hint paths:
+ *   <parent>/feat, <parent>/features, <parent>/features_matching
+ * First directory that contains at least one *.isat_feat wins.
+ * Returns empty string if none found (export stays gray).
+ *
+ * hint_paths may be files (tracks.isat_tracks, project.json) or directories (geo/, output/).
+ */
+std::string resolve_features_dir(const std::string& explicit_dir,
+                                 const std::vector<std::string>& hint_paths);
+
+/// True if dir looks like a feature store (exists + has ≥1 *.isat_feat).
+bool is_features_dir(const std::string& dir);
+
+/// Probe whether any of the first few .isat_feat files in dir carry a colors blob.
+bool features_dir_has_colors(const std::string& features_dir, int max_probe = 8);
 
 } // namespace export_util
 } // namespace insight
