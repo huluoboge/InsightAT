@@ -144,7 +144,7 @@ python3 benchmarks/sfm_compare/compare_dataset_batch.py \
   -o /path/to/compare_colmap_insightat.json
 ```
 
-### 4) Plots (for `doc/images/benchmarks/`)
+### 4) Plots (for `docs/images/benchmarks/`)
 
 ```bash
 pip install matplotlib

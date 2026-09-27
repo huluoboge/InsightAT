@@ -1,11 +1,11 @@
 # Changelog
 
 This is a user-facing changelog for quick scanning.
-For detailed implementation notes, see [`doc/dev-notes/CHANGELOG.md`](doc/dev-notes/CHANGELOG.md).
+For detailed implementation notes, see [`docs/dev-notes/CHANGELOG.md`](docs/dev-notes/CHANGELOG.md).
 
 ## Unreleased
 
-See [`doc/dev-notes/CHANGELOG.md`](doc/dev-notes/CHANGELOG.md).
+See [`docs/dev-notes/CHANGELOG.md`](docs/dev-notes/CHANGELOG.md).
 
 ## 0.2.2 - 2026-05-16
 
@@ -38,7 +38,7 @@ See [`doc/dev-notes/CHANGELOG.md`](doc/dev-notes/CHANGELOG.md).
 - Logging was improved to print the candidate / matched / verified pair JSON paths directly for easier debugging.
 - BA and PoseLib tuning were updated with larger iteration budgets and revised observation weighting based on pixel-domain standard deviations.
 
-Pre-release notes: [`doc/dev-notes/release-v0.2.1.md`](doc/dev-notes/release-v0.2.1.md).
+Pre-release notes: [`docs/dev-notes/release-v0.2.1.md`](docs/dev-notes/release-v0.2.1.md).
 
 ## 0.2.0 - 2026-05-06
 
@@ -58,5 +58,5 @@ Pre-release notes: [`doc/dev-notes/release-v0.2.1.md`](doc/dev-notes/release-v0.
 - Fixed issues in `at_bundler_viewer` rendering/loading.
 - Overall performance improvements across geometry verification / IDC writing / GPU cascade scheduling.
 
-Release notes: [`doc/dev-notes/release-v0.2.0.md`](doc/dev-notes/release-v0.2.0.md).
+Release notes: [`docs/dev-notes/release-v0.2.0.md`](docs/dev-notes/release-v0.2.0.md).
 

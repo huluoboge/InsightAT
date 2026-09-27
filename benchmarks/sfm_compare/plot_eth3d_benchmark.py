@@ -9,7 +9,7 @@ Reads (under --dataset-root):
   - compare_gt_colmap.json + compare_gt_insightat.json (default compare_dataset_batch --ref-source gt)
   - or compare_colmap_insightat.json (legacy --ref-source colmap)
 
-Writes PNG figures to --out-dir (default: doc/images/benchmarks).
+Writes PNG figures to --out-dir (default: docs/images/benchmarks).
 
 Use ``--figure-suffix`` to write alternate filenames without overwriting the default
 figures. Use ``--only`` to emit a subset of charts.
@@ -152,7 +152,7 @@ def main() -> int:
         "--out-dir",
         type=Path,
         default=None,
-        help="Output directory for PNG files (default: <repo>/doc/images/benchmarks)",
+        help="Output directory for PNG files (default: <repo>/docs/images/benchmarks)",
     )
     ap.add_argument(
         "--figure-suffix",

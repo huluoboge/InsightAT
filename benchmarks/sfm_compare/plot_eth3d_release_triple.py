@@ -5,7 +5,7 @@ Plot ETH3D triple comparison: COLMAP (SfM time) vs InsightAT v0.1 vs v0.2 (wall)
 Data snapshot is embedded for release notes; regenerate PNG after re-running batches.
 
   python3 benchmarks/sfm_compare/plot_eth3d_release_triple.py \\
-    -o doc/images/benchmarks/eth3d_colmap_vs_insightat_0.1_vs_0.2.png
+    -o docs/images/benchmarks/eth3d_colmap_vs_insightat_0.1_vs_0.2.png
 
 Requires: matplotlib, numpy
 """
@@ -149,7 +149,7 @@ def main() -> None:
         "-o",
         "--output",
         type=Path,
-        default=Path("doc/images/benchmarks/eth3d_colmap_vs_insightat_0.1_vs_0.2.png"),
+        default=Path("docs/images/benchmarks/eth3d_colmap_vs_insightat_0.1_vs_0.2.png"),
     )
     args = ap.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)

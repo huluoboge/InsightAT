@@ -1,0 +1,72 @@
+# Changelog
+
+All notable changes to the InsightAT project are documented in this file.
+
+Historical design notes and architecture drafts live under [docs/develop/design/](docs/develop/design/). This changelog focuses on implementation and refactoring milestones.
+
+---
+
+## [Unreleased]
+
+### 设计对齐与规划
+
+- **架构**：遵循三层模型（Project Layer / AT Task Layer / Output Layer），算法与 UI 完全分离，CLI-First。
+- **SfM 路线**：按《Parallel Hybrid SfM 架构设计》采用两层设计——**第一层**：粗 SfM = Cluster 内并行重建 + Merge + **Global BA**（得到粗的全局一致结果）；**第二层**（规划中）：原始分辨率特征、位姿引导匹配、高精度相对位姿、Global BA 策略。
+- **数据格式**：IDC (Insight Data Container) 规范已定，支持 `.isat_feat` / `.isat_match` / `.isat_pose` 等，8 字节对齐、自描述 JSON 头。
+
+### 已实现（与设计文档对应）
+
+- **CLI 工具链**：`isat_extract`（特征提取）、`isat_match`（匹配）、`isat_retrieve`（检索）、`isat_geo`（几何验证）、`isat_train_vlad` / `isat_train_vocab`、`isat_project`、`isat_twoview`、`isat_tracks`、`isat_calibrate`、`isat_camera_estimator`；独立进程 `CameraEstimator`。
+- **数据层**：`database` 模块（`database_types.h`）提供 CoordinateSystem、InputPose、Measurement、ATTask、Project、ImageGroup、CameraModel 等，Cereal 序列化与版本控制。
+- **算法模块**：特征提取（SIFT GPU）、检索（VLAD、Sequence）、匹配、几何（GPU RANSAC）、两视图重建与焦距优化、track 构建。
+- **UI**：Qt 主窗口、项目/任务/坐标系配置、相机参数与图像组管理、与 ProjectDocument 绑定；无 3D 渲染依赖。
+- **规范**：CLI I/O 约定（stdout/stderr、`ISAT_EVENT`）、编码风格与 IDC 格式见 [docs/develop/design/](docs/develop/design/)。
+
+### 进行中 / 计划中（相对设计文档）
+
+- **第一层 SfM**：Cluster 内两视图/层级式增量重建 → **Merge**（Sim3/对齐）→ **第一层 Global BA**；简化畸变模型；GNSS+姿态下的航高/投影匹配策略待完善。
+- **第二层 SfM**（规划中）：原始分辨率特征、位姿引导的匹配、高精度相对位姿估计、Global BA 策略；完整畸变模型。
+- **流水线集成**：从检索→匹配→几何→tracks→第一层 Global BA 的端到端脚本与任务描述（如 JSON 任务列表）仍在完善。
+
+### 重构与清理
+
+- **Common 迁移**：原 `Common` 拆分为轻量 `util`（string_utils、numeric、insight_global）；Coordinates 迁入 `ui/utils`；exif 链迁入 `algorithm/io/exif`；未使用代码已删除。
+- **Gui 移除**：旧版 Qt Gui 目录已删除；仅保留新主窗口 UI，QString 转换工具置于 `ui/utils/QStringConvert.h`。
+- **Render 移除**：未使用的 OpenGL 渲染模块已删除；主程序仅依赖 UI + database，无 3D 查看器。
+- **主程序命名**：可执行文件与 CMake 目标统一为 `InsightAT`（不再使用 InsightAT_New）。
+
+### 文档
+
+- 设计文档索引：[docs/develop/design/index.md](docs/develop/design/index.md)；架构、数据模型、坐标系与旋转、序列化、UI、函数式 AT 工具包见对应编号文档。
+- 实现与工具说明见 [docs/dev-notes/](docs/dev-notes/)、[docs/dev-notes/tools/](docs/dev-notes/tools/)。
+
+---
+
+## [0.2.0] - 2026-05-06
+
+### 构建与依赖
+
+- **CUDA 12.8**：提供与 Ceres 2.3+ **CUDA_SPARSE（cuDSS / cuSPARSE）** 协同的构建路径；默认关闭 **SiftGPU**（上游未适配 CUDA 12）。若需要 SiftGPU，可在 **CUDA 11.8** 下将 `INSIGHTAT_ENABLE_SIFTGPU=ON` 单独构建。参考根目录 `compile_appimage-12.8.sh` 对 `libcudss` 与 `LD_LIBRARY_PATH` 的说明。
+
+### 算法与性能
+
+- **稀疏 BA**：Ceres 线性求解优先尝试 `CUDA_SPARSE`，并按环境回退 SUITE_SPARSE / EIGEN_SPARSE（见 `bundle_adjustment_analytic.cpp`）。
+- **匹配**：新增 **cpu_cascade_hash** / **gpu_cascade_hash**；SfM 默认匹配为 **gpu_cascade_hash**；级联匹配输出 scale 写入修复。
+- **几何验证**：可配置 geo 后端，默认 CUDA；CUDA 批处理 Geo RANSAC 等路径对齐 SfM 默认匹配策略。
+- **流水线**：IDC blob 追加与 GPU cascade 调度、三角化/工程路径热路径、BA 观测采样与日志分析工具等整体提速。
+
+### UI 与打包
+
+- **at_bundler_viewer**：重建加载进度、主点/取景与 Qt 部署（含 AppImage 场景）相关修复。
+
+### 基准与发布说明
+
+- ETH3D 训练子集 13 scenes 批跑对比表与作图脚本： [docs/dev-notes/release-v0.2.0.md](release-v0.2.0.md)、`benchmarks/sfm_compare/plot_eth3d_release_triple.py`。
+
+---
+
+## 版本说明
+
+- **Unreleased**：当前开发状态，API 与数据格式可能变动，不建议用于生产环境。
+- **0.2.0**：见上文与 [release-v0.2.0.md](release-v0.2.0.md)。
+- **0.1.0**：首个带 AppImage/CLI 打包与公开版本说明的标签版本。
