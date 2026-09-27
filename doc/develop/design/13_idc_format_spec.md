@@ -56,7 +56,7 @@ Each blob descriptor in the `blobs` array must contain:
 
 ## 3. Blob Access Pattern
 
-Components access blobs using the [IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L30-L68) class:
+Components access blobs using the [IDCReader](../../../src/algorithm/io/idc_reader.h) class:
 
 ```cpp
 IDCReader reader("file.isat_feat");
@@ -66,13 +66,14 @@ auto data = reader.read_blob<uint8_t>("descriptors");
 
 ## 4. Reader Implementation Notes
 
-The [IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L30-L68) maintains an O(1) lookup index for blob names but must preserve all original fields from the JSON descriptor when returning blob information. The [get_blob_descriptor](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L53-L53) method must return the complete original descriptor including `dtype`, `shape`, and other metadata.
+The [IDCReader](../../../src/algorithm/io/idc_reader.h) maintains an O(1) lookup index for blob names but must preserve all original fields from the JSON descriptor when returning blob information. The [`get_blob_descriptor`](../../../src/algorithm/io/idc_reader.h) method must return the complete original descriptor including `dtype`, `shape`, and other metadata.
 
 ## 5. Common Blob Types
 
 ### 5.1 Feature Extraction Blobs
 - **`keypoints`** - `dtype: "float32"`, `shape: [N, 4]` (x, y, scale, orientation)
 - **`descriptors`** - `dtype: "uint8"` or `dtype: "float32"`, `shape: [N, D]` (N features, D dimensions)
+- **`colors`** (optional) - `dtype: "uint8"`, `shape: [N, 3]` — per-keypoint **RGB** sampled at extract time from the color image. Absent on grayscale inputs or when `--no-store-colors` is used. Metadata may include `has_colors: true` when present. Readers must treat this blob as optional for backward compatibility.
 
 ### 5.2 Matching Blobs
 - **`matches`** - `dtype: "uint32"`, `shape: [M, 2]` (index pairs)
@@ -80,7 +81,7 @@ The [IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_re
 
 ## 6. Compatibility Requirements
 
-When modifying the [IDCReader](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_reader.h#L30-L68) or [IDCWriter](file:///home/jones/Git/01jones/InsightAT/src/algorithm/io/idc_writer.h#L77-L97):
+When modifying the [IDCReader](../../../src/algorithm/io/idc_reader.h) or [IDCWriter](../../../src/algorithm/io/idc_writer.h):
 
 1. **Preserve all original fields** when returning blob descriptors
 2. **Never remove critical fields** like `dtype`, especially when optimizing lookup performance

@@ -27,6 +27,9 @@ struct FeatureData {
   std::vector<uint8_t> descriptors_uint8; // For uint8 format
   std::vector<float> descriptors_float;   // For float32 format
 
+  /// Optional per-keypoint RGB (N*3). Empty if .isat_feat has no colors blob.
+  std::vector<uint8_t> colors;
+
   DescriptorType descriptor_type = DescriptorType::kUInt8;
   size_t num_features = 0;
 
@@ -55,10 +58,12 @@ struct FeatureData {
     keypoints.clear();
     descriptors_uint8.clear();
     descriptors_float.clear();
+    colors.clear();
     num_features = 0;
     keypoints.shrink_to_fit();
     descriptors_uint8.shrink_to_fit();
     descriptors_float.shrink_to_fit();
+    colors.shrink_to_fit();
   }
 };
 

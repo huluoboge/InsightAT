@@ -3,7 +3,7 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 add_subdirectory(database)
 add_subdirectory(util)
 
-# Legacy Qt UI (optional). Default builds are CLI-only; Node (simple-gui) is the
+# Legacy Qt UI (optional). Default builds are CLI-only; Node (sfm-gui) is the
 # intended product UI going forward.
 if(INSIGHTAT_BUILD_QT_UI)
     add_subdirectory(ui)

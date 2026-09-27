@@ -12,7 +12,7 @@
  *   Stage 3  [multi-thread]      Post-process (normalization, NMS, uint8)
  *   Stage 4  [multi-thread I/O]  Write .isat_feat
  *
- * Output .isat_feat (IDC): keypoints, descriptors, metadata (feature_type, params).
+ * Output .isat_feat (IDC): keypoints, descriptors, optional colors (uint8 RGB), metadata.
  * Supports --output (matching) and --output-retrieval (dual-output or retrieval-only).
  *
  * Usage:
@@ -20,11 +20,14 @@
  *   isat_extract -i image_list.txt -o feat_dir/ --output-retrieval retrieval_dir/
  */
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <glog/logging.h>
 #include <iostream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 #include <string>
@@ -40,10 +43,30 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 static constexpr const char* kEventPrefix = "ISAT_EVENT ";
+static std::mutex g_event_mu;
 
 static void printEvent(const json& j) {
+  std::lock_guard<std::mutex> lock(g_event_mu);
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
+}
+
+static void emitProgress(int current, int total, const char* message) {
+  if (total <= 0)
+    return;
+  // Throttle: every ~1% or every item when small, always emit first/last.
+  const int stride = std::max(1, total / 100);
+  if (current != 1 && current != total && (current % stride) != 0)
+    return;
+  const double fraction = static_cast<double>(current) / static_cast<double>(total);
+  printEvent({{"type", "progress"},
+              {"ok", true},
+              {"data",
+               {{"fraction", fraction},
+                {"current", current},
+                {"total", total},
+                {"unit", "images"},
+                {"message", message}}}});
 }
 
 struct ImageTask {
@@ -65,10 +88,12 @@ struct ImageTask {
   std::vector<SiftGPU::SiftKeypoint> keypoints;
   std::vector<float> descriptors;
   std::vector<unsigned char> descriptors_uchar;
+  std::vector<uint8_t> colors; // optional RGB, N*3
 
   std::vector<SiftGPU::SiftKeypoint> keypoints_retrieval;
   std::vector<float> descriptors_retrieval;
   std::vector<unsigned char> descriptors_uchar_retrieval;
+  std::vector<uint8_t> colors_retrieval;
 };
 
 std::vector<ImageTask> loadImageList(const std::string& json_path) {
@@ -167,6 +192,8 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, normalization, "norm")
               .doc("[SIFT] Normalization: l1root (RootSIFT) or l2 (default: l1root)"));
   cmd.add(make_switch(0, "uint8").doc("[SIFT] Convert descriptors to uint8 (saves memory)"));
+  cmd.add(make_switch(0, "no-store-colors")
+              .doc("[SIFT] Do not store per-keypoint RGB colors in .isat_feat (default: store)"));
 
   // NMS options
   cmd.add(make_switch(0, "nms").doc("[SIFT] Enable non-maximum suppression"));
@@ -228,6 +255,7 @@ int main(int argc, char* argv[]) {
   // Process switches
   bool adapt_darkness = !cmd.used("no-adapt");
   bool use_uint8 = cmd.used("uint8");
+  bool store_colors = !cmd.used("no-store-colors");
   bool enable_nms = cmd.used("nms");
   bool nms_keep_orientation = !cmd.used("nms-no-orient");
 
@@ -285,6 +313,7 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  SIFT image max dim: " << image_max_dim;
   LOG(INFO) << "  Normalization: " << normalization;
   LOG(INFO) << "  uint8 format: " << (use_uint8 ? "yes" : "no");
+  LOG(INFO) << "  store colors: " << (store_colors ? "yes" : "no");
   LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
   if (enable_nms) {
     LOG(INFO) << "    NMS radius: " << nms_radius;
@@ -402,7 +431,7 @@ int main(int argc, char* argv[]) {
     StageCurrent siftGPUStage(
         "SiftGPU", 1, GPU_QUEUE_SIZE,
         [&image_tasks, &extractor, &sift_params, &lowThreshold_sift_params, &sift_params_retrieval,
-         process_matching, process_retrieval, &matching_used_low_peak](int index) {
+         process_matching, process_retrieval, store_colors, &matching_used_low_peak](int index) {
           auto& task = image_tasks[index];
           auto start = std::chrono::high_resolution_clock::now();
 
@@ -428,6 +457,11 @@ int main(int argc, char* argv[]) {
                   extractor.extract(task.image, task.keypoints, task.descriptors);
               matching_used_low_peak[static_cast<size_t>(index)] = 1;
             }
+            // Sample RGB before scale_back / release (extraction-resolution coords)
+            if (store_colors && !task.keypoints.empty()) {
+              task.colors =
+                  insight::modules::sample_keypoint_colors_bgr_to_rgb(task.image, task.keypoints);
+            }
             if (task.image_coord_scale_back != 1.0f) {
               for (auto& kp : task.keypoints) {
                 kp.x *= task.image_coord_scale_back;
@@ -447,6 +481,10 @@ int main(int argc, char* argv[]) {
                 task.image_retrieval, task.keypoints_retrieval, task.descriptors_retrieval);
             task.image_retrieval_cols = task.image_cols;
             task.image_retrieval_rows = task.image_rows;
+            if (store_colors && !task.keypoints_retrieval.empty()) {
+              task.colors_retrieval = insight::modules::sample_keypoint_colors_bgr_to_rgb(
+                  task.image_retrieval, task.keypoints_retrieval);
+            }
             if (task.image_retrieval_coord_scale_back != 1.0f) {
               for (auto& kp : task.keypoints_retrieval) {
                 kp.x *= task.image_retrieval_coord_scale_back;
@@ -503,7 +541,7 @@ int main(int argc, char* argv[]) {
                   task.keypoints, task.descriptors, task.image_cols, task.image_rows,
                   static_cast<int>(nms_radius * 10), // Grid size ~10x radius
                   2,                                 // Max 2 features per cell
-                  nms_keep_orientation);
+                  nms_keep_orientation, &task.colors);
             }
 
             // Step 3: Convert to uint8 if needed (CPU)
@@ -529,7 +567,7 @@ int main(int argc, char* argv[]) {
               insight::modules::apply_feature_distribution(
                   task.keypoints_retrieval, task.descriptors_retrieval, task.image_retrieval_cols,
                   task.image_retrieval_rows, static_cast<int>(nms_radius * 10), 2,
-                  nms_keep_orientation);
+                  nms_keep_orientation, &task.colors_retrieval);
             }
 
             // Step 3: Convert to uint8 if needed (CPU)
@@ -547,7 +585,7 @@ int main(int argc, char* argv[]) {
         "WriteIDC", io_threads, IO_QUEUE_SIZE,
         [&output_dir, &output_retrieval_dir, &image_tasks, use_uint8, enable_nms, normalization,
          nms_radius, nms_keep_orientation, &sift_params, &sift_params_retrieval, process_matching,
-         process_retrieval, use_pop_sift](int index) {
+         process_retrieval, use_pop_sift, store_colors, total_images](int index) {
           auto& task = image_tasks[index];
 
           // Use image_index for output filename: {image_index}.isat_feat
@@ -558,6 +596,7 @@ int main(int argc, char* argv[]) {
                                     const std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                     const std::vector<float>& descriptors,
                                     const std::vector<unsigned char>& descriptors_uchar,
+                                    const std::vector<uint8_t>& colors,
                                     const insight::modules::SiftGPUParams& params,
                                     const std::string& feature_type) {
             if (keypoints.empty())
@@ -573,6 +612,7 @@ int main(int argc, char* argv[]) {
             params_json["adapt_darkness"] = params.adapt_darkness;
             params_json["normalization"] = normalization;
             params_json["uint8"] = use_uint8;
+            params_json["store_colors"] = store_colors;
             params_json["nms_enabled"] = enable_nms;
             params_json["feature_type"] = feature_type; // "matching" or "retrieval"
             params_json["extractor_impl"] = use_pop_sift ? "popsift" : "sift_gpu";
@@ -589,11 +629,13 @@ int main(int argc, char* argv[]) {
             schema.normalization = normalization;
             schema.quantization_scale = use_uint8 ? 512.0f : 1.0f;
 
+            const bool has_colors = (colors.size() == keypoints.size() * 3);
             const std::string extractor_name = use_pop_sift ? "POP_SIFT" : "SIFT_GPU";
             auto metadata =
                 insight::io::create_feature_metadata(task.image_path, extractor_name,
-                                                     "1.2", // Version bump for dual-output support
+                                                     "1.3", // Version bump for optional colors
                                                      params_json, schema, 0);
+            metadata["has_colors"] = has_colors;
 
             writer.set_metadata(metadata);
 
@@ -619,6 +661,11 @@ int main(int argc, char* argv[]) {
                               "float32", {(int)keypoints.size(), 128});
             }
 
+            if (has_colors) {
+              writer.add_blob("colors", colors.data(), colors.size() * sizeof(uint8_t), "uint8",
+                              {(int)keypoints.size(), 3});
+            }
+
             return writer.write();
           };
 
@@ -626,7 +673,7 @@ int main(int argc, char* argv[]) {
           if (process_matching) {
             std::string output_path = (fs::path(output_dir) / base_filename).string();
             if (write_features(output_path, task.keypoints, task.descriptors,
-                               task.descriptors_uchar, sift_params, "matching")) {
+                               task.descriptors_uchar, task.colors, sift_params, "matching")) {
               LOG(INFO) << "Written matching features [" << index << "]: " << output_path;
             }
           }
@@ -635,14 +682,14 @@ int main(int argc, char* argv[]) {
           if (process_retrieval) {
             std::string output_path = (fs::path(output_retrieval_dir) / base_filename).string();
             if (write_features(output_path, task.keypoints_retrieval, task.descriptors_retrieval,
-                               task.descriptors_uchar_retrieval, sift_params_retrieval,
-                               "retrieval")) {
+                               task.descriptors_uchar_retrieval, task.colors_retrieval,
+                               sift_params_retrieval, "retrieval")) {
               LOG(INFO) << "Written retrieval features [" << index << "]: " << output_path;
             }
           }
 
-          // Progress reporting
-          // std::cerr << "PROGRESS: " << (float)(index + 1) / image_tasks.size() << "\n";
+          // Progress reporting (ISAT_EVENT)
+          emitProgress(index + 1, total_images, "Extracting features");
 
           // Clear memory
           task = ImageTask(); // release all memory

@@ -183,6 +183,12 @@ static FeatureData load_features_idc(const std::string& idc_path) {
       return FeatureData();
     }
   }
+
+  if (reader.has_blob("colors")) {
+    features.colors = reader.read_blob<uint8_t>("colors");
+    if (features.colors.size() != num_features * 3)
+      features.colors.clear();
+  }
   return features;
 }
 

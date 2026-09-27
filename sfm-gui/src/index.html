@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightAT SfM</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-logo" src="../assets/logo-128.png" alt="InsightAT" width="52" height="52">
+          <div>
+            <h1>InsightAT SfM</h1>
+            <p>CLI driven SfM workflow</p>
+          </div>
+        </div>
+
+        <nav class="steps" aria-label="Workflow">
+          <div class="step active" data-step="project">
+            <span class="step-index">1</span>
+            <span>Project</span>
+          </div>
+          <div class="step" data-step="folders">
+            <span class="step-index">2</span>
+            <span>Folders</span>
+          </div>
+          <div class="step" data-step="reconstruct">
+            <span class="step-index">3</span>
+            <span>Reconstruction</span>
+          </div>
+        </nav>
+
+        <section class="status-panel">
+          <h2>Status</h2>
+          <dl>
+            <div>
+              <dt>Work directory</dt>
+              <dd id="workDir">Not selected</dd>
+            </div>
+            <div>
+              <dt>Groups</dt>
+              <dd id="groupCount">0</dd>
+            </div>
+            <div>
+              <dt>Images</dt>
+              <dd id="imageCount">0</dd>
+            </div>
+            <div>
+              <dt>CLI tools</dt>
+              <dd id="cliBinDir">Searching…</dd>
+            </div>
+            <div>
+              <dt>SfM Viewer</dt>
+              <dd id="sfmViewerPath">Searching…</dd>
+            </div>
+          </dl>
+          <button id="settingsBtn" class="secondary settings-btn" type="button">Settings</button>
+          <p id="computeBackend" class="quiet compute-label">Compute: …</p>
+        </section>
+
+        <section class="status-panel recent-panel">
+          <h2>Recent</h2>
+          <div id="recentList" class="recent-list empty">No recent projects</div>
+        </section>
+      </aside>
+
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <h2 id="projectTitle">No project open</h2>
+            <p id="projectSubtitle">Create a project, add image folders, then run reconstruction.</p>
+          </div>
+          <button id="revealBtn" class="icon-button" type="button" title="Open work directory" disabled>
+            <span class="button-icon">[]</span>
+            <span>Open Folder</span>
+          </button>
+        </header>
+
+        <section class="actions-grid">
+          <article class="action-card">
+            <div class="action-head">
+              <span class="action-number">1</span>
+              <h3>Project</h3>
+            </div>
+            <label>
+              Project name
+              <input id="projectName" type="text" value="InsightAT_Project" autocomplete="off">
+            </label>
+            <div class="button-row">
+              <button id="createBtn" type="button">
+                <span class="button-icon">+</span>
+                <span>New Project</span>
+              </button>
+              <button id="openBtn" class="secondary" type="button">
+                <span class="button-icon">^</span>
+                <span>Open</span>
+              </button>
+            </div>
+          </article>
+
+          <article class="action-card">
+            <div class="action-head">
+              <span class="action-number">2</span>
+              <h3>Image Folders</h3>
+            </div>
+            <p class="quiet">Each folder is scanned, split into camera groups, and assigned estimated intrinsics automatically.</p>
+            <button id="addFolderBtn" type="button" disabled>
+              <span class="button-icon">+</span>
+              <span>Add Image Folder</span>
+            </button>
+          </article>
+
+          <article class="action-card run-card">
+            <div class="action-head">
+              <span class="action-number">3</span>
+              <h3>Reconstruction</h3>
+            </div>
+            <p class="quiet">Features → Matching → SfM. Continue from the first incomplete stage, or rebuild from scratch.</p>
+            <div id="stageStatus" class="stage-status" hidden></div>
+            <div class="button-row run-actions">
+              <button id="runBtn" class="primary" type="button" disabled>
+                <span class="button-icon">></span>
+                <span>Run Reconstruction</span>
+              </button>
+              <button id="stopBtn" class="danger" type="button" disabled title="Stop running CLI and child processes">
+                <span>Stop</span>
+              </button>
+            </div>
+            <button id="viewBtn" class="primary view-btn" type="button" disabled>
+              <span class="button-icon">&#9654;</span>
+              <span>View Reconstruction</span>
+            </button>
+            <div id="runState" class="run-state">Waiting for image folders</div>
+          </article>
+        </section>
+
+        <section class="workspace">
+          <div class="list-pane">
+            <div class="section-head">
+              <h3>Imported Groups</h3>
+              <div class="section-head-actions">
+                <span id="cameraModeBadge" class="badge auto" hidden>Auto</span>
+                <button id="cameraBtn" class="secondary" type="button" disabled>Camera</button>
+                <span id="folderCount">0 folders</span>
+              </div>
+            </div>
+            <div id="groupList" class="group-list empty">No image folders imported yet.</div>
+          </div>
+
+          <div class="log-pane">
+            <div class="section-head">
+              <h3>Logs</h3>
+              <div class="log-head-actions">
+                <div class="log-tabs" role="tablist">
+                  <button id="logTabConsole" class="log-tab active" type="button" data-log-tab="console">Console</button>
+                  <button id="logTabDetail" class="log-tab" type="button" data-log-tab="detail">Detail</button>
+                </div>
+                <button id="clearLogBtn" class="ghost" type="button">Clear</button>
+              </div>
+            </div>
+            <div id="progressWrap" class="progress-wrap" hidden>
+              <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+              <div id="progressLabel" class="progress-label quiet"></div>
+            </div>
+            <pre id="logOutput" class="log-output" data-stream="console"></pre>
+            <pre id="logDetailOutput" class="log-output" data-stream="detail" hidden></pre>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="settingsModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-settings></div>
+      <div class="modal-panel" role="dialog" aria-labelledby="settingsTitle">
+        <header class="modal-head">
+          <h2 id="settingsTitle">Settings</h2>
+          <button id="settingsCloseBtn" class="ghost" type="button" aria-label="Close">Close</button>
+        </header>
+        <p class="quiet">Override auto-detected paths. Leave empty to use auto-detect.</p>
+        <label class="settings-field">
+          CLI tools directory
+          <span class="quiet">Folder that contains `isat_project`</span>
+          <div class="path-row">
+            <input id="settingsBinDir" type="text" placeholder="Auto-detect" autocomplete="off">
+            <button id="browseBinBtn" class="secondary" type="button">Browse</button>
+          </div>
+        </label>
+        <label class="settings-field">
+          SfM Viewer
+          <span class="quiet">App folder or packaged executable</span>
+          <div class="path-row">
+            <input id="settingsViewer" type="text" placeholder="Auto-detect" autocomplete="off">
+            <button id="browseViewerBtn" class="secondary" type="button">Browse</button>
+          </div>
+        </label>
+        <p id="settingsResolved" class="settings-resolved quiet"></p>
+        <p id="settingsError" class="settings-error" hidden></p>
+        <div class="modal-actions">
+          <button id="settingsClearBtn" class="secondary" type="button">Use auto-detect</button>
+          <button id="settingsSaveBtn" class="primary" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="cameraModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-camera></div>
+      <div class="modal-panel camera-panel" role="dialog" aria-labelledby="cameraTitle">
+        <header class="modal-head">
+          <h2 id="cameraTitle">Camera</h2>
+          <button id="cameraCloseBtn" class="ghost" type="button" aria-label="Close">Close</button>
+        </header>
+
+        <div class="camera-chrome">
+          <div class="mode-toggle" role="tablist" aria-label="Camera mode">
+            <button id="cameraModeAuto" class="mode-btn" type="button" role="tab">Auto</button>
+            <button id="cameraModeManual" class="mode-btn" type="button" role="tab">Manual</button>
+          </div>
+          <p id="cameraSourceLabel" class="settings-resolved quiet"></p>
+
+          <div id="cameraManualChrome" hidden>
+            <label class="settings-field">
+              Group
+              <select id="camGroupSelect"></select>
+            </label>
+            <label class="settings-field">
+              Convention
+              <select id="camConvention">
+                <option value="context-capture">Context Capture (p1/p2 vs OpenCV)</option>
+                <option value="opencv">OpenCV</option>
+              </select>
+            </label>
+            <label class="check-row">
+              <input id="camFix" type="checkbox">
+              <span>Fix intrinsics during reconstruction</span>
+            </label>
+            <label class="settings-field">
+              Preset
+              <div class="path-row">
+                <select id="camPresetSelect">
+                  <option value="">— none —</option>
+                </select>
+                <button id="camApplyPresetBtn" class="secondary" type="button">Load</button>
+              </div>
+            </label>
+            <div class="path-row">
+              <input id="camPresetName" type="text" placeholder="Save as preset name" autocomplete="off">
+              <button id="camSavePresetBtn" class="secondary" type="button">Save</button>
+            </div>
+          </div>
+
+          <p id="cameraError" class="settings-warn" hidden></p>
+        </div>
+
+        <div class="camera-body" id="cameraManualPanel" hidden>
+          <p class="quiet camera-hint">Per-group settings. Width/height come from that group’s images. Close saves the selected group.</p>
+          <section class="camera-section">
+            <h3>Intrinsics (px)</h3>
+            <div class="camera-grid">
+              <label class="settings-field">fx<input id="camFx" type="number" step="any" min="0"></label>
+              <label class="settings-field">fy<input id="camFy" type="number" step="any" min="0" placeholder="= fx"></label>
+              <label class="settings-field">cx<input id="camCx" type="number" step="any" placeholder="width/2"></label>
+              <label class="settings-field">cy<input id="camCy" type="number" step="any" placeholder="height/2"></label>
+            </div>
+          </section>
+          <section class="camera-section">
+            <h3>Distortion (Brown)</h3>
+            <div class="camera-grid camera-grid-distortion">
+              <label class="settings-field">k1<input id="camK1" type="number" step="any" value="0"></label>
+              <label class="settings-field">k2<input id="camK2" type="number" step="any" value="0"></label>
+              <label class="settings-field">k3<input id="camK3" type="number" step="any" value="0"></label>
+              <label class="settings-field">p1<input id="camP1" type="number" step="any" value="0"></label>
+              <label class="settings-field">p2<input id="camP2" type="number" step="any" value="0"></label>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="runChoiceModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-run-choice></div>
+      <div class="modal-panel run-choice-panel" role="dialog" aria-labelledby="runChoiceTitle">
+        <header class="modal-head">
+          <h2 id="runChoiceTitle">Start reconstruction</h2>
+          <button id="runChoiceCloseBtn" class="ghost" type="button" aria-label="Close">Close</button>
+        </header>
+        <p id="runChoiceSummary" class="quiet"></p>
+        <div id="runChoiceStages" class="stage-status"></div>
+        <div class="modal-actions run-choice-actions">
+          <button id="runContinueBtn" class="primary" type="button">Continue</button>
+          <button id="runForceBtn" class="secondary" type="button">Rebuild from start</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

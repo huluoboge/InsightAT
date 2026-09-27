@@ -34,7 +34,7 @@ endif ()
 # INSIGHTAT build options
 # ==============================================================================
 # Default: CLI-only (isat_* tools). Qt UI lives under src/ui + src/render and is
-# optional; product UI is expected to move to Node (simple-gui) over time.
+# optional; product UI is expected to move to Node (sfm-gui) over time.
 option(INSIGHTAT_BUILD_QT_UI "Build legacy Qt5 GUI (InsightAT + at_bundler_viewer + render)" OFF)
 option(INSIGHTAT_BUILD_GUI_ONLY "Build only Qt GUI targets and skip CUDA/algorithm components" OFF)
 option(INSIGHTAT_BUILD_RENDER_TESTS "Build render property tests and fetch RapidCheck" OFF)

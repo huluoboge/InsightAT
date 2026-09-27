@@ -280,7 +280,8 @@ int main(int argc, char* argv[]) {
     }
 
     const auto reg = read_registered_images_from_poses(row.out_dir / "poses.json");
-    const auto tri = read_triangulated_points_from_bundle(row.out_dir / "bundle.out");
+    const fs::path bundle_path = row.out_dir / "bundler" / "bundle.out";
+    const auto tri = read_triangulated_points_from_bundle(bundle_path);
     row.metrics.registered_images = reg.value_or(0);
     row.metrics.triangulated_points = tri.value_or(0);
     row.metrics.points_per_image = row.metrics.registered_images > 0
@@ -304,7 +305,7 @@ int main(int argc, char* argv[]) {
            {{"output_dir", row.out_dir.string()},
             {"log", row.log_path.string()},
             {"poses_json", (row.out_dir / "poses.json").string()},
-            {"bundle_out", (row.out_dir / "bundle.out").string()}}},
+            {"bundle_out", bundle_path.string()}}},
       };
       std::ofstream f(row.out_dir / "summary.json");
       f << one.dump(2) << "\n";

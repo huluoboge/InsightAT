@@ -46,10 +46,29 @@ using json = nlohmann::json;
 using namespace insight::algorithm::matching;
 
 static constexpr const char* kEventPrefix = "ISAT_EVENT ";
+static std::mutex g_event_mu;
 
 static void printEvent(const json& j) {
+  std::lock_guard<std::mutex> lock(g_event_mu);
   std::cout << kEventPrefix << j.dump() << "\n";
   std::cout.flush();
+}
+
+static void emitProgress(int current, int total, const char* message) {
+  if (total <= 0)
+    return;
+  const int stride = std::max(1, total / 100);
+  if (current != 1 && current != total && (current % stride) != 0)
+    return;
+  const double fraction = static_cast<double>(current) / static_cast<double>(total);
+  printEvent({{"type", "progress"},
+              {"ok", true},
+              {"data",
+               {{"fraction", fraction},
+                {"current", current},
+                {"total", total},
+                {"unit", "pairs"},
+                {"message", message}}}});
 }
 
 static bool write_pairs_json(const std::string& output_path,
@@ -186,6 +205,16 @@ FeatureData loadFeaturesIDC(const std::string& idc_path) {
     if (features.descriptors_float.empty()) {
       LOG(ERROR) << "Failed to read float32 descriptors from " << idc_path;
       return FeatureData();
+    }
+  }
+
+  // Optional per-keypoint RGB (uint8 [N,3])
+  if (reader.has_blob("colors")) {
+    features.colors = reader.read_blob<uint8_t>("colors");
+    if (features.colors.size() != num_features * 3) {
+      LOG(WARNING) << "Ignoring colors blob with unexpected size " << features.colors.size()
+                   << " (expected " << (num_features * 3) << ") in " << idc_path;
+      features.colors.clear();
     }
   }
 
@@ -574,9 +603,8 @@ int main(int argc, char* argv[]) {
 
         VLOG(1) << "Wrote pair [" << index << "] in " << write_time << "ms";
 
-        // Progress reporting
-        float progress = static_cast<float>(index + 1) / pair_tasks.size();
-        // std::cerr << "PROGRESS: " << progress << "\n";
+        // Progress reporting (ISAT_EVENT)
+        emitProgress(index + 1, static_cast<int>(pair_tasks.size()), "Matching pairs");
       });
 
   // Chain stages

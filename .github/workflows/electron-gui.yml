@@ -1,0 +1,126 @@
+# Electron GUI packaging (sfm-viewer + sfm-gui). Independent of CUDA CLI Docker build.
+#
+# Produces:
+#   Linux: AppImage + deb (+ dir) under dist/sfm-viewer and dist/sfm-gui
+#   Windows: zip under dist/sfm-viewer and dist/sfm-gui
+#
+# Uploads workflow artifacts; on release also attaches to the GitHub Release.
+
+name: Electron GUI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'sfm-gui/**'
+      - 'sfm-viewer/**'
+      - 'scripts/package/build_sfm_*.sh'
+      - '.github/workflows/electron-gui.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sfm-gui/**'
+      - 'sfm-viewer/**'
+      - 'scripts/package/build_sfm_*.sh'
+      - '.github/workflows/electron-gui.yml'
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: electron-gui-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux AppImage + deb
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            sfm-viewer/package-lock.json
+            sfm-gui/package-lock.json
+      - name: Package sfm-viewer
+        run: |
+          chmod +x scripts/package/build_sfm_viewer.sh
+          ./scripts/package/build_sfm_viewer.sh linux-all
+      - name: Package sfm-gui
+        run: |
+          chmod +x scripts/package/build_sfm_gui.sh
+          ./scripts/package/build_sfm_gui.sh linux-all
+      - name: Collect artifacts
+        run: |
+          mkdir -p electron-packages/linux
+          find dist/sfm-viewer dist/sfm-gui -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.zip' \) -print -exec cp -a {} electron-packages/linux/ \;
+          (cd electron-packages/linux && sha256sum * > SHA256SUMS || true)
+          ls -la electron-packages/linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InsightAT-electron-linux-${{ github.sha }}
+          path: electron-packages/linux/**
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" electron-packages/linux/* --clobber
+
+  windows:
+    name: Windows zip
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            sfm-viewer/package-lock.json
+            sfm-gui/package-lock.json
+      - name: Package sfm-viewer (win)
+        shell: bash
+        run: |
+          cd sfm-viewer
+          npm install
+          npm run check
+          npm run pack:win
+      - name: Package sfm-gui (win)
+        shell: bash
+        run: |
+          mkdir -p staging/bin
+          echo "CLI tools not staged in CI electron job." > staging/bin/README.txt
+          cd sfm-gui
+          npm install
+          npm run check
+          npm run pack:win
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p electron-packages/windows
+          find dist/sfm-viewer dist/sfm-gui -type f -name '*.zip' -print -exec cp -a {} electron-packages/windows/ \;
+          (cd electron-packages/windows && sha256sum * > SHA256SUMS || true)
+          ls -la electron-packages/windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InsightAT-electron-windows-${{ github.sha }}
+          path: electron-packages/windows/**
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" electron-packages/windows/* --clobber

@@ -7,11 +7,17 @@
  *   2. extract           – dual feature extraction (matching + retrieval)
  *   3. match             – 默认：检索穷举 → 全分辨率 match → geo；图像数 <
  * --auto-exhaustive-max-images 时自动改全穷举；若有 matching_extract_meta.json 中的 low_peak
- * 图，则与 检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举
+ * 图，则与 检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举；
+ * geo 后按焦距估计情况（--focal-from-geo=auto|always|never）可选跑 isat_focal_from_geo
  *   4. tracks            – build tracks from matches + geometry
  *   5. seed_eval         – 四策略 seed 评估（balanced/wide_baseline/support_first/conservative）
  *   6. incremental_sfm   – incremental SfM (resection + BA)
  *   7. undistort         – [可选] 去畸变图像导出 + COLMAP sparse (--undistort 开启)
+ *
+ * Work directory layout (scheme B):
+ *   work/{images_all.json,project.iat,feat/,feat_retrieval/,match/,geo/,tracks/,
+ *         seed_eval_all/,incremental_sfm/{poses.json,tracks.isat_tracks,bundler/,colmap/}}
+ *   pairs_*.json under match/; tracks stage under tracks/; Bundler under incremental_sfm/bundler/.
  *
  * Usage:
  *   isat_sfm -i /photos -w work/                              # run all steps
@@ -23,8 +29,8 @@
  *   isat_sfm -i /photos -w work/ --steps create,extract       # 只跑 create + extract
  *   isat_sfm -i /photos -w work/ --steps tracks,seed_eval,incremental_sfm  # 从 tracks 续跑并评估seed
  *   isat_sfm -i /photos -w work/ --output-interval-sfm           # 在 <work>/sfm_interval/ 写每步 Bundler 快照，at_bundler_viewer 查看
- *   isat_sfm -i /photos -w work/ --undistort                     # SfM 后导出去畸变图像 + COLMAP (txt)
- *   isat_sfm -i /photos -w work/ --undistort --binary            # 同上，COLMAP 二进制格式
+ *   isat_sfm -i /photos -w work/ --undistort                     # SfM 后导出去畸变图像 + COLMAP (.bin)
+ *   isat_sfm -i /photos -w work/ --undistort --text              # 同上，COLMAP 文本格式
  *
  * The binary locates sibling tools relative to its own path (same directory).
  */
@@ -43,6 +49,14 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <process.h>
+#define isat_getpid _getpid
+#else
+#include <unistd.h>
+#define isat_getpid getpid
+#endif
 
 #include <glog/logging.h>
 #include <nlohmann/json.hpp>
@@ -65,46 +79,197 @@ static void printEvent(const json& j) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Log-file sink: duplicate isat_sfm's own glog output to a file
+// Run log directory: console.log / detail.log / events.ndjson
 // ─────────────────────────────────────────────────────────────────────────────
 
-class FileSink : public google::LogSink {
+static std::string g_bin_dir;
+static std::string g_run_id;
+static fs::path g_run_dir;
+static fs::path g_console_log;
+static fs::path g_detail_log;
+static fs::path g_events_path;
+static FILE* g_console_fp = nullptr;
+static FILE* g_detail_fp = nullptr;
+static FILE* g_events_fp = nullptr;
+
+static std::vector<std::string> g_active_step_order;
+static std::string g_current_step;
+static int g_step_index = 0; // 1-based while inside a step; 0 = idle
+static int g_step_count = 0;
+static std::chrono::steady_clock::time_point g_pipeline_t0;
+static std::chrono::steady_clock::time_point g_step_t0;
+
+/// Legacy alias used by older tee paths → detail.log
+static std::string g_log_file;
+
+class DualFileSink : public google::LogSink {
 public:
-  explicit FileSink(const std::string& path) {
-    f_ = fopen(path.c_str(), "a");
-    if (!f_)
-      fprintf(stderr, "[isat_sfm] WARNING: cannot open log file: %s\n", path.c_str());
-  }
-  ~FileSink() override {
-    if (f_)
-      fclose(f_);
-  }
-  bool ok() const { return f_ != nullptr; }
   void send(google::LogSeverity sev, const char* /*full_filename*/, const char* base_filename,
             int line, const struct ::tm* tm_time, const char* message,
             size_t message_len) override {
-    if (!f_)
-      return;
     static const char kCodes[] = "IWEF";
     char ts[24];
     strftime(ts, sizeof(ts), "%m%d %H:%M:%S", tm_time);
-    fprintf(f_, "%c%s %s:%d] %.*s\n", kCodes[std::min((int)sev, 3)], ts, base_filename, line,
-            (int)message_len, message);
-    fflush(f_);
+    char header[256];
+    snprintf(header, sizeof(header), "%c%s %s:%d] ", kCodes[std::min(static_cast<int>(sev), 3)], ts,
+             base_filename, line);
+    if (g_detail_fp) {
+      fprintf(g_detail_fp, "%s%.*s\n", header, static_cast<int>(message_len), message);
+      fflush(g_detail_fp);
+    }
+    if (sev >= google::GLOG_INFO && g_console_fp) {
+      fprintf(g_console_fp, "%s%.*s\n", header, static_cast<int>(message_len), message);
+      fflush(g_console_fp);
+    }
   }
-
-private:
-  FILE* f_ = nullptr;
 };
+
+static void write_event_disk(const json& j) {
+  if (!g_events_fp)
+    return;
+  fprintf(g_events_fp, "%s\n", j.dump().c_str());
+  fflush(g_events_fp);
+}
+
+static void emit_event(const json& j) {
+  printEvent(j);
+  write_event_disk(j);
+}
+
+static double clamp01(double x) {
+  if (x < 0.0)
+    return 0.0;
+  if (x > 1.0)
+    return 1.0;
+  return x;
+}
+
+static json enrich_progress_data(json data) {
+  if (g_step_count > 0 && !g_current_step.empty()) {
+    data["step"] = g_current_step;
+    data["step_index"] = g_step_index;
+    data["step_count"] = g_step_count;
+    const double fraction = clamp01(data.value("fraction", 0.0));
+    data["fraction"] = fraction;
+    data["overall"] =
+        clamp01((static_cast<double>(g_step_index - 1) + fraction) / static_cast<double>(g_step_count));
+  }
+  return data;
+}
+
+static void emit_progress(double fraction, const std::string& message = {}, int current = -1,
+                          int total = -1, const std::string& unit = {}) {
+  json data = {{"fraction", clamp01(fraction)}};
+  if (!message.empty())
+    data["message"] = message;
+  if (current >= 0)
+    data["current"] = current;
+  if (total >= 0)
+    data["total"] = total;
+  if (!unit.empty())
+    data["unit"] = unit;
+  emit_event({{"type", "progress"}, {"ok", true}, {"data", enrich_progress_data(std::move(data))}});
+}
+
+static void handle_child_event(json ev) {
+  const std::string type = ev.value("type", "");
+  if (type == "progress") {
+    json data = ev.contains("data") && ev["data"].is_object() ? ev["data"] : json::object();
+    ev["data"] = enrich_progress_data(std::move(data));
+    ev["ok"] = ev.value("ok", true);
+    ev["type"] = "progress";
+  }
+  emit_event(ev);
+}
+
+static int step_index_of(const std::string& step) {
+  for (size_t i = 0; i < g_active_step_order.size(); ++i) {
+    if (g_active_step_order[i] == step)
+      return static_cast<int>(i) + 1;
+  }
+  return 0;
+}
+
+static void begin_pipeline_step(const std::string& step) {
+  g_current_step = step;
+  g_step_index = step_index_of(step);
+  g_step_t0 = std::chrono::steady_clock::now();
+  emit_event({{"type", "step.start"},
+              {"ok", true},
+              {"data",
+               {{"step", step}, {"step_index", g_step_index}, {"step_count", g_step_count}}}});
+  emit_progress(0.0, "Starting " + step);
+}
+
+static void end_pipeline_step(const std::string& step, bool ok, const std::string& error = {}) {
+  const double secs =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - g_step_t0).count();
+  if (ok) {
+    emit_progress(1.0, "Finished " + step);
+    emit_event({{"type", "step.end"},
+                {"ok", true},
+                {"data", {{"step", step}, {"elapsed_s", secs}}}});
+  } else {
+    emit_event({{"type", "step.end"},
+                {"ok", false},
+                {"error", error.empty() ? ("step failed: " + step) : error},
+                {"data", {{"step", step}, {"elapsed_s", secs}}}});
+  }
+}
+
+static void write_current_json(const fs::path& work_path) {
+  json cur = {{"run_id", g_run_id},
+              {"dir", (fs::path("logs") / ("run_" + g_run_id)).string()}};
+  std::ofstream ofs(work_path / "logs" / "current.json");
+  ofs << cur.dump(2) << "\n";
+}
+
+static void write_meta_json(const json& extra = json::object()) {
+  if (g_run_dir.empty())
+    return;
+  json meta = {{"run_id", g_run_id},
+               {"pid", static_cast<int>(isat_getpid())},
+               {"steps", g_active_step_order}};
+  for (auto it = extra.begin(); it != extra.end(); ++it)
+    meta[it.key()] = it.value();
+  std::ofstream ofs(g_run_dir / "meta.json");
+  ofs << meta.dump(2) << "\n";
+}
+
+static bool setup_run_logs(const fs::path& work_path) {
+  fs::path logs_root = work_path / "logs";
+  fs::create_directories(logs_root);
+  {
+    std::time_t now = std::time(nullptr);
+    std::tm* lt = std::localtime(&now);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", lt);
+    g_run_id = ts;
+  }
+  g_run_dir = logs_root / ("run_" + g_run_id);
+  fs::create_directories(g_run_dir);
+  g_console_log = g_run_dir / "console.log";
+  g_detail_log = g_run_dir / "detail.log";
+  g_events_path = g_run_dir / "events.ndjson";
+  g_console_fp = fopen(g_console_log.string().c_str(), "a");
+  g_detail_fp = fopen(g_detail_log.string().c_str(), "a");
+  g_events_fp = fopen(g_events_path.string().c_str(), "a");
+  if (!g_console_fp || !g_detail_fp || !g_events_fp) {
+    fprintf(stderr, "[isat_sfm] WARNING: cannot open run log files under %s\n",
+            g_run_dir.string().c_str());
+    return false;
+  }
+  g_log_file = g_detail_log.string();
+  static DualFileSink* s_sink = nullptr;
+  s_sink = new DualFileSink();
+  google::AddLogSink(s_sink);
+  write_current_json(work_path);
+  return true;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Subprocess helper
 // ─────────────────────────────────────────────────────────────────────────────
-
-static std::string g_bin_dir;
-
-/// Path of the shared pipeline log file (empty = no file logging).
-static std::string g_log_file;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Step timing registry
@@ -150,7 +315,7 @@ static bool load_seed_eval_best_profile(const fs::path& best_seed_path,
     profile->init_min_angle_deg = best_strategy.value("init_min_angle_deg", 2.0);
     profile->init_min_median_angle_deg =
         best_strategy.value("init_min_median_angle_deg", 30.0);
-    profile->resection_min_inliers = best_strategy.value("resection_min_inliers", 15);
+    profile->resection_min_inliers = best_strategy.value("resection_min_inliers", 30);
     return !profile->name.empty();
   } catch (const std::exception& e) {
     if (error_message)
@@ -189,24 +354,7 @@ static std::vector<std::string> with_verbosity(std::vector<std::string> args) {
   return args;
 }
 
-/// Run subprocess, stream output to console (and to g_log_file when set). Returns exit code.
-static int run(const std::vector<std::string>& args) {
-  auto full_args = with_verbosity(args);
-  std::string cmd = build_cmd(full_args);
-  LOG(INFO) << "RUN: " << cmd;
-  std::string shell_cmd = cmd;
-  if (!g_log_file.empty())
-    shell_cmd += " >> \"" + g_log_file + "\" 2>&1";
-  int rc = std::system(shell_cmd.c_str());
-#ifdef _WIN32
-  return rc;
-#else
-  return WIFEXITED(rc) ? WEXITSTATUS(rc) : 1;
-#endif
-}
-
-/// Run subprocess, capture stdout+stderr lines, parse ISAT_EVENT JSON. Returns exit code.
-/// Captured events are appended to `events`. Lines echoed to stderr + g_log_file.
+/// Run subprocess, tee output to detail/console, parse + forward ISAT_EVENT.
 static int run_capture(const std::vector<std::string>& args, std::vector<json>& events) {
   auto full_args = with_verbosity(args);
   std::string cmd = build_cmd(full_args) + " 2>&1";
@@ -216,10 +364,6 @@ static int run_capture(const std::vector<std::string>& args, std::vector<json>& 
     LOG(ERROR) << "popen failed";
     return 1;
   }
-  // Open log file for appending captured output
-  FILE* lf = nullptr;
-  if (!g_log_file.empty())
-    lf = fopen(g_log_file.c_str(), "a");
   char buf[4096];
   static const std::string prefix = "ISAT_EVENT ";
   while (fgets(buf, sizeof(buf), pipe)) {
@@ -228,18 +372,30 @@ static int run_capture(const std::vector<std::string>& args, std::vector<json>& 
       line.pop_back();
     if (line.compare(0, prefix.size(), prefix) == 0) {
       try {
-        events.push_back(json::parse(line.substr(prefix.size())));
+        json ev = json::parse(line.substr(prefix.size()));
+        events.push_back(ev);
+        handle_child_event(std::move(ev));
       } catch (...) {
+        if (g_detail_fp) {
+          fprintf(g_detail_fp, "%s\n", line.c_str());
+          fflush(g_detail_fp);
+        }
+      }
+    } else {
+      std::cerr << line << "\n";
+      if (g_detail_fp) {
+        fprintf(g_detail_fp, "%s\n", line.c_str());
+        fflush(g_detail_fp);
+      }
+      // Short info-looking lines also go to console
+      if (g_console_fp && line.size() < 400 &&
+          (line.find("I") == 0 || line.find("W") == 0 || line.find("E") == 0 ||
+           line.find("RUN:") != std::string::npos || line.find("===") != std::string::npos)) {
+        fprintf(g_console_fp, "%s\n", line.c_str());
+        fflush(g_console_fp);
       }
     }
-    std::cerr << line << "\n";
-    if (lf) {
-      fprintf(lf, "%s\n", line.c_str());
-      fflush(lf);
-    }
   }
-  if (lf)
-    fclose(lf);
   int status = pclose(pipe);
 #ifdef _WIN32
   return status;
@@ -248,12 +404,20 @@ static int run_capture(const std::vector<std::string>& args, std::vector<json>& 
 #endif
 }
 
+/// Run subprocess (always capture so events land in events.ndjson).
+static int run(const std::vector<std::string>& args) {
+  std::vector<json> ignored;
+  return run_capture(args, ignored);
+}
+
 static void run_or_die(const std::string& step, const std::vector<std::string>& args) {
   auto t0 = std::chrono::steady_clock::now();
   int rc = run(args);
   double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   if (rc != 0) {
     LOG(ERROR) << "Step [" << step << "] failed (exit code " << rc << ")";
+    if (!g_current_step.empty())
+      end_pipeline_step(g_current_step, false, "subprocess failed: " + step);
     std::exit(1);
   }
   LOG(INFO) << "Step [" << step << "] completed in " << secs << "s";
@@ -269,6 +433,8 @@ static std::vector<json> run_capture_or_die(const std::string& step,
   double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   if (rc != 0) {
     LOG(ERROR) << "Step [" << step << "] failed (exit code " << rc << ")";
+    if (!g_current_step.empty())
+      end_pipeline_step(g_current_step, false, "subprocess failed: " + step);
     std::exit(1);
   }
   LOG(INFO) << "Step [" << step << "] completed in " << secs << "s";
@@ -301,6 +467,92 @@ static std::set<std::string> parse_steps(const std::string& steps_str) {
     result.insert(token);
   }
   return result;
+}
+
+/// Classic camera_estimator fallback: f35=35 → fx = 35 * diag / 43.2666.
+static bool looks_like_f35_fallback(double fx, double width, double height) {
+  if (!(fx > 0.0) || !(width > 0.0) || !(height > 0.0))
+    return false;
+  const double diag = std::sqrt(width * width + height * height);
+  const double expected = 35.0 * diag / 43.266615305567875;
+  if (!(expected > 0.0))
+    return false;
+  return std::abs(fx - expected) / expected < 0.02;
+}
+
+/// Persist camera_estimator ISAT_EVENT sources for later pipeline decisions.
+static void write_camera_estimate_meta(const fs::path& meta_path,
+                                       const std::vector<json>& events) {
+  json root;
+  root["type"] = "camera_estimate_meta";
+  root["groups"] = json::array();
+  bool any_fallback = false;
+  for (const auto& ev : events) {
+    if (!ev.contains("type") || ev["type"] != "camera_estimator.estimate")
+      continue;
+    if (!ev.value("ok", false) || !ev.contains("data"))
+      continue;
+    const auto& d = ev["data"];
+    json g;
+    g["group_id"] = d.value("group_id", -1);
+    g["group_name"] = d.value("group_name", "");
+    g["source"] = d.value("source", "");
+    g["fx"] = d.value("fx", 0.0);
+    g["fy"] = d.value("fy", 0.0);
+    g["width"] = d.value("width", 0);
+    g["height"] = d.value("height", 0);
+    g["make"] = d.value("make", "");
+    g["model"] = d.value("model", "");
+    if (g["source"] == "fallback")
+      any_fallback = true;
+    root["groups"].push_back(std::move(g));
+  }
+  root["any_fallback"] = any_fallback;
+  root["needs_focal_from_geo"] = any_fallback;
+  std::ofstream ofs(meta_path);
+  ofs << root.dump(2) << "\n";
+}
+
+/// Decide whether to run isat_focal_from_geo after geometry.
+/// mode: auto | always | never
+static bool should_run_focal_from_geo(const std::string& mode, const fs::path& meta_path,
+                                      const fs::path& images_all_path) {
+  if (mode == "never")
+    return false;
+  if (mode == "always")
+    return true;
+  // auto
+  if (fs::exists(meta_path)) {
+    try {
+      std::ifstream ifs(meta_path);
+      json meta;
+      ifs >> meta;
+      if (meta.contains("needs_focal_from_geo"))
+        return meta["needs_focal_from_geo"].get<bool>();
+      if (meta.value("any_fallback", false))
+        return true;
+    } catch (...) {
+    }
+  }
+  // Resume without meta: detect classic f35=35 fallback in images_all cameras.
+  try {
+    std::ifstream ifs(images_all_path);
+    if (!ifs)
+      return false;
+    json j;
+    ifs >> j;
+    if (!j.contains("cameras") || !j["cameras"].is_array())
+      return false;
+    for (const auto& cam : j["cameras"]) {
+      const double fx = cam.value("fx", 0.0);
+      const double w = cam.value("width", 0.0);
+      const double h = cam.value("height", 0.0);
+      if (looks_like_f35_fallback(fx, w, h))
+        return true;
+    }
+  } catch (...) {
+  }
+  return false;
 }
 
 /// images_all.json → 图像数量（与 isat_retrieval_match 一致）。
@@ -570,6 +822,10 @@ int main(int argc, char* argv[]) {
   int ba_threads = 0;
   /// isat_seed_eval short-window evaluation cap.
   int seed_eval_max_images = 6;
+  /// After geo: refine fx from F when camera prior is unreliable.
+  /// auto (default) = only if camera_estimator used fallback (or images look like f35=35);
+  /// always / never override.
+  std::string focal_from_geo = "auto";
 
   CmdLine cmd("InsightAT SfM Pipeline – end-to-end incremental SfM");
   cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required unless --existing-task)"));
@@ -640,6 +896,10 @@ int main(int argc, char* argv[]) {
       make_option(0, geo_thresh_f, "geo-thresh-f")
       .doc("Geometry -t/--thresh: F inlier threshold in pixels (default: 16.0). "
                "Larger tolerates calibration / distortion / noise; too large admits bad pairs."));
+  cmd.add(make_option(0, focal_from_geo, "focal-from-geo")
+              .doc("After geo, estimate fx from F matrices via isat_focal_from_geo and update "
+                   "images_all.json. auto (default): only when camera_estimator source is "
+                   "fallback (or images look like classic f35=35 fallback); always; never."));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO); also forwarded to all sub-tools"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only); also forwarded to all sub-tools"));
@@ -661,9 +921,12 @@ int main(int argc, char* argv[]) {
   cmd.add(make_switch(0, "undistort")
               .doc("After incremental SfM, run isat_undistort to export undistorted images + "
                    "COLMAP sparse (PINHOLE, %08d naming) for 3DGS training. "
-                   "Default: off. Requires --binary for binary format."));
+                   "Default: off. COLMAP is written as binary (.bin) unless --text."));
   cmd.add(make_switch(0, "binary")
-              .doc("When --undistort is set, write COLMAP binary format (.bin) instead of text."));
+              .doc("When --undistort is set, write COLMAP binary (.bin). Default; kept for "
+                   "compatibility."));
+  cmd.add(make_switch(0, "text")
+              .doc("When --undistort is set, write COLMAP text (.txt) instead of binary."));
 
   try {
     cmd.process(argc, argv);
@@ -706,6 +969,12 @@ int main(int argc, char* argv[]) {
   }
   if (!(geo_thresh_f > 0.0)) {
     std::cerr << "Error: --geo-thresh-f must be > 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (focal_from_geo != "auto" && focal_from_geo != "always" && focal_from_geo != "never") {
+    std::cerr << "Error: --focal-from-geo must be auto|always|never (got '" << focal_from_geo
+              << "')\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -804,34 +1073,6 @@ int main(int argc, char* argv[]) {
     g_verbosity_args.push_back(log_level);
   }
 
-  // ── Set up dated log file in <work-dir>/logs/ ────────────────────────────
-  if (!cmd.used("no-log-file")) {
-    std::string wd = work_dir;
-    while (!wd.empty() && (wd.back() == '/' || wd.back() == '\\'))
-      wd.pop_back();
-    fs::path logs_dir = fs::absolute(wd) / "logs";
-    fs::create_directories(logs_dir);
-    // Generate filename: sfm_YYYYMMDD_HHMMSS.log
-    {
-      std::time_t now = std::time(nullptr);
-      std::tm* lt = std::localtime(&now);
-      char ts[32];
-      std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", lt);
-      g_log_file = (logs_dir / (std::string("sfm_") + ts + ".log")).string();
-    }
-    // Add sink so isat_sfm's own glog lines also appear in the file
-    static FileSink* s_sink = nullptr;
-    s_sink = new FileSink(g_log_file); // lives for process lifetime
-    if (s_sink->ok()) {
-      google::AddLogSink(s_sink);
-      LOG(INFO) << "Pipeline log file: " << g_log_file;
-    } else {
-      delete s_sink;
-      s_sink = nullptr;
-      g_log_file.clear();
-    }
-  }
-
   // Normalize extensions: "JPG" → ".jpg", "tif" → ".tif", etc.
   ext = normalize_exts(ext);
   LOG(INFO) << "Image extensions: " << ext;
@@ -905,21 +1146,31 @@ int main(int argc, char* argv[]) {
   }
 
   // ── Derived paths ────────────────────────────────────────────────────────
+  // Layout (scheme B): root keeps project entry files; pairs live under match/;
+  // tracks under tracks/; Bundler export under incremental_sfm/bundler/.
   fs::path project_path = work_path / "project.iat";
   fs::path images_all = work_path / "images_all.json";
   fs::path feat_dir = work_path / "feat";
   fs::path feat_ret_dir = work_path / "feat_retrieval";
-  fs::path pairs_retrieve = work_path / "pairs_retrieve.json";
-  fs::path pairs_matched = work_path / "pairs_matched.json";
   fs::path match_dir_path = work_path / "match";
+  fs::path pairs_retrieve = match_dir_path / "pairs_retrieve.json";
+  fs::path pairs_matched = match_dir_path / "pairs_matched.json";
   fs::path geo_dir = work_path / "geo";
   fs::path pairs_json = geo_dir / "pairs.json";
-  fs::path tracks_path = work_path / "tracks.isat_tracks";
+  fs::path tracks_dir = work_path / "tracks";
+  fs::path tracks_path = tracks_dir / "tracks.isat_tracks";
   fs::path seed_eval_out = work_path / "seed_eval_all";
   fs::path sfm_out = work_path / "incremental_sfm";
 
   // Create work directory (sub-dirs created per step as needed)
   fs::create_directories(work_path);
+
+  // ── Run log directory (console / detail / events) ───────────────────────
+  if (!cmd.used("no-log-file")) {
+    if (setup_run_logs(work_path)) {
+      LOG(INFO) << "Pipeline log dir: " << g_run_dir.string();
+    }
+  }
 
   // Sensor DB: look next to binary
   std::string sensor_db;
@@ -929,15 +1180,31 @@ int main(int argc, char* argv[]) {
       sensor_db = candidate.string();
   }
 
-  auto pipeline_start = std::chrono::steady_clock::now();
+  g_active_step_order.clear();
+  for (const auto& s : ALL_STEPS) {
+    if (active_steps.count(s))
+      g_active_step_order.push_back(s);
+  }
+  g_step_count = static_cast<int>(g_active_step_order.size());
+  g_pipeline_t0 = std::chrono::steady_clock::now();
+  write_meta_json({{"started_at", g_run_id}, {"work_dir", work_path.string()}});
+  emit_event({{"type", "pipeline.start"},
+              {"ok", true},
+              {"data",
+               {{"run_id", g_run_id},
+                {"steps", g_active_step_order},
+                {"log_dir", g_run_dir.empty() ? "" : g_run_dir.string()}}}});
+
+  auto pipeline_start = g_pipeline_t0;
   int step_num = 0;
-  int total_steps = static_cast<int>(active_steps.size());
+  int total_steps = g_step_count;
 
   // ════════════════════════════════════════════════════════════════════════
   // Step: CREATE
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("create")) {
     ++step_num;
+    begin_pipeline_step("create");
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Create project ===";
 
     run_or_die("create-project",
@@ -987,7 +1254,10 @@ int main(int argc, char* argv[]) {
         cam_cmd.push_back("-d");
         cam_cmd.push_back(sensor_db);
       }
-      run_or_die("camera-estimate", cam_cmd);
+      const auto cam_events = run_capture_or_die("camera-estimate", cam_cmd);
+      const fs::path cam_meta = work_path / "camera_estimate_meta.json";
+      write_camera_estimate_meta(cam_meta, cam_events);
+      LOG(INFO) << "Wrote camera estimate meta: " << cam_meta.string();
     }
 
     run_or_die("create-at-task",
@@ -995,6 +1265,7 @@ int main(int argc, char* argv[]) {
 
     run_or_die("export-images", {tool_path("isat_project"), "extract", "-p", project_path.string(),
                                  "-t", "0", "-o", images_all.string(), "-a"});
+    end_pipeline_step("create", true);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1002,6 +1273,7 @@ int main(int argc, char* argv[]) {
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("extract")) {
     ++step_num;
+    begin_pipeline_step("extract");
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Feature extraction ===";
     fs::create_directories(feat_dir);
     fs::create_directories(feat_ret_dir);
@@ -1085,6 +1357,7 @@ int main(int argc, char* argv[]) {
         extract_cmd.push_back("--use-sift-gpu");
       run_or_die("extract", extract_cmd);
     }
+    end_pipeline_step("extract", true);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1092,11 +1365,13 @@ int main(int argc, char* argv[]) {
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("match")) {
     ++step_num;
+    begin_pipeline_step("match");
 
     const int n_img = count_images_in_images_all_json(images_all);
     if (n_img < 2) {
       LOG(ERROR) << "match step: need at least 2 images in " << images_all << " (got " << n_img
                  << ")";
+      end_pipeline_step("match", false, "need at least 2 images");
       return 1;
     }
 
@@ -1138,10 +1413,7 @@ int main(int argc, char* argv[]) {
         return 1;
       }
     } else {
-      fs::path /* The above code is a comment in C++ programming language. Comments are used to provide
-      explanations or notes within the code for better understanding. In this case, the
-      comment is indicating that the code below it is related to "retrieval_work". */
-      retrieval_work = work_path / "retrieval_match_work";
+      fs::path retrieval_work = work_path / "retrieval_match_work";
       fs::create_directories(retrieval_work);
 
       run_or_die("retrieval-match",
@@ -1286,6 +1558,70 @@ int main(int argc, char* argv[]) {
                   "--twoview",
                   "--vis"});
     }
+
+    // After geometry: refine focal when camera prior is unreliable (fallback / f35=35).
+    {
+      const fs::path cam_meta = work_path / "camera_estimate_meta.json";
+      const bool do_focal =
+          should_run_focal_from_geo(focal_from_geo, cam_meta, images_all);
+      if (do_focal) {
+        LOG(INFO) << "Focal prior unreliable (--focal-from-geo=" << focal_from_geo
+                  << "); estimating fx from geo F matrices";
+        const fs::path focal_bin = fs::path(g_bin_dir) / "isat_focal_from_geo";
+        if (!fs::exists(focal_bin)) {
+          LOG(ERROR) << "isat_focal_from_geo not found at " << focal_bin.string();
+          return 1;
+        }
+        std::vector<std::string> focal_cmd = {tool_path("isat_focal_from_geo"),
+                                              "-p",
+                                              images_all.string(),
+                                              "-g",
+                                              geo_dir.string(),
+                                              "-o",
+                                              images_all.string(),
+                                              "-j",
+                                              std::to_string(io_threads)};
+        std::vector<json> focal_events;
+        auto t0 = std::chrono::steady_clock::now();
+        const int focal_rc = run_capture(focal_cmd, focal_events);
+        const double focal_secs =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (focal_rc != 0) {
+          if (focal_from_geo == "always") {
+            LOG(ERROR) << "Step [focal-from-geo] failed (exit code " << focal_rc << ")";
+            return 1;
+          }
+          LOG(WARNING) << "focal-from-geo failed (exit " << focal_rc << " in " << focal_secs
+                       << "s); keeping camera prior and continuing";
+        } else {
+          LOG(INFO) << "Step [focal-from-geo] completed in " << focal_secs << "s";
+          g_step_timings.push_back({"focal-from-geo", focal_secs});
+          // Stamp meta so resumed runs know prior was refined.
+          try {
+            json stamp;
+            if (fs::exists(cam_meta)) {
+              std::ifstream ifs(cam_meta);
+              ifs >> stamp;
+            }
+            stamp["focal_from_geo_ran"] = true;
+            stamp["needs_focal_from_geo"] = false;
+            for (const auto& ev : focal_events) {
+              if (ev.value("type", "") == "focal_from_geo.estimate") {
+                stamp["focal_from_geo"] = ev;
+                break;
+              }
+            }
+            std::ofstream ofs(cam_meta);
+            ofs << stamp.dump(2) << "\n";
+          } catch (...) {
+          }
+        }
+      } else {
+        LOG(INFO) << "Skipping focal-from-geo (--focal-from-geo=" << focal_from_geo
+                  << "; camera prior trusted)";
+      }
+    }
+    end_pipeline_step("match", true);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1293,12 +1629,15 @@ int main(int argc, char* argv[]) {
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("tracks")) {
     ++step_num;
+    begin_pipeline_step("tracks");
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Track building ===";
+    fs::create_directories(tracks_dir);
 
     run_or_die("tracks",
                {tool_path("isat_tracks"), "-i", pairs_json.string(), "-m", match_dir_path.string(),
                 "-g", geo_dir.string(), "-l", images_all.string(), "-o", tracks_path.string(),
                 "--min-track-length", "2"});
+    end_pipeline_step("tracks", true);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1306,6 +1645,7 @@ int main(int argc, char* argv[]) {
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("seed_eval")) {
     ++step_num;
+    begin_pipeline_step("seed_eval");
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Seed evaluation ===";
     fs::create_directories(seed_eval_out);
 
@@ -1326,6 +1666,7 @@ int main(int argc, char* argv[]) {
                                               tool_path("isat_incremental_sfm")};
 
     run_or_die("seed-eval", seed_eval_cmd);
+    end_pipeline_step("seed_eval", true);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1333,6 +1674,7 @@ int main(int argc, char* argv[]) {
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("incremental_sfm")) {
     ++step_num;
+    begin_pipeline_step("incremental_sfm");
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Incremental SfM ===";
     fs::create_directories(sfm_out);
 
@@ -1364,7 +1706,9 @@ int main(int argc, char* argv[]) {
                                         "-g",
                                         geo_dir.string(),
                                         "-o",
-                                        sfm_out.string()};
+                                        sfm_out.string(),
+                                        "-f",
+                                        feat_dir.string()};
     if (use_seed_profile) {
       sfm_cmd.push_back("--init-min-inliers");
       sfm_cmd.push_back(std::to_string(seed_profile.init_min_inliers));
@@ -1395,6 +1739,7 @@ int main(int argc, char* argv[]) {
                 << "/iter_NNNN/  (at_bundler_viewer; interval=1)";
     }
     run_or_die("incremental-sfm", sfm_cmd);
+    end_pipeline_step("incremental_sfm", true);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1402,23 +1747,30 @@ int main(int argc, char* argv[]) {
   // ════════════════════════════════════════════════════════════════════════
   if (active_steps.count("undistort")) {
     ++step_num;
+    begin_pipeline_step("undistort");
     LOG(INFO) << "=== Step " << step_num << "/" << total_steps << ": Undistort ===";
 
     const fs::path tracks_idc = sfm_out / "tracks.isat_tracks";
     const fs::path poses_json = sfm_out / "poses.json";
     if (!fs::exists(tracks_idc)) {
       LOG(ERROR) << "Undistort skipped: " << tracks_idc << " not found (run incremental_sfm first)";
+      end_pipeline_step("undistort", false, "tracks.isat_tracks missing");
     } else if (!fs::exists(poses_json)) {
       LOG(ERROR) << "Undistort skipped: " << poses_json << " not found (run incremental_sfm first)";
+      end_pipeline_step("undistort", false, "poses.json missing");
     } else {
       std::vector<std::string> ud_cmd = {tool_path("isat_undistort"),
                                          "-p", images_all.string(),
                                          "-t", tracks_idc.string(),
                                          "-j", poses_json.string(),
-                                         "-o", sfm_out.string()};
-      if (cmd.used("binary"))
+                                         "-o", sfm_out.string(),
+                                         "-f", feat_dir.string()};
+      if (cmd.used("text"))
+        ud_cmd.push_back("--text");
+      else
         ud_cmd.push_back("--binary");
       run_or_die("undistort", ud_cmd);
+      end_pipeline_step("undistort", true);
     }
   }
 
@@ -1468,7 +1820,7 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "";
   if (active_steps.count("incremental_sfm")) {
     LOG(INFO) << "  Poses:  " << (sfm_out / "poses.json").string();
-    LOG(INFO) << "  Bundle: " << (sfm_out / "bundle.out").string();
+    LOG(INFO) << "  Bundle: " << (sfm_out / "bundler" / "bundle.out").string();
     LOG(INFO) << "  COLMAP: " << (sfm_out / "colmap" / "sparse" / "0").string();
     if (active_steps.count("undistort")) {
       LOG(INFO) << "  Undistorted: " << (sfm_out / "colmap" / "images").string() << "/";
@@ -1479,7 +1831,8 @@ int main(int argc, char* argv[]) {
       LOG(INFO) << "  Per-step SfM (Bundlers): " << iv << "/iter_*/";
     }
     LOG(INFO) << "View results:";
-    LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " " << (sfm_out).string();
+    LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " "
+              << (sfm_out / "bundler").string();
     if (cmd.used("output-interval-sfm")) {
       LOG(INFO) << "  " << tool_path("at_bundler_viewer") << " "
                 << (work_path / "sfm_interval" / "iter_0000" / "bundle.out").string() << " ...";
@@ -1524,7 +1877,14 @@ int main(int argc, char* argv[]) {
   }
 
   // ── ISAT_EVENT: pipeline timing (stdout, machine-readable) ───────────────
-  printEvent({{"type", "sfm.pipeline_timing"}, {"ok", true}, {"data", timing_json}});
+  emit_event({{"type", "sfm.pipeline_timing"}, {"ok", true}, {"data", timing_json}});
+  emit_event({{"type", "pipeline.end"},
+              {"ok", true},
+              {"data", {{"run_id", g_run_id}, {"elapsed_s", total_secs}}}});
+  write_meta_json({{"finished_at", timing_json.value("timestamp", "")},
+                   {"exit_code", 0},
+                   {"elapsed_s", total_secs},
+                   {"work_dir", work_path.string()}});
 
   return 0;
 }

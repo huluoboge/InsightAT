@@ -33,10 +33,14 @@ static double essential_residual(const Eigen::Matrix3d& F, double cx, double cy,
 
 double focal_from_fundamental(const Eigen::Matrix3d& F, double cx, double cy, double f_min,
                               double f_max) {
-  // Phase 1: coarse grid search (log-spaced, 200 steps)
+  if (!(f_min > 0.0) || !(f_max > f_min * 1.01))
+    return -1.0;
+
+  // Phase 1: coarse grid search (log-spaced).
   constexpr int N_GRID = 200;
   double best_f = (f_min + f_max) * 0.5;
   double best_r = std::numeric_limits<double>::max();
+  int best_i = N_GRID / 2;
   const double log_lo = std::log(f_min), log_hi = std::log(f_max);
   for (int i = 0; i < N_GRID; ++i) {
     double f = std::exp(log_lo + (log_hi - log_lo) * i / (N_GRID - 1));
@@ -44,12 +48,21 @@ double focal_from_fundamental(const Eigen::Matrix3d& F, double cx, double cy, do
     if (r < best_r) {
       best_r = r;
       best_f = f;
+      best_i = i;
     }
   }
 
-  // Phase 2: golden-section refinement in [best_f/1.1, best_f*1.1]
+  // Unobservable / ill-conditioned F: cost minimised at the search boundary.
+  // (Typical for near-planar / pure-rotation pairs that still have a valid F.)
+  if (best_i <= 2 || best_i >= N_GRID - 3)
+    return -1.0;
+
+  // Phase 2: golden-section refinement, clamped to [f_min, f_max].
   const double phi = (std::sqrt(5.0) - 1.0) * 0.5; // ≈ 0.618
-  double lo = best_f / 1.1, hi = best_f * 1.1;
+  double lo = std::max(f_min, best_f / 1.1);
+  double hi = std::min(f_max, best_f * 1.1);
+  if (!(hi > lo))
+    return -1.0;
   double x1 = hi - phi * (hi - lo);
   double x2 = lo + phi * (hi - lo);
   double f1 = essential_residual(F, cx, cy, x1);
@@ -76,6 +89,8 @@ double focal_from_fundamental(const Eigen::Matrix3d& F, double cx, double cy, do
 
   // Sanity: if residual is very large, F might be degenerate
   if (best_r > 1e3)
+    return -1.0;
+  if (best_f <= f_min * 1.02 || best_f >= f_max * 0.98)
     return -1.0;
   return best_f;
 }

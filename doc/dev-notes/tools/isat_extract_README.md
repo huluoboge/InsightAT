@@ -57,6 +57,7 @@ OPTIONS:
   --octaves <int>         金字塔层数 (-1 = 自动, 默认: -1)
   --levels <int>          每层级别数 (默认: 3)
   --no-adapt              禁用暗图自适应
+  --no-store-colors       不写入每特征点 RGB（默认写入；灰度图自动跳过）
   -v, --verbose           详细日志
   -q, --quiet             安静模式（仅错误）
 ```
@@ -86,28 +87,34 @@ OPTIONS:
 ├─────────────────────────────────────┤
 │ JSON Size: uint64_t (8 bytes)       │
 ├─────────────────────────────────────┤
-│ JSON Descriptor                     │  ← 元数据（算法、参数、时间戳）
+│ JSON Descriptor                     │  ← 元数据（算法、参数、时间戳、has_colors）
 ├─────────────────────────────────────┤
 │ Binary Blob 1: keypoints            │  ← float32[N, 4] (x, y, scale, orientation)
 ├─────────────────────────────────────┤
-│ Binary Blob 2: descriptors          │  ← float32[N, 128] (SIFT 描述子)
+│ Binary Blob 2: descriptors          │  ← float32/uint8[N, 128] (SIFT 描述子)
+├─────────────────────────────────────┤
+│ Binary Blob 3: colors (optional)    │  ← uint8[N, 3] RGB（彩色图提取时默认写入）
 └─────────────────────────────────────┘
 ```
+
+兼容性：无 `colors` blob 的旧 `.isat_feat` 仍可正常匹配；导出 COLMAP/Bundler 时无颜色则写死灰 `128 128 128`。
 
 **JSON 描述符示例**:
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "task_type": "feature_extraction",
+  "has_colors": true,
   "algorithm": {
     "name": "SIFT_GPU",
-    "version": "1.0",
+    "version": "1.3",
     "parameters": {
       "nfeatures": 8000,
       "threshold": 0.04,
       "octaves": -1,
       "levels": 3,
-      "adapt_darkness": true
+      "adapt_darkness": true,
+      "store_colors": true
     }
   },
   "metadata": {
@@ -129,6 +136,13 @@ OPTIONS:
       "shape": [8000, 128],
       "offset": 128000,
       "size": 4096000
+    },
+    {
+      "name": "colors",
+      "dtype": "uint8",
+      "shape": [8000, 3],
+      "offset": 4224000,
+      "size": 24000
     }
   ]
 }

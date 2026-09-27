@@ -11,13 +11,16 @@
  *   -p / --project   Path to project JSON (images[] + cameras[], camera_index per image)
  *   -m / --pairs     Path to pairs JSON (for view graph)
  *   -g / --geo       Directory of .isat_geo files (index-based: im0_im1.isat_geo)
- *   -o / --output    Output directory; writes poses.json, bundle.out, list.txt
+ *   -o / --output    Output directory; writes poses.json, bundler/{bundle.out,list.txt},
+ *                    colmap/sparse/0/, and tracks.isat_tracks
+ *   -f / --features  Override .isat_feat dir for point RGB (default: auto-detect work/feat)
  *
  *   --ba-threads N   Ceres solver thread count for bundle adjustment (0 = hardware default).
  */
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -34,6 +37,7 @@
 #include "project_loader.h"
 
 #include "algorithm/io/track_store_idc.h"
+#include "algorithm/export/point_color_utils.h"
 #include "algorithm/modules/camera/camera_utils.h"
 #include "algorithm/modules/sfm/incremental_sfm_pipeline.h"
 #include "algorithm/modules/sfm/track_store.h"
@@ -124,31 +128,44 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
                           const std::vector<bool>& registered,
                           const std::vector<camera::Intrinsics>& cameras,
                           const std::vector<int>& image_to_camera_index, const TrackStore& store,
-                          int bundler_max_cameras = -1) {
+                          int bundler_max_cameras = -1,
+                          const std::string& features_dir = "",
+                          bool nest_under_bundler_subdir = true) {
+  std::string write_dir = out_dir;
+  if (nest_under_bundler_subdir) {
+    write_dir = out_dir + "/bundler";
+    try {
+      std::filesystem::create_directories(write_dir);
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "write_bundler: cannot create " << write_dir << ": " << e.what();
+      return false;
+    }
+  }
+
   const int n_images = static_cast<int>(registered.size());
 
-  // Build list of registered image indices in order
+  // Only registered cameras (global image index order).
   std::vector<int> all_reg_indices;
   for (int i = 0; i < n_images; ++i)
     if (registered[static_cast<size_t>(i)])
       all_reg_indices.push_back(i);
 
-  // Uniformly subsample if requested
   std::vector<int> reg_indices;
   if (bundler_max_cameras > 0 && static_cast<int>(all_reg_indices.size()) > bundler_max_cameras) {
     reg_indices.reserve(static_cast<size_t>(bundler_max_cameras));
-    const double step = static_cast<double>(all_reg_indices.size() - 1) / (bundler_max_cameras - 1);
+    const double step =
+        static_cast<double>(all_reg_indices.size() - 1) / (bundler_max_cameras - 1);
     for (int k = 0; k < bundler_max_cameras; ++k) {
       const int idx = static_cast<int>(std::round(k * step));
       reg_indices.push_back(all_reg_indices[static_cast<size_t>(idx)]);
     }
-    LOG(INFO) << "write_bundler: subsampled " << all_reg_indices.size() << " registered cameras → "
-              << reg_indices.size() << " for Bundler output";
+    LOG(INFO) << "write_bundler: subsampled " << all_reg_indices.size()
+              << " registered cameras → " << reg_indices.size() << " for Bundler output";
   } else {
     reg_indices = all_reg_indices;
   }
 
-  // Map global image index → bundler camera index (only registered images)
+  // Map global image index → bundler camera index
   std::vector<int> global_to_bundler(static_cast<size_t>(n_images), -1);
   for (int bi = 0; bi < static_cast<int>(reg_indices.size()); ++bi)
     global_to_bundler[static_cast<size_t>(reg_indices[bi])] = bi;
@@ -156,10 +173,13 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
   // Collect valid (triangulated) tracks and their observation lists
   struct BundlerPoint {
     float x, y, z;
+    uint8_t r = 128, g = 128, b = 128;
     std::vector<std::tuple<int, int, float, float>> views; // (cam_idx, key_idx, bx, by)
   };
   std::vector<BundlerPoint> points;
   points.reserve(store.num_tracks());
+
+  insight::export_util::FeatureColorCache color_cache(features_dir);
 
   std::vector<Observation> obs_buf;
   for (size_t ti = 0; ti < store.num_tracks(); ++ti) {
@@ -176,6 +196,11 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
     bp.x = px;
     bp.y = py;
     bp.z = pz;
+    if (auto rgb = insight::export_util::average_track_rgb(obs_buf, color_cache)) {
+      bp.r = (*rgb)[0];
+      bp.g = (*rgb)[1];
+      bp.b = (*rgb)[2];
+    }
     for (const auto& o : obs_buf) {
       const int im = static_cast<int>(o.image_index);
       if (im < 0 || im >= n_images || !registered[static_cast<size_t>(im)])
@@ -195,7 +220,7 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
   }
 
   // Write list.txt
-  const std::string list_path = out_dir + "/list.txt";
+  const std::string list_path = write_dir + "/list.txt";
   {
     std::ofstream lf(list_path);
     if (!lf.is_open()) {
@@ -212,7 +237,7 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
   LOG(INFO) << "Wrote " << list_path;
 
   // Write bundle.out
-  const std::string bundle_path = out_dir + "/bundle.out";
+  const std::string bundle_path = write_dir + "/bundle.out";
   std::ofstream bf(bundle_path);
   if (!bf.is_open()) {
     LOG(ERROR) << "Cannot write " << bundle_path;
@@ -246,7 +271,8 @@ static bool write_bundler(const std::string& out_dir, const std::vector<std::str
 
   for (const auto& p : points) {
     bf << p.x << " " << p.y << " " << p.z << "\n";
-    bf << "128 128 128\n"; // dummy colour
+    bf << static_cast<int>(p.r) << " " << static_cast<int>(p.g) << " " << static_cast<int>(p.b)
+       << "\n";
     bf << p.views.size();
     for (const auto& [cam_idx, key_idx, bx, by] : p.views)
       bf << " " << cam_idx << " " << key_idx << " " << bx << " " << by;
@@ -311,7 +337,8 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
                          const std::vector<Eigen::Vector3d>& poses_C,
                          const std::vector<bool>& registered,
                          const std::vector<camera::Intrinsics>& cameras,
-                         const std::vector<int>& image_to_camera_index, const TrackStore& store) {
+                         const std::vector<int>& image_to_camera_index, const TrackStore& store,
+                         const std::string& features_dir = "") {
   ScopedTimer total_timer("write_colmap total");
   namespace fs = std::filesystem;
 
@@ -393,6 +420,7 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
   struct ColmapPoint3D {
     float x, y, z;
     int point3d_id;                         // 1-based
+    uint8_t r = 128, g = 128, b = 128;
     double mean_reproj_px;                  ///< COLMAP points3D.txt ERROR field
     std::vector<std::pair<int, int>> track; // (colmap_image_id, point2d_idx)
   };
@@ -400,6 +428,8 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
   std::vector<ColmapPoint3D> colmap_points;
   colmap_points.reserve(store.num_tracks());
   int next_pt_id = 1;
+
+  insight::export_util::FeatureColorCache color_cache(features_dir);
 
   std::vector<Observation> obs_buf;
   size_t total_obs_for_reproj = 0;
@@ -418,6 +448,11 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
     pt.y = py;
     pt.z = pz;
     pt.point3d_id = next_pt_id;
+    if (auto rgb = insight::export_util::average_track_rgb(obs_buf, color_cache)) {
+      pt.r = (*rgb)[0];
+      pt.g = (*rgb)[1];
+      pt.b = (*rgb)[2];
+    }
     const Eigen::Vector3d Xw(static_cast<double>(px), static_cast<double>(py),
                              static_cast<double>(pz));
     total_obs_for_reproj += obs_buf.size();
@@ -507,8 +542,9 @@ static bool write_colmap(const std::string& out_dir, const std::vector<std::stri
       << "# Number of points: " << colmap_points.size() << "\n";
     f << std::fixed << std::setprecision(6);
     for (const auto& pt : colmap_points) {
-      f << pt.point3d_id << " " << pt.x << " " << pt.y << " " << pt.z << " 128 128 128 "
-        << pt.mean_reproj_px;
+      f << pt.point3d_id << " " << pt.x << " " << pt.y << " " << pt.z << " "
+        << static_cast<int>(pt.r) << " " << static_cast<int>(pt.g) << " " << static_cast<int>(pt.b)
+        << " " << pt.mean_reproj_px;
       for (const auto& [img_id, pt2d_idx] : pt.track)
         f << " " << img_id << " " << pt2d_idx;
       f << "\n";
@@ -526,6 +562,7 @@ int main(int argc, char* argv[]) {
   std::string pairs_path;
   std::string geo_dir;
   std::string output_dir;
+  std::string features_dir;
   std::string log_level;
   std::string debug_dir;
   int debug_interval = 1;
@@ -537,13 +574,16 @@ int main(int argc, char* argv[]) {
   double init_max_forward_motion = 0.95;
   double init_min_angle_deg = 2.0;
   double init_min_median_angle_deg = 30.0;
-  int resection_min_inliers = 15;
+  int resection_min_inliers = 30;
   CmdLine cmd("Incremental SfM: tracks IDC + project JSON + pairs + geo → poses");
   cmd.add(make_option('t', tracks_path, "tracks").doc("Path to .isat_tracks IDC"));
   cmd.add(make_option('p', project_path, "project").doc("Path to project JSON"));
   cmd.add(make_option('m', pairs_path, "pairs").doc("Path to pairs JSON (view graph)"));
   cmd.add(make_option('g', geo_dir, "geo").doc("Directory of .isat_geo files"));
   cmd.add(make_option('o', output_dir, "output").doc("Output directory"));
+  cmd.add(make_option('f', features_dir, "features")
+              .doc("Override .isat_feat directory for point RGB (default: auto-detect "
+                   "work/feat next to tracks/geo)"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_option(0, debug_dir, "debug-dir")
               .doc("Directory for per-iteration Bundler snapshots (debug pose drift)"));
@@ -628,6 +668,20 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
+
+  // Point colors: use --features if given, else auto-detect work/feat next to tracks/geo/output.
+  features_dir = insight::export_util::resolve_features_dir(
+      features_dir, {tracks_path, geo_dir, output_dir, project_path});
+  if (features_dir.empty()) {
+    LOG(INFO) << "No feature directory found; COLMAP/Bundler points will use gray RGB";
+  } else if (insight::export_util::features_dir_has_colors(features_dir)) {
+    LOG(INFO) << "Feature colors available in " << features_dir
+              << " — will write real RGB to COLMAP/Bundler";
+  } else {
+    LOG(INFO) << "Feature directory " << features_dir
+              << " has no colors blob; COLMAP/Bundler points will use gray RGB "
+                 "(re-run isat_extract without --no-store-colors)";
+  }
 
   ProjectData project;
   {
@@ -741,17 +795,19 @@ int main(int argc, char* argv[]) {
     const std::vector<int> snap_img2cam = project.image_to_camera_index;
     const int snap_max_cams = bundler_max_cameras;
     const std::string snap_base = debug_dir;
+    const std::string snap_features_dir = features_dir;
     opts.debug.on_snapshot = [snap_image_paths, snap_cameras, snap_img2cam, snap_max_cams,
-                              snap_base](int sfm_iter, int num_registered,
-                                         const std::vector<Eigen::Matrix3d>& R,
-                                         const std::vector<Eigen::Vector3d>& C,
-                                         const std::vector<bool>& reg, const TrackStore& store) {
+                              snap_base, snap_features_dir](
+                                 int sfm_iter, int num_registered,
+                                 const std::vector<Eigen::Matrix3d>& R,
+                                 const std::vector<Eigen::Vector3d>& C,
+                                 const std::vector<bool>& reg, const TrackStore& store) {
       std::ostringstream ss;
       ss << snap_base << "/iter_" << std::setw(4) << std::setfill('0') << sfm_iter;
       const std::string iter_dir = ss.str();
       std::filesystem::create_directories(iter_dir);
       write_bundler(iter_dir, snap_image_paths, R, C, reg, snap_cameras, snap_img2cam, store,
-                    snap_max_cams);
+                    snap_max_cams, snap_features_dir, /*nest_under_bundler_subdir=*/false);
       LOG(INFO) << "[debug] iter=" << sfm_iter << " n_reg=" << num_registered << " snapshot → "
                 << iter_dir;
     };
@@ -795,13 +851,13 @@ int main(int argc, char* argv[]) {
   {
     ScopedTimer timer("write_bundler");
     write_bundler(output_dir, project.image_paths, poses_R, poses_C, registered, project.cameras,
-                  project.image_to_camera_index, store);
+                  project.image_to_camera_index, store, bundler_max_cameras, features_dir);
   }
 
   {
     ScopedTimer timer("write_colmap");
     write_colmap(output_dir, project.image_paths, poses_R, poses_C, registered, project.cameras,
-                 project.image_to_camera_index, store);
+                 project.image_to_camera_index, store, features_dir);
   }
 
   // ── Save TrackStore (3-D points + observation flags) to bundle dir ────────

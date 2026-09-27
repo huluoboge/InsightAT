@@ -76,21 +76,36 @@ This runs: create project → extract → retrieve → match → geometry → tr
 
 ```bash
 # Built-in 3D viewer (points + cameras)
-./build/at_bundler_viewer 
+./build/at_bundler_viewer work/incremental_sfm/bundler
 
 # Or MeshLab
-meshlab work/incremental_sfm/bundle.out
+meshlab work/incremental_sfm/bundler/bundle.out
 ```
 
-Typical output layout:
+Typical work-directory layout (scheme B):
 ```
-work/incremental_sfm/
-├── poses.json      # Camera poses (R, C)
-├── bundle.out      # Bundler (points + cameras, viewable)
-└── list.txt        # Image list
+work/
+├── images_all.json
+├── project.iat
+├── feat/  feat_retrieval/
+├── match/
+│   ├── pairs_retrieve.json
+│   ├── pairs_matched.json
+│   └── *.isat_match
+├── geo/
+├── tracks/
+│   └── tracks.isat_tracks
+├── seed_eval_all/
+└── incremental_sfm/
+    ├── poses.json
+    ├── tracks.isat_tracks
+    ├── bundler/
+    │   ├── bundle.out
+    │   └── list.txt
+    └── colmap/sparse/0/
 ```
 
-> With debug enabled, each BA in incremental SfM can emit an intermediate `bundle.out` for `at_bundler_viewer`.
+> With `--output-interval-sfm`, each SfM iteration can emit an intermediate Bundler snapshot under `work/sfm_interval/iter_NNNN/` for `at_bundler_viewer`.
 
 ---
 
@@ -242,7 +257,7 @@ Use `-h` on each tool for full options.
 
 ### Bundler (default, viewable out of the box)
 
-Incremental SfM writes `bundle.out` + `list.txt` for `at_bundler_viewer` or MeshLab; compare with COLMAP `sparse/0` if you export there.
+Incremental SfM writes `bundler/{bundle.out,list.txt}` for `at_bundler_viewer` or MeshLab; compare with COLMAP `colmap/sparse/0` beside it.
 
 ### COLMAP export
 

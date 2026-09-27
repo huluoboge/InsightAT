@@ -1,0 +1,71 @@
+{
+  "name": "insightat-sfm-gui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "InsightAT SfM desktop shell driven by CLI tools.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron --no-sandbox .",
+    "postinstall": "node scripts/ensure-electron.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/pipeline.js && node --check src/renderer.js",
+    "pack": "electron-builder --linux dir",
+    "pack:appimage": "electron-builder --linux AppImage",
+    "pack:deb": "electron-builder --linux deb",
+    "pack:win": "electron-builder --win zip"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.insightat.sfmgui",
+    "productName": "InsightAT SfM",
+    "icon": "assets/icons",
+    "directories": {
+      "output": "../dist/sfm-gui"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../sfm-viewer",
+        "to": "sfm-viewer",
+        "filter": [
+          "**/*",
+          "!node_modules/**",
+          "!.git/**",
+          "!dist/**"
+        ]
+      },
+      {
+        "from": "../staging/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "linux": {
+      "target": [
+        "dir",
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icons",
+      "category": "Science",
+      "synopsis": "InsightAT SfM GUI for reconstruction workflows"
+    },
+    "win": {
+      "target": [
+        "zip"
+      ],
+      "icon": "assets/icon.png"
+    }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
+  }
+}

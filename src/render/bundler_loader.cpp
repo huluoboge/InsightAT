@@ -40,10 +40,11 @@ bool load_reconstruction_directory(const std::string& dir, BundlerScene* scene,
   const bool has_colmap_bin =
       fs::exists(root / "cameras.bin") && fs::exists(root / "images.bin") &&
       fs::exists(root / "points3D.bin");
-  if (has_colmap_text)
-    return load_colmap_text_directory(dir, scene, error_message, std::move(progress));
+  // Prefer binary when both exist (txt may be a stale incremental_sfm leftover).
   if (has_colmap_bin)
     return load_colmap_binary_directory(dir, scene, error_message, std::move(progress));
+  if (has_colmap_text)
+    return load_colmap_text_directory(dir, scene, error_message, std::move(progress));
   return load_bundler_directory(dir, scene, error_message, std::move(progress));
 }
 
@@ -290,7 +291,11 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
   Eigen::Vector3d mean = Eigen::Vector3d::Zero();
   int n = 0;
 
+  // Bundler unused slots use f=0 (e.g. debug snapshots with fixed camera indices).
+  // Do not include them in scene centering / scale — they sit at identity/origin.
   for (const auto& c : scene.cameras) {
+    if (!(c.focal > 0.0))
+      continue;
     Eigen::Matrix3d Rt = c.R.transpose();
     Eigen::Vector3d center = -Rt * c.t;
     mean += center;
@@ -306,6 +311,8 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
   double sum_dist = 0.0;
   int n_dist = 0;
   for (const auto& c : scene.cameras) {
+    if (!(c.focal > 0.0))
+      continue;
     Eigen::Matrix3d Rwc = c.R.transpose();
     Eigen::Vector3d center = -Rwc * c.t;
     sum_dist += (center - mean).norm();
@@ -333,10 +340,21 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
     const BundlerCamera& c = scene.cameras[i];
     RenderTracks::Photo photo;
     photo.id = static_cast<int>(i);
+    const std::string& ip = scene.image_paths[i];
+    photo.name = QString::fromStdString(ip);
+    photo.focal = static_cast<float>(c.focal);
+
+    // f<=0: unused / unregistered slot (stable index). Keep entry; do not draw or center on it.
+    if (!(c.focal > 0.0)) {
+      photo.initPose.centerValid = false;
+      photo.initPose.rotationValid = false;
+      photo.refinedPose = photo.initPose;
+      photos.push_back(photo);
+      continue;
+    }
 
     int w = (c.image_width > 0) ? c.image_width : 0;
     int h = (c.image_height > 0) ? c.image_height : 0;
-    const std::string& ip = scene.image_paths[i];
 
     if (w > 0 && h > 0) {
       // COLMAP（或已写入尺寸的模型）：完全使用 cameras.txt / 内参里的宽高，不调 GDAL。
@@ -349,7 +367,6 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
     }
     photo.w = static_cast<float>(w);
     photo.h = static_cast<float>(h);
-    photo.focal = static_cast<float>(c.focal);
     if (photo.focal <= 0.f)
       photo.focal = 0.5f * (photo.w + photo.h);
 
@@ -357,8 +374,6 @@ void fill_render_tracks_from_bundler(RenderTracks* tracks, const BundlerScene& s
         std::max(photo.focal, std::max(photo.w, photo.h));
     sum_max_pixel += L;
     ++n_pixel;
-
-    photo.name = QString::fromStdString(ip);
 
     Eigen::Matrix3d Rwc = c.R.transpose();
     Eigen::Vector3d center = -Rwc * c.t;
