@@ -2,7 +2,7 @@
 
 **Language policy:** `docs/dev-notes/` and `docs/experiment/` are maintained in **Chinese (中文)**. All other content under `docs/` (including `user/`, `develop/`, and `develop/design/`) is maintained in **English**.
 
-**Project homepage:** `index.html` + logos live at the **root of this `docs/` folder** (GitHub Pages source: `/docs`). Mirror also published at [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/).
+**Project homepage:** `index.html` + logos live at the **root of this `docs/` folder** (GitHub Pages source: `/docs`, with `.nojekyll` so Markdown docs are not processed by Jekyll). Mirror also published at [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/).
 
 The `docs/` tree is split by audience and maturity. **End users** should start with [`user/`](user/README.md), not by browsing every subtree below this page.
 
