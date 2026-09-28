@@ -8,6 +8,11 @@ InsightAT（**A**erial **T**riangulation，空三）是开源、全自动、傻�
 
 支持平台：**Ubuntu 22.04** 与 **Windows**，**CUDA 12.8**。默认构建为纯 CLI（`isat_*`）。
 
+## 技术现状
+
+- [English](docs/TECHNICAL_STATUS_EN.md)
+- [简体中文](docs/TECHNICAL_STATUS.md)
+
 ## 快速开始
 
 ### 本地编译（Linux）

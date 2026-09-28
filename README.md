@@ -10,6 +10,11 @@ InsightAT (**A**erial **T**riangulation) is open-source, fully automated aerial 
 
 Supported platforms: **Ubuntu 22.04** and **Windows**, **CUDA 12.8**. Default build is **CLI-only** (`isat_*`).
 
+## Technical Status
+
+- [English](docs/TECHNICAL_STATUS_EN.md)
+- [Simplified Chinese](docs/TECHNICAL_STATUS.md)
+
 ## Quick Start
 
 ### Local build (Linux)

@@ -329,6 +329,7 @@
     <li><a href="#pipeline">Pipeline</a></li>
     <li><a href="#quickstart">Quick Start</a></li>
     <li><a href="#download">Download</a></li>
+    <li><a href="#report">Status</a></li>
     <li><a href="https://github.com/huluoboge/InsightAT" target="_blank" rel="noopener">GitHub</a></li>
     <li><a href="https://doi.org/10.5281/zenodo.20042104" target="_blank" rel="noopener">DOI</a></li>
     <li><a href="https://github.com/huluoboge/InsightAT/blob/main/README_zh.md" target="_blank" rel="noopener">中文</a></li>
@@ -436,6 +437,19 @@
       <div class="step-desc">Images + COLMAP</div>
     </div>
   </div>
+  <figure style="margin-top:1.6rem;">
+    <img src="images/pipeline/isat_sfm_pipeline.svg"
+         alt="isat_sfm CLI pipeline: stages, subprocesses and artifacts"
+         style="width:100%; height:auto; border:1px solid #e5e7eb; border-radius:10px;" />
+    <figcaption style="margin-top:0.5rem; font-size:0.85rem; color:#6b7280;">
+      Full <code>isat_sfm</code> CLI flow &mdash; stages, subprocesses and artifacts.
+      See the
+      <a href="https://github.com/huluoboge/InsightAT/blob/main/docs/TECHNICAL_STATUS_EN.md" target="_blank" rel="noopener">English technical status</a>
+      or
+      <a href="https://github.com/huluoboge/InsightAT/blob/main/docs/TECHNICAL_STATUS.md" target="_blank" rel="noopener">简体中文技术现状</a>
+      for the match-stage decision tree and the incremental SfM loop.
+    </figcaption>
+  </figure>
 </section>
 
 <section id="quickstart">
@@ -504,6 +518,20 @@ isat_sfm -i /data/images -w /data/work --undistort</code></pre>
       <div style="margin-top:0.5rem; font-size:0.85rem; color:#60a5fa; font-weight:600;">Cite this software →</div>
     </a>
   </div>
+</section>
+
+<section id="report">
+  <h2>Technical Status</h2>
+  <p>
+    A current-state technical status document describes what the code does today &mdash;
+    CLI tools, pipeline stages and their real defaults, data formats,
+    algorithms, engineering contracts, and benchmarks &mdash;
+    as of <code>main @ 305bbd1</code> (2026-09-28).
+  </p>
+  <p style="margin-top:0.8rem;">
+    <a class="btn btn-secondary" href="https://github.com/huluoboge/InsightAT/blob/main/docs/TECHNICAL_STATUS_EN.md" target="_blank" rel="noopener">Read in English</a>
+    <a class="btn btn-secondary" href="https://github.com/huluoboge/InsightAT/blob/main/docs/TECHNICAL_STATUS.md" target="_blank" rel="noopener">阅读中文版</a>
+  </p>
 </section>
 
 <section id="citation">

@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="1301" viewBox="0 0 1300 1301">
+<rect width="1300" height="1301" fill="#ffffff"/>
+<text x="26.0" y="50.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="24" fill="#0f172a" text-anchor="start" font-weight="700">增量 SfM（incremental_sfm 阶段）内部流程</text>
+<text x="26.0" y="77.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13.5" fill="#64748b" text-anchor="start" font-weight="400">由 isat_incremental_sfm 调用 run_incremental_sfm_pipeline；每次迭代注册一张新图像，循环直到没有可注册的候选</text>
+<text x="26.0" y="100.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="12" fill="#94a3b8" text-anchor="start" font-weight="400">基线 main@305bbd1 · 参数取值来自 src/cli/isat_incremental_sfm.cpp 实际写入的 IncrementalSfMOptions</text>
+<circle cx="34" cy="127.0" r="5" fill="#2563eb"/>
+<text x="48.0" y="132.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="14" fill="#2563eb" text-anchor="start" font-weight="700">阶段 0 · 载入与初始化</text>
+<line x1="230.0" y1="127.0" x2="1274.0" y2="127.0" stroke="#e2e8f0" stroke-width="1.2"/>
+<rect x="26.0" y="148.0" width="401.3" height="120.0" rx="9" fill="#f8fafc" stroke="#2563eb" stroke-width="1.4"/>
+<text x="41.0" y="174.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13.5" fill="#2563eb" text-anchor="start" font-weight="700">载入轨迹与视图图</text>
+<text x="41.0" y="193.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">读取 tracks.isat_tracks；若其中没有内嵌 view graph，则由</text>
+<text x="41.0" y="209.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">pairs.json 与 geo/ 的 F/E/H 结果重建两视图图。</text>
+<text x="41.0" y="233.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">load_track_store_from_idc(...)</text>
+<text x="41.0" y="249.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">build_view_graph_from_geo(...)</text>
+<rect x="449.3" y="148.0" width="401.3" height="120.0" rx="9" fill="#f8fafc" stroke="#2563eb" stroke-width="1.4"/>
+<text x="464.3" y="174.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13.5" fill="#2563eb" text-anchor="start" font-weight="700">锚定世界坐标系</text>
+<text x="464.3" y="193.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">初始对的第一张图 im0 定义为世界原点，作为所有 global BA</text>
+<text x="464.3" y="209.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">的固定锚点，防止规范自由度漂移。</text>
+<text x="464.3" y="233.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">C(im0) = 0    R(im0) = I</text>
+<text x="464.3" y="249.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">anchor_image = im0</text>
+<rect x="872.7" y="148.0" width="401.3" height="120.0" rx="9" fill="#f8fafc" stroke="#2563eb" stroke-width="1.4"/>
+<text x="887.7" y="174.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13.5" fill="#2563eb" text-anchor="start" font-weight="700">预热求解后端</text>
+<text x="887.7" y="193.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">进入主循环前先初始化 resection 后端与 GPU 上下文，避免第一次</text>
+<text x="887.7" y="209.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">resection 承担 EGL / shader 编译开销。</text>
+<text x="887.7" y="233.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">resection_init_gpu()</text>
+<text x="887.7" y="249.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">backend: poselib（默认）| cuda</text>
+<circle cx="34" cy="297.0" r="5" fill="#ca8a04"/>
+<text x="48.0" y="302.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="14" fill="#b45309" text-anchor="start" font-weight="700">阶段 1 · 初始对搜索与两视图初始化</text>
+<line x1="330.0" y1="297.0" x2="1274.0" y2="297.0" stroke="#e2e8f0" stroke-width="1.2"/>
+<rect x="26.0" y="318.0" width="1248.0" height="141.0" rx="9" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+<text x="42.0" y="345.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="13.5" fill="#b45309" text-anchor="start" font-weight="700">run_initial_pair_loop</text>
+<text x="42.0" y="365.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12" fill="#334155" text-anchor="start" font-weight="400">在视图图上按得分顺序枚举初始对，逐对做两视图重建并跑</text>
+<text x="42.0" y="381.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12" fill="#334155" text-anchor="start" font-weight="400">BA，全部门限通过才接受；失败则继续枚举，直到找到可用初始对（run_initial_pair_loop）。</text>
+<text x="706.0" y="365.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">min_tracks_for_intital_pair = 50</text>
+<text x="706.0" y="381.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">min_num_inliers（E-RANSAC）= 100</text>
+<text x="706.0" y="397.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">max_forward_motion = 0.95（|tz| / ‖t‖）</text>
+<text x="706.0" y="413.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">min_angle_deg = 2.0    min_median_angle_deg = 30.0</text>
+<text x="706.0" y="429.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">BA RMSE ≤ ba_rmse_max = 10.0 px</text>
+<text x="706.0" y="445.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">搜索范围 100 × 50（max_first / max_second images）</text>
+<circle cx="34" cy="488.0" r="5" fill="#db2777"/>
+<text x="48.0" y="493.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="14" fill="#be185d" text-anchor="start" font-weight="700">阶段 2 · 增量主循环 —— 每次迭代注册 1 张新图像</text>
+<line x1="430.0" y1="488.0" x2="1274.0" y2="488.0" stroke="#e2e8f0" stroke-width="1.2"/>
+<rect x="26.0" y="511.0" width="1248.0" height="576.0" rx="14" fill="#fff7fb" stroke="#f9a8d4" stroke-width="1.6" stroke-dasharray="6 5"/>
+<text x="44.0" y="533.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#be185d" text-anchor="start" font-weight="700">循环体：① 选择候选 → ② Resection → ③ 三角化 → ④ BA → ⑤ 剔除 → ⑥ 重三角化 → ⑦ 观测恢复 → ⑧ 快照判据</text>
+<rect x="90.0" y="547.0" width="1158.0" height="52.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="549.0" width="4.0" height="48.0" rx="2.0" fill="#db2777" stroke="#db2777" stroke-width="1.0"/>
+<circle cx="112.0" cy="573.0" r="12" fill="#db2777"/>
+<text x="112.0" y="577.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">1</text>
+<text x="132.0" y="577.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">选择候选图像</text>
+<text x="300.0" y="567.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">按可见性金字塔覆盖率排序未注册图像并做 3D-2D 数量门限；每迭代最多取 40</text>
+<text x="300.0" y="583.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">个候选，用三角化轨迹计数作缓存 watermark。</text>
+<text x="840.0" y="567.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">min_3d2d_count = 30</text>
+<text x="840.0" y="583.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">min_visibility_coverage = 0.02（6 层金字塔）</text>
+<rect x="90.0" y="611.0" width="1158.0" height="52.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="613.0" width="4.0" height="48.0" rx="2.0" fill="#db2777" stroke="#db2777" stroke-width="1.0"/>
+<circle cx="112.0" cy="637.0" r="12" fill="#db2777"/>
+<text x="112.0" y="641.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">2</text>
+<text x="132.0" y="641.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">Resection（PnP）</text>
+<text x="300.0" y="631.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">对候选逐个 dry-run，在通过硬门限者中挑最优后提交注册（最多试 8</text>
+<text x="300.0" y="647.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">个）；提交时按需写回外点。</text>
+<text x="840.0" y="631.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">min_inliers = 30    min_inlier_ratio = 0.10</text>
+<text x="840.0" y="647.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">大场景 ≥ 0.15    期望 50 / 0.20    RANSAC 4 px</text>
+<rect x="90.0" y="675.0" width="1158.0" height="52.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="677.0" width="4.0" height="48.0" rx="2.0" fill="#db2777" stroke="#db2777" stroke-width="1.0"/>
+<circle cx="112.0" cy="701.0" r="12" fill="#db2777"/>
+<text x="112.0" y="705.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">3</text>
+<text x="132.0" y="705.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">三角化新增观测</text>
+<text x="300.0" y="695.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">用新注册的相机三角化新轨迹，并更新既有轨迹的观测。</text>
+<text x="840.0" y="695.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">commit_reproj_px = 16.0</text>
+<text x="840.0" y="711.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">min_angle_deg = 0.5    max_angle_deg = 120</text>
+<rect x="90.0" y="739.0" width="1158.0" height="84.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="741.0" width="4.0" height="80.0" rx="2.0" fill="#7c3aed" stroke="#7c3aed" stroke-width="1.0"/>
+<circle cx="112.0" cy="781.0" r="12" fill="#7c3aed"/>
+<text x="112.0" y="785.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">4</text>
+<text x="132.0" y="785.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">BA 调度（三阶段）</text>
+<text x="300.0" y="759.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">按已注册图像数决定本轮跑 global BA 还是 local BA，并给出 global BA 的节奏。</text>
+<text x="840.0" y="759.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">n &lt; 41：每次注册都跑 global BA</text>
+<text x="840.0" y="775.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">41 ≤ n &lt; 100：linear gap = ceil(5 + 0.12·n)</text>
+<text x="840.0" y="791.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">n ≥ 100：每迭代 local BA（kBatchNeighbor, k=8）</text>
+<text x="840.0" y="807.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">         + 周期 global，gap = ceil(22 + 0.06·n)</text>
+<rect x="90.0" y="835.0" width="1158.0" height="68.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="837.0" width="4.0" height="64.0" rx="2.0" fill="#7c3aed" stroke="#7c3aed" stroke-width="1.0"/>
+<circle cx="112.0" cy="869.0" r="12" fill="#7c3aed"/>
+<text x="112.0" y="873.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">5</text>
+<text x="132.0" y="873.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">BA + 迭代外点剔除</text>
+<text x="300.0" y="855.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">Huber 稳健核叠 MAD 迭代剔除，最多 10 轮；内参按相机注册数分相位渐进解锁。</text>
+<text x="840.0" y="855.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">threshold_px 4.0    mad_k 2.5    Huber δ 0.5–3.0 px</text>
+<text x="840.0" y="871.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">角 0.5°–120°    深度 ≤ 200× 场景中位</text>
+<text x="840.0" y="887.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">内参：n&lt;3 全固定 → ≥3 fx+k1 → ≥10 +k2 → ≥50 全部</text>
+<rect x="90.0" y="915.0" width="1158.0" height="52.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="917.0" width="4.0" height="48.0" rx="2.0" fill="#ea580c" stroke="#ea580c" stroke-width="1.0"/>
+<circle cx="112.0" cy="941.0" r="12" fill="#ea580c"/>
+<text x="112.0" y="945.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">6</text>
+<text x="132.0" y="945.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">重三角化</text>
+<text x="300.0" y="935.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">按范围与周期恢复未三角化或被剔除的轨迹。</text>
+<text x="840.0" y="935.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">kNewImages（每次 local BA 之后）</text>
+<text x="840.0" y="951.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">kPendingOnly 每 3 次迭代    kFullScan 每 10 次迭代</text>
+<rect x="90.0" y="979.0" width="1158.0" height="46.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="981.0" width="4.0" height="42.0" rx="2.0" fill="#ea580c" stroke="#ea580c" stroke-width="1.0"/>
+<circle cx="112.0" cy="1002.0" r="12" fill="#ea580c"/>
+<text x="112.0" y="1006.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">7</text>
+<text x="132.0" y="1006.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">观测恢复</text>
+<text x="300.0" y="999.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">global BA 后若某相机焦距变化超过阈值，重新评估标记为 kRestorable 的观测并恢复合格者。</text>
+<text x="840.0" y="999.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">|Δfx/fx| &gt; 0.02 触发 → restore_reproj_px = 4.0</text>
+<rect x="90.0" y="1037.0" width="1158.0" height="52.0" rx="8" fill="#ffffff" stroke="#f1f5f9" stroke-width="1.2"/>
+<rect x="90.0" y="1039.0" width="4.0" height="48.0" rx="2.0" fill="#0891b2" stroke="#0891b2" stroke-width="1.0"/>
+<circle cx="112.0" cy="1063.0" r="12" fill="#0891b2"/>
+<text x="112.0" y="1067.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="12.5" fill="#ffffff" text-anchor="middle" font-weight="700">8</text>
+<text x="132.0" y="1067.5" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13" fill="#0f172a" text-anchor="start" font-weight="700">快照与循环判断</text>
+<text x="300.0" y="1057.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">按 --debug-interval 写 Bundler 迭代快照；只要还有候选图像就回到第 1 步。</text>
+<text x="840.0" y="1057.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">sfm_interval/iter_NNNN/（--debug-dir）</text>
+<text x="840.0" y="1073.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">无候选连续 2 次 → global BA + kFullScan 救援</text>
+<path d="M 90.0 1063.0 H 62.0 V 573.0 H 83.0" fill="none" stroke="#be185d" stroke-width="1.6"/>
+<path d="M 82.0 568.0 L 90.0 573.0 L 82.0 578.0 Z" fill="#be185d"/>
+<text x="54.0" y="818.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#be185d" font-weight="700" text-anchor="middle" transform="rotate(-90 54.0 818.0)">仍有候选图像 → 下一轮迭代</text>
+<circle cx="34" cy="1116.0" r="5" fill="#059669"/>
+<text x="48.0" y="1121.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="14" fill="#047857" text-anchor="start" font-weight="700">阶段 3 · 收尾与导出</text>
+<line x1="200.0" y1="1116.0" x2="1274.0" y2="1116.0" stroke="#e2e8f0" stroke-width="1.2"/>
+<rect x="26.0" y="1137.0" width="613.0" height="118.0" rx="9" fill="#f0fdf4" stroke="#059669" stroke-width="1.4"/>
+<text x="41.0" y="1163.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13.5" fill="#059669" text-anchor="start" font-weight="700">最终重三角化 + 全局 BA</text>
+<text x="41.0" y="1182.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">收尾做一次 kPendingOnly 重三角化与最终 global BA，按紧门限剔除后不再做</text>
+<text x="41.0" y="1198.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">kFullScan，避免把刚剔除的轨迹又三角化回来。</text>
+<text x="41.0" y="1222.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">final: kPendingOnly → global BA</text>
+<rect x="661.0" y="1137.0" width="613.0" height="118.0" rx="9" fill="#f0fdf4" stroke="#059669" stroke-width="1.4"/>
+<text x="676.0" y="1163.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="13.5" fill="#059669" text-anchor="start" font-weight="700">导出成果</text>
+<text x="676.0" y="1182.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11.5" fill="#64748b" text-anchor="start" font-weight="400">写出位姿、Bundler 与 COLMAP 稀疏模型，并回写更新后的轨迹存储。</text>
+<text x="676.0" y="1206.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">poses.json / bundler/bundle.out</text>
+<text x="676.0" y="1222.0" font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="11.5" fill="#334155" text-anchor="start" font-weight="400">colmap/sparse/0 / tracks.isat_tracks</text>
+<text x="26.0" y="1289.0" font-family="Noto Sans CJK SC, Noto Sans, PingFang SC, Microsoft YaHei, DejaVu Sans, sans-serif" font-size="11" fill="#94a3b8" text-anchor="start" font-weight="400">由 scripts/gen_pipeline_diagrams.py 生成；门限取自 incremental_sfm_pipeline.h 与 isat_incremental_sfm.cpp</text>
+</svg>
