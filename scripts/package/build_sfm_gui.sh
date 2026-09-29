@@ -10,6 +10,8 @@ STAGING_BIN="$ROOT/staging/bin"
 MODE="${1:-dir}"
 
 echo "[build_sfm_gui] repo=$ROOT mode=$MODE"
+chmod +x "$ROOT/scripts/package/sync_electron_version.sh"
+"$ROOT/scripts/package/sync_electron_version.sh"
 
 mkdir -p "$STAGING_BIN"
 if [[ -z "$(ls -A "$STAGING_BIN" 2>/dev/null || true)" ]]; then

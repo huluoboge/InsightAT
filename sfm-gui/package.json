@@ -1,6 +1,6 @@
 {
   "name": "insightat-sfm-gui",
-  "version": "0.1.0",
+  "version": "0.2.5",
   "private": true,
   "description": "InsightAT SfM desktop shell driven by CLI tools.",
   "homepage": "https://github.com/huluoboge/InsightAT",

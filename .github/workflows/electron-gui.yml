@@ -20,6 +20,8 @@ on:
       - 'sfm-gui/**'
       - 'sfm-viewer/**'
       - 'scripts/package/build_sfm_*.sh'
+      - 'scripts/package/sync_electron_version.sh'
+      - 'VERSION'
       - '.github/workflows/electron-gui.yml'
   pull_request:
     branches: [ main ]
@@ -27,6 +29,8 @@ on:
       - 'sfm-gui/**'
       - 'sfm-viewer/**'
       - 'scripts/package/build_sfm_*.sh'
+      - 'scripts/package/sync_electron_version.sh'
+      - 'VERSION'
       - '.github/workflows/electron-gui.yml'
   release:
     types: [published]
@@ -134,21 +138,15 @@ jobs:
         env:
           ELECTRON_GET_USE_PROXY: '0'
         run: |
-          cd sfm-viewer
-          npm install --foreground-scripts
-          npm run check
-          npm run pack:win
+          chmod +x scripts/package/build_sfm_viewer.sh scripts/package/sync_electron_version.sh
+          ./scripts/package/build_sfm_viewer.sh win
       - name: Package sfm-gui (win)
         shell: bash
         env:
           ELECTRON_GET_USE_PROXY: '0'
         run: |
-          mkdir -p staging/bin
-          echo "CLI tools not staged in CI electron job." > staging/bin/README.txt
-          cd sfm-gui
-          npm install --foreground-scripts
-          npm run check
-          npm run pack:win
+          chmod +x scripts/package/build_sfm_gui.sh scripts/package/sync_electron_version.sh
+          ./scripts/package/build_sfm_gui.sh win
       - name: Collect artifacts
         shell: bash
         run: |

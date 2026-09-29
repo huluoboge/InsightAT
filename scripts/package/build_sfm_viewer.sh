@@ -7,6 +7,8 @@ SFM_VIEWER="$ROOT/sfm-viewer"
 MODE="${1:-dir}"
 
 echo "[build_sfm_viewer] repo=$ROOT mode=$MODE"
+chmod +x "$ROOT/scripts/package/sync_electron_version.sh"
+"$ROOT/scripts/package/sync_electron_version.sh"
 (cd "$SFM_VIEWER" && npm install)
 (cd "$SFM_VIEWER" && npm run check)
 
