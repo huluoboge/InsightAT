@@ -6,8 +6,8 @@
 # For Ubuntu 24.04 packages see linux-build-ubuntu24.yml.
 #
 # Triggers:
-#   pull_request / push to main  → build + upload workflow artifacts
-#   release (published)          → also upload assets to the GitHub Release
+#   pull_request / push to main  → build and validate packages
+#   release (published)          → upload assets to the GitHub Release
 #                                 (Draft releases do NOT trigger this —
 #                                  Publish as release or pre-release.)
 #   workflow_dispatch            → manual build; optional tag to upload
@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to upload assets to; leave empty for artifacts only"
+        description: "Existing release tag to upload assets to; leave empty for validation only"
         required: false
         default: ""
       cuda_architectures:
@@ -146,18 +146,7 @@ jobs:
           (cd "${OUTPUT_DIR}/deb" && sha256sum "$(basename "${deb_dest}")" | tee "$(basename "${deb_dest}").sha256")
           find "${OUTPUT_DIR}" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.sha256' \) -print
 
-      - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: InsightAT-linux-cuda12.8-ubuntu22.04-${{ github.sha }}
-          path: |
-            ${{ env.OUTPUT_DIR }}/appimage/*.AppImage
-            ${{ env.OUTPUT_DIR }}/appimage/*.sha256
-            ${{ env.OUTPUT_DIR }}/deb/*.deb
-            ${{ env.OUTPUT_DIR }}/deb/*.sha256
-          if-no-files-found: error
-          retention-days: 14
-
+      # Package binaries are intentionally not stored as Actions artifacts due to quota.
       - name: Upload assets to GitHub Release
         if: steps.meta.outputs.upload_assets == 'true'
         env:

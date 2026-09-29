@@ -5,8 +5,8 @@
 #   Windows: zip under dist/sfm-viewer and dist/sfm-gui
 #
 # Triggers:
-#   push/PR (path-filtered)      → build + workflow artifacts
-#   release (published)          → also attach to the GitHub Release
+#   push/PR (path-filtered)      → build and validate packages
+#   release (published)          → attach assets to the GitHub Release
 #                                 (Draft releases do NOT trigger this —
 #                                  Publish as release or pre-release.)
 #   workflow_dispatch            → manual build; optional tag to upload
@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to upload assets to; leave empty for artifacts only"
+        description: "Existing release tag to upload assets to; leave empty for validation only"
         required: false
         default: ""
 
@@ -107,12 +107,7 @@ jobs:
           find dist/sfm-viewer dist/sfm-gui -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.zip' \) -print -exec cp -a {} electron-packages/linux/ \;
           (cd electron-packages/linux && sha256sum * > SHA256SUMS || true)
           ls -la electron-packages/linux
-      - uses: actions/upload-artifact@v4
-        with:
-          name: InsightAT-electron-linux-${{ github.sha }}
-          path: electron-packages/linux/**
-          if-no-files-found: error
-          retention-days: 14
+      # Package binaries are intentionally not stored as Actions artifacts due to quota.
       - name: Upload to GitHub Release
         if: needs.meta.outputs.upload_assets == 'true'
         env:
@@ -161,12 +156,6 @@ jobs:
           find dist/sfm-viewer dist/sfm-gui -type f -name '*.zip' -print -exec cp -a {} electron-packages/windows/ \;
           (cd electron-packages/windows && sha256sum * > SHA256SUMS || true)
           ls -la electron-packages/windows
-      - uses: actions/upload-artifact@v4
-        with:
-          name: InsightAT-electron-windows-${{ github.sha }}
-          path: electron-packages/windows/**
-          if-no-files-found: error
-          retention-days: 14
       - name: Upload to GitHub Release
         if: needs.meta.outputs.upload_assets == 'true'
         env:

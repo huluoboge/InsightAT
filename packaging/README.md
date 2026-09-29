@@ -48,6 +48,8 @@ GitHub Actions:
 | `windows-build.yml` | Windows | same |
 | `electron-gui.yml` | Linux + Windows Electron | same |
 
+CI runs the packaging steps for validation only and does not store AppImage, `.deb`, or zip binaries as Actions artifacts. Release and pre-release assets are uploaded to the GitHub Release instead.
+
 **Draft releases do not trigger workflows.** Publish the release (pre-release checkbox is fine), or run each workflow with `workflow_dispatch` and set `tag` (e.g. `v0.2.5`) to attach assets to an existing draft/pre-release.
 
 Windows zip is produced by CI via `packaging/windows/package.ps1`.

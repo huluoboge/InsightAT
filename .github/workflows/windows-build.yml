@@ -1,8 +1,8 @@
 # Windows CI — vcpkg + MSVC Release build (CUDA optional / SiftGPU fallback).
 #
 # Triggers:
-#   pull_request / push to main  → build + upload workflow artifacts
-#   release (published)          → also upload zip to the GitHub Release
+#   pull_request / push to main  → build and validate the package
+#   release (published)          → upload zip to the GitHub Release
 #                                 (Draft releases do NOT trigger this —
 #                                  Publish as release or pre-release.)
 #   workflow_dispatch            → manual build; optional tag to upload
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to upload assets to; leave empty for artifacts only"
+        description: "Existing release tag to upload assets to; leave empty for validation only"
         required: false
         default: ""
 
@@ -298,17 +298,7 @@ jobs:
           test -f "${zip_name}"
           sha256sum "${zip_name}" | tee "${zip_name}.sha256"
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: insightat-windows-cuda-${{ matrix.cuda }}-${{ github.sha }}
-          path: |
-            ${{ steps.meta.outputs.zip_name }}
-            ${{ steps.meta.outputs.zip_name }}.sha256
-            windows-package/**
-          retention-days: 30
-
+      # Package binaries are intentionally not stored as Actions artifacts due to quota.
       - name: Upload assets to GitHub Release
         if: success() && steps.meta.outputs.upload_assets == 'true'
         env:
