@@ -1,13 +1,19 @@
-# Linux CI + release packaging (Ubuntu 22.04 + CUDA 12.8).
+# Linux CI + release packaging — Ubuntu 22.04 (Jammy) + CUDA 12.8.
+# Workflow file: linux-build-ubuntu22.yml
 #
-# One build produces AppImage + .deb (glibc 2.35 → runs on 22.04 and 24.04).
+# Produces AppImage + .deb linked against Ubuntu 22.04 libraries
+# (asset names end with .ubuntu22.04).
+# For Ubuntu 24.04 packages see linux-build-ubuntu24.yml.
 #
 # Triggers:
 #   pull_request / push to main  → build + upload workflow artifacts
 #   release (published)          → also upload assets to the GitHub Release
+#                                 (Draft releases do NOT trigger this —
+#                                  Publish as release or pre-release.)
 #   workflow_dispatch            → manual build; optional tag to upload
+#                                  (works for draft / pre-release / release)
 
-name: Linux Build
+name: Linux Build (Ubuntu 22.04)
 
 on:
   push:
@@ -31,18 +37,19 @@ permissions:
   contents: write
 
 concurrency:
-  group: linux-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: linux-build-ubuntu22-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Linux CUDA 12.8 (AppImage + deb)
+    name: Build Ubuntu 22.04 CUDA 12.8 (AppImage + deb)
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     env:
-      IMAGE_NAME: insightat-linux-cuda12.8
+      IMAGE_NAME: insightat-linux-cuda12.8-ubuntu22.04
       OUTPUT_DIR: linux-packages
+      UBUNTU_SUITE: ubuntu22.04
       DEFAULT_CUDA_ARCHITECTURES: "60;61;70;75;80;86;89;90-virtual"
 
     steps:
@@ -98,6 +105,7 @@ jobs:
 
           echo "Tag: ${tag:-"(none)"}"
           echo "Build version: ${version}"
+          echo "Ubuntu suite: ${UBUNTU_SUITE}"
           echo "Upload release assets: ${upload_assets}"
           echo "CUDA architectures: ${cuda_architectures}"
 
@@ -122,19 +130,26 @@ jobs:
           docker cp "${container_id}:/workspace/insightat/build-appimage/." "${OUTPUT_DIR}/appimage/"
           docker cp "${container_id}:/workspace/insightat/build-deb/." "${OUTPUT_DIR}/deb/"
 
-          appimage="$(find "${OUTPUT_DIR}/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          appimage="$(find "${OUTPUT_DIR}/appimage" -maxdepth 1 -type f -name '*.AppImage' ! -name 'linuxdeploy*' -print -quit)"
           deb="$(find "${OUTPUT_DIR}/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
           test -n "${appimage}"
           test -n "${deb}"
 
-          (cd "${OUTPUT_DIR}/appimage" && sha256sum "$(basename "${appimage}")" | tee "$(basename "${appimage}").sha256")
-          (cd "${OUTPUT_DIR}/deb" && sha256sum "$(basename "${deb}")" | tee "$(basename "${deb}").sha256")
+          # Stable release asset names with Ubuntu suite suffix.
+          version="${{ steps.meta.outputs.version }}"
+          appimage_dest="${OUTPUT_DIR}/appimage/InsightAT-${version}-x86_64.${UBUNTU_SUITE}.AppImage"
+          deb_dest="${OUTPUT_DIR}/deb/insightat_${version}-1.${UBUNTU_SUITE}_amd64.deb"
+          [[ "${appimage}" == "${appimage_dest}" ]] || mv "${appimage}" "${appimage_dest}"
+          [[ "${deb}" == "${deb_dest}" ]] || mv "${deb}" "${deb_dest}"
+
+          (cd "${OUTPUT_DIR}/appimage" && sha256sum "$(basename "${appimage_dest}")" | tee "$(basename "${appimage_dest}").sha256")
+          (cd "${OUTPUT_DIR}/deb" && sha256sum "$(basename "${deb_dest}")" | tee "$(basename "${deb_dest}").sha256")
           find "${OUTPUT_DIR}" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.sha256' \) -print
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: InsightAT-linux-cuda12.8-${{ github.sha }}
+          name: InsightAT-linux-cuda12.8-ubuntu22.04-${{ github.sha }}
           path: |
             ${{ env.OUTPUT_DIR }}/appimage/*.AppImage
             ${{ env.OUTPUT_DIR }}/appimage/*.sha256

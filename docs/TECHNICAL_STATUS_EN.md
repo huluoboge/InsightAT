@@ -470,7 +470,7 @@ The practical benefit is that the algorithm layer compiles independently, can be
 
 - Module-local unit tests include `test_ba_analytic`, `test_track_ray_lambda_ceres`, `test_track_store_state_cache`, `test_incremental_triangulation`, `test_pnp_resection`, `test_sfm_diag2`, and `test_seed_eval_common`.
 - The geometry module provides CPU reference implementations for CUDA kernel comparison (`test_cuda_geo_ransac.cpp`).
-- CI: `.github/workflows/linux-build.yml` (`ubuntu-latest`), `windows-build.yml` (`windows-2022`), and `electron-gui.yml` (Electron packaging). Windows dependencies are installed by vcpkg (`vcpkg.json`: `ceres[lapack,schur,suitesparse]`, `eigen3`, `glog`, `gflags`, `glew`, `egl`, `gdal`, `nlohmann-json`, and `opencv4[calib3d,jpeg,png,thread,tiff]`).
+- CI: `.github/workflows/linux-build-ubuntu22.yml` (Ubuntu 22.04 AppImage/deb), `linux-build-ubuntu24.yml` (Ubuntu 24.04 AppImage/deb), `windows-build.yml` (`windows-2022` zip), and `electron-gui.yml` (Electron packaging). Assets upload on `release: published` (including pre-releases; drafts do not trigger) or `workflow_dispatch` with a `tag`. Windows dependencies are installed by vcpkg (`vcpkg.json`: `ceres[lapack,schur,suitesparse]`, `eigen3`, `glog`, `gflags`, `glew`, `egl`, `gdal`, `nlohmann-json`, and `opencv4[calib3d,jpeg,png,thread,tiff]`).
 - Performance changes are expected to pass ETH3D regression: registration count must not decrease and RMSE difference must be <= 0.01 px.
 
 ### 7.4 Packaging and Reproducibility

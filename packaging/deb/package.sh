@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build a Debian package from an existing InsightAT build tree.
-# Intended for Ubuntu 22.04 (glibc 2.35) + CUDA 12.8 release images.
+# Intended for CUDA 12.8 release images (Ubuntu 22.04 or 24.04).
+# Set DEB_VERSION (e.g. 0.2.5-cuda12.8-1.ubuntu24.04) for distro-specific names.
 
 set -euo pipefail
 

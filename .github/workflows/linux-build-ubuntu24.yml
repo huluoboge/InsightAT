@@ -1,0 +1,169 @@
+# Linux CI + release packaging — Ubuntu 24.04 (Noble) + CUDA 12.8.
+# Workflow file: linux-build-ubuntu24.yml
+#
+# Produces AppImage + .deb linked against Ubuntu 24.04 libraries
+# (libopencv*406t64, libgdal34t64, libcholmod5, …; asset names end with .ubuntu24.04).
+# For Ubuntu 22.04 packages see linux-build-ubuntu22.yml.
+#
+# Triggers:
+#   pull_request / push to main  → build + upload workflow artifacts
+#   release (published)          → also upload assets to the GitHub Release
+#                                 (Draft releases do NOT trigger this —
+#                                  Publish as release or pre-release.)
+#   workflow_dispatch            → manual build; optional tag to upload
+
+name: Linux Build (Ubuntu 24.04)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to upload assets to; leave empty for artifacts only"
+        required: false
+        default: ""
+      cuda_architectures:
+        description: "CMake CUDA architectures passed to Docker build"
+        required: false
+        default: "60;61;70;75;80;86;89;90-virtual"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-build-ubuntu24-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Ubuntu 24.04 CUDA 12.8 (AppImage + deb)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      IMAGE_NAME: insightat-linux-cuda12.8-ubuntu24.04
+      OUTPUT_DIR: linux-packages
+      UBUNTU_SUITE: ubuntu24.04
+      DEFAULT_CUDA_ARCHITECTURES: "60;61;70;75;80;86;89;90-virtual"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
+
+      - name: Set build metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+            upload_assets="true"
+            version="${tag#v}-cuda12.8"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+            if [[ -n "$tag" ]]; then
+              upload_assets="true"
+              version="${tag#v}-cuda12.8"
+            else
+              tag="${GITHUB_REF_NAME:-manual}"
+              upload_assets="false"
+              version="ci-${GITHUB_SHA::12}-cuda12.8"
+            fi
+          else
+            tag=""
+            upload_assets="false"
+            version="ci-${GITHUB_SHA::12}-cuda12.8"
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            cuda_architectures="${{ inputs.cuda_architectures }}"
+          else
+            cuda_architectures="${DEFAULT_CUDA_ARCHITECTURES}"
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "upload_assets=${upload_assets}"
+            echo "cuda_architectures=${cuda_architectures}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Tag: ${tag:-"(none)"}"
+          echo "Build version: ${version}"
+          echo "Ubuntu suite: ${UBUNTU_SUITE}"
+          echo "Upload release assets: ${upload_assets}"
+          echo "CUDA architectures: ${cuda_architectures}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --progress=plain \
+            --file packaging/Dockerfile.ubuntu24.04 \
+            --build-arg CMAKE_CUDA_ARCHITECTURES="${{ steps.meta.outputs.cuda_architectures }}" \
+            --build-arg INSIGHTAT_VERSION="${{ steps.meta.outputs.version }}" \
+            --tag "${IMAGE_NAME}:${{ steps.meta.outputs.version }}" \
+            .
+
+      - name: Extract AppImage and deb packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${OUTPUT_DIR}/appimage" "${OUTPUT_DIR}/deb"
+          container_id="$(docker create "${IMAGE_NAME}:${{ steps.meta.outputs.version }}")"
+          trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
+
+          docker cp "${container_id}:/workspace/insightat/build-appimage/." "${OUTPUT_DIR}/appimage/"
+          docker cp "${container_id}:/workspace/insightat/build-deb/." "${OUTPUT_DIR}/deb/"
+
+          appimage="$(find "${OUTPUT_DIR}/appimage" -maxdepth 1 -type f -name '*.AppImage' ! -name 'linuxdeploy*' -print -quit)"
+          deb="$(find "${OUTPUT_DIR}/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "${appimage}"
+          test -n "${deb}"
+
+          version="${{ steps.meta.outputs.version }}"
+          appimage_dest="${OUTPUT_DIR}/appimage/InsightAT-${version}-x86_64.${UBUNTU_SUITE}.AppImage"
+          deb_dest="${OUTPUT_DIR}/deb/insightat_${version}-1.${UBUNTU_SUITE}_amd64.deb"
+          [[ "${appimage}" == "${appimage_dest}" ]] || mv "${appimage}" "${appimage_dest}"
+          [[ "${deb}" == "${deb_dest}" ]] || mv "${deb}" "${deb_dest}"
+
+          (cd "${OUTPUT_DIR}/appimage" && sha256sum "$(basename "${appimage_dest}")" | tee "$(basename "${appimage_dest}").sha256")
+          (cd "${OUTPUT_DIR}/deb" && sha256sum "$(basename "${deb_dest}")" | tee "$(basename "${deb_dest}").sha256")
+          find "${OUTPUT_DIR}" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.sha256' \) -print
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: InsightAT-linux-cuda12.8-ubuntu24.04-${{ github.sha }}
+          path: |
+            ${{ env.OUTPUT_DIR }}/appimage/*.AppImage
+            ${{ env.OUTPUT_DIR }}/appimage/*.sha256
+            ${{ env.OUTPUT_DIR }}/deb/*.deb
+            ${{ env.OUTPUT_DIR }}/deb/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload assets to GitHub Release
+        if: steps.meta.outputs.upload_assets == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.meta.outputs.tag }}" \
+            "${OUTPUT_DIR}"/appimage/*.AppImage \
+            "${OUTPUT_DIR}"/appimage/*.sha256 \
+            "${OUTPUT_DIR}"/deb/*.deb \
+            "${OUTPUT_DIR}"/deb/*.sha256 \
+            --clobber

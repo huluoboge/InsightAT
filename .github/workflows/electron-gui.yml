@@ -4,7 +4,12 @@
 #   Linux: AppImage + deb (+ dir) under dist/sfm-viewer and dist/sfm-gui
 #   Windows: zip under dist/sfm-viewer and dist/sfm-gui
 #
-# Uploads workflow artifacts; on release also attaches to the GitHub Release.
+# Triggers:
+#   push/PR (path-filtered)      → build + workflow artifacts
+#   release (published)          → also attach to the GitHub Release
+#                                 (Draft releases do NOT trigger this —
+#                                  Publish as release or pre-release.)
+#   workflow_dispatch            → manual build; optional tag to upload
 
 name: Electron GUI
 
@@ -24,8 +29,13 @@ on:
       - 'scripts/package/build_sfm_*.sh'
       - '.github/workflows/electron-gui.yml'
   release:
-    types: [ published ]
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to upload assets to; leave empty for artifacts only"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -35,8 +45,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  meta:
+    name: Resolve release upload
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      upload_assets: ${{ steps.meta.outputs.upload_assets }}
+    steps:
+      - name: Set metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+            upload_assets="true"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+            if [[ -n "$tag" ]]; then
+              upload_assets="true"
+            else
+              tag=""
+              upload_assets="false"
+            fi
+          else
+            tag=""
+            upload_assets="false"
+          fi
+          {
+            echo "tag=${tag}"
+            echo "upload_assets=${upload_assets}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tag: ${tag:-"(none)"}"
+          echo "Upload release assets: ${upload_assets}"
+
   linux:
     name: Linux AppImage + deb
+    needs: meta
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
@@ -69,14 +114,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload to GitHub Release
-        if: github.event_name == 'release'
+        if: needs.meta.outputs.upload_assets == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" electron-packages/linux/* --clobber
+          gh release upload "${{ needs.meta.outputs.tag }}" electron-packages/linux/* --clobber
 
   windows:
     name: Windows zip
+    needs: meta
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -122,9 +168,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload to GitHub Release
-        if: github.event_name == 'release'
+        if: needs.meta.outputs.upload_assets == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" electron-packages/windows/* --clobber
+          gh release upload "${{ needs.meta.outputs.tag }}" electron-packages/windows/* --clobber

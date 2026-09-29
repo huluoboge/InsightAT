@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Build / extract InsightAT release packages via Docker (Ubuntu 22.04 + CUDA 12.8).
+# Build / extract InsightAT release packages via Docker (CUDA 12.8).
+#
+# Defaults to Ubuntu 22.04. For Ubuntu 24.04:
+#   UBUNTU_VERSION=24.04 ./packaging/docker-build.sh run
 #
 # Usage:
 #   ./packaging/docker-build.sh build     # Build image (~1–2h first time)
@@ -12,18 +15,34 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-IMAGE_NAME="${IMAGE_NAME:-insightat:cuda12.8}"
-CONTAINER_NAME="${CONTAINER_NAME:-insightat-build-cuda12.8}"
-DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
+UBUNTU_VERSION="${UBUNTU_VERSION:-22.04}"
+
+case "${UBUNTU_VERSION}" in
+  22.04)
+    DOCKERFILE="${DOCKERFILE:-${SCRIPT_DIR}/Dockerfile}"
+    IMAGE_NAME="${IMAGE_NAME:-insightat:cuda12.8-ubuntu22.04}"
+    CONTAINER_NAME="${CONTAINER_NAME:-insightat-build-cuda12.8-ubuntu22.04}"
+    ;;
+  24.04)
+    DOCKERFILE="${DOCKERFILE:-${SCRIPT_DIR}/Dockerfile.ubuntu24.04}"
+    IMAGE_NAME="${IMAGE_NAME:-insightat:cuda12.8-ubuntu24.04}"
+    CONTAINER_NAME="${CONTAINER_NAME:-insightat-build-cuda12.8-ubuntu24.04}"
+    ;;
+  *)
+    echo "ERROR: unsupported UBUNTU_VERSION=${UBUNTU_VERSION} (use 22.04 or 24.04)" >&2
+    exit 1
+    ;;
+esac
 
 help() {
-  sed -n '2,12p' "$0"
+  sed -n '2,16p' "$0"
   echo ""
   echo "Commands: build | extract | run | shell | clean | help"
+  echo "Env: UBUNTU_VERSION=22.04|24.04  IMAGE_NAME  DOCKERFILE  CONTAINER_NAME"
 }
 
 cmd_build() {
-  echo "Building ${IMAGE_NAME} from ${DOCKERFILE}"
+  echo "Building ${IMAGE_NAME} from ${DOCKERFILE} (Ubuntu ${UBUNTU_VERSION})"
   docker build --progress=plain -t "${IMAGE_NAME}" -f "${DOCKERFILE}" "${REPO_ROOT}"
   echo "Build complete: ${IMAGE_NAME}"
 }

@@ -472,7 +472,7 @@ ISAT_EVENT {"type":"project.add_group","ok":false,"error":"project file not foun
 
 - 与模块同目录的单元测试：`test_ba_analytic`、`test_track_ray_lambda_ceres`、`test_track_store_state_cache`、`test_incremental_triangulation`、`test_pnp_resection`、`test_sfm_diag2`、`test_seed_eval_common` 等。
 - 几何模块为 CUDA kernel 提供 CPU 参考实现做对比验证（`test_cuda_geo_ransac.cpp`）。
-- CI：`.github/workflows/linux-build.yml`（`ubuntu-latest`）、`windows-build.yml`（`windows-2022`）、`electron-gui.yml`（打包 Electron 界面）。Windows 侧经 vcpkg 装配依赖（`vcpkg.json`：ceres[lapack,schur,suitesparse]、eigen3、glog、gflags、glew、egl、gdal、nlohmann-json、opencv4[calib3d,jpeg,png,thread,tiff]）。
+- CI：`.github/workflows/linux-build-ubuntu22.yml`（Ubuntu 22.04 AppImage/deb）、`linux-build-ubuntu24.yml`（Ubuntu 24.04 AppImage/deb）、`windows-build.yml`（`windows-2022` zip）、`electron-gui.yml`（Electron 界面）。`release: published`（含 pre-release；Draft 不会触发）或 `workflow_dispatch` + `tag` 会上传到 GitHub Release。Windows 侧经 vcpkg 装配依赖（`vcpkg.json`：ceres[lapack,schur,suitesparse]、eigen3、glog、gflags、glew、egl、gdal、nlohmann-json、opencv4[calib3d,jpeg,png,thread,tiff]）。
 - 性能改动要求用 ETH3D 基准回归：注册数不退步、RMSE 差 ≤ 0.01 px。
 
 ### 7.4 打包与可复现

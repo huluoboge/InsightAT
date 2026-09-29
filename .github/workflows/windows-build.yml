@@ -1,10 +1,11 @@
 # Windows CI — vcpkg + MSVC Release build (CUDA optional / SiftGPU fallback).
 #
-# Development flow:
-#   feature branch → open PR against main → this job + Linux CI run
-#   → fix until green → merge.
-#
-# Heavy release uploads stay optional via workflow_dispatch / main push artifacts.
+# Triggers:
+#   pull_request / push to main  → build + upload workflow artifacts
+#   release (published)          → also upload zip to the GitHub Release
+#                                 (Draft releases do NOT trigger this —
+#                                  Publish as release or pre-release.)
+#   workflow_dispatch            → manual build; optional tag to upload
 
 name: Windows Build
 
@@ -13,10 +14,17 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to upload assets to; leave empty for artifacts only"
+        required: false
+        default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: windows-build-${{ github.ref }}
@@ -47,6 +55,46 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Set build metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          cuda="${{ matrix.cuda }}"
+
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+            upload_assets="true"
+            version="${tag#v}-cuda${cuda}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+            if [[ -n "$tag" ]]; then
+              upload_assets="true"
+              version="${tag#v}-cuda${cuda}"
+            else
+              tag="${GITHUB_REF_NAME:-manual}"
+              upload_assets="false"
+              version="ci-${GITHUB_SHA::12}-cuda${cuda}"
+            fi
+          else
+            tag=""
+            upload_assets="false"
+            version="ci-${GITHUB_SHA::12}-cuda${cuda}"
+          fi
+
+          zip_name="InsightAT-Windows-${version}.zip"
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "upload_assets=${upload_assets}"
+            echo "zip_name=${zip_name}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Tag: ${tag:-"(none)"}"
+          echo "Build version: ${version}"
+          echo "Zip: ${zip_name}"
+          echo "Upload release assets: ${upload_assets}"
 
       # GitHub-hosted Windows runners do not provide an NVIDIA GPU. Prefer a
       # preinstalled toolkit when present; otherwise build the portable
@@ -220,7 +268,7 @@ jobs:
       - name: Stage Windows runtime package
         shell: pwsh
         run: |
-          $env:INSIGHTAT_ZIP_NAME = "InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip"
+          $env:INSIGHTAT_ZIP_NAME = "${{ steps.meta.outputs.zip_name }}"
           & "$env:GITHUB_WORKSPACE\packaging\windows\package.ps1"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Windows packaging failed"
@@ -243,13 +291,31 @@ jobs:
         run: |
           ctest --build-config Release --verbose -E "cuda|geo_ransac|opengl"
 
+      - name: Hash release zip
+        shell: bash
+        run: |
+          zip_name="${{ steps.meta.outputs.zip_name }}"
+          test -f "${zip_name}"
+          sha256sum "${zip_name}" | tee "${zip_name}.sha256"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: insightat-windows-cuda-${{ matrix.cuda }}
+          name: insightat-windows-cuda-${{ matrix.cuda }}-${{ github.sha }}
           path: |
-            InsightAT-Windows-cuda${{ matrix.cuda }}-${{ github.sha }}.zip
+            ${{ steps.meta.outputs.zip_name }}
+            ${{ steps.meta.outputs.zip_name }}.sha256
             windows-package/**
-            build/Release/*.exe
           retention-days: 30
+
+      - name: Upload assets to GitHub Release
+        if: success() && steps.meta.outputs.upload_assets == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "${{ steps.meta.outputs.tag }}" \
+            "${{ steps.meta.outputs.zip_name }}" \
+            "${{ steps.meta.outputs.zip_name }}.sha256" \
+            --clobber
