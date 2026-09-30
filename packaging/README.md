@@ -5,6 +5,17 @@ Default product is **CLI-only** (`isat_*`). Qt is optional (`packaging/legacy/`)
 
 Release packages are **per-distro**: a Jammy `.deb` will not install on Noble (and vice versa). Prefer the matching AppImage / `.deb`, or the Windows zip.
 
+**Asset naming:** see [RELEASE_ASSETS.md](RELEASE_ASSETS.md) for the unified
+`InsightAT-<component>-…` scheme and “which file should I download?” guide.
+
+**`.deb` / AppImage CUDA/cuDSS bundling (22.04 & 24.04):** both
+`packaging/deb/package.sh` and `packaging/appimage/build.sh` ship CUDA 12
+runtime libs plus a CUDA-12-matched `libcudss` via
+`packaging/common/cuda_bundle.sh`. This avoids host `update-alternatives`
+pointing `libcudss.so.0` at a CUDA 13 tree that needs `libcublas.so.13`.
+Set `CUDA_LIBS_DIR` / `CUDSS_LIB_DIR` (or `CUDSS_ROOT`) when packaging
+outside Docker. Packaging fails if linkage still needs `libcublas.so.13`.
+
 ## Developer (local)
 
 If `~/.local/ceres-cuda128` exists, use it; otherwise apt `libceres-dev`.
@@ -62,7 +73,10 @@ Windows zip is produced by CI via `packaging/windows/package.ps1`.
 | `Dockerfile` | Ubuntu 22.04 release image |
 | `Dockerfile.ubuntu24.04` | Ubuntu 24.04 release image |
 | `docker-build.sh` | Build/extract helper (`UBUNTU_VERSION=22.04\|24.04`) |
+| `common/cuda_bundle.sh` | Shared CUDA 12 + cuDSS bundling / linkage checks |
+| `RELEASE_ASSETS.md` | GitHub Release filename scheme + download guide |
 | `appimage/build.sh` | AppImage |
-| `deb/package.sh` | Debian package |
+| `deb/package.sh` | Debian package (CLI) |
+| `deb/package-all.sh` | Meta-package `insightat-all` (Depends: cli + gui + viewer) |
 | `windows/package.ps1` | Windows zip staging |
 | `legacy/qt-gui.sh` | Optional Qt GUI |

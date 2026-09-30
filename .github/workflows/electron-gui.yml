@@ -21,6 +21,7 @@ on:
       - 'sfm-viewer/**'
       - 'scripts/package/build_sfm_*.sh'
       - 'scripts/package/sync_electron_version.sh'
+      - 'packaging/deb/package-all.sh'
       - 'VERSION'
       - '.github/workflows/electron-gui.yml'
   pull_request:
@@ -30,6 +31,7 @@ on:
       - 'sfm-viewer/**'
       - 'scripts/package/build_sfm_*.sh'
       - 'scripts/package/sync_electron_version.sh'
+      - 'packaging/deb/package-all.sh'
       - 'VERSION'
       - '.github/workflows/electron-gui.yml'
   release:
@@ -109,7 +111,76 @@ jobs:
         run: |
           mkdir -p electron-packages/linux
           find dist/sfm-viewer dist/sfm-gui -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.zip' \) -print -exec cp -a {} electron-packages/linux/ \;
-          (cd electron-packages/linux && sha256sum * > SHA256SUMS || true)
+          # Normalize to InsightAT-<component>-<ver>-linux-<arch>.<ext>
+          # See packaging/RELEASE_ASSETS.md
+          python3 - <<'PY'
+          import pathlib, re
+          root = pathlib.Path("electron-packages/linux")
+
+          def rename(src: pathlib.Path, dest: pathlib.Path) -> None:
+              if src.resolve() == dest.resolve():
+                  return
+              if dest.exists():
+                  dest.unlink()
+              print(f"rename {src.name} -> {dest.name}")
+              src.replace(dest)
+
+          patterns = [
+              # Preferred electron-builder artifactName
+              (r"^(InsightAT-(?:sfm-gui|sfm-viewer))-(\d[\w.-]*)-(linux|win)-(x64|amd64|x86_64)\.(AppImage|deb|zip)$",
+               "preferred"),
+              # Legacy / default electron-builder names
+              (r"^InsightAT\.SfM\.Viewer-(\d[\w.-]*)\.AppImage$", "viewer-appimage"),
+              (r"^InsightAT\.SfM-(\d[\w.-]*)\.AppImage$", "gui-appimage"),
+              (r"^InsightAT\.SfM\.Viewer-(\d[\w.-]*)-win\.zip$", "viewer-win"),
+              (r"^InsightAT\.SfM-(\d[\w.-]*)-win\.zip$", "gui-win"),
+              (r"^insightat-sfm-viewer_(\d[\w.-]*)_amd64\.deb$", "viewer-deb"),
+              (r"^insightat-sfm-gui_(\d[\w.-]*)_amd64\.deb$", "gui-deb"),
+          ]
+
+          for src in list(root.iterdir()):
+              if not src.is_file() or src.name in {"SHA256SUMS"}:
+                  continue
+              name = src.name
+              matched = False
+              for pat, kind in patterns:
+                  m = re.match(pat, name)
+                  if not m:
+                      continue
+                  matched = True
+                  if kind == "preferred":
+                      component, version, os_name, arch, ext = m.groups()
+                      os_name = "windows" if os_name == "win" else "linux"
+                      if ext == "AppImage":
+                          arch = "x86_64"
+                      elif ext == "deb":
+                          arch = "amd64"
+                      else:
+                          arch = "x64"
+                          os_name = "windows"
+                      dest = root / f"{component}-{version}-{os_name}-{arch}.{ext}"
+                  elif kind == "viewer-appimage":
+                      dest = root / f"InsightAT-sfm-viewer-{m.group(1)}-linux-x86_64.AppImage"
+                  elif kind == "gui-appimage":
+                      dest = root / f"InsightAT-sfm-gui-{m.group(1)}-linux-x86_64.AppImage"
+                  elif kind == "viewer-win":
+                      dest = root / f"InsightAT-sfm-viewer-{m.group(1)}-windows-x64.zip"
+                  elif kind == "gui-win":
+                      dest = root / f"InsightAT-sfm-gui-{m.group(1)}-windows-x64.zip"
+                  elif kind == "viewer-deb":
+                      dest = root / f"InsightAT-sfm-viewer-{m.group(1)}-linux-amd64.deb"
+                  elif kind == "gui-deb":
+                      dest = root / f"InsightAT-sfm-gui-{m.group(1)}-linux-amd64.deb"
+                  else:
+                      continue
+                  rename(src, dest)
+                  break
+              if not matched:
+                  print(f"skip unrecognized: {name}")
+          PY
+          chmod +x packaging/deb/package-all.sh
+          DEB_OUTPUT_DIR=electron-packages/linux bash packaging/deb/package-all.sh
+          (cd electron-packages/linux && sha256sum InsightAT-* > SHA256SUMS || true)
           ls -la electron-packages/linux
       # Package binaries are intentionally not stored as Actions artifacts due to quota.
       - name: Upload to GitHub Release
@@ -152,7 +223,44 @@ jobs:
         run: |
           mkdir -p electron-packages/windows
           find dist/sfm-viewer dist/sfm-gui -type f -name '*.zip' -print -exec cp -a {} electron-packages/windows/ \;
-          (cd electron-packages/windows && sha256sum * > SHA256SUMS || true)
+          python3 - <<'PY'
+          import pathlib, re
+          root = pathlib.Path("electron-packages/windows")
+
+          def rename(src: pathlib.Path, dest: pathlib.Path) -> None:
+              if src.resolve() == dest.resolve():
+                  return
+              if dest.exists():
+                  dest.unlink()
+              print(f"rename {src.name} -> {dest.name}")
+              src.replace(dest)
+
+          patterns = [
+              (r"^(InsightAT-(?:sfm-gui|sfm-viewer))-(\d[\w.-]*)-(?:win|windows)-(?:x64|amd64|x86_64)\.zip$", "preferred"),
+              (r"^InsightAT\.SfM\.Viewer-(\d[\w.-]*)-win\.zip$", "viewer"),
+              (r"^InsightAT\.SfM-(\d[\w.-]*)-win\.zip$", "gui"),
+          ]
+          for src in list(root.iterdir()):
+              if not src.is_file() or src.name == "SHA256SUMS":
+                  continue
+              matched = False
+              for pat, kind in patterns:
+                  m = re.match(pat, src.name)
+                  if not m:
+                      continue
+                  matched = True
+                  if kind == "preferred":
+                      dest = root / f"{m.group(1)}-{m.group(2)}-windows-x64.zip"
+                  elif kind == "viewer":
+                      dest = root / f"InsightAT-sfm-viewer-{m.group(1)}-windows-x64.zip"
+                  else:
+                      dest = root / f"InsightAT-sfm-gui-{m.group(1)}-windows-x64.zip"
+                  rename(src, dest)
+                  break
+              if not matched:
+                  print(f"skip unrecognized: {src.name}")
+          PY
+          (cd electron-packages/windows && sha256sum InsightAT-* > SHA256SUMS || true)
           ls -la electron-packages/windows
       - name: Upload to GitHub Release
         if: needs.meta.outputs.upload_assets == 'true'

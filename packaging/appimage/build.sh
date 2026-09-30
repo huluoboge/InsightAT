@@ -12,8 +12,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=../common/cuda_bundle.sh
+source "${SCRIPT_DIR}/../common/cuda_bundle.sh"
 
-# CUDA 12.8 defaults for Ubuntu 22.04 packaging
+# CUDA 12.8 defaults for Ubuntu 22.04 / 24.04 packaging
 export INSIGHTAT_BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build}"
 export CUDA_LIBS_DIR="${CUDA_LIBS_DIR:-/usr/local/cuda-12.8/lib64}"
 INSIGHTAT_BASE_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo "0.1.0")"
@@ -136,16 +138,15 @@ for exe in "$APPDIR"/usr/bin/*; do
     [[ -n "$lib" && -f "$lib" ]] || continue
     case "$lib" in
       /lib/*|/usr/lib/libc.so*|/usr/lib/x86_64-linux-gnu/libc.so*) continue ;;
+      # Skip CUDA/cuDSS here — force CUDA-12 bundle below (ldd may pick CUDA 13 cuDSS).
+      *libcudart.so*|*libcublas*.so*|*libcusolver.so*|*libcusparse.so*|*libnvJitLink.so*|*libcufft.so*|*libnvrtc.so*|*libcudss.so*) continue ;;
     esac
     cp -n "$lib" "$APPDIR/usr/lib/" 2>/dev/null || true
   done
 done
 
-for pat in libcudart.so* libcublas.so* libcufft.so* libnvrtc.so*; do
-  for f in "$CUDA_LIBS_DIR"/$pat; do
-    [[ -e "$f" ]] && cp -n "$f" "$APPDIR/usr/lib/" || true
-  done
-done
+insightat_bundle_cuda_libs "$APPDIR/usr/lib"
+insightat_verify_cuda_linkage "$APPDIR/usr/bin" "$APPDIR/usr/lib"
 
 cp -a "$ICON_SRC" "$APPDIR/app.png"
 for d in 256x256 128x128 64x64 48x48; do

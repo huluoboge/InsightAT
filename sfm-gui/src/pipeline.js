@@ -255,7 +255,8 @@ function isSfmViewerLaunchable(candidate) {
 
 /**
  * Auto-locate InsightAT CLI tools. Prefer user settings, then bundled
- * locations, then repo build dirs.
+ * locations, then system install paths (/usr/lib/insightat/bin, PATH),
+ * then repo build dirs.
  */
 function resolveCliBinDir() {
   const candidates = [];
@@ -267,6 +268,15 @@ function resolveCliBinDir() {
   if (resourceBin) candidates.push(resourceBin);
 
   if (process.env.ISAT_BIN_DIR) candidates.push(process.env.ISAT_BIN_DIR);
+
+  // System packages (InsightAT .deb installs binaries here + /usr/bin symlinks).
+  candidates.push('/usr/lib/insightat/bin');
+  candidates.push('/usr/bin');
+  if (process.env.PATH) {
+    for (const dir of String(process.env.PATH).split(path.delimiter)) {
+      if (dir) candidates.push(dir);
+    }
+  }
 
   // Next to the packaged GUI binary: .../linux-unpacked/bin or .../linux-unpacked/
   if (process.execPath) {
@@ -317,10 +327,25 @@ function findSfmViewerApp() {
   const settings = loadUserSettings();
   if (settings.sfmViewerPath) candidates.push(settings.sfmViewerPath);
 
+  // Bundled inside the GUI package (electron-builder extraResources).
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, 'sfm-viewer'));
   }
-  // sfm-gui/src → repo/sfm-viewer
+
+  // Standalone / unified install paths (no spaces in /opt/insightat*).
+  candidates.push('/usr/bin/insightat-sfm-viewer');
+  candidates.push('/opt/insightat/insightat-sfm-viewer');
+  candidates.push('/opt/insightat-viewer/insightat-sfm-viewer');
+  if (process.execPath) {
+    candidates.push(path.join(path.dirname(process.execPath), 'insightat-sfm-viewer'));
+  }
+  if (process.env.PATH) {
+    for (const dir of String(process.env.PATH).split(path.delimiter)) {
+      if (dir) candidates.push(path.join(dir, 'insightat-sfm-viewer'));
+    }
+  }
+
+  // Dev: sfm-gui/src → repo/sfm-viewer
   candidates.push(path.resolve(__dirname, '..', '..', 'sfm-viewer'));
 
   for (const dir of candidates) {
@@ -349,6 +374,10 @@ function sensorDbCandidates(binDir) {
     candidates.push(path.join(process.env.ISAT_BIN_DIR, 'data', 'config', 'camera_sensor_database.txt'));
     candidates.push(path.join(process.env.ISAT_BIN_DIR, 'config', 'camera_sensor_database.txt'));
   }
+  // System .deb layout
+  candidates.push('/usr/share/insightat/data/config/camera_sensor_database.txt');
+  candidates.push('/usr/lib/insightat/bin/data/config/camera_sensor_database.txt');
+
   const repoRoot = path.resolve(__dirname, '..', '..');
   for (const dir of ['build', 'build-release', 'build-ceres-12.8', 'build-local']) {
     candidates.push(path.join(repoRoot, dir, 'data', 'config', 'camera_sensor_database.txt'));

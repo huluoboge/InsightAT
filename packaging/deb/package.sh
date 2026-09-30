@@ -2,13 +2,20 @@
 # Build a Debian package from an existing InsightAT build tree.
 # Intended for CUDA 12.8 release images (Ubuntu 22.04 or 24.04).
 # Set DEB_VERSION (e.g. 0.2.5-cuda12.8-1.ubuntu24.04) for distro-specific names.
+#
+# Bundles CUDA 12 + matching cuDSS into /usr/lib/insightat/lib so the package
+# does not pick up a host alternatives pointer to CUDA 13 cuDSS (libcublas.so.13).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=../common/cuda_bundle.sh
+source "${SCRIPT_DIR}/../common/cuda_bundle.sh"
+
 BUILD_DIR="${INSIGHTAT_BUILD_DIR:-${REPO_ROOT}/build}"
 OUTPUT_DIR="${DEB_OUTPUT_DIR:-${REPO_ROOT}/build-deb}"
+CUDA_LIBS_DIR="${CUDA_LIBS_DIR:-/usr/local/cuda-12.8/lib64}"
 UPSTREAM_VERSION="${VERSION:-$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")}"
 DEB_VERSION="${DEB_VERSION:-${UPSTREAM_VERSION}-1}"
 if [[ ! "${DEB_VERSION}" =~ ^[0-9] && ! "${DEB_VERSION}" =~ ^[0-9]+: ]]; then
@@ -39,6 +46,10 @@ done
 }
 [[ -d "${REPO_ROOT}/data" ]] || {
   echo "ERROR: project data directory does not exist: ${REPO_ROOT}/data" >&2
+  exit 1
+}
+[[ -d "${CUDA_LIBS_DIR}" ]] || {
+  echo "ERROR: CUDA_LIBS_DIR does not exist: ${CUDA_LIBS_DIR}" >&2
   exit 1
 }
 
@@ -76,10 +87,15 @@ POPSIFT_LIB_DIR="${BUILD_DIR}/third_party/popsift/Linux-x86_64"
 if [[ -d "${POPSIFT_LIB_DIR}" ]]; then
   cp -a "${POPSIFT_LIB_DIR}"/libpopsift.so* "${PRIVATE_LIB_DIR}/" 2>/dev/null || true
 fi
+
+insightat_bundle_cuda_libs "${PRIVATE_LIB_DIR}"
+
 for private_lib in "${PRIVATE_LIB_DIR}"/*.so*; do
   [[ -f "${private_lib}" && ! -L "${private_lib}" ]] || continue
   patchelf --set-rpath '$ORIGIN' "${private_lib}"
 done
+
+insightat_verify_cuda_linkage "${BIN_DIR}" "${PRIVATE_LIB_DIR}"
 
 cp -a "${REPO_ROOT}/data" "${PKG_ROOT}/usr/share/insightat/"
 if [[ -d "${REPO_ROOT}/scripts" ]]; then

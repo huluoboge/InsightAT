@@ -21,7 +21,7 @@ function createWindow() {
     height: 760,
     minWidth: 920,
     minHeight: 620,
-    title: 'InsightAT SfM',
+    title: 'InsightAT',
     backgroundColor: '#f5f7fb',
     autoHideMenuBar: true,
     ...(icon ? { icon } : {}),
@@ -190,18 +190,34 @@ ipcMain.handle('project:revealWorkDir', async () => {
   return true;
 });
 
-function launchDetached(command, args, cwd) {
-  const child = spawn(command, args, {
-    cwd,
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }
-  });
-  child.unref();
-  child.on('error', (err) => {
-    sendLog(`Failed to launch viewer: ${err.message}\n`);
-  });
-  return child;
+function resolveViewerExecutable(sfmViewerApp) {
+  const candidates = [];
+  if (sfmViewerApp && !pipeline.isSfmViewerAppDir(sfmViewerApp)) {
+    candidates.push(sfmViewerApp);
+  }
+  if (process.execPath) {
+    candidates.push(path.join(path.dirname(process.execPath), 'insightat-sfm-viewer'));
+  }
+  candidates.push(
+    '/opt/insightat/insightat-sfm-viewer',
+    '/usr/bin/insightat-sfm-viewer',
+    '/opt/insightat-viewer/insightat-sfm-viewer'
+  );
+  if (process.env.PATH) {
+    for (const dir of String(process.env.PATH).split(path.delimiter)) {
+      if (dir) candidates.push(path.join(dir, 'insightat-sfm-viewer'));
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        return path.resolve(candidate);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  return '';
 }
 
 ipcMain.handle('project:viewReconstruction', async () => {
@@ -216,49 +232,60 @@ ipcMain.handle('project:viewReconstruction', async () => {
     fs.existsSync(path.join(viewPath, 'cameras.txt')) ||
     fs.existsSync(path.join(viewPath, 'cameras.bin'));
 
-  if (sfmViewerApp && colmapOk) {
-    const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
-    // App dir → relaunch this Electron with that app; executable → run it directly.
-    const isAppDir = pipeline.isSfmViewerAppDir(sfmViewerApp);
-    const command = isAppDir ? process.execPath : sfmViewerApp;
-    const args = isAppDir
-      ? ['--no-sandbox', sfmViewerApp, viewPath]
-      : ['--no-sandbox', viewPath];
-    const child = spawn(command, args, {
-      cwd: state.workDir,
-      detached: true,
-      stdio: ['ignore', 'ignore', 'pipe'],
-      env
-    });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on('error', (err) => {
-      sendLog(`Failed to launch sfm-viewer: ${err.message}\n`);
-    });
-    child.once('exit', (code, signal) => {
-      if (code || signal) {
-        const detail = stderr.trim().split('\n').slice(-3).join(' | ') || `${signal || `code ${code}`}`;
-        sendLog(`sfm-viewer exited early: ${detail}\n`);
-      }
-    });
-    setTimeout(() => {
-      try {
-        child.stderr.destroy();
-      } catch (_) {
-        /* ignore */
-      }
-      child.unref();
-    }, 1500);
-    sendLog(`Launched sfm-viewer: ${sfmViewerApp} ${viewPath}\n`);
-    return true;
+  if (!colmapOk) {
+    throw new Error('No COLMAP sparse model found under incremental_sfm/colmap.');
   }
 
-  const viewerExe = pipeline.findTool(state.binDir, 'at_bundler_viewer');
-  launchDetached(viewerExe, [viewPath], state.workDir);
-  sendLog(`Launched: ${viewerExe} ${viewPath}\n`);
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+
+  const viewerExe = resolveViewerExecutable(sfmViewerApp);
+  let command = '';
+  let args = [];
+
+  if (viewerExe) {
+    // Dedicated viewer binary (installed package or bundled next to GUI).
+    command = viewerExe;
+    args = ['--no-sandbox', viewPath];
+  } else if (sfmViewerApp && pipeline.isSfmViewerAppDir(sfmViewerApp) && !app.isPackaged) {
+    // Dev only: the Electron binary can load another app directory.
+    command = process.execPath;
+    args = ['--no-sandbox', sfmViewerApp, viewPath];
+  } else {
+    throw new Error(
+      'SfM Viewer executable not found. Install insightat-sfm-viewer (or insightat-all), ' +
+        'or use a GUI build that bundles insightat-sfm-viewer under /opt/insightat/.'
+    );
+  }
+
+  const child = spawn(command, args, {
+    cwd: state.workDir,
+    detached: true,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    env
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  child.on('error', (err) => {
+    sendLog(`Failed to launch sfm-viewer: ${err.message}\n`);
+  });
+  child.once('exit', (code, signal) => {
+    if (code || signal) {
+      const detail = stderr.trim().split('\n').slice(-3).join(' | ') || `${signal || `code ${code}`}`;
+      sendLog(`sfm-viewer exited early: ${detail}\n`);
+    }
+  });
+  setTimeout(() => {
+    try {
+      child.stderr.destroy();
+    } catch (_) {
+      /* ignore */
+    }
+    child.unref();
+  }, 1500);
+  sendLog(`Launched sfm-viewer: ${command} ${viewPath}\n`);
   return true;
 });
 

@@ -830,7 +830,8 @@ int main(int argc, char* argv[]) {
   CmdLine cmd("InsightAT SfM Pipeline – end-to-end incremental SfM");
   cmd.add(make_option('i', input_dir, "input").doc("Input directory containing images (required unless --existing-task)"));
   cmd.add(
-      make_option('w', work_dir, "work-dir").doc("Working directory for all outputs (required)"));
+      make_option('w', work_dir, "work-dir").doc(
+          "Working directory for all outputs (required; created if missing)"));
   cmd.add(make_switch(0, "existing-task")
               .doc("Run on an existing ATTask directory. Ignores -i, skips create step. "
                    "Requires <work-dir> to contain images_all.json. "
@@ -1118,13 +1119,22 @@ int main(int argc, char* argv[]) {
     return s;
   };
   fs::path work_path = fs::absolute(strip_trailing_sep(work_dir));
-  
-  // Validate work directory
-  if (!fs::is_directory(work_path)) {
-    LOG(ERROR) << "Work directory does not exist: " << work_path;
+
+  // Create work directory if missing; error if path exists but is not a directory.
+  if (fs::exists(work_path) && !fs::is_directory(work_path)) {
+    LOG(ERROR) << "Work path exists but is not a directory: " << work_path;
     return 1;
   }
-  
+  {
+    std::error_code ec;
+    fs::create_directories(work_path, ec);
+    if (ec || !fs::is_directory(work_path)) {
+      LOG(ERROR) << "Failed to create work directory: " << work_path
+                 << (ec ? (" (" + ec.message() + ")") : "");
+      return 1;
+    }
+  }
+
   fs::path input_path;
   if (!existing_task_mode) {
     // Traditional mode: validate input directory
@@ -1134,7 +1144,7 @@ int main(int argc, char* argv[]) {
       return 1;
     }
   }
-  
+
   // In existing-task mode, verify images_all.json exists
   if (existing_task_mode) {
     fs::path images_all_check = work_path / "images_all.json";
@@ -1161,9 +1171,6 @@ int main(int argc, char* argv[]) {
   fs::path tracks_path = tracks_dir / "tracks.isat_tracks";
   fs::path seed_eval_out = work_path / "seed_eval_all";
   fs::path sfm_out = work_path / "incremental_sfm";
-
-  // Create work directory (sub-dirs created per step as needed)
-  fs::create_directories(work_path);
 
   // ── Run log directory (console / detail / events) ───────────────────────
   if (!cmd.used("no-log-file")) {

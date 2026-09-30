@@ -22,8 +22,10 @@
   },
   "build": {
     "appId": "com.insightat.sfmgui",
-    "productName": "InsightAT SfM",
+    "productName": "insightat",
     "executableName": "insightat-sfm-gui",
+    "artifactName": "InsightAT-sfm-gui-${version}-${os}-${arch}.${ext}",
+    "afterPack": "./scripts/after-pack.js",
     "icon": "assets/icons",
     "directories": {
       "output": "../dist/sfm-gui"
@@ -61,7 +63,22 @@
       "icon": "assets/icons",
       "category": "Science",
       "maintainer": "InsightAT Contributors <insightat@users.noreply.github.com>",
-      "synopsis": "InsightAT SfM GUI for reconstruction workflows"
+      "synopsis": "InsightAT SfM GUI for reconstruction workflows",
+      "desktop": {
+        "Name": "InsightAT",
+        "Comment": "InsightAT SfM desktop shell (CLI + reconstruction viewer)"
+      }
+    },
+    "deb": {
+      "packageName": "insightat-sfm-gui",
+      "afterInstall": "scripts/gui-after-install.sh",
+      "afterRemove": "scripts/gui-after-remove.sh",
+      "depends": [
+        "insightat-sfm-viewer"
+      ],
+      "recommends": [
+        "insightat"
+      ]
     },
     "win": {
       "target": [

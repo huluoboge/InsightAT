@@ -6,7 +6,9 @@ InsightAT（**A**erial **T**riangulation，空三）是开源、全自动、傻�
 
 **项目主页：** [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/) · **[English](README.md) | 简体中文**
 
-支持平台：**Ubuntu 22.04** 与 **Windows**，**CUDA 12.8**。默认构建为纯 CLI（`isat_*`）。
+支持平台：**Ubuntu 22.04 / 24.04** 与 **Windows**，**CUDA 12.8**。默认构建为纯 CLI（`isat_*`）。
+
+Release 下载文件名规则见 [packaging/RELEASE_ASSETS.md](packaging/RELEASE_ASSETS.md)（`cli` / `sfm-gui` / `sfm-viewer`）。
 
 ## 技术现状
 
@@ -52,11 +54,11 @@ isat_sfm -i /data/images -w /data/work
 ### Ubuntu 运行 AppImage / deb
 
 ```bash
-# 查看内置 CLI
-./InsightAT-*.AppImage
+# 查看内置 CLI（选与自己 Ubuntu 版本匹配的文件）
+./InsightAT-cli-*-linux-x86_64-ubuntu22.04.AppImage
 
 # 执行重建
-./InsightAT-*.AppImage isat_sfm -i /data/images -w /data/work
+./InsightAT-cli-*-linux-x86_64-ubuntu22.04.AppImage isat_sfm -i /data/images -w /data/work
 ```
 
 ## 开源协议

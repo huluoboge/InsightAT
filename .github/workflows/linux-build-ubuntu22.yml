@@ -135,10 +135,11 @@ jobs:
           test -n "${appimage}"
           test -n "${deb}"
 
-          # Stable release asset names with Ubuntu suite suffix.
+          # Stable release asset names:
+          # InsightAT-cli-<ver>-cuda…-linux-<arch>-ubuntuXX.YY.<ext>
           version="${{ steps.meta.outputs.version }}"
-          appimage_dest="${OUTPUT_DIR}/appimage/InsightAT-${version}-x86_64.${UBUNTU_SUITE}.AppImage"
-          deb_dest="${OUTPUT_DIR}/deb/insightat_${version}-1.${UBUNTU_SUITE}_amd64.deb"
+          appimage_dest="${OUTPUT_DIR}/appimage/InsightAT-cli-${version}-linux-x86_64-${UBUNTU_SUITE}.AppImage"
+          deb_dest="${OUTPUT_DIR}/deb/InsightAT-cli-${version}-linux-amd64-${UBUNTU_SUITE}.deb"
           [[ "${appimage}" == "${appimage_dest}" ]] || mv "${appimage}" "${appimage_dest}"
           [[ "${deb}" == "${deb_dest}" ]] || mv "${deb}" "${deb_dest}"
 

@@ -24,8 +24,9 @@
   },
   "build": {
     "appId": "com.insightat.sfmviewer",
-    "productName": "InsightAT SfM Viewer",
+    "productName": "insightat-viewer",
     "executableName": "insightat-sfm-viewer",
+    "artifactName": "InsightAT-sfm-viewer-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "../dist/sfm-viewer"
     },
@@ -41,7 +42,14 @@
       ],
       "category": "Science",
       "maintainer": "InsightAT Contributors <insightat@users.noreply.github.com>",
-      "synopsis": "COLMAP sparse reconstruction viewer"
+      "synopsis": "COLMAP sparse reconstruction viewer",
+      "desktop": {
+        "Name": "InsightAT Viewer",
+        "Comment": "InsightAT reconstruction viewer (COLMAP sparse)"
+      }
+    },
+    "deb": {
+      "packageName": "insightat-sfm-viewer"
     },
     "win": {
       "target": [

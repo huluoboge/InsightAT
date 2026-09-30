@@ -8,7 +8,9 @@ InsightAT (**A**erial **T**riangulation) is open-source, fully automated aerial 
 
 **Project page:** [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/) · **English | [简体中文](README_zh.md)**
 
-Supported platforms: **Ubuntu 22.04** and **Windows**, **CUDA 12.8**. Default build is **CLI-only** (`isat_*`).
+Supported platforms: **Ubuntu 22.04 / 24.04** and **Windows**, **CUDA 12.8**. Default build is **CLI-only** (`isat_*`).
+
+Release downloads use a fixed name scheme — see [packaging/RELEASE_ASSETS.md](packaging/RELEASE_ASSETS.md) (`cli` / `sfm-gui` / `sfm-viewer`).
 
 ## Technical Status
 
@@ -54,11 +56,11 @@ isat_sfm -i /data/images -w /data/work
 ### AppImage / deb (Ubuntu)
 
 ```bash
-# list bundled CLIs
-./InsightAT-*.AppImage
+# list bundled CLIs (pick the file matching your Ubuntu series)
+./InsightAT-cli-*-linux-x86_64-ubuntu22.04.AppImage
 
 # run SfM
-./InsightAT-*.AppImage isat_sfm -i /data/images -w /data/work
+./InsightAT-cli-*-linux-x86_64-ubuntu22.04.AppImage isat_sfm -i /data/images -w /data/work
 ```
 
 ## License

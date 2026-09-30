@@ -83,7 +83,7 @@ jobs:
             version="ci-${GITHUB_SHA::12}-cuda${cuda}"
           fi
 
-          zip_name="InsightAT-Windows-${version}.zip"
+          zip_name="InsightAT-cli-${version}-windows-x64.zip"
           {
             echo "tag=${tag}"
             echo "version=${version}"

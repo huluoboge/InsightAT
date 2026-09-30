@@ -109,5 +109,15 @@ ENV INSIGHTAT_BUILD_DIR=/workspace/insightat/build-release \
 
 RUN cd /workspace/insightat && bash ./packaging/appimage/build.sh
 RUN cd /workspace/insightat && bash ./packaging/deb/package.sh
+# Guard against CUDA-13 cuDSS leak on Ubuntu 22.04 hosts/alternatives.
+RUN deb="$(ls -1 /workspace/insightat/build-deb/insightat_*.deb | head -1)" \
+    && tmp="$(mktemp -d)" \
+    && dpkg-deb -x "${deb}" "${tmp}" \
+    && LD_LIBRARY_PATH="${tmp}/usr/lib/insightat/lib" \
+       ldd "${tmp}/usr/lib/insightat/bin/isat_incremental_sfm" > /tmp/insightat-ldd.txt \
+    && ! grep -E 'libcublas\.so\.13|not found' /tmp/insightat-ldd.txt \
+    && "${tmp}/usr/lib/insightat/bin/isat_incremental_sfm" --help >/dev/null \
+    && echo "deb CUDA/cuDSS smoke OK" \
+    && rm -rf "${tmp}"
 
 CMD ["/bin/bash"]

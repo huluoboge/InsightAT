@@ -51,15 +51,20 @@ case "$MODE" in
     (cd "$SFM_GUI" && npm run pack)
     ;;
   appimage)
+    # Viewer unpacked binary is bundled into the GUI AppImage when present.
+    "$ROOT/scripts/package/build_sfm_viewer.sh" dir || true
     (cd "$SFM_GUI" && npm run pack:appimage)
     ;;
   deb)
+    "$ROOT/scripts/package/build_sfm_viewer.sh" dir || true
     (cd "$SFM_GUI" && npm run pack:deb)
     ;;
   win|windows)
     (cd "$SFM_GUI" && npm run pack:win)
     ;;
   linux-all)
+    # Pack viewer first so GUI afterPack can embed /opt/insightat/insightat-sfm-viewer.
+    "$ROOT/scripts/package/build_sfm_viewer.sh" dir
     (cd "$SFM_GUI" && npx electron-builder --linux dir AppImage deb)
     ;;
   *)
