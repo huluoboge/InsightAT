@@ -9,9 +9,9 @@ for helper in \
   /opt/insightat/chrome-sandbox \
   /opt/insightat/sfm-viewer-app/chrome-sandbox
 do
-  if [ -f "${helper}" ]; then
-    chown root:root "${helper}"
-    chmod 4755 "${helper}"
+  if [ -f "$helper" ]; then
+    chown root:root "$helper"
+    chmod 4755 "$helper"
   fi
 done
 
