@@ -61,8 +61,13 @@
         </section>
 
         <section class="status-panel recent-panel">
-          <h2>Recent</h2>
-          <div id="recentList" class="recent-list empty">No recent projects</div>
+          <div class="recent-panel-head">
+            <h2>Recent</h2>
+            <button id="recentToggle" class="recent-toggle" type="button" aria-expanded="false" aria-controls="recentList">
+              Show
+            </button>
+          </div>
+          <div id="recentList" class="recent-list empty" hidden>No recent projects</div>
         </section>
       </aside>
 

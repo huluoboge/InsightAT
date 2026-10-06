@@ -589,12 +589,43 @@ body.busy #stopBtn {
 .recent-list {
   display: grid;
   gap: 6px;
-  margin-top: 8px;
+  max-height: 208px;
+  margin-top: 12px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.recent-list[hidden] {
+  display: none;
 }
 
 .recent-list.empty {
   color: var(--muted);
   font-size: 12px;
+}
+
+.recent-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.recent-panel-head h2 {
+  margin: 0;
+}
+
+.recent-toggle {
+  min-height: 28px;
+  padding: 0 9px;
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.recent-toggle:disabled {
+  cursor: default;
 }
 
 .recent-item {

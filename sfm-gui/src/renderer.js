@@ -38,6 +38,7 @@ const ui = {
   folderCount: $('folderCount'),
   groupList: $('groupList'),
   recentList: $('recentList'),
+  recentToggle: $('recentToggle'),
   runState: $('runState'),
   settingsModal: $('settingsModal'),
   settingsBinDir: $('settingsBinDir'),
@@ -84,6 +85,7 @@ let cameraUiMode = 'auto';
 let cameraTargetGroupId = null;
 let profileCache = null;
 let activeLogTab = 'console';
+let recentExpanded = false;
 
 function appendLog(text) {
   if (!ui.logOutput) return;
@@ -319,9 +321,17 @@ function renderRecent(profile) {
   if (!items.length) {
     ui.recentList.className = 'recent-list empty';
     ui.recentList.textContent = 'No recent projects';
+    ui.recentList.hidden = false;
+    ui.recentToggle.disabled = true;
+    ui.recentToggle.setAttribute('aria-expanded', 'false');
+    ui.recentToggle.textContent = 'Show';
     return;
   }
   ui.recentList.className = 'recent-list';
+  ui.recentList.hidden = !recentExpanded;
+  ui.recentToggle.disabled = false;
+  ui.recentToggle.setAttribute('aria-expanded', String(recentExpanded));
+  ui.recentToggle.textContent = recentExpanded ? 'Hide' : `Show (${items.length})`;
   for (const item of items) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -750,6 +760,12 @@ ui.settingsBtn.addEventListener('click', () => openSettings());
 ui.settingsCloseBtn.addEventListener('click', () => closeSettings());
 ui.settingsModal.addEventListener('click', (event) => {
   if (event.target && event.target.hasAttribute('data-close-settings')) closeSettings();
+});
+
+ui.recentToggle.addEventListener('click', () => {
+  recentExpanded = !recentExpanded;
+  const profile = profileCache || { recentProjects: [] };
+  renderRecent(profile);
 });
 
 ui.browseBinBtn.addEventListener('click', async () => {
