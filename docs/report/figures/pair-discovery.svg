@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Candidate Image-Pair Discovery</title>
+  <desc id="desc">InsightAT chooses exhaustive or low-resolution retrieval, validates candidate neighbors, recovers weakly connected images, and then performs full-resolution matching and geometric verification.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#ea580c"/>
+    </marker>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 15px sans-serif; fill: #64748b; }
+      .section { font: 700 15px sans-serif; fill: #334155; letter-spacing: .3px; }
+      .heading { font: 700 16px sans-serif; fill: #0f172a; }
+      .body { font: 400 13px sans-serif; fill: #475569; }
+      .small { font: 400 12px sans-serif; fill: #64748b; }
+      .decision { font: 700 14px sans-serif; fill: #1e3a8a; }
+      .card { stroke: #cbd5e1; stroke-width: 1.5; }
+      .flow { stroke: #475569; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .flow-blue { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrowBlue); }
+      .flow-orange { stroke: #ea580c; stroke-width: 2.2; fill: none; marker-end: url(#arrowOrange); }
+      .dashed { stroke-dasharray: 7 5; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f8fafc"/>
+  <text x="56" y="48" class="title">Candidate Image-Pair Discovery</text>
+  <text x="56" y="76" class="subtitle">High recall first, full-resolution matching and geometry second</text>
+
+  <rect x="56" y="126" width="244" height="90" rx="12" fill="#eff6ff" class="card"/>
+  <text x="178" y="159" text-anchor="middle" class="heading">Input Image Set</text>
+  <text x="178" y="183" text-anchor="middle" class="body">n images - metadata -</text>
+  <text x="178" y="201" text-anchor="middle" class="body">extraction summaries</text>
+
+  <path d="M300 171 H366" class="flow-blue"/>
+  <polygon points="440,126 514,171 440,216 366,171" fill="#dbeafe" stroke="#60a5fa" stroke-width="2"/>
+  <text x="440" y="166" text-anchor="middle" class="decision">n &lt; 60?</text>
+  <text x="440" y="184" text-anchor="middle" class="small">pair-count gate</text>
+
+  <path d="M514 171 H590" class="flow-blue"/>
+  <text x="549" y="158" text-anchor="middle" class="small">yes</text>
+  <rect x="590" y="126" width="278" height="90" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="729" y="159" text-anchor="middle" class="heading">Exhaustive Pair Enumeration</text>
+  <text x="729" y="183" text-anchor="middle" class="body">All image pairs become candidates</text>
+  <text x="729" y="201" text-anchor="middle" class="small">Good coverage at small scale</text>
+
+  <path d="M440 216 V238 H729" class="flow-blue"/>
+  <text x="486" y="232" class="small">no</text>
+  <rect x="590" y="238" width="278" height="108" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="729" y="270" text-anchor="middle" class="heading">Low-resolution Retrieval</text>
+  <text x="729" y="293" text-anchor="middle" class="body">Downsampled images + compact SIFT</text>
+  <text x="729" y="316" text-anchor="middle" class="body">GPU cascade-hash matching</text>
+  <text x="729" y="337" text-anchor="middle" class="small">Efficient candidate generation</text>
+  <path d="M729 216 V238" class="flow"/>
+
+  <rect x="930" y="126" width="354" height="90" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="1107" y="159" text-anchor="middle" class="heading">Coarse Geometric Validation</text>
+  <text x="1107" y="183" text-anchor="middle" class="body">F-RANSAC and validated neighbor count</text>
+  <text x="1107" y="201" text-anchor="middle" class="small">Reject unsupported retrievals</text>
+  <path d="M868 171 H930" class="flow"/>
+  <path d="M868 292 H900 V171 H930" class="flow"/>
+
+  <text x="56" y="396" class="section">RECALL RECOVERY</text>
+  <rect x="56" y="414" width="400" height="126" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="256" y="446" text-anchor="middle" class="heading">Neighbor Deficit Recovery</text>
+  <text x="256" y="470" text-anchor="middle" class="body">For an image with too few validated</text>
+  <text x="256" y="491" text-anchor="middle" class="body">neighbors, add all pairs incident to it</text>
+  <text x="256" y="518" text-anchor="middle" class="small">Restores missing registration paths</text>
+
+  <rect x="500" y="414" width="400" height="126" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="700" y="446" text-anchor="middle" class="heading">Weak-texture Recovery</text>
+  <text x="700" y="470" text-anchor="middle" class="body">If extraction reports a weak image,</text>
+  <text x="700" y="491" text-anchor="middle" class="body">add all pairs incident to that image</text>
+  <text x="700" y="518" text-anchor="middle" class="small">Protects difficult images from early exclusion</text>
+
+  <rect x="944" y="414" width="340" height="126" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="1114" y="446" text-anchor="middle" class="heading">Candidate Pair Union</text>
+  <text x="1114" y="470" text-anchor="middle" class="body">Enumerated pairs * retrieved pairs</text>
+  <text x="1114" y="494" text-anchor="middle" class="body">* recovery pairs</text>
+  <text x="1114" y="518" text-anchor="middle" class="small">Still candidates, not verified relations</text>
+
+  <path d="M1107 216 V360 H256 V414" class="flow-orange"/>
+  <path d="M1107 216 V360 H700 V414" class="flow-orange"/>
+  <path d="M456 477 H944" class="flow-orange"/>
+  <path d="M900 477 H944" class="flow-orange"/>
+
+  <text x="56" y="596" class="section">FULL-RESOLUTION VERIFICATION</text>
+  <rect x="56" y="616" width="302" height="106" rx="12" fill="#eff6ff" class="card"/>
+  <text x="207" y="648" text-anchor="middle" class="heading">Full-resolution Matching</text>
+  <text x="207" y="672" text-anchor="middle" class="body">GPU cascade-hash search</text>
+  <text x="207" y="695" text-anchor="middle" class="small">Only on the candidate union</text>
+
+  <rect x="420" y="616" width="302" height="106" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="571" y="648" text-anchor="middle" class="heading">Geometric Verification</text>
+  <text x="571" y="672" text-anchor="middle" class="body">F / E / H model checks</text>
+  <text x="571" y="695" text-anchor="middle" class="small">Inlier support and consistency</text>
+
+  <rect x="784" y="616" width="500" height="106" rx="12" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="1034" y="648" text-anchor="middle" class="heading">Verified View-graph Relations</text>
+  <text x="1034" y="672" text-anchor="middle" class="body">Accepted matches, masks, and pair metadata</text>
+  <text x="1034" y="695" text-anchor="middle" class="small">Consumed by tracks, seed evaluation, and SfM</text>
+
+  <path d="M1114 540 V578 H207 V616" class="flow-blue"/>
+  <path d="M358 669 H420" class="flow-blue"/>
+  <path d="M722 669 H784" class="flow-blue"/>
+
+  <rect x="56" y="778" width="1228" height="54" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="670" y="811" text-anchor="middle" class="body">Retrieval narrows the expensive work; recovery deliberately widens recall where registration would otherwise be fragile.</text>
+</svg>

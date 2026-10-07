@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Subset BA and Reversible Masks</title>
+  <desc id="desc">The complete TrackStore remains stable while grid coverage and geometric quality select a smaller bundle-adjustment subset. Masks change participation in the current solve without deleting track identity or observations.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 15px sans-serif; fill: #64748b; }
+      .section { font: 700 15px sans-serif; fill: #334155; letter-spacing: .3px; }
+      .heading { font: 700 16px sans-serif; fill: #0f172a; }
+      .body { font: 400 13px sans-serif; fill: #475569; }
+      .small { font: 400 12px sans-serif; fill: #64748b; }
+      .label { font: 600 12px sans-serif; fill: #334155; }
+      .card { stroke: #cbd5e1; stroke-width: 1.5; }
+      .flow { stroke: #475569; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .flow-blue { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrowBlue); }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f8fafc"/>
+  <text x="56" y="48" class="title">Subset BA: Stable Selection Through Masks</text>
+  <text x="56" y="76" class="subtitle">Reduce one solve without shrinking the recoverable model</text>
+
+  <text x="56" y="120" class="section">FULL MODEL STATE</text>
+  <rect x="56" y="138" width="476" height="366" rx="14" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="294" y="172" text-anchor="middle" class="heading">TrackStore: stable identity and observations</text>
+  <text x="294" y="196" text-anchor="middle" class="body">All tracks remain addressable throughout incremental SfM</text>
+
+  <text x="102" y="235" class="label">Track</text>
+  <text x="209" y="235" class="label">V1</text>
+  <text x="263" y="235" class="label">V2</text>
+  <text x="317" y="235" class="label">V3</text>
+  <text x="371" y="235" class="label">V4</text>
+  <text x="425" y="235" class="label">V5</text>
+  <text x="479" y="235" class="label">V6</text>
+
+  <g stroke="#cbd5e1" stroke-width="1">
+    <rect x="92" y="250" width="408" height="196" rx="6" fill="#ffffff"/>
+    <path d="M174 250 V446 M228 250 V446 M282 250 V446 M336 250 V446 M390 250 V446 M444 250 V446"/>
+    <path d="M92 278 H500 M92 306 H500 M92 334 H500 M92 362 H500 M92 390 H500 M92 418 H500"/>
+  </g>
+  <text x="108" y="269" class="label">T1</text>
+  <text x="108" y="297" class="label">T2</text>
+  <text x="108" y="325" class="label">T3</text>
+  <text x="108" y="353" class="label">T4</text>
+  <text x="108" y="381" class="label">T5</text>
+  <text x="108" y="409" class="label">T6</text>
+  <text x="108" y="437" class="label">T7</text>
+
+  <g fill="#34d399">
+    <rect x="186" y="256" width="30" height="16" rx="3"/><rect x="294" y="256" width="30" height="16" rx="3"/><rect x="402" y="256" width="30" height="16" rx="3"/>
+    <rect x="240" y="284" width="30" height="16" rx="3"/><rect x="294" y="284" width="30" height="16" rx="3"/><rect x="456" y="284" width="30" height="16" rx="3"/>
+    <rect x="186" y="312" width="30" height="16" rx="3"/><rect x="348" y="312" width="30" height="16" rx="3"/><rect x="402" y="312" width="30" height="16" rx="3"/>
+    <rect x="240" y="340" width="30" height="16" rx="3"/><rect x="348" y="340" width="30" height="16" rx="3"/><rect x="456" y="340" width="30" height="16" rx="3"/>
+    <rect x="186" y="368" width="30" height="16" rx="3"/><rect x="240" y="368" width="30" height="16" rx="3"/>
+    <rect x="294" y="396" width="30" height="16" rx="3"/><rect x="402" y="396" width="30" height="16" rx="3"/><rect x="456" y="396" width="30" height="16" rx="3"/>
+    <rect x="186" y="424" width="30" height="16" rx="3"/><rect x="348" y="424" width="30" height="16" rx="3"/><rect x="456" y="424" width="30" height="16" rx="3"/>
+  </g>
+  <g fill="#fdba74">
+    <rect x="240" y="312" width="30" height="16" rx="3"/><rect x="402" y="340" width="30" height="16" rx="3"/><rect x="294" y="368" width="30" height="16" rx="3"/>
+  </g>
+  <g fill="#fecaca">
+    <rect x="456" y="368" width="30" height="16" rx="3"/><rect x="348" y="396" width="30" height="16" rx="3"/>
+  </g>
+
+  <rect x="92" y="462" width="14" height="14" rx="2" fill="#34d399"/>
+  <text x="114" y="474" class="small">active candidate</text>
+  <rect x="224" y="462" width="14" height="14" rx="2" fill="#fdba74"/>
+  <text x="246" y="474" class="small">recoverable</text>
+  <rect x="344" y="462" width="14" height="14" rx="2" fill="#fecaca"/>
+  <text x="366" y="474" class="small">permanent reject</text>
+
+  <text x="56" y="548" class="section">SUBSET CONSTRUCTION</text>
+  <rect x="56" y="566" width="408" height="176" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="260" y="600" text-anchor="middle" class="heading">Grid and Geometry Selection</text>
+  <text x="82" y="628" class="body">1. Project active tracks into image grids</text>
+  <text x="82" y="653" class="body">2. Score visibility, parallax, and coverage</text>
+  <text x="82" y="678" class="body">3. Keep strong candidates in each cell</text>
+  <text x="82" y="703" class="body">4. Take the union across registered views</text>
+  <text x="260" y="727" text-anchor="middle" class="small">A representative cross-view set replaces dense repetition</text>
+
+  <path d="M260 504 V566" class="flow"/>
+
+  <text x="610" y="120" class="section">CURRENT BA INPUT</text>
+  <rect x="610" y="138" width="348" height="366" rx="14" fill="#eef2ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="784" y="172" text-anchor="middle" class="heading">Selected Subset</text>
+  <text x="784" y="196" text-anchor="middle" class="body">Only selected Track-observation pairs enter</text>
+  <text x="784" y="216" text-anchor="middle" class="body">this joint camera-point solve</text>
+
+  <rect x="650" y="250" width="268" height="196" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+  <g stroke="#cbd5e1" stroke-width="1">
+    <path d="M717 250 V446 M784 250 V446 M851 250 V446"/>
+    <path d="M650 278 H918 M650 306 H918 M650 334 H918 M650 362 H918 M650 390 H918 M650 418 H918"/>
+  </g>
+  <g fill="#2563eb">
+    <rect x="660" y="256" width="46" height="16" rx="3"/><rect x="794" y="256" width="46" height="16" rx="3"/>
+    <rect x="727" y="284" width="46" height="16" rx="3"/><rect x="861" y="284" width="46" height="16" rx="3"/>
+    <rect x="660" y="312" width="46" height="16" rx="3"/><rect x="794" y="312" width="46" height="16" rx="3"/>
+    <rect x="727" y="340" width="46" height="16" rx="3"/><rect x="861" y="340" width="46" height="16" rx="3"/>
+    <rect x="660" y="396" width="46" height="16" rx="3"/><rect x="794" y="396" width="46" height="16" rx="3"/>
+    <rect x="727" y="424" width="46" height="16" rx="3"/>
+  </g>
+  <text x="784" y="475" text-anchor="middle" class="small">Coverage is preserved; redundant density is limited</text>
+
+  <rect x="994" y="138" width="390" height="366" rx="14" fill="#f1f5f9" class="card"/>
+  <text x="1189" y="172" text-anchor="middle" class="heading">What the Mask Means</text>
+  <text x="1022" y="214" class="body">Active</text>
+  <text x="1120" y="214" class="small">included in this BA</text>
+  <rect x="1022" y="228" width="74" height="22" rx="4" fill="#2563eb"/>
+  <text x="1022" y="280" class="body">Masked</text>
+  <text x="1120" y="280" class="small">skipped this round only</text>
+  <rect x="1022" y="294" width="74" height="22" rx="4" fill="#94a3b8"/>
+  <text x="1022" y="346" class="body">Recoverable</text>
+  <text x="1120" y="346" class="small">can return after a better model</text>
+  <rect x="1022" y="360" width="74" height="22" rx="4" fill="#fdba74"/>
+  <text x="1022" y="412" class="body">Permanent reject</text>
+  <text x="1120" y="412" class="small">fails a basic geometric condition</text>
+  <rect x="1022" y="426" width="74" height="22" rx="4" fill="#fecaca"/>
+  <text x="1189" y="478" text-anchor="middle" class="small">Masking changes participation, not Track identity</text>
+
+  <path d="M464 654 H570 V320 H610" class="flow-blue"/>
+  <path d="M958 320 H994" class="flow-blue"/>
+
+  <rect x="610" y="566" width="774" height="176" rx="12" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="997" y="600" text-anchor="middle" class="heading">After the Solve</text>
+  <text x="650" y="630" class="body">1. Inspect residuals, depth, parallax, and numerical status</text>
+  <text x="650" y="655" class="body">2. Update masks and preserve the complete TrackStore</text>
+  <text x="650" y="680" class="body">3. Re-triangulate or optimize skipped points when conditions improve</text>
+  <text x="650" y="705" class="body">4. Select a new subset for the next Global or Local BA</text>
+  <text x="997" y="729" text-anchor="middle" class="small">Subset BA controls one solve; the full model remains available for later recovery</text>
+
+  <path d="M784 504 V566" class="flow"/>
+  <path d="M1189 504 V566" class="flow"/>
+  <path d="M610 680 H464" class="flow-blue"/>
+</svg>

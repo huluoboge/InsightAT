@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Incremental SfM Stability Loop</title>
+  <desc id="desc">The incremental SfM process selects an image, estimates its pose, registers it, triangulates points, schedules bundle adjustment, and re-evaluates recoverable states before continuing.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#dc2626"/>
+    </marker>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 15px sans-serif; fill: #64748b; }
+      .section { font: 700 15px sans-serif; fill: #334155; letter-spacing: .3px; }
+      .heading { font: 700 16px sans-serif; fill: #0f172a; }
+      .body { font: 400 13px sans-serif; fill: #475569; }
+      .small { font: 400 12px sans-serif; fill: #64748b; }
+      .stage { font: 600 14px sans-serif; fill: #1e3a8a; }
+      .card { stroke: #cbd5e1; stroke-width: 1.5; }
+      .flow { stroke: #475569; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .flow-blue { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrowBlue); }
+      .flow-red { stroke: #dc2626; stroke-width: 2; fill: none; marker-end: url(#arrowRed); }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f8fafc"/>
+  <text x="56" y="48" class="title">Keeping Incremental SfM Stable</text>
+  <text x="56" y="76" class="subtitle">Each registration step is checked, optimized, and given a path to recover from temporary failure</text>
+
+  <rect x="56" y="126" width="410" height="86" rx="12" fill="#eff6ff" class="card"/>
+  <text x="261" y="158" text-anchor="middle" class="heading">Registered Model</text>
+  <text x="261" y="182" text-anchor="middle" class="body">Camera poses, 3D points, tracks, and masks</text>
+  <text x="261" y="201" text-anchor="middle" class="small">Current state becomes the next iteration input</text>
+
+  <rect x="515" y="126" width="410" height="86" rx="12" fill="#f1f5f9" class="card"/>
+  <text x="720" y="158" text-anchor="middle" class="heading">Unregistered Images</text>
+  <text x="720" y="182" text-anchor="middle" class="body">Candidates with verified view-graph relations</text>
+  <text x="720" y="201" text-anchor="middle" class="small">Visibility and 3D-2D support guide selection</text>
+
+  <rect x="974" y="126" width="410" height="86" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="1179" y="158" text-anchor="middle" class="heading">State Store</text>
+  <text x="1179" y="182" text-anchor="middle" class="body">Stable Track identity + reversible observation state</text>
+  <text x="1179" y="201" text-anchor="middle" class="small">Masks control participation without physical deletion</text>
+
+  <path d="M261 212 V236 H120 V276" class="flow"/>
+  <path d="M720 212 V250 H220 V276" class="flow"/>
+  <path d="M1179 212 V230 H1328 V470 H541 V502" class="flow"/>
+
+  <text x="56" y="252" class="section">REGISTRATION LOOP</text>
+
+  <rect x="56" y="276" width="230" height="108" rx="12" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.5"/>
+  <text x="171" y="309" text-anchor="middle" class="heading">Select Next Image</text>
+  <text x="171" y="333" text-anchor="middle" class="body">Coverage, visibility,</text>
+  <text x="171" y="353" text-anchor="middle" class="body">and 3D-2D support</text>
+  <text x="171" y="373" text-anchor="middle" class="small">Prefer a well-supported candidate</text>
+
+  <rect x="336" y="276" width="230" height="108" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="451" y="309" text-anchor="middle" class="heading">Pose Estimation</text>
+  <text x="451" y="333" text-anchor="middle" class="body">3D-2D association</text>
+  <text x="451" y="353" text-anchor="middle" class="body">+ PnP RANSAC</text>
+  <text x="451" y="373" text-anchor="middle" class="small">Reject unsupported hypotheses</text>
+
+  <polygon points="646,276 716,330 646,384 576,330" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/>
+  <text x="646" y="326" text-anchor="middle" class="stage">Quality</text>
+  <text x="646" y="345" text-anchor="middle" class="stage">gate</text>
+
+  <rect x="756" y="276" width="230" height="108" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="871" y="309" text-anchor="middle" class="heading">Register Camera</text>
+  <text x="871" y="333" text-anchor="middle" class="body">Accept a stable pose</text>
+  <text x="871" y="353" text-anchor="middle" class="body">and extend the model</text>
+  <text x="871" y="373" text-anchor="middle" class="small">One image joins the registered set</text>
+
+  <rect x="1046" y="276" width="230" height="108" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="1161" y="309" text-anchor="middle" class="heading">Triangulate</text>
+  <text x="1161" y="333" text-anchor="middle" class="body">Create new 3D points</text>
+  <text x="1161" y="353" text-anchor="middle" class="body">and check depth, angle, residual</text>
+  <text x="1161" y="373" text-anchor="middle" class="small">Queue uncertain tracks for review</text>
+
+  <path d="M286 330 H336 M566 330 H576 M716 330 H756 M986 330 H1046" class="flow-blue"/>
+  <path d="M646 276 V222 H320 V330 H286" class="flow-red"/>
+  <text x="412" y="230" text-anchor="middle" class="small" fill="#dc2626">reject or defer</text>
+
+  <rect x="56" y="502" width="286" height="112" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="199" y="535" text-anchor="middle" class="heading">BA Scheduler</text>
+  <text x="199" y="559" text-anchor="middle" class="body">Global BA early</text>
+  <text x="199" y="579" text-anchor="middle" class="body">Local BA later + periodic Global BA</text>
+  <text x="199" y="601" text-anchor="middle" class="small">Keep local freedom conservative</text>
+
+  <rect x="398" y="502" width="286" height="112" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="541" y="535" text-anchor="middle" class="heading">Re-evaluate States</text>
+  <text x="541" y="559" text-anchor="middle" class="body">Apply masks to temporary failures</text>
+  <text x="541" y="579" text-anchor="middle" class="body">Keep recoverable observations</text>
+  <text x="541" y="601" text-anchor="middle" class="small">Do not turn early uncertainty into deletion</text>
+
+  <rect x="740" y="502" width="286" height="112" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="883" y="535" text-anchor="middle" class="heading">Re-triangulate</text>
+  <text x="883" y="559" text-anchor="middle" class="body">Use updated poses and intrinsics</text>
+  <text x="883" y="579" text-anchor="middle" class="body">to restore useful structure</text>
+  <text x="883" y="601" text-anchor="middle" class="small">Pending tracks can return to the model</text>
+
+  <rect x="1082" y="502" width="302" height="112" rx="12" fill="#f1f5f9" class="card"/>
+  <text x="1233" y="535" text-anchor="middle" class="heading">Continue or Finish</text>
+  <text x="1233" y="559" text-anchor="middle" class="body">More supported candidates?</text>
+  <text x="1233" y="579" text-anchor="middle" class="body">Continue the loop</text>
+  <text x="1233" y="601" text-anchor="middle" class="small">Otherwise finalize Global BA and output</text>
+
+  <path d="M1161 384 V445 H199 V502" class="flow"/>
+  <path d="M342 558 H398 M684 558 H740 M1026 558 H1082" class="flow"/>
+  <path d="M1082 614 V678 H32 V330 H56" class="flow-blue"/>
+  <text x="625" y="672" text-anchor="middle" class="small" fill="#2563eb">more supported candidates: select the next image</text>
+
+  <rect x="56" y="730" width="856" height="76" rx="12" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="484" y="763" text-anchor="middle" class="heading">Stability principle</text>
+  <text x="484" y="787" text-anchor="middle" class="body">Registration, triangulation, optimization, and recovery form a controlled loop.</text>
+  <rect x="974" y="730" width="410" height="76" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="1179" y="763" text-anchor="middle" class="heading">Final Output</text>
+  <text x="1179" y="787" text-anchor="middle" class="body">Global BA + final re-triangulation</text>
+  <path d="M1233 614 V730" class="flow"/>
+  <text x="1270" y="696" class="small">no more candidates</text>
+</svg>

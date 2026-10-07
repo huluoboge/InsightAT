@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Progressive Intrinsics Optimization</title>
+  <desc id="desc">Camera intrinsics are unlocked in phases according to the number of registered images for each camera, beginning with focal length and low-order distortion and ending with the full model.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 15px sans-serif; fill: #64748b; }
+      .section { font: 700 15px sans-serif; fill: #334155; letter-spacing: .3px; }
+      .heading { font: 700 16px sans-serif; fill: #0f172a; }
+      .body { font: 400 13px sans-serif; fill: #475569; }
+      .small { font: 400 12px sans-serif; fill: #64748b; }
+      .label { font: 600 13px sans-serif; fill: #334155; }
+      .phase { font: 700 15px sans-serif; fill: #1e3a8a; }
+      .fixed { font: 600 12px sans-serif; fill: #64748b; }
+      .free { font: 600 12px sans-serif; fill: #ffffff; }
+      .card { stroke: #cbd5e1; stroke-width: 1.5; }
+      .flow { stroke: #475569; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .flow-blue { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrowBlue); }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f8fafc"/>
+  <text x="56" y="48" class="title">Progressive Intrinsics Optimization</text>
+  <text x="56" y="76" class="subtitle">Unlock camera-model freedom as evidence accumulates for each camera</text>
+
+  <rect x="56" y="126" width="1328" height="72" rx="12" fill="#eff6ff" class="card"/>
+  <text x="720" y="156" text-anchor="middle" class="heading">Per-camera support count</text>
+  <text x="720" y="180" text-anchor="middle" class="body">The phase is determined by the number of registered images for that camera, not by a single global iteration counter.</text>
+
+  <text x="56" y="238" class="section">PARAMETER FREEDOM BY PHASE</text>
+  <text x="56" y="286" class="label">Parameter block</text>
+  <text x="56" y="326" class="label">Focal length</text>
+  <text x="56" y="380" class="label">First-order distortion k1</text>
+  <text x="56" y="434" class="label">Second-order distortion k2</text>
+  <text x="56" y="488" class="label">Full model terms</text>
+
+  <rect x="250" y="260" width="258" height="270" rx="12" fill="#ffffff" class="card"/>
+  <rect x="522" y="260" width="258" height="270" rx="12" fill="#ffffff" class="card"/>
+  <rect x="794" y="260" width="258" height="270" rx="12" fill="#ffffff" class="card"/>
+  <rect x="1066" y="260" width="318" height="270" rx="12" fill="#ffffff" class="card"/>
+
+  <text x="379" y="294" text-anchor="middle" class="phase">Phase 0</text>
+  <text x="379" y="316" text-anchor="middle" class="small">n_c &lt; 3</text>
+  <text x="651" y="294" text-anchor="middle" class="phase">Phase 1</text>
+  <text x="651" y="316" text-anchor="middle" class="small">3 &lt;= n_c &lt; 10</text>
+  <text x="923" y="294" text-anchor="middle" class="phase">Phase 2</text>
+  <text x="923" y="316" text-anchor="middle" class="small">10 &lt;= n_c &lt; 50</text>
+  <text x="1225" y="294" text-anchor="middle" class="phase">Phase 3</text>
+  <text x="1225" y="316" text-anchor="middle" class="small">n_c &gt;= 50</text>
+
+  <g stroke="#cbd5e1" stroke-width="1">
+    <path d="M250 340 H1384 M250 394 H1384 M250 448 H1384 M250 502 H1384"/>
+  </g>
+
+  <rect x="270" y="348" width="218" height="32" rx="5" fill="#e2e8f0"/>
+  <text x="379" y="369" text-anchor="middle" class="fixed">fixed</text>
+  <rect x="542" y="348" width="218" height="32" rx="5" fill="#2563eb"/>
+  <text x="651" y="369" text-anchor="middle" class="free">free: focal length</text>
+  <rect x="814" y="348" width="218" height="32" rx="5" fill="#2563eb"/>
+  <text x="923" y="369" text-anchor="middle" class="free">free: focal length</text>
+  <rect x="1086" y="348" width="278" height="32" rx="5" fill="#059669"/>
+  <text x="1225" y="369" text-anchor="middle" class="free">free: focal length</text>
+
+  <rect x="270" y="402" width="218" height="32" rx="5" fill="#e2e8f0"/>
+  <text x="379" y="423" text-anchor="middle" class="fixed">fixed</text>
+  <rect x="542" y="402" width="218" height="32" rx="5" fill="#2563eb"/>
+  <text x="651" y="423" text-anchor="middle" class="free">free: k1</text>
+  <rect x="814" y="402" width="218" height="32" rx="5" fill="#2563eb"/>
+  <text x="923" y="423" text-anchor="middle" class="free">free: k1</text>
+  <rect x="1086" y="402" width="278" height="32" rx="5" fill="#059669"/>
+  <text x="1225" y="423" text-anchor="middle" class="free">free: k1</text>
+
+  <rect x="270" y="456" width="218" height="32" rx="5" fill="#e2e8f0"/>
+  <text x="379" y="477" text-anchor="middle" class="fixed">fixed</text>
+  <rect x="542" y="456" width="218" height="32" rx="5" fill="#e2e8f0"/>
+  <text x="651" y="477" text-anchor="middle" class="fixed">fixed</text>
+  <rect x="814" y="456" width="218" height="32" rx="5" fill="#2563eb"/>
+  <text x="923" y="477" text-anchor="middle" class="free">free: k2</text>
+  <rect x="1086" y="456" width="278" height="32" rx="5" fill="#059669"/>
+  <text x="1225" y="477" text-anchor="middle" class="free">free: k2</text>
+
+  <rect x="270" y="510" width="218" height="32" rx="5" fill="#e2e8f0"/>
+  <text x="379" y="531" text-anchor="middle" class="fixed">fixed</text>
+  <rect x="542" y="510" width="218" height="32" rx="5" fill="#e2e8f0"/>
+  <text x="651" y="531" text-anchor="middle" class="fixed">fixed</text>
+  <rect x="814" y="510" width="218" height="32" rx="5" fill="#e2e8f0"/>
+  <text x="923" y="531" text-anchor="middle" class="fixed">fixed</text>
+  <rect x="1086" y="510" width="278" height="32" rx="5" fill="#059669"/>
+  <text x="1225" y="531" text-anchor="middle" class="free">free: full model</text>
+
+  <path d="M508 330 H522 M780 330 H794 M1052 330 H1066" class="flow-blue"/>
+  <text x="515" y="326" text-anchor="middle" class="small" fill="#2563eb">support</text>
+  <text x="787" y="326" text-anchor="middle" class="small" fill="#2563eb">support</text>
+  <text x="1059" y="326" text-anchor="middle" class="small" fill="#2563eb">support</text>
+
+  <rect x="56" y="598" width="410" height="144" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="261" y="631" text-anchor="middle" class="heading">Focal-length control</text>
+  <text x="82" y="660" class="body">EXIF or F-based estimate provides a prior</text>
+  <text x="82" y="685" class="body">A soft prior and per-round limit prevent jumps</text>
+  <text x="82" y="710" class="small">The anchor is updated as the model improves</text>
+
+  <rect x="515" y="598" width="410" height="144" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="720" y="631" text-anchor="middle" class="heading">BA participation</text>
+  <text x="541" y="660" class="body">Local BA keeps intrinsics constrained in early updates</text>
+  <text x="541" y="685" class="body">Global BA updates parameters that are unlocked</text>
+  <text x="541" y="710" class="small">Freedom follows evidence, not optimization pressure</text>
+
+  <rect x="974" y="598" width="410" height="144" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="1179" y="631" text-anchor="middle" class="heading">Model feedback</text>
+  <text x="1000" y="660" class="body">Better intrinsics improve triangulation and residuals</text>
+  <text x="1000" y="685" class="body">Improved structure supports the next unlock</text>
+  <text x="1000" y="710" class="small">Re-evaluate recoverable observations after improvement</text>
+
+  <path d="M720 530 V598" class="flow"/>
+  <path d="M925 670 H974" class="flow-blue"/>
+  <path d="M1179 598 V566 H1408 V108 H720 V126" class="flow-blue"/>
+  <text x="1260" y="100" text-anchor="middle" class="small" fill="#2563eb">next support update</text>
+  <text x="720" y="563" text-anchor="middle" class="small" fill="#2563eb">progressive release of freedom</text>
+
+  <rect x="244" y="790" width="952" height="52" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="720" y="822" text-anchor="middle" class="body">A camera with insufficient support remains constrained; a well-supported camera earns additional degrees of freedom.</text>
+</svg>

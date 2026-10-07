@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">InsightAT Architecture</title>
+  <desc id="desc">InsightAT connects user entry points, task snapshots, independent CLI stages, file-bounded data exchange, and heterogeneous compute backends.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 15px sans-serif; fill: #64748b; }
+      .section { font: 700 15px sans-serif; fill: #334155; letter-spacing: .3px; }
+      .heading { font: 700 16px sans-serif; fill: #0f172a; }
+      .body { font: 400 13px sans-serif; fill: #475569; }
+      .stage { font: 600 13px sans-serif; fill: #1e3a8a; }
+      .small { font: 400 12px sans-serif; fill: #64748b; }
+      .card { stroke: #cbd5e1; stroke-width: 1.5; }
+      .flow { stroke: #475569; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .flow-blue { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrowBlue); }
+      .cross { stroke: #94a3b8; stroke-width: 1.5; stroke-dasharray: 8 6; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f8fafc"/>
+  <text x="56" y="48" class="title">InsightAT Architecture</text>
+  <text x="56" y="76" class="subtitle">File-bounded stages, task snapshots, and replaceable compute backends</text>
+
+  <text x="56" y="116" class="section">USER ENTRY POINTS AND TASK INPUT</text>
+  <rect x="56" y="132" width="300" height="82" rx="12" fill="#eff6ff" class="card"/>
+  <text x="206" y="164" text-anchor="middle" class="heading">Electron UI</text>
+  <text x="206" y="188" text-anchor="middle" class="body">Projects, tasks, progress, results</text>
+
+  <rect x="410" y="132" width="300" height="82" rx="12" fill="#eff6ff" class="card"/>
+  <text x="560" y="164" text-anchor="middle" class="heading">CLI / Automation</text>
+  <text x="560" y="188" text-anchor="middle" class="body">Shell scripts and external callers</text>
+
+  <rect x="764" y="132" width="300" height="82" rx="12" fill="#f1f5f9" class="card"/>
+  <text x="914" y="164" text-anchor="middle" class="heading">Images and Metadata</text>
+  <text x="914" y="188" text-anchor="middle" class="body">Folders, EXIF, camera groups</text>
+
+  <rect x="1118" y="132" width="266" height="82" rx="12" fill="#f1f5f9" class="card"/>
+  <text x="1251" y="164" text-anchor="middle" class="heading">Task Snapshot</text>
+  <text x="1251" y="188" text-anchor="middle" class="body">Frozen inputs and parameters</text>
+
+  <path d="M206 214 V228 H300 V258" class="flow"/>
+  <path d="M560 214 V258" class="flow"/>
+  <path d="M914 214 V258" class="flow"/>
+  <path d="M1251 214 V258" class="flow"/>
+
+  <text x="56" y="244" class="section">TASK ORCHESTRATION</text>
+  <rect x="56" y="258" width="1328" height="78" rx="14" fill="#dbeafe" stroke="#60a5fa" stroke-width="2"/>
+  <text x="720" y="290" text-anchor="middle" class="heading">Task Orchestrator</text>
+  <text x="720" y="314" text-anchor="middle" class="body">Freeze inputs - schedule stages - pass parameters - forward events - record state and timing</text>
+
+  <text x="56" y="382" class="section">ALGORITHM EXECUTION: INDEPENDENT CLI STAGES</text>
+  <rect x="56" y="398" width="1328" height="116" rx="14" fill="#eef2ff" stroke="#818cf8" stroke-width="1.5"/>
+
+  <rect x="78" y="432" width="135" height="50" rx="8" fill="#ffffff" class="card"/>
+  <text x="145" y="462" text-anchor="middle" class="stage">create</text>
+  <rect x="226" y="432" width="135" height="50" rx="8" fill="#ffffff" class="card"/>
+  <text x="293" y="462" text-anchor="middle" class="stage">extract</text>
+  <rect x="374" y="432" width="135" height="50" rx="8" fill="#ffffff" class="card"/>
+  <text x="441" y="462" text-anchor="middle" class="stage">match</text>
+  <rect x="522" y="432" width="135" height="50" rx="8" fill="#ffffff" class="card"/>
+  <text x="589" y="462" text-anchor="middle" class="stage">tracks</text>
+  <rect x="670" y="432" width="135" height="50" rx="8" fill="#ffffff" class="card"/>
+  <text x="737" y="462" text-anchor="middle" class="stage">seed_eval</text>
+  <rect x="818" y="432" width="205" height="50" rx="8" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.5"/>
+  <text x="920" y="454" text-anchor="middle" class="stage">incremental_sfm</text>
+  <text x="920" y="471" text-anchor="middle" class="small">registration - triangulation - BA</text>
+  <rect x="1036" y="432" width="155" height="50" rx="8" fill="#ffffff" class="card"/>
+  <text x="1114" y="462" text-anchor="middle" class="stage">undistort</text>
+  <rect x="1204" y="432" width="158" height="50" rx="8" fill="#ffffff" class="card"/>
+  <text x="1283" y="462" text-anchor="middle" class="stage">result export</text>
+
+  <path d="M191 457 H226 M339 457 H374 M487 457 H522 M635 457 H670 M783 457 H818 M1023 457 H1036 M1191 457 H1204" class="flow-blue"/>
+  <path d="M720 336 V398" class="flow"/>
+
+  <text x="56" y="562" class="section">CROSS-CUTTING DATA AND COMPUTE RUNTIME</text>
+  <rect x="56" y="578" width="414" height="128" rx="12" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="263" y="610" text-anchor="middle" class="heading">IDC and JSON Artifacts</text>
+  <text x="263" y="636" text-anchor="middle" class="body">Self-describing blocks and manifests</text>
+  <text x="263" y="660" text-anchor="middle" class="body">Stage outputs - logs - snapshots</text>
+  <text x="263" y="684" text-anchor="middle" class="small">File boundary between processes</text>
+
+  <rect x="513" y="578" width="414" height="128" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="720" y="610" text-anchor="middle" class="heading">SoA and Bounded Dataflow</text>
+  <text x="720" y="636" text-anchor="middle" class="body">Stable indices - masks - contiguous arrays</text>
+  <text x="720" y="660" text-anchor="middle" class="body">Batching - async I/O - bounded queues</text>
+  <text x="720" y="684" text-anchor="middle" class="small">State and data movement stay observable</text>
+
+  <rect x="970" y="578" width="414" height="128" rx="12" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5"/>
+  <text x="1177" y="610" text-anchor="middle" class="heading">Compute Backends</text>
+  <text x="1177" y="636" text-anchor="middle" class="body">CUDA - GLSL/EGL - CPU</text>
+  <text x="1177" y="660" text-anchor="middle" class="body">Feature - matching - geometry - BA</text>
+  <text x="1177" y="684" text-anchor="middle" class="small">Selected by capability and fallback rules</text>
+
+  <path d="M263 514 V578 M720 514 V578 M1177 514 V578" class="cross"/>
+
+  <rect x="270" y="758" width="900" height="70" rx="12" fill="#e0e7ff" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="720" y="790" text-anchor="middle" class="heading">Stage Artifacts and Results</text>
+  <text x="720" y="813" text-anchor="middle" class="body">Sparse model - camera poses - tracks - logs - Electron UI / sfm-viewer</text>
+  <path d="M263 706 L410 758 M720 706 V758 M1177 706 L1030 758" class="flow"/>
+
+  <text x="56" y="866" class="small">Current execution: a single-machine staged pipeline. Task, CLI, and file boundaries leave room for external orchestration.</text>
+</svg>
