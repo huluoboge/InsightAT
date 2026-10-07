@@ -2,9 +2,9 @@
 
 [![DOI](https://zenodo.org/badge/1169840859.svg)](https://doi.org/10.5281/zenodo.20042104)
 
-InsightAT（**A**erial **T**riangulation，空三）是开源、全自动、傻瓜化的空中三角测量工具——把影像文件夹交给它，就能完成 SfM 稀疏重建，少调参、易上手。
+InsightAT 是开源、全自动、易用的 SfM 稀疏重建工具——把影像文件夹交给它，就能完成重建，少调参、易上手。空中三角测量是它的一个应用场景。
 
-**项目主页：** [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/) · **[English](README.md) | 简体中文**
+**项目主页：** [huluoboge.top/InsightAT](https://huluoboge.top/InsightAT/) · **[English](README.md) | 简体中文**
 
 支持平台：**Ubuntu 22.04 / 24.04** 与 **Windows**，**CUDA 12.8**。默认构建为纯 CLI（`isat_*`）。
 
@@ -72,7 +72,7 @@ MIT 许可证
 ```bibtex
 @software{hu2026insightat,
   author = {Hu, Yang},
-  title = {InsightAT: Simple Automated Aerial Triangulation},
+  title = {InsightAT: Simple Automated SfM},
   year = {2026},
   doi = {10.5281/zenodo.20042104},
   url = {https://github.com/huluoboge/InsightAT}

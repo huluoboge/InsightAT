@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="InsightAT: simple, fully automated aerial triangulation (SfM) — from a photo folder to sparse models with minimal knobs." />
+  <meta name="description" content="InsightAT: simple, fully automated SfM — from an image folder to sparse models with minimal knobs." />
   <link rel="icon" type="image/png" href="favicon.png" />
-  <title>InsightAT — Simple Automated Aerial Triangulation</title>
+  <title>InsightAT — Simple Automated SfM</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -339,11 +339,11 @@
 <div class="container">
 <section id="hero">
   <h1>InsightAT</h1>
-  <p class="subtitle">Simple Automated Aerial Triangulation</p>
+  <p class="subtitle">Simple Automated SfM</p>
 
   <p style="max-width:680px; color:#374151;">
-    Fully automated <strong>aerial triangulation</strong> (AT = SfM) —
-    drop in a photo folder, get sparse models, COLMAP export, and a desktop viewer.
+    Fully automated <strong>SfM</strong> —
+    drop in an image folder, get sparse models, COLMAP export, and a desktop viewer.
     Built to be <strong>hands-off and foolproof</strong>.
   </p>
 
@@ -373,9 +373,10 @@
 <section id="overview">
   <h2>Overview</h2>
   <p>
-    InsightAT (<strong>A</strong>erial <strong>T</strong>riangulation) treats AT as
-    image-based SfM: an open-source toolkit for <strong>fully automated, foolproof</strong>
-    sparse reconstruction. One entry point (<code>isat_sfm</code>), or the Electron
+    InsightAT is an open-source toolkit for <strong>fully automated, foolproof</strong>
+    image-based SfM and sparse reconstruction. It supports aerial triangulation
+    as well as other image-based reconstruction tasks. Use one entry point
+    (<code>isat_sfm</code>), or the Electron
     <strong>SfM GUI</strong> for setup, progress, and the embedded <strong>SfM Viewer</strong>.
   </p>
   <p>
@@ -541,7 +542,7 @@ isat_sfm -i /data/images -w /data/work --undistort</code></pre>
   <p>If you use InsightAT in research or production work, please cite:</p>
   <pre><code>@software{hu2026insightat,
   author = {Hu, Yang},
-  title = {InsightAT: Simple Automated Aerial Triangulation},
+  title = {InsightAT: Simple Automated SfM},
   year = {2026},
   doi = {10.5281/zenodo.20042104},
   url = {https://github.com/huluoboge/InsightAT}

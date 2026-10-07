@@ -2,11 +2,11 @@
 
 [![DOI](https://zenodo.org/badge/1169840859.svg)](https://doi.org/10.5281/zenodo.20042104)
 
-**InsightAT: Simple Automated Aerial Triangulation**
+**InsightAT: Simple Automated SfM**
 
-InsightAT (**A**erial **T**riangulation) is open-source, fully automated aerial triangulation — SfM that just works. Point it at a photo folder and get sparse reconstruction with minimal knobs.
+InsightAT is an open-source, fully automated SfM toolkit for sparse reconstruction. Point it at an image folder and get a reconstruction with minimal knobs. Aerial triangulation is one of its applications.
 
-**Project page:** [huluoboge.github.io/insightat](https://huluoboge.github.io/insightat/) · **English | [简体中文](README_zh.md)**
+**Project page:** [huluoboge.top/InsightAT](https://huluoboge.top/InsightAT/) · **English | [简体中文](README_zh.md)**
 
 Supported platforms: **Ubuntu 22.04 / 24.04** and **Windows**, **CUDA 12.8**. Default build is **CLI-only** (`isat_*`).
 
@@ -74,7 +74,7 @@ Copyright (c) 2026 Yang Hu
 ```bibtex
 @software{hu2026insightat,
   author = {Hu, Yang},
-  title = {InsightAT: Simple Automated Aerial Triangulation},
+  title = {InsightAT: Simple Automated SfM},
   year = {2026},
   doi = {10.5281/zenodo.20042104},
   url = {https://github.com/huluoboge/InsightAT}
