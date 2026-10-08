@@ -50,6 +50,7 @@ enum class DistributionStrategy {
 struct GridDistributionParams {
   int grid_size = 32;                      // Grid cell size in pixels
   int max_per_cell = 2;                    // Maximum features per grid cell
+  int max_total_features = 0;              // Global cap; 0 = unlimited
   bool keep_orientation = true;            // Keep multiple orientations at same location
   float orientation_threshold_deg = 30.0f; // Angle threshold for same orientation (degrees)
 };

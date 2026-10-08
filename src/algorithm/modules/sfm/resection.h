@@ -61,14 +61,22 @@ bool resection_single_image(TrackStore& store, int image_index, double fx, doubl
                             double cy, Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
                             int* inliers_out = nullptr, double* rmse_px_out = nullptr,
-                            double min_inlier_ratio = 0.02, bool commit_outliers = true);
+                            double min_inlier_ratio = 0.02, bool commit_outliers = true,
+                            std::vector<int>* pnp_obs_ids_out = nullptr,
+                            std::vector<char>* inlier_mask_out = nullptr);
 
 /// If K.has_distortion(), observations are undistorted before PnP.
 bool resection_single_image(const camera::Intrinsics& K, TrackStore& store, int image_index,
                             Eigen::Matrix3d* R_out, Eigen::Vector3d* t_out,
                             int min_inliers = 15, double ransac_thresh_px = 8.0,
                             int* inliers_out = nullptr, double* rmse_px_out = nullptr,
-                            double min_inlier_ratio = 0.02, bool commit_outliers = true);
+                            double min_inlier_ratio = 0.02, bool commit_outliers = true,
+                            std::vector<int>* pnp_obs_ids_out = nullptr,
+                            std::vector<char>* inlier_mask_out = nullptr);
+
+/// Commit the exact PnP result from a dry-run without running randomized PnP again.
+bool commit_resection_result(TrackStore& store, const std::vector<int>& pnp_obs_ids,
+                             const std::vector<char>& inlier_mask);
 
 /**
  * Count grid cells that contain at least one 3D–2D observation (COLMAP-style

@@ -6,6 +6,7 @@
 #include "feature_distribution.h"
 #include "key_points_node.h"
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 
@@ -108,9 +109,20 @@ std::vector<size_t> distribute_keypoints_grid(const std::vector<SiftGPU::SiftKey
     }
   }
 
+  // Keep spatial coverage from the cell pass, then enforce the extractor's
+  // global feature budget using the strongest remaining candidates.
+  if (params.max_total_features > 0 &&
+      static_cast<int>(kept_indices.size()) > params.max_total_features) {
+    const auto nth = kept_indices.begin() + params.max_total_features;
+    std::nth_element(
+        kept_indices.begin(), nth, kept_indices.end(),
+        [&keypoints](size_t a, size_t b) { return keypoints[a].s > keypoints[b].s; });
+    kept_indices.resize(static_cast<size_t>(params.max_total_features));
+  }
+
   LOG(INFO) << "Grid distribution: " << kept_indices.size() << "/" << keypoints.size()
             << " features kept (grid=" << params.grid_size << "px, max/cell=" << params.max_per_cell
-            << ")";
+            << ", max_total=" << params.max_total_features << ")";
 
   return kept_indices;
 }
@@ -198,8 +210,17 @@ std::vector<size_t> distribute_keypoints_grid(const std::vector<cv::KeyPoint>& k
     }
   }
 
+  if (params.max_total_features > 0 &&
+      static_cast<int>(kept_indices.size()) > params.max_total_features) {
+    const auto nth = kept_indices.begin() + params.max_total_features;
+    std::nth_element(
+        kept_indices.begin(), nth, kept_indices.end(),
+        [&keypoints](size_t a, size_t b) { return keypoints[a].response > keypoints[b].response; });
+    kept_indices.resize(static_cast<size_t>(params.max_total_features));
+  }
+
   LOG(INFO) << "Grid distribution: " << kept_indices.size() << "/" << keypoints.size()
-            << " features kept";
+            << " features kept (max_total=" << params.max_total_features << ")";
 
   return kept_indices;
 }

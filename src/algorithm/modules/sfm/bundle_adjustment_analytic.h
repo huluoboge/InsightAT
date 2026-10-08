@@ -58,8 +58,13 @@ struct BACameraDistancePrior {
 /// Single observation for BA: image index, point index, 2D pixel, optional observation stddev.
 /// std_sigma_obs_px is the pixel-domain observation standard deviation used for weighting.
 struct BAObservation {
+  // Keep this type non-aggregate so adding a field cannot silently reorder positional
+  // initializers. Construct with the default constructor and assign fields explicitly.
+  BAObservation() = default;
+
   int image_index = 0;
   int point_index = 0;
+  int observation_id = -1; ///< Optional TrackStore observation ID for cache synchronization.
   double u = 0.0;
   double v = 0.0;
   double std_sigma_obs_px = 1.0;  ///< Pixel-domain observation stddev consumed by BA weighting.

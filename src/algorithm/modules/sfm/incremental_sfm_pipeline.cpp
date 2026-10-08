@@ -2150,8 +2150,13 @@ static bool build_ba_input_skipped_tracks_fixed_pose(
       if (it == g2ba.end())
         continue;
       const double sc = (o.scale > 1e-6f) ? static_cast<double>(o.scale) : 1.0;
-      ba.observations.push_back(
-          {it->second, pt_idx, static_cast<double>(o.u), static_cast<double>(o.v), sc});
+      BAObservation bo;
+      bo.image_index = it->second;
+      bo.point_index = pt_idx;
+      bo.u = static_cast<double>(o.u);
+      bo.v = static_cast<double>(o.v);
+      bo.std_sigma_obs_px = sc;
+      ba.observations.push_back(bo);
     }
   }
   ba.fix_point.assign(ba.points3d.size(), false); // 3D points are FREE
@@ -2205,7 +2210,8 @@ bool build_ba_input_from_store(
     BAInput* ba_input_out, std::vector<int>* point_index_to_track_id_out,
     const std::vector<bool>* skip_2deg_image_stable, // nullptr = disabled
     double skip_2deg_min_angle_score, int max_observations_per_track, int* n_skipped_2deg_out,
-    int* n_skipped_grid_out) { // nullptr = don't report grid-skip count
+    int* n_skipped_grid_out, // nullptr = don't report grid-skip count
+    std::vector<int>* observation_id_out = nullptr) {
   if (!ba_input_out || !point_index_to_track_id_out || !ba_image_index_to_global_out)
     return false;
   const int n_images = store.num_images();
@@ -2242,6 +2248,8 @@ bool build_ba_input_from_store(
   ba.fix_pose.clear();
   ba.fix_point.clear();
   ba.fix_intrinsics_flags.clear();
+  if (observation_id_out)
+    observation_id_out->clear();
 
   for (int g : global_indices) {
     ba.poses_R.push_back(poses_R[static_cast<size_t>(g)]);
@@ -2382,13 +2390,26 @@ bool build_ba_input_from_store(
     ++tracks_sampled;
     for (const auto& c : selected_obs) {
       const double scale = (c.obs.scale > 1e-6f) ? static_cast<double>(c.obs.scale) : 1.0;
+      int observation_id = -1;
+      for (int obs_id : track_obs_ids) {
+        if (!store.is_obs_valid(obs_id))
+          continue;
+        if (store.obs_image_index(obs_id) == c.obs.image_index &&
+            store.obs_feature_id(obs_id) == c.obs.feature_id) {
+          observation_id = obs_id;
+          break;
+        }
+      }
       BAObservation bo;
       bo.image_index = c.ba_image_index;
       bo.point_index = pt_idx;
+      bo.observation_id = observation_id;
       bo.u = static_cast<double>(c.obs.u);
       bo.v = static_cast<double>(c.obs.v);
       bo.std_sigma_obs_px = scale;
       ba.observations.push_back(bo);
+      if (observation_id_out)
+        observation_id_out->push_back(observation_id);
     }
   }
 
@@ -4022,21 +4043,18 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
   }
 
   // ── Fix C: BA input cache ─────────────────────────────────────────────────────────────────────
-  // Between fine rounds that reject < 0.5% of observations the observation set barely changes.
-  // Skipping build_ba_input_from_store (O(N_tracks), ~33 s at 3000 images) and updating only
-  // poses/XYZ in the cached BAInput saves most of this cost.
+  // When the observation graph is unchanged, skip build_ba_input_from_store (O(N_tracks), ~33 s
+  // at 3000 images) and update only poses/XYZ in the cached BAInput. After deletions, compact the
+  // affected cached observations/points instead of rebuilding the full graph.
   //
   // Cache layout: BAInput + index mappings from the most recent full rebuild.
-  // Invalidated when: (a) gba_cache.valid == false (first call)
-  //                   (b) rejection_rate > 0.5%  (significant obs deleted → rebuild)
-  //                   (c) force_rebuild == true   (error-recovery paths after angle rejection)
-  //
-  // Stale observations (deleted but still in cache) represent < 0.5% of total.
-  // Ceres Huber loss (δ ≈ 4 px) down-weights high-error residuals so the impact is negligible.
+  // The cache stores TrackStore observation IDs so deleted observations and invalidated tracks
+  // can be compacted in-place before the next BA solve.
   struct GlobalBACache {
     BAInput ba_in;
     std::vector<int> ba_image_index_to_global;
     std::vector<int> point_index_to_track_id;
+    std::vector<int> observation_id;
     int n_skipped_2deg = 0;
     int n_skipped_grid = 0;
     bool valid = false;
@@ -4053,9 +4071,82 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
     return 0.0;
   }();
 
-  // O(1): use the incrementally-maintained counter instead of scanning all observations.
-  int total_obs_before = store->num_valid_observations();
+  // Keep the store-wide count for the retry threshold below.  Cache invalidation must use
+  // the number of observations in the current BA input, not this larger store-wide count:
+  // the cache only contains a sampled subset of the TrackStore observations.
+  const int total_valid_obs_before = store->num_valid_observations();
   int last_rejected_count = 0; // updated after each fine round's outlier rejection
+
+  // Synchronize the changed part of a cached BA graph after outlier rejection. This is
+  // O(num_cached_points + num_cached_observations), instead of rebuilding from the full store.
+  const auto sync_cached_ba_graph = [&]() -> bool {
+    if (!gba_cache.valid ||
+        gba_cache.observation_id.size() != gba_cache.ba_in.observations.size())
+      return false;
+
+    const size_t n_old_points = gba_cache.point_index_to_track_id.size();
+    std::vector<int> old_to_new(n_old_points, -1);
+    std::vector<int> new_point_to_track_id;
+    std::vector<Eigen::Vector3d> new_points;
+    new_point_to_track_id.reserve(n_old_points);
+    new_points.reserve(n_old_points);
+    for (size_t old_pi = 0; old_pi < n_old_points; ++old_pi) {
+      const int tid = gba_cache.point_index_to_track_id[old_pi];
+      if (tid < 0 || !store->is_track_valid(tid) || !store->track_has_triangulated_xyz(tid))
+        continue;
+      float x, y, z;
+      store->get_track_xyz(tid, &x, &y, &z);
+      old_to_new[old_pi] = static_cast<int>(new_points.size());
+      new_point_to_track_id.push_back(tid);
+      new_points.emplace_back(static_cast<double>(x), static_cast<double>(y),
+                              static_cast<double>(z));
+    }
+
+    std::vector<BAObservation> new_observations;
+    std::vector<int> new_observation_ids;
+    new_observations.reserve(gba_cache.ba_in.observations.size());
+    new_observation_ids.reserve(gba_cache.observation_id.size());
+    for (size_t oi = 0; oi < gba_cache.ba_in.observations.size(); ++oi) {
+      const BAObservation& old_obs = gba_cache.ba_in.observations[oi];
+      const int old_pi = old_obs.point_index;
+      if (old_pi < 0 || static_cast<size_t>(old_pi) >= old_to_new.size())
+        continue;
+      const int new_pi = old_to_new[static_cast<size_t>(old_pi)];
+      const int obs_id = gba_cache.observation_id[oi];
+      if (new_pi < 0 || obs_id < 0 || !store->is_obs_valid(obs_id))
+        continue;
+      if (store->obs_track_id(obs_id) !=
+          gba_cache.point_index_to_track_id[static_cast<size_t>(old_pi)])
+        continue;
+
+      const int ba_im = old_obs.image_index;
+      if (ba_im < 0 || static_cast<size_t>(ba_im) >= gba_cache.ba_image_index_to_global.size())
+        continue;
+      Observation current_obs;
+      store->get_obs(obs_id, &current_obs);
+      if (static_cast<int>(current_obs.image_index) !=
+          gba_cache.ba_image_index_to_global[static_cast<size_t>(ba_im)])
+        continue;
+
+      BAObservation updated = old_obs;
+      updated.point_index = new_pi;
+      updated.u = static_cast<double>(current_obs.u);
+      updated.v = static_cast<double>(current_obs.v);
+      updated.std_sigma_obs_px =
+          (current_obs.scale > 1e-6f) ? static_cast<double>(current_obs.scale) : 1.0;
+      new_observations.push_back(updated);
+      new_observation_ids.push_back(obs_id);
+    }
+    if (new_point_to_track_id.empty() || new_observations.empty())
+      return false;
+
+    gba_cache.point_index_to_track_id.swap(new_point_to_track_id);
+    gba_cache.ba_in.points3d.swap(new_points);
+    gba_cache.ba_in.observations.swap(new_observations);
+    gba_cache.observation_id.swap(new_observation_ids);
+    gba_cache.ba_in.fix_point.assign(gba_cache.ba_in.points3d.size(), false);
+    return true;
+  };
 
   // run_one_ba: build (or incrementally update) BA input, apply options, run Ceres, write back.
   // force_rebuild=true must be used whenever the observation set may have changed significantly
@@ -4065,10 +4156,20 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
     ++n_ba_calls;
 
     // Decide rebuild vs. incremental-update.
-    const float rej_rate = (total_obs_before > 0) ? static_cast<float>(last_rejected_count) /
-                                                        static_cast<float>(total_obs_before)
-                                                  : 1.0f;
-    const bool do_rebuild = force_rebuild || !gba_cache.valid || rej_rate > 0.005f;
+    const int cache_obs_before = gba_cache.valid
+                                     ? static_cast<int>(gba_cache.ba_in.observations.size())
+                                     : 0;
+    const float rej_rate =
+        (cache_obs_before > 0)
+            ? static_cast<float>(last_rejected_count) / static_cast<float>(cache_obs_before)
+            : 1.0f;
+    bool do_rebuild = force_rebuild || !gba_cache.valid;
+    if (!do_rebuild && last_rejected_count > 0) {
+      // Prefer compacting the cached graph. If the cache cannot be synchronized safely,
+      // fall back to a full rebuild for this round.
+      do_rebuild = !sync_cached_ba_graph();
+      last_rejected_count = 0;
+    }
 
     if (do_rebuild) {
       const auto t_build0 = Clock::now();
@@ -4076,6 +4177,7 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
       gba_cache.ba_in.cameras = *cameras;
       gba_cache.ba_image_index_to_global.clear();
       gba_cache.point_index_to_track_id.clear();
+      gba_cache.observation_id.clear();
       gba_cache.n_skipped_2deg = 0;
       gba_cache.n_skipped_grid = 0;
       if (!build_ba_input_from_store(*store, *poses_R, *poses_C, registered, image_to_camera_index,
@@ -4084,11 +4186,13 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
                                      p_image_stable_2deg,
                                      opts.global_ba.skip_2degree_min_angle_score,
                                      opts.global_ba.max_observations_per_track,
-                                     &gba_cache.n_skipped_2deg, &gba_cache.n_skipped_grid)) {
+                                     &gba_cache.n_skipped_2deg, &gba_cache.n_skipped_grid,
+                                     &gba_cache.observation_id)) {
         CHECK(false) << "Failed to build BA input from store";
         return false;
       }
       gba_cache.valid = true;
+      last_rejected_count = 0;
       const int ms_build = static_cast<int>(
           std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_build0).count());
       LOG(INFO) << "run_global_ba(rebuild): " << gba_cache.ba_in.poses_R.size() << " images, "
@@ -4098,7 +4202,7 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
                 << "ms  rej_rate=" << (rej_rate * 100.0f) << "%";
     } else {
       // Incremental update: re-read poses and XYZ from current state.
-      // Observation list stays unchanged (stale < 0.5% are down-weighted by Huber loss).
+      // The observation list was synchronized above when the previous round rejected data.
       for (size_t bi = 0; bi < gba_cache.ba_image_index_to_global.size(); ++bi) {
         const int g = gba_cache.ba_image_index_to_global[bi];
         if (g >= 0 && g < static_cast<int>(poses_R->size())) {
@@ -4417,7 +4521,8 @@ bool run_ba_with_outlier_detection(TrackStore* store, std::vector<Eigen::Matrix3
     // 3000 imgs (10.5M obs): max(100, 2100) = 2100 → ~2-3 fewer rounds per global BA call.
     last_rejected_count = rejected;
     const int dynamic_min_for_retry =
-        std::max(opts.outlier.min_for_retry, static_cast<int>(total_obs_before * 0.0002));
+        std::max(opts.outlier.min_for_retry,
+                 static_cast<int>(total_valid_obs_before * 0.0002));
     if (rejected < std::max(1, dynamic_min_for_retry))
       break;
   }
@@ -4546,6 +4651,16 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
   set_resection_backend(opts.resection.backend);
   LOG(INFO) << "run_incremental_sfm_pipeline: resection_backend="
             << resection_backend_name(get_resection_backend());
+  LOG(INFO) << "run_incremental_sfm_pipeline: resection_gate min_inliers="
+            << opts.resection.min_inliers
+            << " min_ratio=" << opts.resection.min_inlier_ratio
+            << " ransac_max_error=" << opts.resection.ransac_max_error_px
+            << " max_pose_rmse=" << opts.resection.max_pose_rmse_px
+            << " adaptive=" << (opts.resection.enable_adaptive_acceptance ? 1 : 0)
+            << " adaptive_min_inliers=" << opts.resection.adaptive_min_inliers
+            << " adaptive_min_ratio=" << opts.resection.adaptive_min_inlier_ratio
+            << " adaptive_max_rmse=" << opts.resection.adaptive_max_rmse_px
+            << " max_trials=" << opts.resection.max_trials_before_accept;
   resection_init_gpu();
   if (resection_backend_uses_gpu(get_resection_backend())) {
     gpu_geo_set_solver(0); // use jacobian svd, resection slower but more robust
@@ -4782,7 +4897,11 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       double ratio = 0.0;
       Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
       Eigen::Vector3d t = Eigen::Vector3d::Zero();
+      std::vector<int> pnp_obs_ids;
+      std::vector<char> inlier_mask;
       bool preferred = false;
+      bool adaptive = false;
+      bool acceptable = false;
       double score = -1.0;
     };
     const int resection_minliers = opts.resection.min_inliers;
@@ -4814,8 +4933,10 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       tr.n_3d2d = cand.num_3d2d > 0 ? cand.num_3d2d : store_out->image_tri_count(im);
       auto t_resect_cand0 = Clock::now();
       const bool ok = resection_single_image(
-          K, *store_out, im, &tr.R, &tr.t, resection_minliers, /*ransac_thresh_px=*/4.0,
-          &tr.inliers, &tr.rmse_px, resection_min_inlier_ratio, /*commit_outliers=*/false);
+          K, *store_out, im, &tr.R, &tr.t, resection_minliers,
+          opts.resection.ransac_max_error_px,
+          &tr.inliers, &tr.rmse_px, /*min_inlier_ratio=*/0.0, /*commit_outliers=*/false,
+          &tr.pnp_obs_ids, &tr.inlier_mask);
       add_ms(&ms_resection, t_resect_cand0, Clock::now());
       if (!ok) {
         LOG(INFO) << "  resection image " << im << ": FAILED (trial, 3D-2D=" << tr.n_3d2d
@@ -4825,15 +4946,40 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
         continue;
       }
       tr.ratio =
-          tr.n_3d2d > 0 ? static_cast<double>(tr.inliers) / static_cast<double>(tr.n_3d2d) : 0.0;
+          !tr.pnp_obs_ids.empty()
+              ? static_cast<double>(tr.inliers) /
+                    static_cast<double>(tr.pnp_obs_ids.size())
+              : (tr.n_3d2d > 0
+                     ? static_cast<double>(tr.inliers) / static_cast<double>(tr.n_3d2d)
+                     : 0.0);
       tr.preferred = (tr.inliers >= opts.resection.preferred_min_inliers &&
                       tr.ratio >= opts.resection.preferred_min_inlier_ratio);
-      // Higher ratio/inliers and lower RMSE wins.
-      tr.score = tr.ratio * std::log1p(static_cast<double>(tr.inliers)) /
+      const int grid_cells = resection_image_grid_coverage(*store_out, im, 4, 4);
+      const bool strict_ok =
+          tr.inliers >= resection_minliers && tr.ratio >= resection_min_inlier_ratio &&
+          tr.rmse_px <= opts.resection.max_pose_rmse_px;
+      tr.adaptive =
+          opts.resection.enable_adaptive_acceptance &&
+          tr.inliers >= std::max(resection_minliers, opts.resection.adaptive_min_inliers) &&
+          tr.ratio >= opts.resection.adaptive_min_inlier_ratio &&
+          tr.rmse_px <= opts.resection.adaptive_max_rmse_px &&
+          cand.coverage >= opts.resection.min_visibility_coverage &&
+          grid_cells >= opts.resection.adaptive_min_grid_cells;
+      tr.acceptable = strict_ok || tr.adaptive;
+      // Inlier count is the primary signal when overlap varies. Ratio and RMSE remain
+      // soft penalties, while the hard/adaptive checks above protect against weak poses.
+      const double ratio_factor =
+          0.5 + 0.5 * std::min(1.0, tr.ratio / std::max(0.01, resection_min_inlier_ratio));
+      const double coverage_factor = 0.5 + 0.5 * std::min(1.0, static_cast<double>(cand.coverage));
+      tr.score = static_cast<double>(tr.inliers) * ratio_factor * coverage_factor /
                  (1.0 + tr.rmse_px / 4.0);
       LOG(INFO) << "  resection image " << im << ": TRIAL-OK (3D-2D=" << tr.n_3d2d
                 << ", inliers=" << tr.inliers << ", ratio=" << tr.ratio << ", rmse=" << tr.rmse_px
-                << ", score=" << tr.score << (tr.preferred ? ", preferred" : "") << ")";
+                << ", grid=" << grid_cells << ", coverage=" << cand.coverage
+                << ", score=" << tr.score
+                << (tr.preferred ? ", preferred" : "")
+                << (tr.adaptive ? ", adaptive" : "")
+                << (tr.acceptable ? ", acceptable" : ", rejected") << ")";
       trials.push_back(std::move(tr));
     }
 
@@ -4845,6 +4991,8 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       double best_any_score = -1.0;
       for (int i = 0; i < static_cast<int>(trials.size()); ++i) {
         const auto& tr = trials[static_cast<size_t>(i)];
+        if (!tr.acceptable)
+          continue;
         if (tr.preferred && tr.score > best_pref_score) {
           best_pref_score = tr.score;
           best_pref = i;
@@ -4861,11 +5009,36 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
       const ResectionTrial& best = trials[static_cast<size_t>(best_idx)];
       registered_images_buf.clear();
       auto t_resect_commit0 = Clock::now();
-      // Commit winner: re-run with outlier writeback + pose registration.
-      const int n = run_batch_resection(
-          *store_out, {best.image_index}, *cameras, image_to_camera_index, poses_R_out, poses_C_out,
-          registered_out, resection_minliers, &registered_images_buf, resection_min_inlier_ratio,
-          opts.resection.post_resection_reproj_thresh_px);
+      // Commit the exact dry-run pose and inlier mask. Re-running randomized PnP here could
+      // select a different hypothesis than the one that was scored.
+      const int best_im = best.image_index;
+      const int best_cam_idx = image_to_camera_index[static_cast<size_t>(best_im)];
+      const camera::Intrinsics& best_K = (*cameras)[static_cast<size_t>(best_cam_idx)];
+      const bool committed =
+          commit_resection_result(*store_out, best.pnp_obs_ids, best.inlier_mask);
+      int n = 0;
+      if (committed) {
+        const Eigen::Vector3d C = -best.R.transpose() * best.t;
+        if (opts.resection.post_resection_reproj_thresh_px > 0.0) {
+          const int n_pr = prune_resection_observations_reprojection(
+              store_out, best_im, best.R, C, best_K,
+              opts.resection.post_resection_reproj_thresh_px);
+          if (n_pr > 0)
+            VLOG(1) << "  post_resection_reproj: image " << best_im << " pruned " << n_pr
+                    << " obs (thr=" << opts.resection.post_resection_reproj_thresh_px << " px)";
+        }
+        if (static_cast<size_t>(best_im) >= poses_R_out->size())
+          poses_R_out->resize(static_cast<size_t>(best_im) + 1);
+        if (static_cast<size_t>(best_im) >= poses_C_out->size())
+          poses_C_out->resize(static_cast<size_t>(best_im) + 1);
+        if (static_cast<size_t>(best_im) >= registered_out->size())
+          registered_out->resize(static_cast<size_t>(best_im) + 1);
+        (*poses_R_out)[static_cast<size_t>(best_im)] = best.R;
+        (*poses_C_out)[static_cast<size_t>(best_im)] = C;
+        (*registered_out)[static_cast<size_t>(best_im)] = true;
+        registered_images_buf.push_back(best_im);
+        n = 1;
+      }
       add_ms(&ms_resection, t_resect_commit0, Clock::now());
       LOG(INFO) << "  [resection] picked im=" << best.image_index << " among " << trials.size()
                 << "/" << max_trials << " trials (inliers=" << best.inliers

@@ -196,6 +196,13 @@ struct ResectionOptions {
   int min_3d2d_count = 30; ///< Min 3D-2D correspondences to list a candidate.
   /// Hard gate: min PnP inlier ratio (inliers / total 3D-2D correspondences).
   double min_inlier_ratio = 0.10;
+  /// PnP hypothesis-discovery threshold, aligned with COLMAP's abs_pose_max_error.
+  /// This is intentionally looser than the final pose-quality checks below.
+  double ransac_max_error_px = 12.0;
+  /// Maximum refined pose RMSE for the normal (non-adaptive) acceptance path. This follows the
+  /// original resection stability rule max(6 px, 1.5 * ransac_max_error_px) = 18 px at the
+  /// current 12 px PnP discovery threshold. The post-resection 4 px cleanup remains independent.
+  double max_pose_rmse_px = 18.0;
   /// For large scenes, use a stricter inlier-ratio gate once enough cameras are registered.
   double min_inlier_ratio_large_scene = 0.15;
   int large_scene_min_images = 100;
@@ -205,9 +212,17 @@ struct ResectionOptions {
   double preferred_min_inlier_ratio = 0.20;
   /// Evaluate up to this many ranked candidates (dry-run) and accept the best, not the first OK.
   int max_trials_before_accept = 8;
-  /// Optional second pass after PnP inlier writeback: drop obs with reproj error > this (px). 0 =
-  /// off.
-  double post_resection_reproj_thresh_px = 0.0;
+  /// Enable a low-overlap acceptance path. A candidate must still have enough absolute
+  /// inliers, low RMSE, and reasonable image coverage; the ratio floor is only a fallback
+  /// for images whose valid overlap is much smaller than the full 3D-2D candidate set.
+  bool enable_adaptive_acceptance = true;
+  int adaptive_min_inliers = 50;
+  double adaptive_min_inlier_ratio = 0.04;
+  double adaptive_max_rmse_px = 3.0;
+  int adaptive_min_grid_cells = 3;
+  /// Second pass after PnP inlier writeback: drop observations with reprojection error above
+  /// this threshold (px). This mirrors COLMAP's filter_max_reproj_error.
+  double post_resection_reproj_thresh_px = 4.0;
   /// First-sort tier: prefer candidates with normalized VisibilityPyramid coverage ≥ this (see
   /// COLMAP scene/visibility_pyramid). Typical range 0.01–0.05; legacy 3×3 bbox metric used ~0.33.
   float min_visibility_coverage = 0.02f;

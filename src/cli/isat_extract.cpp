@@ -199,6 +199,10 @@ int main(int argc, char* argv[]) {
   cmd.add(make_switch(0, "nms").doc("[SIFT] Enable non-maximum suppression"));
   cmd.add(
       make_option(0, nms_radius, "nms-radius").doc("[SIFT] NMS radius in pixels (default: 3.0)"));
+  int nms_max_per_cell = 4;
+  cmd.add(make_option(0, nms_max_per_cell, "nms-max-per-cell")
+              .doc("[SIFT] Maximum base features per grid cell (default: 4; "
+                   "orientation-preserving mode may keep up to 2x)"));
   cmd.add(make_switch(0, "nms-no-orient")
               .doc("[SIFT] NMS ignores orientation (removes multi-orientation)"));
   cmd.add(
@@ -237,6 +241,11 @@ int main(int argc, char* argv[]) {
   }
   if (io_threads < 1) {
     std::cerr << "Error: -j/--threads must be >= 1\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (nms_max_per_cell < 1) {
+    std::cerr << "--nms-max-per-cell must be >= 1\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -317,6 +326,8 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
   if (enable_nms) {
     LOG(INFO) << "    NMS radius: " << nms_radius;
+    LOG(INFO) << "    NMS max per cell: " << nms_max_per_cell
+              << " (orientation mode effective cap up to " << 2 * nms_max_per_cell << ")";
     LOG(INFO) << "    Keep orientations: " << (nms_keep_orientation ? "yes" : "no");
   }
 
@@ -523,8 +534,9 @@ int main(int argc, char* argv[]) {
     // Stage 3: CPU post-processing (normalization, distribution, uint8 conversion)
     Stage postProcessStage(
         "PostProcess", io_threads, IO_QUEUE_SIZE,
-        [&image_tasks, use_uint8, enable_nms, normalization, nms_radius, nms_keep_orientation,
-         process_matching, process_retrieval](int index) {
+        [&image_tasks, use_uint8, enable_nms, normalization, nms_radius, nms_max_per_cell,
+         nms_keep_orientation, nfeatures, nfeatures_retrieval, process_matching,
+         process_retrieval](int index) {
           auto& task = image_tasks[index];
 
           // Process matching features
@@ -540,8 +552,8 @@ int main(int argc, char* argv[]) {
               insight::modules::apply_feature_distribution(
                   task.keypoints, task.descriptors, task.image_cols, task.image_rows,
                   static_cast<int>(nms_radius * 10), // Grid size ~10x radius
-                  2,                                 // Max 2 features per cell
-                  nms_keep_orientation, &task.colors);
+                  nms_max_per_cell,                   // Adaptive spatial capacity
+                  nms_keep_orientation, &task.colors, nfeatures);
             }
 
             // Step 3: Convert to uint8 if needed (CPU)
@@ -566,8 +578,9 @@ int main(int argc, char* argv[]) {
             if (enable_nms) {
               insight::modules::apply_feature_distribution(
                   task.keypoints_retrieval, task.descriptors_retrieval, task.image_retrieval_cols,
-                  task.image_retrieval_rows, static_cast<int>(nms_radius * 10), 2,
-                  nms_keep_orientation, &task.colors_retrieval);
+                  task.image_retrieval_rows, static_cast<int>(nms_radius * 10),
+                  nms_max_per_cell, nms_keep_orientation, &task.colors_retrieval,
+                  nfeatures_retrieval);
             }
 
             // Step 3: Convert to uint8 if needed (CPU)
@@ -584,8 +597,9 @@ int main(int argc, char* argv[]) {
     Stage writeStage(
         "WriteIDC", io_threads, IO_QUEUE_SIZE,
         [&output_dir, &output_retrieval_dir, &image_tasks, use_uint8, enable_nms, normalization,
-         nms_radius, nms_keep_orientation, &sift_params, &sift_params_retrieval, process_matching,
-         process_retrieval, use_pop_sift, store_colors, total_images](int index) {
+         nms_radius, nms_max_per_cell, nms_keep_orientation, &sift_params, &sift_params_retrieval,
+         process_matching, process_retrieval, use_pop_sift, store_colors,
+         total_images](int index) {
           auto& task = image_tasks[index];
 
           // Use image_index for output filename: {image_index}.isat_feat
@@ -618,6 +632,7 @@ int main(int argc, char* argv[]) {
             params_json["extractor_impl"] = use_pop_sift ? "popsift" : "sift_gpu";
             if (enable_nms) {
               params_json["nms_radius"] = nms_radius;
+              params_json["nms_max_per_cell"] = nms_max_per_cell;
               params_json["nms_keep_orientation"] = nms_keep_orientation;
             }
 
