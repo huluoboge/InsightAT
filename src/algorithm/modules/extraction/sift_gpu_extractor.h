@@ -31,7 +31,7 @@ enum class DescriptorNormalization {
 /** SIFT GPU 参数（仅提取）。 */
 struct SiftGPUParams {
   int n_octave_from = -1;     ///< 起始 octave（SiftGPU -fo；-1≈上采样一级
-  int n_octaves = -1;         ///< octave 数（-1 自动）
+  int n_octaves = 4;          ///< octave 数（COLMAP 对齐）
   int n_level = 3;            ///< 每 octave 层数
   double d_peak = 0.02;       ///< 峰值阈值（会除以 n_level）
   int n_max_features = 10000;  ///< 最大特征数

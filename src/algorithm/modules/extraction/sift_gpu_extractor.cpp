@@ -388,6 +388,7 @@ bool SiftGPUExtractor::initialize_popsift(const SiftGPUParams& param) {
     // Effective DoG threshold = d_peak * 0.5 * 255 / levels — intentionally lower than
     // SiftGPU's d_peak/n_level * 255 to yield more raw candidates before grid filtering.
     ps_config.setThreshold(static_cast<float>(param.d_peak));
+    ps_config.setOctaves(param.n_octaves);
     ps_config.setLevels(param.n_level);
     ps_config.setEdgeLimit(10.0f);
     ps_config.setFilterMaxExtrema(param.n_max_features);
