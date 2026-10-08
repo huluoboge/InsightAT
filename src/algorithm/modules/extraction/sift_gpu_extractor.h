@@ -93,13 +93,15 @@ void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<float>& descriptors, int image_width, int image_height,
                                 int grid_size = 32, int max_per_cell = 2,
                                 bool keep_orientation = true,
-                                std::vector<uint8_t>* colors = nullptr);
+                                std::vector<uint8_t>* colors = nullptr,
+                                int max_total_features = 0);
 
 void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<unsigned char>& descriptors, int image_width,
                                 int image_height, int grid_size = 32, int max_per_cell = 2,
                                 bool keep_orientation = true,
-                                std::vector<uint8_t>* colors = nullptr);
+                                std::vector<uint8_t>* colors = nullptr,
+                                int max_total_features = 0);
 
 /**
  * Sample per-keypoint RGB (uint8) from a BGR/BGRA image at keypoint locations.

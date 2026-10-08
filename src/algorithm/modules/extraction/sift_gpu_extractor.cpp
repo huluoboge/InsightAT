@@ -615,7 +615,7 @@ sample_keypoint_colors_bgr_to_rgb(const cv::Mat& image,
 void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<float>& descriptors, int image_width, int image_height,
                                 int grid_size, int max_per_cell, bool keep_orientation,
-                                std::vector<uint8_t>* colors) {
+                                std::vector<uint8_t>* colors, int max_total_features) {
 
   if (keypoints.empty())
     return;
@@ -623,12 +623,14 @@ void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
   GridDistributionParams params;
   params.grid_size = grid_size;
   params.max_per_cell = max_per_cell;
+  params.max_total_features = max_total_features;
   params.keep_orientation = keep_orientation;
 
   auto kept_indices = distribute_keypoints_grid(keypoints, image_width, image_height, params);
 
   LOG(INFO) << "Grid distribution: kept " << kept_indices.size() << "/" << keypoints.size()
-            << " features (grid=" << grid_size << "px, max_per_cell=" << max_per_cell << ")";
+            << " features (grid=" << grid_size << "px, max_per_cell=" << max_per_cell
+            << ", max_total=" << max_total_features << ")";
 
   // Re-pack keypoints and descriptors
   std::vector<SiftGPU::SiftKeypoint> kpts_filtered;
@@ -655,7 +657,8 @@ void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
 void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
                                 std::vector<unsigned char>& descriptors, int image_width,
                                 int image_height, int grid_size, int max_per_cell,
-                                bool keep_orientation, std::vector<uint8_t>* colors) {
+                                bool keep_orientation, std::vector<uint8_t>* colors,
+                                int max_total_features) {
 
   if (keypoints.empty())
     return;
@@ -663,12 +666,14 @@ void apply_feature_distribution(std::vector<SiftGPU::SiftKeypoint>& keypoints,
   GridDistributionParams params;
   params.grid_size = grid_size;
   params.max_per_cell = max_per_cell;
+  params.max_total_features = max_total_features;
   params.keep_orientation = keep_orientation;
 
   auto kept_indices = distribute_keypoints_grid(keypoints, image_width, image_height, params);
 
   LOG(INFO) << "Grid distribution: kept " << kept_indices.size() << "/" << keypoints.size()
-            << " features (grid=" << grid_size << "px, max_per_cell=" << max_per_cell << ")";
+            << " features (grid=" << grid_size << "px, max_per_cell=" << max_per_cell
+            << ", max_total=" << max_total_features << ")";
 
   // Re-pack keypoints and descriptors
   std::vector<SiftGPU::SiftKeypoint> kpts_filtered;

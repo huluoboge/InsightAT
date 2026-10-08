@@ -618,7 +618,7 @@ int main(int argc, char* argv[]) {
   cmd.add(make_option(0, init_min_median_angle_deg, "init-min-median-angle-deg")
               .doc("Initial pair gate: minimum median triangulation angle in degrees (default: 30.0)."));
   cmd.add(make_option(0, resection_min_inliers, "resection-min-inliers")
-              .doc("Resection gate: minimum PnP RANSAC inliers to accept new image registration (default: 15)."));
+              .doc("Resection gate: minimum PnP RANSAC inliers to accept new image registration (default: 30)."));
   cmd.add(make_switch('v', "verbose").doc("Verbose (INFO)"));
   cmd.add(make_switch('q', "quiet").doc("Quiet (ERROR only)"));
   cmd.add(make_switch('h', "help").doc("Show help"));

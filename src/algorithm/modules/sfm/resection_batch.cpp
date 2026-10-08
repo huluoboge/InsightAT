@@ -127,8 +127,10 @@ std::vector<ResectionCandidate> choose_resection_candidates(
     if (registered[static_cast<size_t>(im)])
       ++n_registed;
   }
-  // cap candidates to 30% of registered views, but at least 2
-  int max_count = std::max<int>(2, static_cast<int>(n_registed * 0.3));
+  // Keep enough candidates for dry-run PnP scoring during the early phase. With only
+  // 9 registered images, the old 30%-of-registered cap tested just 2 images and could
+  // stop on a poor overlap choice even when other candidates were viable.
+  int max_count = std::max<int>(8, static_cast<int>(std::ceil(n_registed * 0.3)));
   max_candidates = std::min(max_candidates, max_count);
 
   if (score_cache && score_cache->last_obs_epoch == store.obs_epoch() &&
@@ -373,8 +375,9 @@ int run_batch_resection(TrackStore& store, const std::vector<int>& image_indices
     Eigen::Vector3d t;
     int inliers = 0;
     double rmse_px = 0.0;
-    const double ransac_thresh_px =
-        4.0; // tighter threshold since we have good initialization from tracks
+    // Match the COLMAP reference configuration's abs_pose_max_error.  Final
+    // reprojection filtering remains separate and can still be strict.
+    const double ransac_thresh_px = 12.0;
     if (!resection_single_image(K, store, im, &R, &t, min_inliers, ransac_thresh_px, &inliers,
                                 &rmse_px, min_inlier_ratio)) {
       LOG(INFO) << "  resection image " << im << ": FAILED (3D-2D=" << n_3d2d

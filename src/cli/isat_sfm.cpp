@@ -801,6 +801,7 @@ int main(int argc, char* argv[]) {
   // int image_max_dim = 6000;
   int image_max_dim = 3200;
   double sift_threshold = 0.0067;
+  int nms_max_per_cell = 4;
   bool exhaustive_match = false;
   /// When not using --exhaustive-match: if image count < this, skip retrieval and use full
   /// exhaustive pairs (same as manual exhaustive for small sets).
@@ -886,6 +887,9 @@ int main(int argc, char* argv[]) {
   cmd.add(make_switch(0, "no-grid")
               .doc("Feature extract: do not pass --nms to isat_extract (disable spatial grid on "
                    "matching + retrieval features; temporary A/B vs dense SIFT)"));
+  cmd.add(make_option(0, nms_max_per_cell, "nms-max-per-cell")
+              .doc("Feature extract: base features per NMS grid cell (default: 4; "
+                   "orientation-preserving mode may keep up to 2x)."));
     cmd.add(make_option(0, geo_min_inliers, "geo-min-inliers")
           .doc("Geometry min inliers: forwarded to isat_geo_cuda/isat_geo --min-inliers "
             "(default: 10). Stricter scenes: try 12–15."));
@@ -999,6 +1003,11 @@ int main(int argc, char* argv[]) {
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
+  if (nms_max_per_cell < 1) {
+    std::cerr << "Error: --nms-max-per-cell must be >= 1\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
   if (seed_eval_max_images < 2) {
     std::cerr << "Error: --seed-eval-max-images must be >= 2\n\n";
     cmd.printHelp(std::cerr, argv[0]);
@@ -1081,6 +1090,7 @@ int main(int argc, char* argv[]) {
             << (ba_threads > 0 ? "" : " (BA: auto)");
   LOG(INFO) << "SIFT image max dim: " << image_max_dim;
   LOG(INFO) << "SIFT threshold: " << sift_threshold;
+  LOG(INFO) << "NMS max per cell: " << nms_max_per_cell;
   LOG(INFO) << "SIFT extractor implementation: " << (use_pop_sift ? "popsift" : "sift_gpu");
   LOG(INFO) << "Match implementation: " << match_impl;
   LOG(INFO) << "Retrieval min output matches: " << retrieval_min_output_matches;
@@ -1319,6 +1329,10 @@ int main(int argc, char* argv[]) {
                                               std::to_string(io_threads)};
       if (!no_grid)
         extract_cmd.push_back("--nms");
+      if (!no_grid) {
+        extract_cmd.push_back("--nms-max-per-cell");
+        extract_cmd.push_back(std::to_string(nms_max_per_cell));
+      }
       if (use_pop_sift)
         extract_cmd.push_back("--use-pop-sift");
       else
@@ -1358,6 +1372,10 @@ int main(int argc, char* argv[]) {
                                               "--only-retrieval"};
       if (!no_grid)
         extract_cmd.push_back("--nms");
+      if (!no_grid) {
+        extract_cmd.push_back("--nms-max-per-cell");
+        extract_cmd.push_back(std::to_string(nms_max_per_cell));
+      }
       if (use_pop_sift)
         extract_cmd.push_back("--use-pop-sift");
       else
