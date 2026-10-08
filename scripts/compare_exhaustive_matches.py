@@ -17,6 +17,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -25,13 +26,15 @@ from pathlib import Path
 PAIRS = [(197, 200), (195, 197), (195, 198), (195, 199), (198, 199)]
 
 
-def run(cmd: list[str], log_path: Path) -> None:
+def run(cmd: list[str], log_path: Path) -> float:
     print("$", " ".join(cmd), flush=True)
+    start = time.perf_counter()
     with log_path.open("w", encoding="utf-8") as log:
         proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
     if proc.returncode != 0:
         print(f"command failed ({proc.returncode}), see {log_path}", file=sys.stderr)
         raise SystemExit(proc.returncode)
+    return time.perf_counter() - start
 
 
 def read_idc_header(path: Path) -> dict:
@@ -90,9 +93,17 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--backend",
-        choices=("siftgpu", "popsift", "both"),
+        choices=(
+            "siftgpu",
+            "popsift",
+            "cascade",
+            "cascade-relaxed",
+            "cascade-rescue",
+            "both",
+            "all",
+        ),
         default="both",
-        help="exhaustive matcher backend(s), default: both",
+        help="matcher(s) to compare; default: both exhaustive matchers",
     )
     args = parser.parse_args()
 
@@ -103,34 +114,75 @@ def main() -> None:
     pairs_json = out / "pairs.json"
     write_pairs(pairs_json)
 
-    backends = ("siftgpu", "popsift") if args.backend == "both" else (args.backend,)
+    if args.backend == "both":
+        backends = ("siftgpu", "popsift")
+    elif args.backend == "all":
+        backends = ("cascade", "cascade-relaxed", "cascade-rescue", "popsift")
+    else:
+        backends = (args.backend,)
     all_rows: list[dict] = []
+    elapsed = {}
     for backend in backends:
         match_dir = out / f"match_{backend}"
         geo_dir = out / f"geo_{backend}"
         match_dir.mkdir(parents=True, exist_ok=True)
         geo_dir.mkdir(parents=True, exist_ok=True)
 
-        match_cmd = [
-            str(build / "isat_match"),
-            "-i",
-            str(pairs_json),
-            "-f",
-            str(project / "feat"),
-            "-o",
-            str(match_dir),
-            "--max-features",
-            "-1",
-            "--ratio",
-            "0.8",
-            "--threads",
-            "5",
-            "--match-backend",
-            "cuda",
-            "--use-sift-gpu" if backend == "siftgpu" else "--use-pop-sift",
-            "-v",
-        ]
-        run(match_cmd, out / f"match_{backend}.log")
+        if backend in ("siftgpu", "popsift"):
+            match_cmd = [
+                str(build / "isat_match"),
+                "-i",
+                str(pairs_json),
+                "-f",
+                str(project / "feat"),
+                "-o",
+                str(match_dir),
+                "--max-features",
+                "-1",
+                "--ratio",
+                "0.8",
+                "--threads",
+                "5",
+                "--match-backend",
+                "cuda",
+                "--use-sift-gpu" if backend == "siftgpu" else "--use-pop-sift",
+                "-v",
+            ]
+        else:
+            match_cmd = [
+                str(build / "isat_gpu_cascade_hashing_match"),
+                "-i",
+                str(pairs_json),
+                "-f",
+                str(project / "feat"),
+                "-o",
+                str(match_dir),
+                "--min-output-matches",
+                "0",
+                "--threads",
+                "5",
+                "--bucket-groups",
+                "6",
+                "--bucket-bits",
+                "7" if backend == "cascade-relaxed" else "8",
+                "--candidate-top-max",
+                "12" if backend == "cascade-relaxed" else "10",
+                "--ratio",
+                "0.82" if backend == "cascade-relaxed" else "0.8",
+            ]
+            if backend == "cascade-rescue":
+                match_cmd += [
+                    "--rescue-min-matches",
+                    "128",
+                    "--rescue-bucket-bits",
+                    "7",
+                    "--rescue-candidate-top-max",
+                    "12",
+                    "--rescue-ratio",
+                    "0.82",
+                ]
+            match_cmd.append("-v")
+        elapsed[backend] = run(match_cmd, out / f"match_{backend}.log")
 
         geo_cmd = [
             str(build / "isat_geo_cuda"),
@@ -154,19 +206,22 @@ def main() -> None:
             "5",
             "-v",
         ]
-        run(geo_cmd, out / f"geo_{backend}.log")
+        elapsed[backend] += run(geo_cmd, out / f"geo_{backend}.log")
         all_rows.extend(collect_rows(match_dir, geo_dir, backend))
 
-    result = {"pairs": PAIRS, "results": all_rows}
+    result = {"pairs": PAIRS, "elapsed_seconds": elapsed, "results": all_rows}
     (out / "result.json").write_text(
         json.dumps(result, indent=2) + "\n", encoding="utf-8"
     )
-    print("\nbackend pair raw F E")
+    print("\nbackend          pair raw F E")
     for row in all_rows:
         print(
-            f"{row['backend']:8s} {row['pair']:7s} "
+            f"{row['backend']:16s} {row['pair']:7s} "
             f"{row['raw_matches']:3d} {row['F_inliers']:4d} {row['E_inliers']:4d}"
         )
+    print("\nelapsed seconds")
+    for backend, seconds in elapsed.items():
+        print(f"{backend:16s} {seconds:.3f}")
     print(f"\nWrote {out / 'result.json'}")
 
 

@@ -538,6 +538,14 @@ int main(int argc, char* argv[]) {
   int sample_images = 256;
   int image_block_size = 1000;  // max images held simultaneously in GPU (= 2*B for inter-block)
   int min_output_matches = 16;
+  int bucket_groups = 6;
+  int bucket_bits = 8;
+  int candidate_top_max = 10;
+  float ratio_test = 0.8f;
+  int rescue_min_matches = 0;
+  int rescue_bucket_bits = 7;
+  int rescue_candidate_top_max = 12;
+  float rescue_ratio_test = 0.82f;
   int cuda_device = 0;
   std::string log_level;
 
@@ -554,6 +562,23 @@ int main(int argc, char* argv[]) {
                    "VRAM-adaptive sizing is applied automatically (default: 1000)"));
   cmd.add(make_option(0, min_output_matches, "min-output-matches")
               .doc("Skip writing pair if matches below this threshold (default: 16)"));
+  cmd.add(make_option(0, bucket_groups, "bucket-groups")
+              .doc("Cascade hash bucket groups (default: 6)"));
+  cmd.add(make_option(0, bucket_bits, "bucket-bits")
+              .doc("Cascade hash bits per bucket (default: 8)"));
+  cmd.add(make_option(0, candidate_top_max, "candidate-top-max")
+              .doc("Maximum hash candidates per query (1..12, default: 10)"));
+  cmd.add(make_option(0, ratio_test, "ratio")
+              .doc("Descriptor ratio test threshold (default: 0.8)"));
+  cmd.add(make_option(0, rescue_min_matches, "rescue-min-matches")
+              .doc("Run a relaxed Cascade pass for pairs below this match count; 0 disables "
+                   "rescue (default: 0)"));
+  cmd.add(make_option(0, rescue_bucket_bits, "rescue-bucket-bits")
+              .doc("Bucket bits for the relaxed rescue pass (default: 7)"));
+  cmd.add(make_option(0, rescue_candidate_top_max, "rescue-candidate-top-max")
+              .doc("Candidate cap for the relaxed rescue pass (1..12, default: 12)"));
+  cmd.add(make_option(0, rescue_ratio_test, "rescue-ratio")
+              .doc("Ratio threshold for the relaxed rescue pass (default: 0.82)"));
   cmd.add(make_option(0, cuda_device, "cuda-device").doc("CUDA device id (default: 0)"));
   cmd.add(make_option(0, log_level, "log-level").doc("Log level: error|warn|info|debug"));
   cmd.add(make_switch('v', "verbose").doc("Verbose logging (INFO level)"));
@@ -581,6 +606,16 @@ int main(int argc, char* argv[]) {
     std::cerr << "Error: --threads and --image-block-size must be > 0\n";
     return 1;
   }
+  if (bucket_groups <= 0 || bucket_bits <= 0 || bucket_bits > 16 ||
+      candidate_top_max <= 0 || candidate_top_max > 12 || ratio_test <= 0.0f ||
+      ratio_test > 1.0f || rescue_min_matches < 0 || rescue_bucket_bits <= 0 ||
+      rescue_bucket_bits > 16 || rescue_candidate_top_max <= 0 ||
+      rescue_candidate_top_max > 12 || rescue_ratio_test <= 0.0f ||
+      rescue_ratio_test > 1.0f) {
+    std::cerr << "Error: invalid Cascade hash/ratio option; bucket-bits must be 1..16, "
+                 "candidate-top-max must be 1..12, and ratios must be in (0,1]\n";
+    return 1;
+  }
   insight::tools::apply_log_level(cmd.used('v'), cmd.used('q'), log_level);
 
   // ── Load pair list ────────────────────────────────────────────────────────
@@ -592,6 +627,14 @@ int main(int argc, char* argv[]) {
   }
   fs::create_directories(output_dir);
   LOG(INFO) << "Total pairs: " << total_pairs;
+  LOG(INFO) << "Cascade config: groups=" << bucket_groups
+            << " bucket_bits=" << bucket_bits
+            << " candidate_top_max=" << candidate_top_max
+            << " ratio=" << ratio_test
+            << " rescue_min_matches=" << rescue_min_matches
+            << " rescue(bucket_bits=" << rescue_bucket_bits
+            << ", candidate_top_max=" << rescue_candidate_top_max
+            << ", ratio=" << rescue_ratio_test << ")";
 
   // ── Compute global mean descriptor ────────────────────────────────────────
   std::vector<std::string> sample_files;
@@ -613,8 +656,17 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Mean descriptor built from " << sample_files.size() << " sample images"
             << " (avg_features=" << static_cast<int>(avg_features_per_image) << ")";
 
-  // Build CPU hash model (shared across all jobs, read-only after this point).
   CascadeHashOptions hash_options;
+  hash_options.bucket_groups = bucket_groups;
+  hash_options.bucket_bits = bucket_bits;
+  hash_options.candidate_top_max = candidate_top_max;
+  hash_options.ratio_test = ratio_test;
+  CascadeHashOptions rescue_hash_options = hash_options;
+  rescue_hash_options.bucket_bits = rescue_bucket_bits;
+  rescue_hash_options.candidate_top_max = rescue_candidate_top_max;
+  rescue_hash_options.ratio_test = rescue_ratio_test;
+
+  // Build CPU hash model (shared across all jobs, read-only after this point).
   const CascadeHashSampleModel hash_model =
       insight::algorithm::cpu_cascade_hash::build_sample_model_from_mean_descriptor(
           mean_descriptor, hash_options);
@@ -681,25 +733,10 @@ int main(int argc, char* argv[]) {
   // Bounded queue capacity 2: GpuStage accepts at most 2 pre-loaded jobs.
   StageCurrent gpu_stage(
       "GpuMatchStage", 1, 2,
-      [&block_jobs, &pair_tasks, &mean_descriptor, cuda_device, &jobs_done,
-       total_jobs, &t_pipeline_start](int job_idx) {
+      [&block_jobs, &pair_tasks, &mean_descriptor, hash_options, rescue_hash_options,
+       rescue_min_matches, cuda_device, &jobs_done, total_jobs, &t_pipeline_start](int job_idx) {
         auto& job = block_jobs[static_cast<size_t>(job_idx)];
         const auto t0 = std::chrono::high_resolution_clock::now();
-
-        // Create a fresh matcher for this job.
-        GpuCascadeHashOptions gpu_options;
-        gpu_options.mean_descriptor = mean_descriptor;
-        gpu_options.cuda_device_id = cuda_device;
-        GpuCascadeHashBlockMatcher matcher(gpu_options);
-
-        // Upload both block's features to GPU.
-        for (auto& li : job.loaded_a)
-          if (li.valid)
-            matcher.add_image_with_index(li.image_index, &li.features, &li.hash_index);
-        for (auto& li : job.loaded_b)
-          if (li.valid)
-            matcher.add_image_with_index(li.image_index, &li.features, &li.hash_index);
-        matcher.finalize();
 
         // Build pair list for this job and run batch GPU matching.
         std::vector<std::pair<uint32_t, uint32_t>> gpu_pairs;
@@ -707,7 +744,66 @@ int main(int argc, char* argv[]) {
         for (int pi : job.pair_indices)
           gpu_pairs.push_back({pair_tasks[static_cast<size_t>(pi)].image1_index,
                                pair_tasks[static_cast<size_t>(pi)].image2_index});
-        job.results = matcher.match_pairs(gpu_pairs);
+        {
+          // Keep the primary matcher in a scope so its device allocations are
+          // released before an optional rescue matcher is created.
+          GpuCascadeHashOptions gpu_options;
+          gpu_options.mean_descriptor = mean_descriptor;
+          gpu_options.cuda_device_id = cuda_device;
+          gpu_options.hash_options = hash_options;
+          GpuCascadeHashBlockMatcher matcher(gpu_options);
+          for (auto& li : job.loaded_a)
+            if (li.valid)
+              matcher.add_image_with_index(li.image_index, &li.features, &li.hash_index);
+          for (auto& li : job.loaded_b)
+            if (li.valid)
+              matcher.add_image_with_index(li.image_index, &li.features, &li.hash_index);
+          matcher.finalize();
+          job.results = matcher.match_pairs(gpu_pairs);
+        }
+
+        // Weak pairs get a second, still-hashed pass. This preserves the
+        // fast path for strong pairs while allowing a wider bucket/candidate
+        // configuration to recover descriptors missed by the first hash
+        // shortlist. The rescue matcher owns its own hash index because the
+        // bucket layout may differ from the primary pass.
+        if (rescue_min_matches > 0) {
+          std::vector<int> rescue_slots;
+          std::vector<std::pair<uint32_t, uint32_t>> rescue_pairs;
+          for (size_t k = 0; k < job.results.size() && k < gpu_pairs.size(); ++k) {
+            if (static_cast<int>(job.results[k].num_matches) < rescue_min_matches) {
+              rescue_slots.push_back(static_cast<int>(k));
+              rescue_pairs.push_back(gpu_pairs[k]);
+            }
+          }
+          if (!rescue_pairs.empty()) {
+            GpuCascadeHashOptions rescue_gpu_options;
+            rescue_gpu_options.mean_descriptor = mean_descriptor;
+            rescue_gpu_options.cuda_device_id = cuda_device;
+            rescue_gpu_options.hash_options = rescue_hash_options;
+            GpuCascadeHashBlockMatcher rescue_matcher(rescue_gpu_options);
+            for (auto& li : job.loaded_a)
+              if (li.valid) rescue_matcher.add_image(li.image_index, &li.features);
+            for (auto& li : job.loaded_b)
+              if (li.valid) rescue_matcher.add_image(li.image_index, &li.features);
+            rescue_matcher.finalize();
+            const auto rescued = rescue_matcher.match_pairs(rescue_pairs);
+            int replaced = 0;
+            for (size_t r = 0; r < rescued.size() && r < rescue_slots.size(); ++r) {
+              const int slot = rescue_slots[r];
+              if (rescued[r].num_matches > job.results[static_cast<size_t>(slot)].num_matches) {
+                job.results[static_cast<size_t>(slot)] = rescued[r];
+                ++replaced;
+              }
+            }
+            if (replaced > 0) {
+              VLOG(1) << "Cascade rescue: job=" << job_idx
+                      << " weak_pairs=" << rescue_pairs.size()
+                      << " replaced=" << replaced;
+            }
+          }
+        }
+
         job.result_scales.clear();
         job.result_scales.reserve(job.results.size());
         std::unordered_map<uint32_t, const FeatureData*> image_features;

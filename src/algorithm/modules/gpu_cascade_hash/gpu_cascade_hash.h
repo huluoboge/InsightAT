@@ -14,6 +14,10 @@ namespace gpu_cascade_hash {
 struct GpuCascadeHashOptions {
   std::vector<float> mean_descriptor;  // length 128
   int cuda_device_id = 0;
+  // Matching/hash controls. Keep the defaults bit-compatible with the
+  // original GPU cascade path; callers can use a relaxed configuration for
+  // a small rescue pass on weak pairs.
+  cpu_cascade_hash::CascadeHashOptions hash_options;
 };
 
 class GpuCascadeHashBlockMatcher {

@@ -150,6 +150,7 @@ int main(int argc, char* argv[]) {
   int image_max_dim = 6000;
   std::string normalization = "l1root";
   float nms_radius = 3.0f;
+  constexpr int kExperimentalGridSizePx = 30;
   int io_threads = 4; ///< Load / post-process / write stages (GPU stage stays single-threaded).
 
   // ================================================================
@@ -288,7 +289,9 @@ int main(int argc, char* argv[]) {
   sift_params.n_max_features = nfeatures;
   sift_params.d_peak = threshold;
   sift_params.n_octaves = octaves;
-  sift_params.n_octave_from = 0;
+  // Match COLMAP's SiftExtraction.first_octave=-1. For SiftGPU this is
+  // passed as -fo -1; PopSift receives the equivalent input scale below.
+  sift_params.n_octave_from = -1;
   sift_params.n_level = levels;
   sift_params.adapt_darkness = adapt_darkness;
   sift_params.use_cuda = use_cuda_extract;
@@ -304,6 +307,7 @@ int main(int argc, char* argv[]) {
   sift_params_retrieval.n_max_features = nfeatures_retrieval;
   sift_params_retrieval.d_peak = threshold;
   sift_params_retrieval.n_octaves = octaves;
+  sift_params_retrieval.n_octave_from = -1;
   sift_params_retrieval.n_level = levels;
   sift_params_retrieval.adapt_darkness = adapt_darkness;
   sift_params_retrieval.use_cuda = use_cuda_extract;
@@ -326,6 +330,7 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "  NMS enabled: " << (enable_nms ? "yes" : "no");
   if (enable_nms) {
     LOG(INFO) << "    NMS radius: " << nms_radius;
+    LOG(INFO) << "    Distribution grid size: " << kExperimentalGridSizePx << " px";
     LOG(INFO) << "    NMS max per cell: " << nms_max_per_cell
               << " (orientation mode effective cap up to " << 2 * nms_max_per_cell << ")";
     LOG(INFO) << "    Keep orientations: " << (nms_keep_orientation ? "yes" : "no");
@@ -551,7 +556,7 @@ int main(int argc, char* argv[]) {
             if (enable_nms) {
               insight::modules::apply_feature_distribution(
                   task.keypoints, task.descriptors, task.image_cols, task.image_rows,
-                  static_cast<int>(nms_radius * 10), // Grid size ~10x radius
+                  kExperimentalGridSizePx,
                   nms_max_per_cell,                   // Adaptive spatial capacity
                   nms_keep_orientation, &task.colors, nfeatures);
             }
@@ -578,7 +583,7 @@ int main(int argc, char* argv[]) {
             if (enable_nms) {
               insight::modules::apply_feature_distribution(
                   task.keypoints_retrieval, task.descriptors_retrieval, task.image_retrieval_cols,
-                  task.image_retrieval_rows, static_cast<int>(nms_radius * 10),
+                  task.image_retrieval_rows, kExperimentalGridSizePx,
                   nms_max_per_cell, nms_keep_orientation, &task.colors_retrieval,
                   nfeatures_retrieval);
             }

@@ -24,7 +24,9 @@ struct GpuCascadeHashBlockMatcher::Impl {
       options.mean_descriptor.assign(128, 0.0f);
     }
     cudaSetDevice(options.cuda_device_id);
-    model = cpu_cascade_hash::build_sample_model_from_mean_descriptor(options.mean_descriptor, hash_options);
+    hash_options = options.hash_options;
+    model = cpu_cascade_hash::build_sample_model_from_mean_descriptor(
+        options.mean_descriptor, hash_options);
   }
 
   struct StoredImage {

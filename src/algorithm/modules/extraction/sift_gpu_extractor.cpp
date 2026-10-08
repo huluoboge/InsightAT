@@ -389,6 +389,9 @@ bool SiftGPUExtractor::initialize_popsift(const SiftGPUParams& param) {
     // SiftGPU's d_peak/n_level * 255 to yield more raw candidates before grid filtering.
     ps_config.setThreshold(static_cast<float>(param.d_peak));
     ps_config.setLevels(param.n_level);
+    // PopSift's downsampling exponent has the same convention as COLMAP's
+    // first_octave: -1 means input upsampling by 2, 0 keeps the input scale.
+    ps_config.setDownsampling(static_cast<float>(param.n_octave_from));
     ps_config.setEdgeLimit(10.0f);
     ps_config.setFilterMaxExtrema(param.n_max_features);
     ps_config.setFilterGridSize(4);

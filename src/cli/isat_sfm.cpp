@@ -786,6 +786,14 @@ int main(int argc, char* argv[]) {
   int cascade_gpu_image_block_size = 1000;
   int cascade_gpu_sample_images = 256;
   int cascade_gpu_min_output_matches = 16;
+  int cascade_gpu_bucket_groups = 6;
+  int cascade_gpu_bucket_bits = 8;
+  int cascade_gpu_candidate_top_max = 10;
+  double cascade_gpu_ratio = 0.8;
+  int cascade_gpu_rescue_min_matches = 0;
+  int cascade_gpu_rescue_bucket_bits = 7;
+  int cascade_gpu_rescue_candidate_top_max = 12;
+  double cascade_gpu_rescue_ratio = 0.82;
   int retrieval_min_output_matches = 16;
   std::string cascade_cpu_preset = "modern";
   bool use_pop_sift = false;
@@ -860,6 +868,24 @@ int main(int argc, char* argv[]) {
               .doc("Sample images for GPU cascade global mean descriptor (default: 256)"));
   cmd.add(make_option(0, cascade_gpu_min_output_matches, "cascade-gpu-min-output-matches")
               .doc("Minimum matches per pair for GPU cascade output (default: 16)"));
+  cmd.add(make_option(0, cascade_gpu_bucket_groups, "cascade-gpu-bucket-groups")
+              .doc("GPU cascade hash bucket groups (default: 6)"));
+  cmd.add(make_option(0, cascade_gpu_bucket_bits, "cascade-gpu-bucket-bits")
+              .doc("GPU cascade hash bits per bucket (default: 8)"));
+  cmd.add(make_option(0, cascade_gpu_candidate_top_max, "cascade-gpu-candidate-top-max")
+              .doc("GPU cascade maximum hash candidates per query, 1..12 (default: 10)"));
+  cmd.add(make_option(0, cascade_gpu_ratio, "cascade-gpu-ratio")
+              .doc("GPU cascade descriptor ratio threshold (default: 0.8)"));
+  cmd.add(make_option(0, cascade_gpu_rescue_min_matches, "cascade-gpu-rescue-min-matches")
+              .doc("Run relaxed GPU cascade for pairs below this match count; 0 disables "
+                   "rescue (default: 0)"));
+  cmd.add(make_option(0, cascade_gpu_rescue_bucket_bits, "cascade-gpu-rescue-bucket-bits")
+              .doc("GPU cascade rescue bucket bits (default: 7)"));
+  cmd.add(make_option(0, cascade_gpu_rescue_candidate_top_max,
+                      "cascade-gpu-rescue-candidate-top-max")
+              .doc("GPU cascade rescue candidate cap, 1..12 (default: 12)"));
+  cmd.add(make_option(0, cascade_gpu_rescue_ratio, "cascade-gpu-rescue-ratio")
+              .doc("GPU cascade rescue ratio threshold (default: 0.82)"));
   cmd.add(make_option(0, retrieval_min_output_matches, "retrieval-min-output-matches")
               .doc("Minimum matches per pair written during retrieval-stage low-resolution "
                    "matching (default: 16). Forwarded to isat_retrieval_match "
@@ -1028,6 +1054,19 @@ int main(int argc, char* argv[]) {
     std::cerr << "Error: --cascade-gpu-image-block-size must be > 0, "
                  "--cascade-gpu-sample-images must be > 0, "
                  "--cascade-gpu-min-output-matches must be >= 0\n\n";
+    cmd.printHelp(std::cerr, argv[0]);
+    return 1;
+  }
+  if (cascade_gpu_bucket_groups <= 0 || cascade_gpu_bucket_bits <= 0 ||
+      cascade_gpu_bucket_bits > 16 || cascade_gpu_candidate_top_max <= 0 ||
+      cascade_gpu_candidate_top_max > 12 || cascade_gpu_ratio <= 0.0 ||
+      cascade_gpu_ratio > 1.0 || cascade_gpu_rescue_min_matches < 0 ||
+      cascade_gpu_rescue_bucket_bits <= 0 || cascade_gpu_rescue_bucket_bits > 16 ||
+      cascade_gpu_rescue_candidate_top_max <= 0 ||
+      cascade_gpu_rescue_candidate_top_max > 12 || cascade_gpu_rescue_ratio <= 0.0 ||
+      cascade_gpu_rescue_ratio > 1.0) {
+    std::cerr << "Error: invalid GPU cascade hash/ratio option; bucket-bits must be 1..16, "
+                 "candidate-top-max must be 1..12, and ratios must be in (0,1]\n\n";
     cmd.printHelp(std::cerr, argv[0]);
     return 1;
   }
@@ -1316,7 +1355,7 @@ int main(int argc, char* argv[]) {
                                               "--threshold",
                                               std::string(sift_threshold_buf),
                                               "--octaves",
-                                              "-1",
+                                              "4",
                                               "--levels",
                                               std::to_string(sift_levels),
                                               "--image-max-dim",
@@ -1358,7 +1397,7 @@ int main(int argc, char* argv[]) {
                                               "--threshold",
                                               "0.02",
                                               "--octaves",
-                                              "-1",
+                                              "4",
                                               "--levels",
                                               std::to_string(sift_levels),
                                               "--image-max-dim",
@@ -1517,7 +1556,23 @@ int main(int argc, char* argv[]) {
                            "--sample-images",
                            std::to_string(cascade_gpu_sample_images),
                            "--min-output-matches",
-                           std::to_string(cascade_gpu_min_output_matches)});
+                           std::to_string(cascade_gpu_min_output_matches),
+                           "--bucket-groups",
+                           std::to_string(cascade_gpu_bucket_groups),
+                           "--bucket-bits",
+                           std::to_string(cascade_gpu_bucket_bits),
+                           "--candidate-top-max",
+                           std::to_string(cascade_gpu_candidate_top_max),
+                           "--ratio",
+                           std::to_string(cascade_gpu_ratio),
+                           "--rescue-min-matches",
+                           std::to_string(cascade_gpu_rescue_min_matches),
+                           "--rescue-bucket-bits",
+                           std::to_string(cascade_gpu_rescue_bucket_bits),
+                           "--rescue-candidate-top-max",
+                           std::to_string(cascade_gpu_rescue_candidate_top_max),
+                           "--rescue-ratio",
+                           std::to_string(cascade_gpu_rescue_ratio)});
     } else {
       run_or_die("match",
                  {tool_path("isat_match"), "-i", pairs_retrieve.string(), "-f", feat_dir.string(),

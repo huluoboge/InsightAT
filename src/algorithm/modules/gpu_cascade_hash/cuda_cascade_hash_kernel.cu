@@ -506,6 +506,14 @@ void launch_match_one_direction_cuda_u8_device(
         query_dev.desc_u8, query_dev.hash, query_dev.bucket_ids, query_n,
         train_dev.desc_u8, train_dev.hash, train_dev.bucket_offsets, train_dev.bucket_indices, train_n,
         ratio_sq, d_out);
+  } else if (options.bucket_groups == 6 && options.bucket_bits == 8 && keep_k == 12) {
+    // The relaxed rescue preset keeps the same hash layout and only expands
+    // the exact-distance shortlist. Retain a compile-time path so it does
+    // not fall back to the fully dynamic kernel.
+    match_direction_kernel_u8_templ<6, 8, 12><<<blocks, threads, 0, stream>>>(
+        query_dev.desc_u8, query_dev.hash, query_dev.bucket_ids, query_n,
+        train_dev.desc_u8, train_dev.hash, train_dev.bucket_offsets, train_dev.bucket_indices, train_n,
+        ratio_sq, d_out);
   } else {
     match_direction_kernel_u8_generic<<<blocks, threads, 0, stream>>>(
         query_dev.desc_u8, query_dev.hash, query_dev.bucket_ids, query_n,
