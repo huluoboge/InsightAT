@@ -394,6 +394,14 @@ splitGroup(Project& project,
            ImageExif& primary_rep_out) {
   if (buckets.size() <= 1) return {};
 
+  // Buckets contain indices into the original image vector.  Never read those
+  // indices from `group.images` after assigning the primary bucket: unordered
+  // bucket iteration may visit the primary first, shrinking group.images and
+  // making later indices out of bounds.  Besides corrupting image filenames,
+  // that previously caused nlohmann::json to abort on invalid UTF-8 during
+  // `isat_project extract`.
+  const ImageGroup original_group = group;
+
   // Find the largest bucket → stays as the primary group.
   const ExifBuckets::value_type* largest = nullptr;
   for (const auto& kv : buckets)
@@ -409,7 +417,7 @@ splitGroup(Project& project,
     std::vector<Image> sub_images;
     sub_images.reserve(kv.second.indices.size());
     for (size_t gi : kv.second.indices)
-      sub_images.push_back(group.images[gi]);
+      sub_images.push_back(original_group.images.at(gi));
 
     if (is_primary) {
       group.images  = sub_images;
@@ -420,9 +428,9 @@ splitGroup(Project& project,
                 << " → " << sub_images.size() << " images"
                 << " (retained as group " << group.group_id << ")";
     } else {
-      ImageGroup ng   = group; // copy: inherit flags/settings
+      ImageGroup ng   = original_group; // inherit the pre-split flags/settings
       ng.group_id     = project.next_image_group_id++;
-      ng.group_name   = group.group_name + "_sub" + std::to_string(sub_idx);
+      ng.group_name   = original_group.group_name + "_sub" + std::to_string(sub_idx);
       ng.images       = sub_images;
       ng.group_camera = CameraModel{}; // reset; will be estimated from representative
       LOG(INFO) << "  [split] sub[" << sub_idx << "] "

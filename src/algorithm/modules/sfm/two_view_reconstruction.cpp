@@ -19,12 +19,18 @@ namespace sfm {
 
 static double essential_residual(const Eigen::Matrix3d& F, double cx, double cy, double f) {
   // K = diag(f, f, 1) with pp at (cx, cy)
+  const double f_norm = F.norm();
+  if (!(f_norm > 1e-15) || !std::isfinite(f_norm) || !(f > 0.0))
+    return 1.0;
   Eigen::Matrix3d K;
   K << f, 0.0, cx, 0.0, f, cy, 0.0, 0.0, 1.0;
-  Eigen::Matrix3d E = K.transpose() * F * K;
+  Eigen::Matrix3d E = K.transpose() * (F / f_norm) * K;
   Eigen::JacobiSVD<Eigen::Matrix3d> svd(E);
   const auto& sv = svd.singularValues(); // descending
-  return std::abs(sv[0] - sv[1]);
+  const double scale = sv[0] + sv[1];
+  if (!(scale > 1e-15) || !std::isfinite(scale))
+    return 1.0;
+  return std::abs(sv[0] - sv[1]) / scale;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,11 +91,7 @@ double focal_from_fundamental(const Eigen::Matrix3d& F, double cx, double cy, do
       break;
   }
   best_f = (lo + hi) * 0.5;
-  best_r = essential_residual(F, cx, cy, best_f);
 
-  // Sanity: if residual is very large, F might be degenerate
-  if (best_r > 1e3)
-    return -1.0;
   if (best_f <= f_min * 1.02 || best_f >= f_max * 0.98)
     return -1.0;
   return best_f;

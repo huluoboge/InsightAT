@@ -77,13 +77,12 @@ struct FocalFromViewGraphOptions {
   bool refine_with_ceres = true;
   /// Include cross-camera pairs in the joint Ceres stage (K2^T F K1).
   bool use_cross_camera_pairs = true;
-  /// Relative σ for soft prior residual in Ceres: (f−prior)/(σ·prior).
+  /// Relative σ for soft prior residual in log-focal Ceres space.
   /// Default 0: disabled — image soft prior is only used for Hartley sample
   /// gating / bounds; a strong Ceres prior toward 0.7·max(w,h) fights good F data.
   double ceres_prior_sigma_frac = 0.0;
-  /// If Ceres moves more than this fraction from the robust median, keep the median.
-  double ceres_max_median_rel_delta = 0.20;
-  double ceres_cauchy_scale = 1e-2;
+  /// Cauchy scale for the dimensionless relative essential residual.
+  double ceres_cauchy_scale = 0.1;
   int max_ceres_iterations = 50;
   int ceres_num_threads = 1;
   int hartley_num_threads = 1;
@@ -98,6 +97,9 @@ struct CameraFocalEstimate {
   int num_pairs = 0;        ///< Same-camera Hartley samples.
   int num_cross_pairs = 0;  ///< Cross-camera pairs touching this camera in Ceres.
   int num_rejected = 0;
+  int num_constraints = 0;  ///< Same- and cross-camera constraints touching this camera.
+  int observable_rank = 0;  ///< Numerical rank of the joint focal Jacobian.
+  bool observable = false;
   bool ok = false;
 };
 

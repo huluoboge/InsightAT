@@ -561,6 +561,9 @@ int main(int argc, char** argv) {
                        {"median_focal", c.median_focal},
                        {"num_pairs", c.num_pairs},
                        {"num_cross_pairs", c.num_cross_pairs},
+                       {"num_constraints", c.num_constraints},
+                       {"observable_rank", c.observable_rank},
+                       {"observable", c.observable},
                        {"ok", c.ok}});
   }
   json ev = {{"type", "focal_from_geo.estimate"},
