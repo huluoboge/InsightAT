@@ -10,7 +10,8 @@ Writes per scene:
 
 Per-scene ``run.json`` stats: ``n_images_input`` from ``work/images_all.json`` (``images``
 array length, same as C++ tools); fallback recursive scan of ``images/`` if missing.
-``n_images_registered`` from ``work/incremental_sfm/list.txt`` (Bundler) line count only.
+``n_images_registered`` from the unique ``image_index`` values in
+``work/incremental_sfm/poses.json``; falls back to the Bundler list when poses are absent.
 
 By default each scene **deletes and recreates** `work/` so reruns are full pipelines.
 Use `--reuse-work` to keep an existing work directory (expert only).
@@ -61,6 +62,19 @@ def _scene_insightat_run_json(scenes_dir: Path, scene_name: str) -> Path:
     return scenes_dir / scene_name / "results" / "insightat" / "run.json"
 
 
+def _ensure_project_link(link: Path, target: Path) -> None:
+    """Create a project-side input symlink without replacing unrelated files."""
+    target = target.resolve()
+    if link.is_symlink():
+        if link.resolve() == target:
+            return
+        link.unlink()
+    elif link.exists():
+        raise RuntimeError(f"project input path already exists and is not a symlink: {link}")
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target, target_is_directory=target.is_dir())
+
+
 def _load_successful_run_row(run_json: Path) -> Optional[Dict[str, Any]]:
     """If run.json records a successful isat_sfm run, return that object; else None."""
     if not run_json.is_file():
@@ -92,6 +106,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Batch isat_sfm")
     ap.add_argument("-d", "--dataset-root", required=True, help="Root with scenes/<name>/images/")
     ap.add_argument(
+        "--project-root",
+        default="",
+        help="Separate project/output directory; writes prj/<scene>/ there instead of into dataset",
+    )
+    ap.add_argument(
         "--insightat-bin-dir",
         default=os.environ.get("ISAT_BIN_DIR", ""),
         help="Directory containing isat_sfm (or set ISAT_BIN_DIR)",
@@ -117,6 +136,11 @@ def main() -> int:
         help="Optional path to write batch summary JSON",
     )
     ap.add_argument(
+        "--summary-csv",
+        default="",
+        help="Pose-evaluation summary CSV path (the evaluator also writes per-pose CSVs)",
+    )
+    ap.add_argument(
         "--reuse-work",
         action="store_true",
         help="Do not delete results/insightat/work before each scene (default: delete for a clean rerun)",
@@ -129,10 +153,18 @@ def main() -> int:
     args = ap.parse_args()
 
     root = Path(args.dataset_root).resolve()
-    scenes_dir = root / "scenes"
-    if not scenes_dir.is_dir():
-        print(f"Error: missing {scenes_dir}", file=sys.stderr)
+    data_scenes_dir = root / "scenes"
+    if not data_scenes_dir.is_dir():
+        print(f"Error: missing {data_scenes_dir}", file=sys.stderr)
         return 2
+
+    project_root = Path(args.project_root).expanduser().resolve() if args.project_root else None
+    if project_root is not None and (project_root == root or root in project_root.parents):
+        print("Error: --project-root must be separate from and outside the dataset directory", file=sys.stderr)
+        return 2
+    scenes_dir = (project_root / "prj") if project_root is not None else data_scenes_dir
+    if project_root is not None:
+        scenes_dir.mkdir(parents=True, exist_ok=True)
 
     isat = _isat_sfm_exe()
     if args.insightat_bin_dir:
@@ -146,12 +178,24 @@ def main() -> int:
         env["PATH"] = str(Path(args.insightat_bin_dir).resolve()) + os.pathsep + env.get("PATH", "")
 
     results: List[Dict[str, Any]] = []
-    scene_names = sorted(p.name for p in scenes_dir.iterdir() if p.is_dir())
+    scene_names = sorted(p.name for p in data_scenes_dir.iterdir() if p.is_dir())
     for name in scene_names:
-        img_dir = scenes_dir / name / "images"
-        if not img_dir.is_dir():
+        data_scene = data_scenes_dir / name
+        data_img_dir = data_scene / "images"
+        if not data_img_dir.is_dir():
             continue
-        run_json = _scene_insightat_run_json(scenes_dir, name)
+        scene_dir = scenes_dir / name
+        if project_root is not None:
+            _ensure_project_link(scene_dir / "images", data_img_dir)
+            data_gt_dir = data_scene / "gt"
+            if data_gt_dir.is_dir():
+                _ensure_project_link(scene_dir / "gt", data_gt_dir)
+        img_dir = scene_dir / "images" if project_root is not None else data_img_dir
+        run_json = (
+            scene_dir / "run.json"
+            if project_root is not None
+            else _scene_insightat_run_json(scenes_dir, name)
+        )
         if args.skip_done:
             prev = _load_successful_run_row(run_json)
             if prev is not None:
@@ -161,11 +205,19 @@ def main() -> int:
                 print(f"[isat_sfm] {name}: skip (already done, exit_code=0)")
                 continue
 
-        work = scenes_dir / name / "results" / "insightat" / "work"
+        work = (
+            scene_dir / "work"
+            if project_root is not None
+            else scene_dir / "results" / "insightat" / "work"
+        )
         if not args.reuse_work and work.exists():
             shutil.rmtree(work)
         work.mkdir(parents=True, exist_ok=True)
-        log_path = scenes_dir / name / "results" / "insightat" / "isat_sfm_console.log"
+        log_path = (
+            scene_dir / "isat_sfm.log"
+            if project_root is not None
+            else scene_dir / "results" / "insightat" / "isat_sfm_console.log"
+        )
 
         cmd = [
             isat,
@@ -210,10 +262,32 @@ def main() -> int:
         if n_input == 0:
             n_input = count_images_in_tree(img_dir)
         # SfM success: Bundler reconstruction list only (not COLMAP basename heuristics).
-        n_reg = count_bundler_list_paths(bundler_list) if bundler_list.is_file() else 0
+        pose_json = work / "incremental_sfm" / "poses.json"
+        n_reg = 0
+        if pose_json.is_file():
+            try:
+                pose_data = json.loads(pose_json.read_text(encoding="utf-8"))
+                pose_rows = pose_data.get("poses", []) if isinstance(pose_data, dict) else []
+                if isinstance(pose_rows, list):
+                    n_reg = len(
+                        {
+                            row.get("image_index")
+                            for row in pose_rows
+                            if isinstance(row, dict) and isinstance(row.get("image_index"), int)
+                        }
+                    )
+            except (OSError, json.JSONDecodeError):
+                n_reg = 0
+        if n_reg == 0 and bundler_list.is_file():
+            n_reg = count_bundler_list_paths(bundler_list)
         n_pts = 0
         if sparse.is_file():
             n_pts = count_points3d(sparse.parent / "points3D.txt")
+
+        if project_root is not None:
+            estimated_pose_path = work / "incremental_sfm" / "poses.json"
+            if estimated_pose_path.is_file():
+                shutil.copy2(estimated_pose_path, scene_dir / "poses.json")
 
         row = {
             "scene": name,
@@ -229,6 +303,7 @@ def main() -> int:
             "n_images_registered": n_reg,
             "n_points3d": n_pts,
         }
+        run_json.parent.mkdir(parents=True, exist_ok=True)
         run_json.write_text(json.dumps(row, indent=2), encoding="utf-8")
         print(
             f"[isat_sfm] {name}: code={p.returncode} wall={elapsed:.1f}s "
@@ -238,6 +313,30 @@ def main() -> int:
 
     if args.summary:
         Path(args.summary).write_text(json.dumps(results, indent=2), encoding="utf-8")
+    if project_root is not None or args.summary_csv:
+        eval_script = _REPO / "benchmarks" / "eth3d" / "evaluate_wai_eth3d_poses.py"
+        evaluation_project_root = project_root or root
+        evaluation_dir = evaluation_project_root / "evaluation"
+        evaluation_cmd = [
+            sys.executable,
+            str(eval_script),
+            "--dataset-root",
+            str(root),
+            "--project-root",
+            str(evaluation_project_root),
+            "--output-dir",
+            str(evaluation_dir),
+            "--csv-only",
+        ]
+        csv_path = (
+            Path(args.summary_csv).expanduser().resolve()
+            if args.summary_csv
+            else evaluation_project_root / "summary.csv"
+        )
+        evaluation_cmd.extend(["--csv", str(csv_path)])
+        print("[isat_sfm] pose evaluation CSV: " + " ".join(evaluation_cmd))
+        evaluated = subprocess.run(evaluation_cmd, check=False)
+        return evaluated.returncode
     return 0
 
 

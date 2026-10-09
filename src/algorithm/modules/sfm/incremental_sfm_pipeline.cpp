@@ -4954,20 +4954,24 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                      : 0.0);
       tr.preferred = (tr.inliers >= opts.resection.preferred_min_inliers &&
                       tr.ratio >= opts.resection.preferred_min_inlier_ratio);
-      const int grid_cells = resection_image_grid_coverage(*store_out, im, 4, 4);
+      const int image_width =
+          K.width > 0 ? K.width : static_cast<int>(std::ceil(2.0 * K.cx));
+      const int image_height =
+          K.height > 0 ? K.height : static_cast<int>(std::ceil(2.0 * K.cy));
+      const int inlier_grid_cells = resection_inlier_grid_coverage(
+          *store_out, tr.pnp_obs_ids, tr.inlier_mask, image_width, image_height, 4, 4);
       const bool strict_ok =
           tr.inliers >= resection_minliers && tr.ratio >= resection_min_inlier_ratio &&
-          tr.rmse_px <= opts.resection.max_pose_rmse_px;
+          tr.rmse_px <= opts.resection.max_pose_rmse_px &&
+          inlier_grid_cells >= opts.resection.min_inlier_grid_cells;
       tr.adaptive =
           opts.resection.enable_adaptive_acceptance &&
           tr.inliers >= std::max(resection_minliers, opts.resection.adaptive_min_inliers) &&
           tr.ratio >= opts.resection.adaptive_min_inlier_ratio &&
           tr.rmse_px <= opts.resection.adaptive_max_rmse_px &&
-          cand.coverage >= opts.resection.min_visibility_coverage &&
-          grid_cells >= opts.resection.adaptive_min_grid_cells;
+          inlier_grid_cells >= opts.resection.min_inlier_grid_cells;
       tr.acceptable = strict_ok || tr.adaptive;
-      // Inlier count is the primary signal when overlap varies. Ratio and RMSE remain
-      // soft penalties, while the hard/adaptive checks above protect against weak poses.
+      // Inlier count, ratio, spatial coverage, and RMSE rank candidates that pass the gate.
       const double ratio_factor =
           0.5 + 0.5 * std::min(1.0, tr.ratio / std::max(0.01, resection_min_inlier_ratio));
       const double coverage_factor = 0.5 + 0.5 * std::min(1.0, static_cast<double>(cand.coverage));
@@ -4975,7 +4979,7 @@ bool run_incremental_sfm_pipeline(const std::string& tracks_idc_path,
                  (1.0 + tr.rmse_px / 4.0);
       LOG(INFO) << "  resection image " << im << ": TRIAL-OK (3D-2D=" << tr.n_3d2d
                 << ", inliers=" << tr.inliers << ", ratio=" << tr.ratio << ", rmse=" << tr.rmse_px
-                << ", grid=" << grid_cells << ", coverage=" << cand.coverage
+                << ", inlier_grid=" << inlier_grid_cells << ", coverage=" << cand.coverage
                 << ", score=" << tr.score
                 << (tr.preferred ? ", preferred" : "")
                 << (tr.adaptive ? ", adaptive" : "")

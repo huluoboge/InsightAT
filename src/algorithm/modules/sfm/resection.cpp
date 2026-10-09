@@ -11,6 +11,7 @@
 #include <PoseLib/robust.h>
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <glog/logging.h>
@@ -905,6 +906,34 @@ int resection_image_grid_coverage(const TrackStore& store, int image_index, int 
       if (cell_used[static_cast<size_t>(r)][static_cast<size_t>(c)])
         ++cells;
   return cells;
+}
+
+int resection_inlier_grid_coverage(const TrackStore& store,
+                                   const std::vector<int>& pnp_obs_ids,
+                                   const std::vector<char>& inlier_mask,
+                                   int image_width, int image_height,
+                                   int grid_cols, int grid_rows) {
+  if (pnp_obs_ids.empty() || pnp_obs_ids.size() != inlier_mask.size() || image_width <= 0 ||
+      image_height <= 0 || grid_cols <= 0 || grid_rows <= 0)
+    return 0;
+
+  std::vector<bool> used(static_cast<size_t>(grid_cols * grid_rows), false);
+  for (size_t i = 0; i < pnp_obs_ids.size(); ++i) {
+    if (!inlier_mask[i] || pnp_obs_ids[i] < 0 || !store.is_obs_valid(pnp_obs_ids[i]))
+      continue;
+    Observation obs;
+    store.get_obs(pnp_obs_ids[i], &obs);
+    if (!std::isfinite(obs.u) || !std::isfinite(obs.v) || obs.u < 0.f || obs.v < 0.f ||
+        obs.u >= static_cast<float>(image_width) || obs.v >= static_cast<float>(image_height))
+      continue;
+
+    const int col = std::min(grid_cols - 1,
+                             static_cast<int>(obs.u / static_cast<float>(image_width) * grid_cols));
+    const int row = std::min(grid_rows - 1,
+                             static_cast<int>(obs.v / static_cast<float>(image_height) * grid_rows));
+    used[static_cast<size_t>(row * grid_cols + col)] = true;
+  }
+  return static_cast<int>(std::count(used.begin(), used.end(), true));
 }
 
 int choose_next_resection_image(const TrackStore& store,

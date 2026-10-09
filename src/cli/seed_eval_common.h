@@ -28,10 +28,10 @@ struct SeedEvalMetrics {
 
 inline std::vector<SeedStrategyProfile> default_seed_profiles() {
   return {
-      {"00_balanced", "balanced", 100, 0.95, 2.0, 20.0, 15},
-      {"01_wide_baseline", "wide_baseline", 110, 0.80, 3.0, 30.0, 15},
-      {"02_support_first", "support_first", 80, 0.95, 1.5, 10.0, 15},
-      {"03_conservative", "conservative", 120, 0.75, 2.5, 15.0, 15},
+      {"00_balanced", "balanced", 100, 0.95, 2.0, 20.0, 30},
+      {"01_wide_baseline", "wide_baseline", 110, 0.80, 3.0, 30.0, 30},
+      {"02_support_first", "support_first", 80, 0.95, 1.5, 10.0, 30},
+      {"03_conservative", "conservative", 120, 0.75, 2.5, 15.0, 30},
   };
 }
 

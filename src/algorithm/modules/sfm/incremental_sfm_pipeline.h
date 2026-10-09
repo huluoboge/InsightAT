@@ -199,10 +199,9 @@ struct ResectionOptions {
   /// PnP hypothesis-discovery threshold, aligned with COLMAP's abs_pose_max_error.
   /// This is intentionally looser than the final pose-quality checks below.
   double ransac_max_error_px = 12.0;
-  /// Maximum refined pose RMSE for the normal (non-adaptive) acceptance path. This follows the
-  /// original resection stability rule max(6 px, 1.5 * ransac_max_error_px) = 18 px at the
-  /// current 12 px PnP discovery threshold. The post-resection 4 px cleanup remains independent.
-  double max_pose_rmse_px = 18.0;
+  /// Final refined-pose RMSE cap. Numerically matches the 12 px PnP threshold, but is a
+  /// separate aggregate quality gate; inlier-ratio and spatial-coverage gates remain independent.
+  double max_pose_rmse_px = 12.0;
   /// For large scenes, use a stricter inlier-ratio gate once enough cameras are registered.
   double min_inlier_ratio_large_scene = 0.15;
   int large_scene_min_images = 100;
@@ -212,14 +211,14 @@ struct ResectionOptions {
   double preferred_min_inlier_ratio = 0.20;
   /// Evaluate up to this many ranked candidates (dry-run) and accept the best, not the first OK.
   int max_trials_before_accept = 8;
-  /// Enable a low-overlap acceptance path. A candidate must still have enough absolute
-  /// inliers, low RMSE, and reasonable image coverage; the ratio floor is only a fallback
-  /// for images whose valid overlap is much smaller than the full 3D-2D candidate set.
+  /// Enable a low-overlap acceptance path. Require substantial absolute support, a stricter
+  /// refined-pose RMSE, and spatial coverage of the actual PnP inliers.
   bool enable_adaptive_acceptance = true;
   int adaptive_min_inliers = 50;
-  double adaptive_min_inlier_ratio = 0.04;
+  double adaptive_min_inlier_ratio = 0.10;
   double adaptive_max_rmse_px = 3.0;
-  int adaptive_min_grid_cells = 3;
+  /// Minimum occupied cells in the 4x4 grid of PnP inliers.
+  int min_inlier_grid_cells = 2;
   /// Second pass after PnP inlier writeback: drop observations with reprojection error above
   /// this threshold (px). This mirrors COLMAP's filter_max_reproj_error.
   double post_resection_reproj_thresh_px = 4.0;

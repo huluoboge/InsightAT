@@ -8,7 +8,7 @@
  *   3. match             – 默认：检索穷举 → 全分辨率 match → geo；图像数 <
  * --auto-exhaustive-max-images 时自动改全穷举；若有 matching_extract_meta.json 中的 low_peak
  * 图，则与 检索 pairs 并集后再匹配；--exhaustive-match 强制全穷举；
- * geo 后按焦距估计情况（--focal-from-geo=auto|always|never）可选跑 isat_focal_from_geo
+ * geo 后按焦距估计情况（--focal-from-geo=auto|always|never）运行 isat_focal_from_geo
  *   4. tracks            – build tracks from matches + geometry
  *   5. seed_eval         – 四策略 seed 评估（balanced/wide_baseline/support_first/conservative）
  *   6. incremental_sfm   – incremental SfM (resection + BA)
@@ -315,7 +315,10 @@ static bool load_seed_eval_best_profile(const fs::path& best_seed_path,
     profile->init_min_angle_deg = best_strategy.value("init_min_angle_deg", 2.0);
     profile->init_min_median_angle_deg =
         best_strategy.value("init_min_median_angle_deg", 30.0);
-    profile->resection_min_inliers = best_strategy.value("resection_min_inliers", 30);
+    // Seed evaluation uses only a short prefix of the sequence. Do not let an old or
+    // under-supported profile lower the production PnP support gate below COLMAP's 30.
+    profile->resection_min_inliers =
+        std::max(30, best_strategy.value("resection_min_inliers", 30));
     return !profile->name.empty();
   } catch (const std::exception& e) {
     if (error_message)
@@ -1297,6 +1300,7 @@ int main(int argc, char* argv[]) {
 
     const int sift_levels = 3;
     const std::string sift_octaves = "-1";
+    const std::string matching_nfeatures = "15000";
     // const std::string sift_octaves = "4";
     //           << sift_levels << ")";
     if (no_grid) {
@@ -1314,7 +1318,7 @@ int main(int argc, char* argv[]) {
                                               "--extract-backend",
                                               extract_backend,
                                               "--nfeatures",
-                                              "10000",
+                                              matching_nfeatures,
                                               "--threshold",
                                               std::string(sift_threshold_buf),
                                               "--octaves",
@@ -1356,7 +1360,7 @@ int main(int argc, char* argv[]) {
                                               "--extract-backend",
                                               extract_backend,
                                               "--nfeatures",
-                                              "10000",
+                                              matching_nfeatures,
                                               "--threshold",
                                               "0.02",
                                               "--octaves",

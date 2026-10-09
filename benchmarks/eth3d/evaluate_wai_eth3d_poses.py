@@ -501,6 +501,226 @@ def load_scene_bundles(root: dict[str, Any]) -> list[dict[str, Any]]:
     raise ValueError("输入 JSON 不是批量或单场景位姿集合")
 
 
+def quaternion_rotation(qw: float, qx: float, qy: float, qz: float) -> np.ndarray:
+    """COLMAP Hamilton quaternion to world-to-camera rotation matrix."""
+    return np.asarray(
+        [
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def read_colmap_cameras(path: Path) -> dict[int, dict[str, Any]]:
+    cameras: dict[int, dict[str, Any]] = {}
+    if not path.is_file():
+        return cameras
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        camera_id, model = int(fields[0]), fields[1]
+        width, height = int(fields[2]), int(fields[3])
+        params = [float(value) for value in fields[4:]]
+        intrinsics: dict[str, Any] = {"width": width, "height": height}
+        if model in {"SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"} and len(params) >= 3:
+            intrinsics.update({"fx": params[0], "fy": params[0], "cx": params[1], "cy": params[2]})
+            if model == "SIMPLE_RADIAL" and len(params) >= 4:
+                intrinsics["k1"] = params[3]
+            elif model == "RADIAL" and len(params) >= 5:
+                intrinsics.update({"k1": params[3], "k2": params[4]})
+        elif model in {"PINHOLE", "OPENCV", "OPENCV_FISHEYE", "FULL_OPENCV"} and len(params) >= 4:
+            intrinsics.update({"fx": params[0], "fy": params[1], "cx": params[2], "cy": params[3]})
+            if model == "OPENCV" and len(params) >= 8:
+                intrinsics.update({"k1": params[4], "k2": params[5], "p1": params[6], "p2": params[7]})
+            elif model == "OPENCV_FISHEYE" and len(params) >= 8:
+                intrinsics.update({"k1": params[4], "k2": params[5], "k3": params[6]})
+            elif model == "FULL_OPENCV" and len(params) >= 12:
+                intrinsics.update({"k1": params[4], "k2": params[5], "p1": params[8], "p2": params[9], "k3": params[6]})
+        cameras[camera_id] = intrinsics
+    return cameras
+
+
+def read_colmap_ground_truth(gt_dir: Path) -> list[dict[str, Any]]:
+    """Read ETH3D DSLR ground-truth camera poses from COLMAP text files."""
+    image_path = gt_dir / "images.txt"
+    if not image_path.is_file():
+        raise FileNotFoundError(f"missing COLMAP ground-truth file: {image_path}")
+    cameras = read_colmap_cameras(gt_dir / "cameras.txt")
+    lines = image_path.read_text(encoding="utf-8").splitlines()
+    poses: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line or line.startswith("#"):
+            index += 1
+            continue
+        fields = line.split()
+        if len(fields) < 10:
+            index += 1
+            continue
+        try:
+            image_id = int(fields[0])
+            qw, qx, qy, qz = (float(value) for value in fields[1:5])
+            translation = np.asarray([float(value) for value in fields[5:8]], dtype=np.float64)
+            camera_id = int(fields[8])
+        except ValueError:
+            index += 1
+            continue
+        image_name = Path(" ".join(fields[9:])).name
+        rotation = quaternion_rotation(qw, qx, qy, qz)
+        rotation_camera_to_world = rotation.T
+        center = -rotation_camera_to_world @ translation
+        matrix = np.eye(4, dtype=np.float64)
+        matrix[:3, :3] = rotation_camera_to_world
+        matrix[:3, 3] = center
+        poses.append(
+            {
+                "image_name": image_name,
+                "image_index": image_id,
+                "camera_index": camera_id,
+                "R_world_to_camera": rotation.tolist(),
+                "camera_center": center.tolist(),
+                "camera_to_world": matrix.tolist(),
+                "intrinsics": cameras.get(camera_id, {}),
+            }
+        )
+        # COLMAP stores each image's 2D observations on the next line.
+        index += 2
+    return poses
+
+
+def image_names_from_work(work_dir: Path) -> dict[int, str]:
+    image_list = work_dir / "images_all.json"
+    if not image_list.is_file():
+        return {}
+    try:
+        images = read_json(image_list).get("images", [])
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    names: dict[int, str] = {}
+    if isinstance(images, list):
+        for fallback_index, image in enumerate(images):
+            if not isinstance(image, dict):
+                continue
+            image_index = image.get("image_index", fallback_index)
+            image_path = image.get("path")
+            if isinstance(image_index, int) and isinstance(image_path, str):
+                names[image_index] = Path(image_path).name
+    return names
+
+
+def estimated_poses_from_file(path: Path, work_dir: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    value = read_json(path)
+    raw_poses = value.get("estimated")
+    if isinstance(raw_poses, list):
+        return raw_poses
+    raw_poses = value.get("poses", [])
+    if not isinstance(raw_poses, list):
+        return []
+    names = image_names_from_work(work_dir)
+    estimates: list[dict[str, Any]] = []
+    for pose in raw_poses:
+        if not isinstance(pose, dict):
+            continue
+        image_index = pose.get("image_index")
+        rotation = pose.get("R")
+        center = pose.get("C")
+        if not isinstance(image_index, int) or not isinstance(rotation, list) or len(rotation) != 9:
+            continue
+        if not isinstance(center, list) or len(center) != 3:
+            continue
+        rotation_matrix = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+        camera_to_world = np.eye(4, dtype=np.float64)
+        camera_to_world[:3, :3] = rotation_matrix.T
+        camera_to_world[:3, 3] = np.asarray(center, dtype=np.float64)
+        estimates.append(
+            {
+                "image_name": names.get(image_index, ""),
+                "image_index": image_index,
+                "camera_index": pose.get("camera_index"),
+                "R_world_to_camera": rotation_matrix.tolist(),
+                "camera_center": center,
+                "camera_to_world": camera_to_world.tolist(),
+                "intrinsics": {},
+            }
+        )
+    return estimates
+
+
+def load_eth3d_bundles(dataset_root: Path, project_root: Path) -> list[dict[str, Any]]:
+    """Build evaluator input directly from prepared ETH3D data and SfM work dirs."""
+    data_scenes = dataset_root / "scenes"
+    bundles: list[dict[str, Any]] = []
+    for data_scene in sorted(path for path in data_scenes.iterdir() if path.is_dir()):
+        name = data_scene.name
+        gt_dir = dataset_root / "raw" / name / "dslr_calibration_jpg"
+        if not gt_dir.is_dir():
+            gt_dir = data_scene / "gt"
+
+        project_scene = project_root / "prj" / name
+        run_path = project_scene / "run.json"
+        if not run_path.is_file():
+            run_path = data_scene / "results" / "insightat" / "run.json"
+        run_exit_code: Any = None
+        if run_path.is_file():
+            try:
+                run_exit_code = read_json(run_path).get("exit_code")
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+
+        pose_candidates = [
+            (project_scene / "poses.json", project_scene / "work"),
+            (project_scene / "work" / "incremental_sfm" / "poses.json", project_scene / "work"),
+            (data_scene / "results" / "insightat" / "work" / "incremental_sfm" / "poses.json",
+             data_scene / "results" / "insightat" / "work"),
+            (data_scene / "results" / "insightat" / "previous_workspace" / "incremental_sfm" / "poses.json",
+             data_scene / "results" / "insightat" / "previous_workspace"),
+            (data_scene / "results" / "previous_scenes-00" / "insightat" / "work" / "incremental_sfm" / "poses.json",
+             data_scene / "results" / "previous_scenes-00" / "insightat" / "work"),
+        ]
+        pose_path, work_dir = next(
+            ((path, work) for path, work in pose_candidates if path.is_file()),
+            (pose_candidates[0][0], pose_candidates[0][1]),
+        )
+        try:
+            ground_truth = read_colmap_ground_truth(gt_dir)
+        except (OSError, ValueError) as error:
+            ground_truth = []
+            gt_error = str(error)
+        else:
+            gt_error = ""
+        try:
+            estimated = estimated_poses_from_file(pose_path, work_dir)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            estimated = []
+            pose_error = str(error)
+        else:
+            pose_error = ""
+        bundles.append(
+            {
+                "schema": "insightat_eth3d_pose_collection_v1",
+                "scene": name,
+                "run_exit_code": run_exit_code,
+                "ground_truth": ground_truth,
+                "estimated": estimated,
+                "source_files": {
+                    "ground_truth": str(gt_dir / "images.txt"),
+                    "estimated": str(pose_path) if pose_path.is_file() else "",
+                },
+                "load_error": "; ".join(error for error in (gt_error, pose_error) if error),
+            }
+        )
+    return bundles
+
+
 def aggregate_rows(rows: list[dict[str, Any]],
                    residuals: list[dict[str, Any]]) -> dict[str, Any]:
     position = [
@@ -593,9 +813,19 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="评估 wai_eth3d poses.json：每个场景 Sim(3) 对齐后计算位姿误差"
+        description="逐场景 Sim(3) 对齐 ETH3D 相机位姿，生成汇总和逐图像 CSV"
     )
-    parser.add_argument("--poses", required=True, type=Path, help="批量或单场景 poses.json")
+    parser.add_argument("--poses", type=Path, help="wai_eth3d 格式的批量或单场景 poses.json")
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        help="prepared ETH3D 数据目录；直接从 scenes/*/gt 和 raw/*/dslr_calibration_jpg/images.txt 读取 GT",
+    )
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        help="项目输出目录；读取 prj/<scene>/poses.json 或 work 下的 SfM 位姿。默认与 dataset-root 相同以兼容旧结果",
+    )
     parser.add_argument(
         "--csv",
         type=Path,
@@ -612,7 +842,7 @@ def main() -> int:
         "--output-dir",
         type=Path,
         default=None,
-        help="位姿 CSV 输出目录（默认与输入同目录）",
+        help="位姿 CSV 输出目录（默认与输入文件或项目目录同目录）",
     )
     parser.add_argument(
         "--ground-truth-csv",
@@ -632,19 +862,44 @@ def main() -> int:
         default=None,
         help="逐图像对比 CSV 路径",
     )
+    parser.add_argument(
+        "--csv-only",
+        action="store_true",
+        help="只写 CSV，不生成 pose_evaluation.json",
+    )
     args = parser.parse_args()
 
-    poses_path = args.poses.expanduser().resolve()
-    if not poses_path.is_file():
-        print(f"错误: 位姿文件不存在: {poses_path}", file=sys.stderr)
-        return 2
+    if args.poses and args.dataset_root:
+        parser.error("--poses 和 --dataset-root 只能指定一个")
+    if not args.poses and not args.dataset_root:
+        parser.error("必须指定 --poses 或 --dataset-root")
 
-    try:
-        root = read_json(poses_path)
-        bundles = load_scene_bundles(root)
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        print(f"错误: 无法读取位姿集合: {error}", file=sys.stderr)
-        return 2
+    poses_path: Path | None = None
+    if args.poses:
+        poses_path = args.poses.expanduser().resolve()
+        if not poses_path.is_file():
+            print(f"错误: 位姿文件不存在: {poses_path}", file=sys.stderr)
+            return 2
+        try:
+            bundles = load_scene_bundles(read_json(poses_path))
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"错误: 无法读取位姿集合: {error}", file=sys.stderr)
+            return 2
+        default_output_dir = poses_path.parent
+    else:
+        dataset_root = args.dataset_root.expanduser().resolve()
+        if not (dataset_root / "scenes").is_dir():
+            print(f"错误: 缺少数据场景目录: {dataset_root / 'scenes'}", file=sys.stderr)
+            return 2
+        project_root = (
+            args.project_root.expanduser().resolve() if args.project_root else dataset_root
+        )
+        try:
+            bundles = load_eth3d_bundles(dataset_root, project_root)
+        except OSError as error:
+            print(f"错误: 无法读取 ETH3D 位姿: {error}", file=sys.stderr)
+            return 2
+        default_output_dir = project_root / "evaluation"
 
     rows: list[dict[str, Any]] = []
     residuals: list[dict[str, Any]] = []
@@ -670,7 +925,7 @@ def main() -> int:
     ]
     output_dir = (
         args.output_dir
-        or (args.csv.parent if args.csv is not None else poses_path.parent)
+        or (args.csv.parent if args.csv is not None else default_output_dir)
     ).expanduser().resolve()
     output_csv = (args.csv or output_dir / "pose_evaluation.csv").expanduser().resolve()
     output_json = (args.json or output_dir / "pose_evaluation.json").expanduser().resolve()
@@ -687,33 +942,34 @@ def main() -> int:
     write_csv(ground_truth_csv, ground_truth_rows, POSE_CSV_FIELDS)
     write_csv(estimated_csv, estimated_rows, POSE_CSV_FIELDS)
     write_csv(comparison_csv, comparison_rows, COMPARISON_CSV_FIELDS)
-    write_json(
-        output_json,
-        {
-            "schema": "insightat_eth3d_pose_evaluation_v1",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "input": str(poses_path),
-            "alignment": {
-                "direction": "estimated_camera_center -> ground_truth_camera_center",
-                "transform": "C_gt ~= scale * R_align @ C_est + t",
-                "position_unit": "ground-truth unit (ETH3D metric when applicable)",
-                "rotation_unit": "degree",
-            },
-            "csv_outputs": {
-                "summary": str(output_csv),
-                "ground_truth_poses": str(ground_truth_csv),
-                "estimated_poses": str(estimated_csv),
-                "comparison": str(comparison_csv),
-            },
-            "scenes": rows,
-            "overall": total,
-        },
-    )
     print(f"[pose-eval] CSV: {output_csv}")
     print(f"[pose-eval] GT poses CSV: {ground_truth_csv}")
     print(f"[pose-eval] estimated poses CSV: {estimated_csv}")
     print(f"[pose-eval] comparison CSV: {comparison_csv}")
-    print(f"[pose-eval] JSON: {output_json}")
+    if not args.csv_only:
+        write_json(
+            output_json,
+            {
+                "schema": "insightat_eth3d_pose_evaluation_v1",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "input": str(poses_path) if poses_path is not None else "ETH3D dataset/project roots",
+                "alignment": {
+                    "direction": "estimated_camera_center -> ground_truth_camera_center",
+                    "transform": "C_gt ~= scale * R_align @ C_est + t",
+                    "position_unit": "ground-truth unit (ETH3D metric when applicable)",
+                    "rotation_unit": "degree",
+                },
+                "csv_outputs": {
+                    "summary": str(output_csv),
+                    "ground_truth_poses": str(ground_truth_csv),
+                    "estimated_poses": str(estimated_csv),
+                    "comparison": str(comparison_csv),
+                },
+                "scenes": rows,
+                "overall": total,
+            },
+        )
+        print(f"[pose-eval] JSON: {output_json}")
     return 0 if total["ok"] else 1
 
 

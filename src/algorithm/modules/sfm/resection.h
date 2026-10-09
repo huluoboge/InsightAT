@@ -88,6 +88,14 @@ bool commit_resection_result(TrackStore& store, const std::vector<int>& pnp_obs_
 int resection_image_grid_coverage(const TrackStore& store, int image_index, int grid_cols = 4,
                                   int grid_rows = 4);
 
+/// Count fixed image-grid cells containing PnP inliers. Unlike candidate coverage, this only
+/// considers the observations selected by the PnP inlier mask and uses the full image bounds.
+int resection_inlier_grid_coverage(const TrackStore& store,
+                                   const std::vector<int>& pnp_obs_ids,
+                                   const std::vector<char>& inlier_mask,
+                                   int image_width, int image_height,
+                                   int grid_cols = 4, int grid_rows = 4);
+
 /**
  * Select next image to register: unregistered image with the most
  * 3D–2D correspondences (tracks with triangulated xyz observed in that image).
