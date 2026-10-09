@@ -313,8 +313,6 @@ SiftGPUExtractor::SiftGPUPtr SiftGPUExtractor::create_sift_gpu(const SiftGPUPara
   argv[ii++] = strPeak;
   argv[ii++] = "-d";
   argv[ii++] = strNLevel;
-  argv[ii++] = "-w";
-  argv[ii++] = "3";
   argv[ii++] = "-maxd";
   argv[ii++] = strImageMaxDimension;
 
@@ -388,6 +386,10 @@ bool SiftGPUExtractor::initialize_popsift(const SiftGPUParams& param) {
     // Effective DoG threshold = d_peak * 0.5 * 255 / levels — intentionally lower than
     // SiftGPU's d_peak/n_level * 255 to yield more raw candidates before grid filtering.
     ps_config.setThreshold(static_cast<float>(param.d_peak));
+    // PopSift stores the opposite sign as its upscale factor, so its
+    // downsampling value has the same convention as COLMAP's first_octave:
+    // -1 means 2x input upsampling, while 0 keeps the input scale.
+    ps_config.setDownsampling(static_cast<float>(param.n_octave_from));
     ps_config.setOctaves(param.n_octaves);
     ps_config.setLevels(param.n_level);
     ps_config.setEdgeLimit(10.0f);

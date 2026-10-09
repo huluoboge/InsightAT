@@ -1296,6 +1296,8 @@ int main(int argc, char* argv[]) {
     fs::create_directories(feat_ret_dir);
 
     const int sift_levels = 3;
+    const std::string sift_octaves = "-1";
+    // const std::string sift_octaves = "4";
     //           << sift_levels << ")";
     if (no_grid) {
       LOG(INFO) << "isat_extract: spatial grid disabled (--no-grid, omitting --nms)";
@@ -1316,7 +1318,7 @@ int main(int argc, char* argv[]) {
                                               "--threshold",
                                               std::string(sift_threshold_buf),
                                               "--octaves",
-                                              "4",
+                                              sift_octaves,
                                               "--levels",
                                               std::to_string(sift_levels),
                                               "--image-max-dim",
@@ -1358,7 +1360,7 @@ int main(int argc, char* argv[]) {
                                               "--threshold",
                                               "0.02",
                                               "--octaves",
-                                              "4",
+                                              sift_octaves,
                                               "--levels",
                                               std::to_string(sift_levels),
                                               "--image-max-dim",
